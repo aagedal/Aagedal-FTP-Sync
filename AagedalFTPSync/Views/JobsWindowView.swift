@@ -2,11 +2,10 @@ import SwiftUI
 
 struct JobsWindowView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var selectedID: UUID?
 
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedID) {
+            List(selection: $store.selectedJobID) {
                 ForEach(store.jobs) { job in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(job.name).fontWeight(.medium)
@@ -35,7 +34,8 @@ struct JobsWindowView: View {
                 .background(.bar)
             }
         } detail: {
-            if let selectedID, let job = store.jobs.first(where: { $0.id == selectedID }) {
+            if let selectedID = store.selectedJobID,
+               let job = store.jobs.first(where: { $0.id == selectedID }) {
                 JobDetailEditor(job: job)
                     .id(job.id)
             } else if store.jobs.isEmpty {
@@ -56,13 +56,13 @@ struct JobsWindowView: View {
     }
 
     private func selectFirstIfNeeded() {
-        if selectedID == nil || !store.jobs.contains(where: { $0.id == selectedID }) {
-            selectedID = store.jobs.last?.id
+        if store.selectedJobID == nil || !store.jobs.contains(where: { $0.id == store.selectedJobID }) {
+            store.selectedJobID = store.jobs.last?.id
         }
     }
 
     private func addJob() {
-        selectedID = store.addJob().id
+        _ = store.addJob()
     }
 }
 

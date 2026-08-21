@@ -152,7 +152,9 @@ private struct MenuJobRow: View {
             .buttonStyle(.plain)
             .foregroundStyle(job.isEnabled ? Color.secondary : Color.accentColor)
             .help(job.isEnabled ? "Pause Automatic Sync" : "Resume Automatic Sync")
+            localFolderControl
             Button {
+                store.selectedJobID = job.id
                 RegularWindowController.shared.prepareForOpening()
                 openWindow(id: "jobs")
                 NSApplication.shared.activate(ignoringOtherApps: true)
@@ -175,6 +177,69 @@ private struct MenuJobRow: View {
         let count = store.transferredFileCount(for: job.id)
         let files = count == 1 ? "1 file" : "\(count) files"
         return "\(files) synced since job started"
+    }
+
+    @ViewBuilder
+    private var localFolderControl: some View {
+        let shortcuts = job.localFolderShortcuts
+        if shortcuts.count == 1, let shortcut = shortcuts.first {
+            Button {
+                store.openLocalFolder(shortcut.endpoint)
+            } label: {
+                Image(systemName: "folder")
+            }
+            .buttonStyle(.plain)
+            .help(shortcut.title)
+            .accessibilityLabel(shortcut.title)
+        } else if shortcuts.count > 1 {
+            Menu {
+                ForEach(shortcuts) { shortcut in
+                    Button(shortcut.title, systemImage: "folder") {
+                        store.openLocalFolder(shortcut.endpoint)
+                    }
+                }
+            } label: {
+                Image(systemName: "folder")
+            }
+            .menuStyle(.borderlessButton)
+            .help("Open Local Folder")
+            .accessibilityLabel("Open Local Folder")
+        }
+    }
+}
+
+private struct LocalFolderShortcut: Identifiable {
+    let title: String
+    let endpoint: Endpoint
+
+    var id: String { title }
+}
+
+private extension SyncJob {
+    var localFolderShortcuts: [LocalFolderShortcut] {
+        switch direction {
+        case .leftToRight:
+            return localShortcuts(source: left, destination: right)
+        case .rightToLeft:
+            return localShortcuts(source: right, destination: left)
+        case .bidirectional:
+            return [
+                localShortcut(title: "Open Location A", endpoint: left),
+                localShortcut(title: "Open Location B", endpoint: right),
+            ].compactMap { $0 }
+        }
+    }
+
+    private func localShortcuts(source: Endpoint, destination: Endpoint) -> [LocalFolderShortcut] {
+        [
+            localShortcut(title: "Open Source Folder", endpoint: source),
+            localShortcut(title: "Open Destination Folder", endpoint: destination),
+        ].compactMap { $0 }
+    }
+
+    private func localShortcut(title: String, endpoint: Endpoint) -> LocalFolderShortcut? {
+        guard endpoint.kind == .local else { return nil }
+        return LocalFolderShortcut(title: title, endpoint: endpoint)
     }
 }
 

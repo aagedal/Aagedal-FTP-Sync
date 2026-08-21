@@ -28,6 +28,7 @@ struct JobTransferTotals: Sendable {
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
+    @Published var selectedJobID: UUID?
     @Published var alertMessage: String?
 
     private let repository: JobRepository
@@ -48,6 +49,7 @@ final class AppStore: ObservableObject {
             jobs = []
             alertMessage = "Saved jobs could not be loaded: \(error.localizedDescription)"
         }
+        selectedJobID = jobs.last?.id
         for job in jobs { phases[job.id] = .stopped }
         Task { [weak self] in self?.restartSchedules() }
     }
@@ -59,6 +61,7 @@ final class AppStore: ObservableObject {
     func addJob() -> SyncJob {
         let job = SyncJob(name: uniqueName())
         jobs.append(job)
+        selectedJobID = job.id
         phases[job.id] = .stopped
         persist()
         return job
@@ -128,6 +131,7 @@ final class AppStore: ObservableObject {
         removeCachedPassword(for: job.left.credentialID)
         removeCachedPassword(for: job.right.credentialID)
         jobs.removeAll { $0.id == jobID }
+        if selectedJobID == jobID { selectedJobID = jobs.last?.id }
         phases[jobID] = nil
         transferTotals.remove(jobID: jobID)
         persist()
@@ -135,6 +139,18 @@ final class AppStore: ObservableObject {
 
     func runNow(_ jobID: UUID) {
         Task { await performSync(jobID) }
+    }
+
+    func openLocalFolder(_ endpoint: Endpoint) {
+        guard endpoint.kind == .local else { return }
+        do {
+            let access = try BookmarkAccess(endpoint: endpoint)
+            guard NSWorkspace.shared.open(access.url) else {
+                throw AppError.folderPermissionLost("Finder could not open the folder.")
+            }
+        } catch {
+            alertMessage = error.localizedDescription
+        }
     }
 
     func startAll() {
