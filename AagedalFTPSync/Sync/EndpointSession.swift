@@ -4,10 +4,15 @@ protocol EndpointSession: Sendable {
     func listFiles() async throws -> [String: SyncFile]
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws
     func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool) async throws
+    func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool
     func close() async
 }
 
 extension EndpointSession {
+    func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
+        throw AppError.invalidConfiguration("Cleanup was attempted on an unsupported target.")
+    }
+
     func close() async {}
 }
 

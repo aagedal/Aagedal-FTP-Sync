@@ -63,6 +63,23 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
         }
     }
 
+    func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
+        let target = try safeURL(for: file.relativePath)
+        guard fileManager.fileExists(atPath: target.path) else { return false }
+        let root = access.url.standardizedFileURL.resolvingSymlinksInPath()
+        let resolvedTarget = target.resolvingSymlinksInPath()
+        guard resolvedTarget.path.hasPrefix(root.path + "/") else {
+            throw AppError.transferFailed("A target path attempted to leave its selected folder.")
+        }
+        let values = try target.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey])
+        guard values.isRegularFile == true,
+              values.isSymbolicLink != true,
+              let modifiedAt = values.contentModificationDate,
+              modifiedAt < cutoff else { return false }
+        try fileManager.removeItem(at: target)
+        return true
+    }
+
     private func safeURL(for relativePath: String) throws -> URL {
         guard PathSafety.isSafeRelativePath(relativePath) else {
             throw AppError.transferFailed("A file contained an unsafe relative path and was skipped.")

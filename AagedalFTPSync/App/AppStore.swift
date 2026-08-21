@@ -146,8 +146,12 @@ final class AppStore: ObservableObject {
         do {
             let leftPassword = job.left.kind.isRemote ? try keychain.password(for: job.left.credentialID) : nil
             let rightPassword = job.right.kind.isRemote ? try keychain.password(for: job.right.credentialID) : nil
-            let count = try await engine.run(job: job, leftPassword: leftPassword, rightPassword: rightPassword)
-            phases[jobID] = .succeeded(Date(), transferred: count)
+            let result = try await engine.run(job: job, leftPassword: leftPassword, rightPassword: rightPassword)
+            phases[jobID] = .succeeded(
+                Date(),
+                transferred: result.transferred,
+                deleted: result.deleted
+            )
         } catch is CancellationError {
             phases[jobID] = .stopped
         } catch {

@@ -3,7 +3,7 @@ import Foundation
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
 
-    func run(job: SyncJob, leftPassword: String?, rightPassword: String?) async throws -> Int {
+    func run(job: SyncJob, leftPassword: String?, rightPassword: String?) async throws -> SyncResult {
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
         let left = try EndpointSessionFactory.make(endpoint: job.left, password: leftPassword)
         let right = try EndpointSessionFactory.make(endpoint: job.right, password: rightPassword)
@@ -11,23 +11,63 @@ struct SyncEngine: Sendable {
             async let leftListing = left.listFiles()
             async let rightListing = right.listFiles()
             let (leftFiles, rightFiles) = try await (leftListing, rightListing)
-            let result: Int
+            let transferred: Int
             switch job.direction {
             case .leftToRight:
-                result = try await transferNewer(from: left, files: leftFiles, to: right, files: rightFiles, job: job)
+                transferred = try await transferNewer(from: left, files: leftFiles, to: right, files: rightFiles, job: job)
             case .rightToLeft:
-                result = try await transferNewer(from: right, files: rightFiles, to: left, files: leftFiles, job: job)
+                transferred = try await transferNewer(from: right, files: rightFiles, to: left, files: leftFiles, job: job)
             case .bidirectional:
-                result = try await transferBothWays(left: left, leftFiles: leftFiles, right: right, rightFiles: rightFiles, job: job)
+                transferred = try await transferBothWays(left: left, leftFiles: leftFiles, right: right, rightFiles: rightFiles, job: job)
             }
+            let deleted = try await cleanupTargetIfNeeded(
+                job: job,
+                left: left,
+                leftFiles: leftFiles,
+                right: right,
+                rightFiles: rightFiles
+            )
             await left.close()
             await right.close()
-            return result
+            return SyncResult(transferred: transferred, deleted: deleted)
         } catch {
             await left.close()
             await right.close()
             throw error
         }
+    }
+
+    private func cleanupTargetIfNeeded(
+        job: SyncJob,
+        left: any EndpointSession,
+        leftFiles: [String: SyncFile],
+        right: any EndpointSession,
+        rightFiles: [String: SyncFile]
+    ) async throws -> Int {
+        guard let cleanup = job.targetCleanup else { return 0 }
+        let target: any EndpointSession
+        let targetFiles: [String: SyncFile]
+        switch job.direction {
+        case .leftToRight:
+            target = right
+            targetFiles = rightFiles
+        case .rightToLeft:
+            target = left
+            targetFiles = leftFiles
+        case .bidirectional:
+            throw AppError.invalidConfiguration("Automatic cleanup cannot run for a two-way job.")
+        }
+
+        let cutoff = Date().addingTimeInterval(-Double(cleanup.olderThanHours) * 3_600)
+        let candidates = targetFiles.values
+            .filter { job.filter.includesFileType(path: $0.relativePath) && $0.modifiedAt < cutoff }
+            .sorted { $0.modifiedAt < $1.modifiedAt }
+        var deleted = 0
+        for file in candidates {
+            try Task.checkCancellation()
+            if try await target.deleteFile(file, ifOlderThan: cutoff) { deleted += 1 }
+        }
+        return deleted
     }
 
     private func transferNewer(

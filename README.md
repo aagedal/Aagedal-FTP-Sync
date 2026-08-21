@@ -13,6 +13,7 @@ Version 2.0 is a clean SwiftUI rewrite. It has no hard-coded server and does not
 - Per-job schedules from 2 seconds to 5 minutes
 - Quick filters for JPEG, camera RAW, all photos, video, all files, or custom extensions
 - Optional recent-file windows for busy assignment folders
+- Optional age-based cleanup of matching files in a one-way job's local target
 - Original filenames and modification dates are preserved when the server supports it
 - Passwords are kept in macOS Keychain, never in the jobs file
 - Security-scoped folder bookmarks survive sandboxed app restarts
@@ -20,7 +21,7 @@ Version 2.0 is a clean SwiftUI rewrite. It has no hard-coded server and does not
 - FTPS certificates use normal system trust validation
 - New files are staged before atomic local replacement
 - Remote path traversal and symbolic-link traversal are rejected
-- Deletions are never propagated in version 2.0
+- Source deletions are never propagated
 
 ## Requirements
 
@@ -64,7 +65,9 @@ The menu-bar panel provides start/stop controls, status, one-click sync, and a p
 
 One-way jobs copy files that are missing or newer at the destination. Two-way jobs copy unique files in both directions and use the newer modification date when both sides contain a path. If timestamps are effectively equal but sizes differ, the app refuses to overwrite either file because the correct version is ambiguous.
 
-Version 2.0 intentionally does not mirror deletions. A temporary network outage, empty server listing, or accidental source-folder change therefore cannot erase newsroom files.
+Version 2.0 intentionally does not mirror source deletions. A temporary network outage, empty server listing, or accidental source-folder change therefore cannot erase newsroom files.
+
+For one-way jobs with a local target, you can optionally remove matching target files after a chosen age. Cleanup requires a recent-file source window, and its deletion age must be longer than that window—for example, sync files from the last hour and remove matching target files older than two hours. The app evaluates only target entries for deletion, re-checks each file's type and modification date immediately before removal, and never issues a delete operation to the source. Cleanup is unavailable for two-way jobs, remote targets, and overlapping local folders.
 
 Local files are copied to a hidden staging file in the destination directory and then moved into place. Remote transfers use a private temporary file. File names are never rewritten.
 

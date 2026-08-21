@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.1 — 2026-08-21
+
+- Fixed local folder selection so sandbox permission bookmarks are captured and shown reliably.
+- Added optional age-based cleanup for matching files in a one-way job's local target.
+- Added validation that cleanup is older than the source sync window and can never run against a source, remote target, two-way job, or overlapping local folder.
+
 ## 2.0.0 — 2026-08-21
 
 - Rebuilt the application as a native SwiftUI menu-bar utility.

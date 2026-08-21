@@ -1,5 +1,5 @@
-import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct JobDetailEditor: View {
     @EnvironmentObject private var store: AppStore
@@ -63,10 +63,28 @@ struct JobDetailEditor: View {
                 Section("Safety") {
                     Toggle("Preserve modification dates", isOn: $draft.preserveModificationDates)
                     Toggle("Verify file sizes", isOn: $draft.verifyFileSizes)
-                    LabeledContent("Deletion policy") {
-                        Text("Never delete files").foregroundStyle(.secondary)
+
+                    Toggle("Automatically delete old files from the local target", isOn: targetCleanupBinding)
+                        .disabled(draft.targetCleanup == nil && !hasLocalOneWayTarget)
+
+                    if draft.targetCleanup != nil {
+                        Stepper(value: targetCleanupHoursBinding, in: 1...720) {
+                            LabeledContent("Delete target files older than") {
+                                Text(targetCleanupLabel).monospacedDigit()
+                            }
+                        }
+                        Text("Only matching file types in the local target are removed. The source is never touched. The deletion age must be greater than the source file-age window.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if !hasLocalOneWayTarget {
+                        Text("Automatic cleanup is available for one-way jobs whose target is a local folder.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("Deletion policy") {
+                            Text("Never delete files").foregroundStyle(.secondary)
+                        }
                     }
-                    Text("Transfers are written to a temporary file first. Two-way sync keeps the newest copy and does not propagate deletions.")
+
+                    Text("Transfers are written to a temporary file first. Two-way sync keeps the newest copy and never deletes files.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -112,7 +130,53 @@ struct JobDetailEditor: View {
     }
 
     private var recentHoursBinding: Binding<Int> {
-        Binding(get: { draft.filter.recentHours ?? 0 }, set: { draft.filter.recentHours = $0 == 0 ? nil : $0 })
+        Binding(
+            get: { draft.filter.recentHours ?? 0 },
+            set: { value in
+                draft.filter.recentHours = value == 0 ? nil : value
+                if value > 0, let cleanup = draft.targetCleanup, cleanup.olderThanHours <= value {
+                    draft.targetCleanup?.olderThanHours = value + 1
+                }
+            }
+        )
+    }
+
+    private var hasLocalOneWayTarget: Bool {
+        guard draft.direction != .bidirectional else { return false }
+        let target = draft.direction == .leftToRight ? draft.right : draft.left
+        return target.kind == .local
+    }
+
+    private var targetCleanupBinding: Binding<Bool> {
+        Binding(
+            get: { draft.targetCleanup != nil },
+            set: { enabled in
+                if enabled {
+                    let sourceHours = draft.filter.recentHours ?? 1
+                    draft.filter.recentHours = sourceHours
+                    draft.targetCleanup = TargetCleanup(olderThanHours: sourceHours + 1)
+                } else {
+                    draft.targetCleanup = nil
+                }
+            }
+        )
+    }
+
+    private var targetCleanupHoursBinding: Binding<Int> {
+        Binding(
+            get: { draft.targetCleanup?.olderThanHours ?? 2 },
+            set: { draft.targetCleanup?.olderThanHours = $0 }
+        )
+    }
+
+    private var targetCleanupLabel: String {
+        let hours = draft.targetCleanup?.olderThanHours ?? 2
+        if hours == 1 { return "1 hour" }
+        if hours.isMultiple(of: 24) {
+            let days = hours / 24
+            return days == 1 ? "1 day" : "\(days) days"
+        }
+        return "\(hours) hours"
     }
 
     private func save() {
@@ -128,68 +192,81 @@ struct JobDetailEditor: View {
 private struct EndpointEditor: View {
     @Binding var endpoint: Endpoint
     @Binding var password: String
+    @State private var showFolderPicker = false
+    @State private var folderError: String?
 
     var body: some View {
-        Picker("Type", selection: $endpoint.kind) {
-            ForEach(EndpointKind.allCases) { Text($0.title).tag($0) }
-        }
-        .onChange(of: endpoint.kind) { oldKind, newKind in
-            if oldKind != newKind, newKind.isRemote { endpoint.port = newKind.defaultPort }
-        }
-
-        if endpoint.kind == .local {
-            LabeledContent("Folder") {
-                HStack {
-                    Text(endpoint.localPath.isEmpty ? "Not selected" : endpoint.localPath)
-                        .foregroundStyle(endpoint.localPath.isEmpty ? .secondary : .primary)
-                        .lineLimit(1).truncationMode(.middle)
-                    Button("Choose…") { chooseFolder() }
-                }
+        Group {
+            Picker("Type", selection: $endpoint.kind) {
+                ForEach(EndpointKind.allCases) { Text($0.title).tag($0) }
             }
-        } else {
-            TextField("Server", text: $endpoint.host, prompt: Text("photos.example.com"))
-                .textContentType(.URL)
-            TextField("Port", value: $endpoint.port, format: .number)
-                .frame(maxWidth: 180)
-            TextField("Username", text: $endpoint.username)
-                .textContentType(.username)
-            SecureField("Password", text: $password)
-                .textContentType(.password)
-            TextField("Remote folder", text: $endpoint.remotePath, prompt: Text("/incoming"))
-            if endpoint.kind == .ftp {
-                Label("FTP sends credentials and files without encryption. Prefer SFTP or FTPS.", systemImage: "exclamationmark.shield")
-                    .font(.caption).foregroundStyle(.orange)
-            } else if endpoint.kind == .ftps {
-                Text("FTPS uses implicit TLS (normally port 990) and validates the server certificate.")
-                    .font(.caption).foregroundStyle(.secondary)
-            } else {
-                Text("On first connection, the SSH host key is recorded; later changes are rejected.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if !endpoint.host.isEmpty {
-                    Button("Forget trusted host key") {
-                        UserDefaults.standard.removeObject(forKey: "trusted-ssh-host-key.\(endpoint.host.lowercased()):\(endpoint.port)")
+            .onChange(of: endpoint.kind) { oldKind, newKind in
+                if oldKind != newKind, newKind.isRemote { endpoint.port = newKind.defaultPort }
+            }
+
+            if endpoint.kind == .local {
+                LabeledContent("Folder") {
+                    HStack {
+                        Text(endpoint.localPath.isEmpty ? "Not selected" : endpoint.localPath)
+                            .foregroundStyle(endpoint.localPath.isEmpty ? .secondary : .primary)
+                            .lineLimit(1).truncationMode(.middle)
+                        Button("Choose…") { showFolderPicker = true }
                     }
-                    .controlSize(.small)
+                }
+            } else {
+                TextField("Server", text: $endpoint.host, prompt: Text("photos.example.com"))
+                    .textContentType(.URL)
+                TextField("Port", value: $endpoint.port, format: .number)
+                    .frame(maxWidth: 180)
+                TextField("Username", text: $endpoint.username)
+                    .textContentType(.username)
+                SecureField("Password", text: $password)
+                    .textContentType(.password)
+                TextField("Remote folder", text: $endpoint.remotePath, prompt: Text("/incoming"))
+                if endpoint.kind == .ftp {
+                    Label("FTP sends credentials and files without encryption. Prefer SFTP or FTPS.", systemImage: "exclamationmark.shield")
+                        .font(.caption).foregroundStyle(.orange)
+                } else if endpoint.kind == .ftps {
+                    Text("FTPS uses implicit TLS (normally port 990) and validates the server certificate.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("On first connection, the SSH host key is recorded; later changes are rejected.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !endpoint.host.isEmpty {
+                        Button("Forget trusted host key") {
+                            UserDefaults.standard.removeObject(forKey: "trusted-ssh-host-key.\(endpoint.host.lowercased()):\(endpoint.port)")
+                        }
+                        .controlSize(.small)
+                    }
                 }
             }
         }
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose a folder for this sync job"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                endpoint.localPath = url.path
-                endpoint.bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
-            } catch {
-                endpoint.localPath = ""
-                endpoint.bookmark = nil
+        .fileImporter(
+            isPresented: $showFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do {
+                    let bookmark = try FolderBookmark.create(for: url)
+                    endpoint.localPath = bookmark.resolvedURL.path
+                    endpoint.bookmark = bookmark.data
+                } catch {
+                    folderError = "Folder access could not be saved: \(error.localizedDescription)"
+                }
+            case .failure(let error):
+                folderError = "The folder could not be selected: \(error.localizedDescription)"
             }
+        }
+        .alert("Folder Access", isPresented: Binding(
+            get: { folderError != nil },
+            set: { if !$0 { folderError = nil } }
+        )) {
+            Button("OK") { folderError = nil }
+        } message: {
+            Text(folderError ?? "")
         }
     }
 }
