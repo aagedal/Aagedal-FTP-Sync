@@ -62,7 +62,9 @@ struct MenuBarView: View {
                 }
             }
         }
-        .frame(maxHeight: 360)
+        // MenuBarExtra windows do not propose an intrinsic height to ScrollView.
+        // A max height alone therefore lets the list collapse to zero, hiding every job row.
+        .frame(height: min(CGFloat(store.jobs.count) * 82, 360))
     }
 
     private var footer: some View {
@@ -151,12 +153,16 @@ private struct MenuJobRow: View {
             Button {
                 store.setEnabled(!job.isEnabled, for: job.id)
             } label: {
-                Image(systemName: job.isEnabled ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.title3)
+                Label(
+                    job.isEnabled ? "Stop" : "Start",
+                    systemImage: job.isEnabled ? "stop.fill" : "play.fill"
+                )
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(job.isEnabled ? Color.secondary : Color.accentColor)
-            .help(job.isEnabled ? "Pause Automatic Sync" : "Resume Automatic Sync")
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .fixedSize()
+            .tint(job.isEnabled ? Color.secondary : Color.accentColor)
+            .help(job.isEnabled ? "Stop Automatic Sync" : "Start Automatic Sync")
             localFolderControl
             Button {
                 store.selectedJobID = job.id

@@ -20,6 +20,7 @@ struct JobDetailEditor: View {
                     TextField("Name", text: $draft.name)
                     Toggle("Two-way sync", isOn: twoWayBinding)
                     Toggle("Run automatically", isOn: $draft.isEnabled)
+                    Toggle("Start this job when the app launches", isOn: startOnAppLaunchBinding)
                     LabeledContent("Check every") {
                         HStack {
                             Slider(value: $draft.intervalSeconds, in: 2...300, step: 1)
@@ -148,6 +149,13 @@ struct JobDetailEditor: View {
                     draft.targetCleanup?.olderThanHours = value + 1
                 }
             }
+        )
+    }
+
+    private var startOnAppLaunchBinding: Binding<Bool> {
+        Binding(
+            get: { draft.startsOnAppLaunch },
+            set: { draft.startsOnAppLaunch = $0 }
         )
     }
 

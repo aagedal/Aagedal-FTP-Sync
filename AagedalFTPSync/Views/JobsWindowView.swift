@@ -2,6 +2,7 @@ import SwiftUI
 
 struct JobsWindowView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationSplitView {
@@ -19,6 +20,28 @@ struct JobsWindowView: View {
             .navigationTitle("Sync Jobs")
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(isOn: launchAtLoginBinding) {
+                            Label("Launch at Login", systemImage: "power")
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+
+                        if store.launchAtLoginRequiresApproval {
+                            Text("Approval required in System Settings.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Button("Open Login Items…") {
+                                store.openLoginItemsSettings()
+                            }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+
                     Divider()
                     HStack {
                         Button(action: addJob) {
@@ -51,8 +74,29 @@ struct JobsWindowView: View {
                 ContentUnavailableView("Select a sync job", systemImage: "arrow.triangle.2.circlepath")
             }
         }
-        .onAppear { selectFirstIfNeeded() }
+        .onAppear {
+            store.refreshLaunchAtLoginStatus()
+            selectFirstIfNeeded()
+        }
         .onChange(of: store.jobs.map(\.id)) { _, _ in selectFirstIfNeeded() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { store.refreshLaunchAtLoginStatus() }
+        }
+        .alert("Aagedal FTP Sync", isPresented: Binding(
+            get: { store.alertMessage != nil },
+            set: { if !$0 { store.alertMessage = nil } }
+        )) {
+            Button("OK") { store.alertMessage = nil }
+        } message: {
+            Text(store.alertMessage ?? "")
+        }
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { store.launchAtLoginEnabled },
+            set: { store.setLaunchAtLoginEnabled($0) }
+        )
     }
 
     private func selectFirstIfNeeded() {

@@ -9,6 +9,7 @@ final class JobRepositoryTests: XCTestCase {
         let repository = JobRepository(fileURL: url)
         var first = SyncJob(name: "Desk one")
         first.isEnabled = false
+        first.startsOnAppLaunch = false
         var second = SyncJob(name: "Desk two")
         second.filter.preset = .raw
 
@@ -16,6 +17,23 @@ final class JobRepositoryTests: XCTestCase {
 
         let loaded = try repository.load()
         XCTAssertEqual(loaded, [first, second])
+    }
+
+    func testLegacyJobInheritsItsPreviousEnabledStateAtLaunch() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-jobs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let repository = JobRepository(fileURL: url)
+        var job = SyncJob(name: "Legacy paused job")
+        job.isEnabled = false
+
+        try repository.save([job])
+        let data = try Data(contentsOf: url)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        json[0]["startOnAppLaunch"] = nil
+        try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+
+        let loaded = try XCTUnwrap(repository.load().first)
+        XCTAssertFalse(loaded.startsOnAppLaunch)
     }
 }
 

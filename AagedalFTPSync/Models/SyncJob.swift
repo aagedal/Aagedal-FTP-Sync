@@ -98,9 +98,16 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var filter = FileFilter()
     var intervalSeconds: Double = 5
     var isEnabled = true
+    // Optional so jobs saved by earlier versions can inherit their previous enabled state.
+    var startOnAppLaunch: Bool? = true
     var preserveModificationDates = true
     var verifyFileSizes = true
     var targetCleanup: TargetCleanup? = nil
+
+    var startsOnAppLaunch: Bool {
+        get { startOnAppLaunch ?? isEnabled }
+        set { startOnAppLaunch = newValue }
+    }
 
     var validationMessage: String? {
         if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Give this job a name." }

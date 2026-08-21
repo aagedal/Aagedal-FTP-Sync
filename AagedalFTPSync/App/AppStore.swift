@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import ServiceManagement
 
 struct JobTransferTotals: Sendable {
     private var fileCounts: [UUID: Int] = [:]
@@ -28,6 +29,7 @@ struct JobTransferTotals: Sendable {
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
+    @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
     @Published var selectedJobID: UUID?
     @Published var alertMessage: String?
 
@@ -49,8 +51,14 @@ final class AppStore: ObservableObject {
             jobs = []
             alertMessage = "Saved jobs could not be loaded: \(error.localizedDescription)"
         }
+        refreshLaunchAtLoginStatus()
         selectedJobID = jobs.last?.id
-        for job in jobs { phases[job.id] = .stopped }
+        for index in jobs.indices {
+            let shouldStart = jobs[index].startsOnAppLaunch
+            jobs[index].startOnAppLaunch = shouldStart
+            jobs[index].isEnabled = shouldStart
+            phases[jobs[index].id] = .stopped
+        }
         Task { [weak self] in self?.restartSchedules() }
     }
 
@@ -151,6 +159,38 @@ final class AppStore: ObservableObject {
         } catch {
             alertMessage = error.localizedDescription
         }
+    }
+
+    var launchAtLoginEnabled: Bool {
+        launchAtLoginStatus == .enabled || launchAtLoginStatus == .requiresApproval
+    }
+
+    var launchAtLoginRequiresApproval: Bool {
+        launchAtLoginStatus == .requiresApproval
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        let service = SMAppService.mainApp
+        do {
+            if enabled {
+                if service.status == .notRegistered || service.status == .notFound {
+                    try service.register()
+                }
+            } else if service.status != .notRegistered {
+                try service.unregister()
+            }
+        } catch {
+            alertMessage = "Launch at Login could not be \(enabled ? "enabled" : "disabled"): \(error.localizedDescription)"
+        }
+        refreshLaunchAtLoginStatus()
+    }
+
+    func refreshLaunchAtLoginStatus() {
+        launchAtLoginStatus = SMAppService.mainApp.status
+    }
+
+    func openLoginItemsSettings() {
+        SMAppService.openSystemSettingsLoginItems()
     }
 
     func startAll() {
