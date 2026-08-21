@@ -18,9 +18,7 @@ struct JobDetailEditor: View {
             Form {
                 Section("Job") {
                     TextField("Name", text: $draft.name)
-                    Picker("Direction", selection: $draft.direction) {
-                        ForEach(SyncDirection.allCases) { Text($0.title).tag($0) }
-                    }
+                    Toggle("Two-way sync", isOn: twoWayBinding)
                     Toggle("Run automatically", isOn: $draft.isEnabled)
                     LabeledContent("Check every") {
                         HStack {
@@ -31,12 +29,23 @@ struct JobDetailEditor: View {
                     }
                 }
 
-                Section("Left side") {
-                    EndpointEditor(endpoint: $draft.left, password: $leftPassword)
-                }
+                Section("Locations") {
+                    HStack(alignment: .top, spacing: 12) {
+                        EndpointSummaryCard(
+                            title: draft.direction == .bidirectional ? "Location A" : "Source",
+                            endpoint: firstEndpointBinding,
+                            password: firstPasswordBinding
+                        )
 
-                Section("Right side") {
-                    EndpointEditor(endpoint: $draft.right, password: $rightPassword)
+                        directionControl
+
+                        EndpointSummaryCard(
+                            title: draft.direction == .bidirectional ? "Location B" : "Destination",
+                            endpoint: secondEndpointBinding,
+                            password: secondPasswordBinding
+                        )
+                    }
+                    .padding(.vertical, 4)
                 }
 
                 Section("File filter") {
@@ -52,6 +61,7 @@ struct JobDetailEditor: View {
                     Picker("File age", selection: recentHoursBinding) {
                         Text("Any age").tag(0)
                         Text("Last hour").tag(1)
+                        Text("Last 3 hours").tag(3)
                         Text("Last 6 hours").tag(6)
                         Text("Last 12 hours").tag(12)
                         Text("Last 24 hours").tag(24)
@@ -141,6 +151,91 @@ struct JobDetailEditor: View {
         )
     }
 
+    @ViewBuilder
+    private var directionControl: some View {
+        VStack {
+            Spacer()
+            if draft.direction == .bidirectional {
+                Image(systemName: "arrow.left.arrow.right")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Two-way sync")
+            } else {
+                Button(action: swapSourceAndDestination) {
+                    Image(systemName: "arrow.left.arrow.right")
+                }
+                .buttonStyle(.borderless)
+                .help("Swap Source and Destination")
+                .accessibilityLabel("Swap Source and Destination")
+            }
+            Spacer()
+        }
+        .font(.title3)
+        .frame(width: 28)
+        .frame(minHeight: 132)
+    }
+
+    private var twoWayBinding: Binding<Bool> {
+        Binding(
+            get: { draft.direction == .bidirectional },
+            set: { enabled in
+                if enabled, draft.direction == .rightToLeft {
+                    let source = draft.right
+                    draft.right = draft.left
+                    draft.left = source
+
+                    let sourcePassword = rightPassword
+                    rightPassword = leftPassword
+                    leftPassword = sourcePassword
+                }
+                draft.direction = enabled ? .bidirectional : .leftToRight
+            }
+        )
+    }
+
+    private var firstEndpointBinding: Binding<Endpoint> {
+        Binding(
+            get: { draft.direction == .rightToLeft ? draft.right : draft.left },
+            set: {
+                if draft.direction == .rightToLeft { draft.right = $0 }
+                else { draft.left = $0 }
+            }
+        )
+    }
+
+    private var secondEndpointBinding: Binding<Endpoint> {
+        Binding(
+            get: { draft.direction == .rightToLeft ? draft.left : draft.right },
+            set: {
+                if draft.direction == .rightToLeft { draft.left = $0 }
+                else { draft.right = $0 }
+            }
+        )
+    }
+
+    private var firstPasswordBinding: Binding<String> {
+        Binding(
+            get: { draft.direction == .rightToLeft ? rightPassword : leftPassword },
+            set: {
+                if draft.direction == .rightToLeft { rightPassword = $0 }
+                else { leftPassword = $0 }
+            }
+        )
+    }
+
+    private var secondPasswordBinding: Binding<String> {
+        Binding(
+            get: { draft.direction == .rightToLeft ? leftPassword : rightPassword },
+            set: {
+                if draft.direction == .rightToLeft { leftPassword = $0 }
+                else { rightPassword = $0 }
+            }
+        )
+    }
+
+    private func swapSourceAndDestination() {
+        draft.direction = draft.direction == .rightToLeft ? .leftToRight : .rightToLeft
+    }
+
     private var hasLocalOneWayTarget: Bool {
         guard draft.direction != .bidirectional else { return false }
         let target = draft.direction == .leftToRight ? draft.right : draft.left
@@ -186,6 +281,160 @@ struct JobDetailEditor: View {
             try? await Task.sleep(for: .seconds(1.5))
             saveConfirmation = false
         }
+    }
+}
+
+private struct EndpointSummaryCard: View {
+    let title: String
+    @Binding var endpoint: Endpoint
+    @Binding var password: String
+    @State private var showSettings = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                Menu {
+                    Button("Edit Settings…", systemImage: "gearshape") {
+                        showSettings = true
+                    }
+                    Divider()
+                    Menu("Connection Type") {
+                        ForEach(EndpointKind.allCases) { kind in
+                            Button {
+                                setKind(kind)
+                            } label: {
+                                if kind == endpoint.kind {
+                                    Label(kind.title, systemImage: "checkmark")
+                                } else {
+                                    Text(kind.title)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.title3)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("\(title) settings")
+            }
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: endpoint.kind.systemImage)
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 28)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(endpoint.kind.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(endpoint.cardLocation)
+                        .font(.callout)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            if endpoint.validationMessage == nil {
+                Label("Configured", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            } else {
+                Label("Needs setup", systemImage: "exclamationmark.circle.fill")
+                    .foregroundStyle(.orange)
+            }
+        }
+        .font(.caption)
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+        .background(.background.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(.separator.opacity(0.7), lineWidth: 1)
+        }
+        .sheet(isPresented: $showSettings) {
+            EndpointSettingsSheet(
+                title: title,
+                endpoint: $endpoint,
+                password: $password
+            )
+        }
+    }
+
+    private func setKind(_ kind: EndpointKind) {
+        guard kind != endpoint.kind else { return }
+        endpoint.kind = kind
+        if kind.isRemote { endpoint.port = kind.defaultPort }
+    }
+}
+
+private struct EndpointSettingsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let title: String
+    @Binding var endpoint: Endpoint
+    @Binding var password: String
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: endpoint.kind.systemImage)
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(title) Settings")
+                        .font(.headline)
+                    Text(endpoint.kind.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(16)
+
+            Divider()
+
+            Form {
+                Section("Connection") {
+                    EndpointEditor(endpoint: $endpoint, password: $password)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .frame(width: 520, height: endpoint.kind == .local ? 300 : 500)
+    }
+}
+
+private extension EndpointKind {
+    var systemImage: String {
+        switch self {
+        case .local: "folder.fill"
+        case .ftp: "network"
+        case .ftps: "lock.shield.fill"
+        case .sftp: "terminal.fill"
+        }
+    }
+}
+
+private extension Endpoint {
+    var cardLocation: String {
+        if kind == .local {
+            return localPath.isEmpty ? "Choose a folder" : localPath
+        }
+
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHost.isEmpty else { return "Enter a server address" }
+        let portSuffix = port == kind.defaultPort ? "" : ":\(port)"
+        let path = remotePath.isEmpty ? "/" : remotePath
+        return "\(kind.rawValue)://\(trimmedHost)\(portSuffix)\(path)"
     }
 }
 

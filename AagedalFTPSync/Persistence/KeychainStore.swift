@@ -33,10 +33,8 @@ struct KeychainStore: Sendable {
             kSecValueData as String: Data(password.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
-        let status: OSStatus
-        if SecItemCopyMatching(key as CFDictionary, nil) == errSecSuccess {
-            status = SecItemUpdate(key as CFDictionary, attributes as CFDictionary)
-        } else {
+        var status = SecItemUpdate(key as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
             status = SecItemAdd(key.merging(attributes) { _, new in new } as CFDictionary, nil)
         }
         guard status == errSecSuccess else {

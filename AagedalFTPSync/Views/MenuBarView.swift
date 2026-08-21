@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @State private var showQuitConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,18 +77,30 @@ struct MenuBarView: View {
             Button("Settings…") { openJobsWindow(adding: false) }
                 .buttonStyle(.plain)
             Button("About") {
+                RegularWindowController.shared.prepareForOpening()
                 openWindow(id: "about")
                 NSApplication.shared.activate(ignoringOtherApps: true)
             }
             .buttonStyle(.plain)
-            Button("Quit") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.plain)
+            Button("Quit") { showQuitConfirmation = true }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .controlSize(.small)
+                .alert("Quit Aagedal FTP Sync?", isPresented: $showQuitConfirmation) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Quit", role: .destructive) {
+                        NSApplication.shared.terminate(nil)
+                    }
+                } message: {
+                    Text("Automatic sync jobs will stop until you open the app again.")
+                }
         }
         .padding(12)
     }
 
     private func openJobsWindow(adding: Bool) {
         if adding { _ = store.addJob() }
+        RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
@@ -96,51 +109,58 @@ struct MenuBarView: View {
 private struct MenuJobRow: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @State private var showQuickControls = false
     let job: SyncJob
     let phase: JobPhase
 
     var body: some View {
         HStack(spacing: 10) {
             Button { store.runNow(job.id) } label: {
-                Image(systemName: phase == .syncing ? "arrow.triangle.2.circlepath" : "play.circle.fill")
+                Image(systemName: phase == .syncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.circle.fill")
                     .font(.title2)
             }
             .buttonStyle(.plain)
             .disabled(phase == .syncing)
+            .help("Sync Now")
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(job.name).fontWeight(.medium).lineLimit(1)
                     Image(systemName: job.direction.symbol).font(.caption).foregroundStyle(.secondary)
                 }
                 Text(phase.label).font(.caption).foregroundStyle(statusColor).lineLimit(1)
+                Text(activityLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
             Spacer()
-            Menu {
-                ForEach(FilterPreset.allCases) { preset in
-                    Button {
-                        store.updateFilter(jobID: job.id, preset: preset)
-                    } label: {
-                        if preset == job.filter.preset { Label(preset.title, systemImage: "checkmark") }
-                        else { Text(preset.title) }
-                    }
-                }
-            } label: {
-                Image(systemName: "line.3.horizontal.decrease.circle")
+            Button { showQuickControls.toggle() } label: {
+                Image(systemName: "slider.horizontal.3")
             }
-            .menuStyle(.borderlessButton)
-            .help("Quick file filter")
-            Toggle("", isOn: Binding(
-                get: { job.isEnabled },
-                set: { store.setEnabled($0, for: job.id) }
-            ))
-                .toggleStyle(.switch).labelsHidden().controlSize(.small)
+            .buttonStyle(.plain)
+            .help("Quick Controls")
+            .popover(isPresented: $showQuickControls, arrowEdge: .trailing) {
+                JobQuickControls(job: job)
+                    .environmentObject(store)
+            }
             Button {
+                store.setEnabled(!job.isEnabled, for: job.id)
+            } label: {
+                Image(systemName: job.isEnabled ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(job.isEnabled ? Color.secondary : Color.accentColor)
+            .help(job.isEnabled ? "Pause Automatic Sync" : "Resume Automatic Sync")
+            Button {
+                RegularWindowController.shared.prepareForOpening()
                 openWindow(id: "jobs")
                 NSApplication.shared.activate(ignoringOtherApps: true)
             } label: {
-                Image(systemName: "slider.horizontal.3")
+                Image(systemName: "gearshape")
             }
-                .buttonStyle(.plain)
+            .buttonStyle(.plain)
+            .help("Job Settings")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
@@ -149,5 +169,161 @@ private struct MenuJobRow: View {
     private var statusColor: Color {
         if case .failed = phase { return .red }
         return .secondary
+    }
+
+    private var activityLabel: String {
+        let count = store.transferredFileCount(for: job.id)
+        let files = count == 1 ? "1 file" : "\(count) files"
+        return "\(files) synced since job started"
+    }
+}
+
+private struct JobQuickControls: View {
+    @EnvironmentObject private var store: AppStore
+    let job: SyncJob
+    @State private var intervalSeconds: Double
+    @State private var ageIndex: Double
+    @State private var intervalWasEdited = false
+    @State private var ageWasEdited = false
+
+    private static let ageOptions: [Int?] = [nil, 1, 3, 6, 12, 24, 48, 168]
+
+    init(job: SyncJob) {
+        self.job = job
+        _intervalSeconds = State(initialValue: job.intervalSeconds)
+        let index = Self.ageOptions.firstIndex(of: job.filter.recentHours) ?? 0
+        _ageIndex = State(initialValue: Double(index))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(currentJob.name)
+                        .font(.headline)
+                        .lineLimit(1)
+                    Text(currentJob.isEnabled ? "Automatic sync is running" : "Automatic sync is paused")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: currentJob.isEnabled ? "play.fill" : "pause.fill")
+                    .foregroundStyle(currentJob.isEnabled ? .green : .secondary)
+            }
+
+            Divider()
+
+            Picker("File type", selection: filterBinding) {
+                ForEach(FilterPreset.allCases) { preset in
+                    Text(preset.title).tag(preset)
+                }
+            }
+            .pickerStyle(.menu)
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("Sync frequency")
+                    Spacer()
+                    Text(intervalLabel)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(
+                    value: $intervalSeconds,
+                    in: 2...300,
+                    step: 1,
+                    onEditingChanged: { editing in
+                        if editing { intervalWasEdited = true }
+                        if !editing { commitInterval() }
+                    }
+                )
+                HStack {
+                    Text("2 sec")
+                    Spacer()
+                    Text("5 min")
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("File age")
+                    Spacer()
+                    Text(ageLabel)
+                        .foregroundStyle(.secondary)
+                }
+                Slider(
+                    value: $ageIndex,
+                    in: 0...Double(Self.ageOptions.count - 1),
+                    step: 1,
+                    onEditingChanged: { editing in
+                        if editing { ageWasEdited = true }
+                        if !editing { commitFileAge() }
+                    }
+                )
+                HStack {
+                    Text("Any age")
+                    Spacer()
+                    Text("7 days")
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(16)
+        .frame(width: 300)
+        .onDisappear {
+            commitInterval()
+            commitFileAge()
+        }
+    }
+
+    private var filterBinding: Binding<FilterPreset> {
+        Binding(
+            get: { currentJob.filter.preset },
+            set: { store.updateFilter(jobID: job.id, preset: $0) }
+        )
+    }
+
+    private var currentJob: SyncJob {
+        store.jobs.first(where: { $0.id == job.id }) ?? job
+    }
+
+    private var intervalLabel: String {
+        let seconds = Int(intervalSeconds)
+        if seconds < 60 { return "\(seconds) sec" }
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        return remainder == 0 ? "\(minutes) min" : "\(minutes)m \(remainder)s"
+    }
+
+    private var selectedAge: Int? {
+        let index = min(max(Int(ageIndex.rounded()), 0), Self.ageOptions.count - 1)
+        return Self.ageOptions[index]
+    }
+
+    private var ageLabel: String {
+        guard let hours = selectedAge else { return "Any age" }
+        if hours == 1 { return "Last hour" }
+        if hours.isMultiple(of: 24) {
+            let days = hours / 24
+            return days == 1 ? "Last day" : "Last \(days) days"
+        }
+        return "Last \(hours) hours"
+    }
+
+    private func commitInterval() {
+        guard intervalWasEdited else { return }
+        intervalWasEdited = false
+        guard abs(currentJob.intervalSeconds - intervalSeconds) > 0.001 else { return }
+        store.updateInterval(jobID: job.id, seconds: intervalSeconds)
+    }
+
+    private func commitFileAge() {
+        guard ageWasEdited else { return }
+        ageWasEdited = false
+        guard currentJob.filter.recentHours != selectedAge else { return }
+        store.updateFileAge(jobID: job.id, recentHours: selectedAge)
     }
 }

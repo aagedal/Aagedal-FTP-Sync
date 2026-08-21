@@ -18,3 +18,30 @@ final class JobRepositoryTests: XCTestCase {
         XCTAssertEqual(loaded, [first, second])
     }
 }
+
+final class JobTransferTotalsTests: XCTestCase {
+    func testCountsTransfersPerJobAndAcrossJobs() {
+        let firstJob = UUID()
+        let secondJob = UUID()
+        var totals = JobTransferTotals()
+
+        totals.record(jobID: firstJob, fileCount: 2)
+        totals.record(jobID: firstJob, fileCount: 3)
+        totals.record(jobID: secondJob, fileCount: 4)
+
+        XCTAssertEqual(totals.fileCount(jobID: firstJob), 5)
+        XCTAssertEqual(totals.fileCount(jobID: secondJob), 4)
+        XCTAssertEqual(totals.fileCount(), 9)
+    }
+
+    func testResetStartsANewJobSession() {
+        let jobID = UUID()
+        var totals = JobTransferTotals()
+
+        totals.record(jobID: jobID, fileCount: 5)
+        totals.reset(jobID: jobID)
+
+        XCTAssertEqual(totals.fileCount(jobID: jobID), 0)
+        XCTAssertEqual(totals.fileCount(), 0)
+    }
+}
