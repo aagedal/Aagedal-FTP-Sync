@@ -9,6 +9,10 @@ struct SFTPEndpointSession: EndpointSession, Sendable {
         transport = SFTPTransport(endpoint: endpoint, password: password)
     }
 
+    func testConnection() async throws {
+        try await transport.testConnection()
+    }
+
     func listFiles() async throws -> [String: SyncFile] {
         try await transport.listFiles()
     }

@@ -9,6 +9,10 @@ struct FTPEndpointSession: EndpointSession, Sendable {
         connection = FTPConnection(endpoint: endpoint, password: password)
     }
 
+    func testConnection() async throws {
+        _ = try await connection.list(path: normalizedRoot)
+    }
+
     func listFiles() async throws -> [String: SyncFile] {
         var result: [String: SyncFile] = [:]
         var directories: [(remote: String, relative: String)] = [(normalizedRoot, "")]

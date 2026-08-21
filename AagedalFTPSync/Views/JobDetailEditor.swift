@@ -443,6 +443,8 @@ private struct EndpointEditor: View {
     @Binding var password: String
     @State private var showFolderPicker = false
     @State private var folderError: String?
+    @State private var connectionTestState = ConnectionTestState.idle
+    @State private var connectionTestTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -472,6 +474,7 @@ private struct EndpointEditor: View {
                 SecureField("Password", text: $password)
                     .textContentType(.password)
                 TextField("Remote folder", text: $endpoint.remotePath, prompt: Text("/incoming"))
+                connectionTestControls
                 if endpoint.kind == .ftp {
                     Label("FTP sends credentials and files without encryption. Prefer SFTP or FTPS.", systemImage: "exclamationmark.shield")
                         .font(.caption).foregroundStyle(.orange)
@@ -517,5 +520,70 @@ private struct EndpointEditor: View {
         } message: {
             Text(folderError ?? "")
         }
+        .onChange(of: endpoint) { _, _ in resetConnectionTest() }
+        .onChange(of: password) { _, _ in resetConnectionTest() }
+        .onDisappear { connectionTestTask?.cancel() }
     }
+
+    @ViewBuilder
+    private var connectionTestControls: some View {
+        HStack {
+            Button(action: testConnection) {
+                if connectionTestState == .testing {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Testing…")
+                    }
+                } else {
+                    Label("Test Connection", systemImage: "network")
+                }
+            }
+            .disabled(endpoint.validationMessage != nil || connectionTestState == .testing)
+
+            if connectionTestState == .succeeded {
+                Label("Connection successful", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.caption)
+            }
+        }
+
+        if case .failed(let message) = connectionTestState {
+            Label(message, systemImage: "xmark.circle.fill")
+                .foregroundStyle(.red)
+                .font(.caption)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func testConnection() {
+        connectionTestTask?.cancel()
+        connectionTestState = .testing
+        let candidate = endpoint
+        let candidatePassword = password
+        connectionTestTask = Task {
+            do {
+                try await EndpointConnectionTester.test(endpoint: candidate, password: candidatePassword)
+                try Task.checkCancellation()
+                connectionTestState = .succeeded
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                connectionTestState = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    private func resetConnectionTest() {
+        connectionTestTask?.cancel()
+        connectionTestTask = nil
+        connectionTestState = .idle
+    }
+}
+
+private enum ConnectionTestState: Equatable {
+    case idle
+    case testing
+    case succeeded
+    case failed(String)
 }

@@ -14,6 +14,11 @@ actor SFTPTransport {
         self.password = password
     }
 
+    func testConnection() async throws {
+        let sftp = try await connect()
+        _ = try await sftp.listDirectory(atPath: normalizedRoot)
+    }
+
     func listFiles() async throws -> [String: SyncFile] {
         let sftp = try await connect()
         var result: [String: SyncFile] = [:]
