@@ -1,3 +1,4 @@
+import Network
 import XCTest
 @testable import AagedalFTPSync
 
@@ -13,5 +14,10 @@ final class FTPListingTests: XCTestCase {
         XCTAssertEqual(entries.map(\.name), ["NEWS_001.JPG", "NEWS 002.CR3", "selects"])
         XCTAssertEqual(entries[0].size, 43_121)
         XCTAssertTrue(entries[2].isDirectory)
+    }
+
+    func testNoDataNetworkErrorIsTreatedAsEndOfStream() {
+        XCTAssertTrue(NetworkStream.isEndOfStream(.posix(.ENODATA)))
+        XCTAssertFalse(NetworkStream.isEndOfStream(.posix(.ECONNRESET)))
     }
 }

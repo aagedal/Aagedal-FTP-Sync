@@ -4,7 +4,6 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
-    @State private var showQuitConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -82,18 +81,10 @@ struct MenuBarView: View {
                 NSApplication.shared.activate(ignoringOtherApps: true)
             }
             .buttonStyle(.plain)
-            Button("Quit") { showQuitConfirmation = true }
+            Button("Quit", action: confirmQuit)
                 .buttonStyle(.bordered)
                 .tint(.red)
                 .controlSize(.small)
-                .alert("Quit Aagedal FTP Sync?", isPresented: $showQuitConfirmation) {
-                    Button("Cancel", role: .cancel) {}
-                    Button("Quit", role: .destructive) {
-                        NSApplication.shared.terminate(nil)
-                    }
-                } message: {
-                    Text("Automatic sync jobs will stop until you open the app again.")
-                }
         }
         .padding(12)
     }
@@ -103,6 +94,20 @@ struct MenuBarView: View {
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func confirmQuit() {
+        let alert = NSAlert()
+        alert.messageText = "Quit Aagedal FTP Sync?"
+        alert.informativeText = "Automatic sync jobs will stop until you open the app again."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit").hasDestructiveAction = true
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSApplication.shared.terminate(nil)
+        }
     }
 }
 

@@ -4,6 +4,7 @@ import Network
 final class NetworkStream: @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "no.aagedal.ftpsync.network")
+    private let address: String
     private var buffer = Data()
 
     init(host: String, port: Int, tls: Bool) throws {
@@ -12,24 +13,42 @@ final class NetworkStream: @unchecked Sendable {
         }
         let parameters = tls ? NWParameters(tls: NWProtocolTLS.Options(), tcp: NWProtocolTCP.Options()) : .tcp
         connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: parameters)
+        address = "\(host):\(port)"
     }
 
     func start() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let gate = ContinuationGate()
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    guard gate.claim() else { return }
-                    continuation.resume()
-                case .failed(let error), .waiting(let error):
-                    guard gate.claim() else { return }
-                    continuation.resume(throwing: error)
-                default:
-                    break
+        let connection = self.connection
+        let address = self.address
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let gate = ContinuationGate()
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        guard gate.claim() else { return }
+                        continuation.resume()
+                    case .failed(let error):
+                        guard gate.claim() else { return }
+                        continuation.resume(throwing: error)
+                    case .cancelled:
+                        guard gate.claim() else { return }
+                        continuation.resume(throwing: CancellationError())
+                    case .waiting:
+                        // Waiting is recoverable and may transition to ready when a path becomes available.
+                        break
+                    default:
+                        break
+                    }
                 }
+                queue.asyncAfter(deadline: .now() + 20) {
+                    guard gate.claim() else { return }
+                    connection.cancel()
+                    continuation.resume(throwing: AppError.transferFailed("Timed out connecting to \(address)."))
+                }
+                connection.start(queue: queue)
             }
-            connection.start(queue: queue)
+        } onCancel: {
+            connection.cancel()
         }
     }
 
@@ -45,12 +64,23 @@ final class NetworkStream: @unchecked Sendable {
     func receiveChunk(maximum: Int = 512 * 1_024) async throws -> Data? {
         try await withCheckedThrowingContinuation { continuation in
             connection.receive(minimumIncompleteLength: 1, maximumLength: maximum) { data, _, complete, error in
-                if let error { continuation.resume(throwing: error) }
-                else if let data, !data.isEmpty { continuation.resume(returning: data) }
-                else if complete { continuation.resume(returning: nil) }
-                else { continuation.resume(returning: Data()) }
+                if let data, !data.isEmpty {
+                    continuation.resume(returning: data)
+                } else if let error {
+                    if Self.isEndOfStream(error) { continuation.resume(returning: nil) }
+                    else { continuation.resume(throwing: error) }
+                } else if complete {
+                    continuation.resume(returning: nil)
+                } else {
+                    continuation.resume(returning: Data())
+                }
             }
         }
+    }
+
+    static func isEndOfStream(_ error: NWError) -> Bool {
+        guard case .posix(let code) = error else { return false }
+        return code == .ENODATA
     }
 
     func receiveLine() async throws -> String {
