@@ -29,6 +29,16 @@ struct JobTransferTotals: Sendable {
     }
 }
 
+enum SyncRetryPolicy {
+    static func delay(baseInterval: Double, consecutiveFailures: Int) -> Double {
+        var delay = min(max(baseInterval, 2), 300)
+        for _ in 1..<max(consecutiveFailures, 1) {
+            delay = min(delay * 2, 300)
+        }
+        return delay
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
@@ -49,17 +59,25 @@ final class AppStore: ObservableObject {
     init(repository: JobRepository = JobRepository(), keychain: KeychainStore = KeychainStore()) {
         self.repository = repository
         self.keychain = keychain
+        let recoveredFromBackup: Bool
         do {
-            jobs = try repository.load()
+            let loadResult = try repository.loadResult()
+            jobs = loadResult.jobs
+            recoveredFromBackup = loadResult.recoveredFromBackup
+            if loadResult.recoveredFromBackup {
+                alertMessage = "The jobs file was damaged, so the most recent backup was restored. Review your jobs before starting them."
+            }
         } catch {
             jobs = []
+            recoveredFromBackup = false
             alertMessage = "Saved jobs could not be loaded: \(error.localizedDescription)"
         }
         refreshLaunchAtLoginStatus()
         selectedJobID = jobs.last?.id
         for index in jobs.indices {
-            let shouldStart = jobs[index].startsOnAppLaunch
-            jobs[index].startOnAppLaunch = shouldStart
+            let configuredToStart = jobs[index].startsOnAppLaunch
+            let shouldStart = !recoveredFromBackup && configuredToStart
+            jobs[index].startOnAppLaunch = configuredToStart
             jobs[index].isEnabled = shouldStart
             phases[jobs[index].id] = .stopped
         }
@@ -71,7 +89,9 @@ final class AppStore: ObservableObject {
     }
 
     func addJob() -> SyncJob {
-        let job = SyncJob(name: uniqueName())
+        var job = SyncJob(name: uniqueName())
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
         jobs.append(job)
         selectedJobID = job.id
         phases[job.id] = .stopped
@@ -79,12 +99,14 @@ final class AppStore: ObservableObject {
         return job
     }
 
-    func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) {
+    @discardableResult
+    func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) -> Bool {
         if let message = job.validationMessage {
             alertMessage = message
-            return
+            return false
         }
-        let wasEnabled = jobs.first(where: { $0.id == job.id })?.isEnabled ?? false
+        let previousJob = jobs.first(where: { $0.id == job.id })
+        let wasEnabled = previousJob?.isEnabled ?? false
         do {
             if job.left.kind.isRemote, !leftPassword.isEmpty {
                 try savePasswordIfNeeded(leftPassword, for: job.left.credentialID)
@@ -92,13 +114,21 @@ final class AppStore: ObservableObject {
             if job.right.kind.isRemote, !rightPassword.isEmpty {
                 try savePasswordIfNeeded(rightPassword, for: job.right.credentialID)
             }
-            if let index = jobs.firstIndex(where: { $0.id == job.id }) { jobs[index] = job }
-            else { jobs.append(job) }
+            var updatedJobs = jobs
+            if let index = updatedJobs.firstIndex(where: { $0.id == job.id }) { updatedJobs[index] = job }
+            else { updatedJobs.append(job) }
+            try repository.save(updatedJobs)
+            jobs = updatedJobs
+
+            if let previousJob {
+                removeCredentialsNoLongerUsed(previousJob: previousJob, updatedJob: job)
+            }
             if job.isEnabled, !wasEnabled { transferTotals.reset(jobID: job.id) }
-            persist()
             reschedule(job.id)
+            return true
         } catch {
             alertMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -138,8 +168,8 @@ final class AppStore: ObservableObject {
         scheduleTasks[jobID]?.cancel()
         scheduleTasks[jobID] = nil
         guard let job = jobs.first(where: { $0.id == jobID }) else { return }
-        if job.left.kind.isRemote { keychain.removePassword(for: job.left.credentialID) }
-        if job.right.kind.isRemote { keychain.removePassword(for: job.right.credentialID) }
+        keychain.removePassword(for: job.left.credentialID)
+        keychain.removePassword(for: job.right.credentialID)
         removeCachedPassword(for: job.left.credentialID)
         removeCachedPassword(for: job.right.credentialID)
         jobs.removeAll { $0.id == jobID }
@@ -150,7 +180,7 @@ final class AppStore: ObservableObject {
     }
 
     func runNow(_ jobID: UUID) {
-        Task { await performSync(jobID) }
+        Task { _ = await performSync(jobID) }
     }
 
     func openLocalFolder(_ endpoint: Endpoint) {
@@ -253,23 +283,59 @@ final class AppStore: ObservableObject {
     private func schedule(_ jobID: UUID) {
         scheduleTasks[jobID] = Task { [weak self] in
             guard let self else { return }
+            var consecutiveFailures = 0
             while !Task.isCancelled {
-                await self.performSync(jobID)
+                let attempt = await self.performSync(jobID)
                 guard !Task.isCancelled,
                       let job = self.jobs.first(where: { $0.id == jobID }),
                       job.isEnabled else { break }
-                let next = Date().addingTimeInterval(job.intervalSeconds)
-                self.phases[jobID] = .waiting(next)
+
+                let delay: Double
+                switch attempt {
+                case .succeeded:
+                    consecutiveFailures = 0
+                    delay = job.intervalSeconds
+                case .failed:
+                    consecutiveFailures += 1
+                    delay = SyncRetryPolicy.delay(
+                        baseInterval: job.intervalSeconds,
+                        consecutiveFailures: consecutiveFailures
+                    )
+                case .skipped:
+                    delay = job.intervalSeconds
+                case .cancelled:
+                    return
+                }
+
+                let next = Date().addingTimeInterval(delay)
+                switch attempt {
+                case .succeeded:
+                    if case .succeeded(let date, let transferred, let deleted, let conflicts, _) = self.phases[jobID] {
+                        self.phases[jobID] = .succeeded(
+                            date,
+                            transferred: transferred,
+                            deleted: deleted,
+                            conflicts: conflicts,
+                            nextRun: next
+                        )
+                    }
+                case .failed(let message):
+                    self.phases[jobID] = .failed(message, retryAt: next)
+                case .skipped:
+                    break
+                case .cancelled:
+                    return
+                }
                 do {
-                    try await Task.sleep(for: .seconds(job.intervalSeconds))
+                    try await Task.sleep(for: .seconds(delay))
                 } catch { break }
             }
         }
     }
 
-    private func performSync(_ jobID: UUID) async {
+    private func performSync(_ jobID: UUID) async -> SyncAttempt {
         guard !runningJobs.contains(jobID),
-              let job = jobs.first(where: { $0.id == jobID }) else { return }
+              let job = jobs.first(where: { $0.id == jobID }) else { return .skipped }
         runningJobs.insert(jobID)
         phases[jobID] = .syncing
         defer { runningJobs.remove(jobID) }
@@ -282,12 +348,18 @@ final class AppStore: ObservableObject {
             phases[jobID] = .succeeded(
                 completedAt,
                 transferred: result.transferred,
-                deleted: result.deleted
+                deleted: result.deleted,
+                conflicts: result.conflicts,
+                nextRun: nil
             )
+            return .succeeded
         } catch is CancellationError {
             phases[jobID] = .stopped
+            return .cancelled
         } catch {
-            phases[jobID] = .failed(error.localizedDescription)
+            let message = error.localizedDescription
+            phases[jobID] = .failed(message, retryAt: nil)
+            return .failed(message)
         }
     }
 
@@ -325,6 +397,19 @@ final class AppStore: ObservableObject {
         loadedCredentialIDs.remove(credentialID)
     }
 
+    private func removeCredentialsNoLongerUsed(previousJob: SyncJob, updatedJob: SyncJob) {
+        let previousIDs = Set([previousJob.left, previousJob.right]
+            .filter(\.kind.isRemote)
+            .map(\.credentialID))
+        let updatedIDs = Set([updatedJob.left, updatedJob.right]
+            .filter(\.kind.isRemote)
+            .map(\.credentialID))
+        for credentialID in previousIDs.subtracting(updatedIDs) {
+            keychain.removePassword(for: credentialID)
+            removeCachedPassword(for: credentialID)
+        }
+    }
+
     private func uniqueName() -> String {
         let base = "Photo sync"
         var candidate = base
@@ -336,4 +421,11 @@ final class AppStore: ObservableObject {
         }
         return candidate
     }
+}
+
+private enum SyncAttempt {
+    case succeeded
+    case failed(String)
+    case cancelled
+    case skipped
 }

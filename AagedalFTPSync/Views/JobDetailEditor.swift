@@ -114,8 +114,7 @@ struct JobDetailEditor: View {
                     Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 }
                 Button("Sync Now") {
-                    save()
-                    store.runNow(draft.id)
+                    if save() { store.runNow(draft.id) }
                 }
                 .disabled(draft.validationMessage != nil)
                 Button("Save") { save() }
@@ -291,13 +290,18 @@ struct JobDetailEditor: View {
         return "\(hours) hours"
     }
 
-    private func save() {
-        store.saveJob(draft, leftPassword: leftPassword, rightPassword: rightPassword)
+    @discardableResult
+    private func save() -> Bool {
+        guard store.saveJob(draft, leftPassword: leftPassword, rightPassword: rightPassword) else {
+            saveConfirmation = false
+            return false
+        }
         saveConfirmation = true
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             saveConfirmation = false
         }
+        return true
     }
 }
 

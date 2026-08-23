@@ -63,13 +63,13 @@ The menu-bar panel provides start/stop controls, status, one-click sync, and a p
 
 ## Synchronization behavior
 
-One-way jobs copy files that are missing or newer at the destination. Two-way jobs copy unique files in both directions and use the newer modification date when both sides contain a path. If timestamps are effectively equal but sizes differ, the app refuses to overwrite either file because the correct version is ambiguous.
+One-way jobs copy files that are missing or newer at the destination. Two-way jobs copy unique files in both directions and use the newer modification date when both sides contain a path. If timestamps are effectively equal but sizes differ, the app reports a conflict and refuses to overwrite either file because the correct version is ambiguous.
 
 Version 2.0 intentionally does not mirror source deletions. A temporary network outage, empty server listing, or accidental source-folder change therefore cannot erase newsroom files.
 
 For one-way jobs with a local target, you can optionally remove matching target files after a chosen age. Cleanup requires a recent-file source window, and its deletion age must be longer than that window—for example, sync files from the last hour and remove matching target files older than two hours. The app evaluates only target entries for deletion, re-checks each file's type and modification date immediately before removal, and never issues a delete operation to the source. Cleanup is unavailable for two-way jobs, remote targets, and overlapping local folders.
 
-Local files are copied to a hidden staging file in the destination directory and then moved into place. Remote transfers use a private temporary file. File names are never rewritten.
+Local files are copied to a hidden staging file in the destination directory and then moved into place. Remote uploads use a private sibling file, optionally verify its uploaded size, and publish it by rename with rollback protection for servers that cannot replace an existing path directly. File names are never rewritten.
 
 ## Protocol notes
 

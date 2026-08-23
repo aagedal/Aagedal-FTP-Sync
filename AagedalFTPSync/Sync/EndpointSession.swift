@@ -4,7 +4,12 @@ protocol EndpointSession: Sendable {
     func testConnection() async throws
     func listFiles() async throws -> [String: SyncFile]
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws
-    func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool) async throws
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool
     func close() async
 }

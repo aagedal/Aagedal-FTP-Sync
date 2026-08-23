@@ -171,21 +171,37 @@ actor FTPConnection {
         }
     }
 
-    func upload(localURL: URL, path: String, modifiedAt: Date?) async throws {
+    func upload(localURL: URL, path: String, modifiedAt: Date?, expectedSize: Int64?) async throws {
         let parent = (path as NSString).deletingLastPathComponent
         try await ensureDirectory(parent)
-        let handle = try FileHandle(forReadingFrom: localURL)
-        defer { try? handle.close() }
-        _ = try await withDataConnection(command: "STOR \(escaped(path))") { stream in
-            while true {
-                try Task.checkCancellation()
-                guard let data = try handle.read(upToCount: 512 * 1_024), !data.isEmpty else { break }
-                try await stream.send(data)
+        let temporaryPath = stagingPath(nextTo: path, suffix: "part")
+        do {
+            let handle = try FileHandle(forReadingFrom: localURL)
+            defer { try? handle.close() }
+            _ = try await withDataConnection(command: "STOR \(escaped(temporaryPath))") { stream in
+                while true {
+                    try Task.checkCancellation()
+                    guard let data = try handle.read(upToCount: 512 * 1_024), !data.isEmpty else { break }
+                    try await stream.send(data)
+                }
             }
-        }
-        if let modifiedAt {
-            let timestamp = Self.ftpDateFormatter.string(from: modifiedAt)
-            _ = try? await command("MFMT \(timestamp) \(escaped(path))", accepting: 200..<300)
+
+            if let expectedSize {
+                let uploadedSize = try await size(of: temporaryPath)
+                guard uploadedSize == expectedSize else {
+                    throw AppError.transferFailed(
+                        "Size verification failed for \(path): expected \(expectedSize) bytes, uploaded \(uploadedSize) bytes."
+                    )
+                }
+            }
+            if let modifiedAt {
+                let timestamp = Self.ftpDateFormatter.string(from: modifiedAt)
+                _ = try? await command("MFMT \(timestamp) \(escaped(temporaryPath))", accepting: 200..<300)
+            }
+            try await replaceUploadedFile(at: temporaryPath, destination: path)
+        } catch {
+            _ = try? await command("DELE \(escaped(temporaryPath))", accepting: 200..<300)
+            throw error
         }
     }
 
@@ -202,6 +218,56 @@ actor FTPConnection {
             current += "/\(component)"
             _ = try? await command("MKD \(escaped(current))", accepting: 200..<300)
         }
+    }
+
+    private func size(of path: String) async throws -> Int64 {
+        let reply = try await command("SIZE \(escaped(path))", accepting: 200..<300)
+        let values = reply.lines
+            .flatMap { $0.split(whereSeparator: { $0.isWhitespace }) }
+            .compactMap { Int64($0) }
+        guard let size = values.last else {
+            throw AppError.transferFailed("The FTP server returned an invalid SIZE response for \(path).")
+        }
+        return size
+    }
+
+    private func replaceUploadedFile(at temporaryPath: String, destination: String) async throws {
+        do {
+            try await rename(temporaryPath, to: destination)
+            return
+        } catch let directRenameError {
+            let backupPath = stagingPath(nextTo: destination, suffix: "backup")
+            do {
+                try await rename(destination, to: backupPath)
+            } catch {
+                throw directRenameError
+            }
+
+            do {
+                try await rename(temporaryPath, to: destination)
+                _ = try? await command("DELE \(escaped(backupPath))", accepting: 200..<300)
+            } catch let replacementError {
+                do {
+                    try await rename(backupPath, to: destination)
+                } catch {
+                    throw AppError.transferFailed(
+                        "Could not replace \(destination). The previous file remains at \(backupPath)."
+                    )
+                }
+                throw replacementError
+            }
+        }
+    }
+
+    private func rename(_ source: String, to destination: String) async throws {
+        _ = try await command("RNFR \(escaped(source))", accepting: 300..<400)
+        _ = try await command("RNTO \(escaped(destination))", accepting: 200..<300)
+    }
+
+    private func stagingPath(nextTo path: String, suffix: String) -> String {
+        let parent = (path as NSString).deletingLastPathComponent
+        let name = ".aagedal-sync-\(UUID().uuidString).\(suffix)"
+        return parent == "/" ? "/\(name)" : "\(parent)/\(name)"
     }
 
     private func withDataConnection<T: Sendable>(

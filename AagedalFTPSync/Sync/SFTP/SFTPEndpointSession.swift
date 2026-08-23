@@ -21,11 +21,17 @@ struct SFTPEndpointSession: EndpointSession, Sendable {
         try await transport.download(file: file, to: temporaryURL)
     }
 
-    func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool) async throws {
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
         try await transport.upload(
             localURL: localURL,
             file: file,
-            preserveDate: preserveDate
+            preserveDate: preserveDate,
+            verifySize: verifySize
         )
     }
 

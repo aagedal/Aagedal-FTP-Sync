@@ -134,7 +134,11 @@ private struct MenuJobRow: View {
                     Text(job.name).fontWeight(.medium).lineLimit(1)
                     Image(systemName: job.direction.symbol).font(.caption).foregroundStyle(.secondary)
                 }
-                Text(phase.label).font(.caption).foregroundStyle(statusColor).lineLimit(1)
+                Text(phase.label)
+                    .font(.caption)
+                    .foregroundStyle(statusColor)
+                    .lineLimit(1)
+                    .help(phase.label)
                 Text(activityLabel)
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -181,6 +185,7 @@ private struct MenuJobRow: View {
 
     private var statusColor: Color {
         if case .failed = phase { return .red }
+        if case .succeeded(_, _, _, let conflicts, _) = phase, !conflicts.isEmpty { return .orange }
         return .secondary
     }
 

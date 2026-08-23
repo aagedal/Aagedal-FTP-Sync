@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Stage FTP, FTPS, and SFTP uploads under private names, verify their sizes when requested, and publish them by rename with rollback protection.
+- Reject local destination paths that traverse symbolic links or collide by case or Unicode normalization.
+- Keep automatic-sync failures visible and use exponential retry backoff up to five minutes.
+- Report ambiguous two-way conflicts instead of silently presenting them as an empty successful run.
+- Only show a successful save or start Sync Now after the job file has been committed.
+- Back up valid job files and recover damaged primary files with recovered jobs paused for review.
+- Remove orphaned Keychain credentials when an endpoint no longer uses them.
+
 ## 2.0.0 — 2026-08-21
 
 - Rebuilt the application as a native SwiftUI menu-bar utility.

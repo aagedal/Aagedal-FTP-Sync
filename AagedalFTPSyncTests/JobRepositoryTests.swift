@@ -50,6 +50,24 @@ final class JobRepositoryTests: XCTestCase {
         let loaded = try XCTUnwrap(repository.load().first)
         XCTAssertFalse(loaded.showsLatestSessionTransferCountOnly)
     }
+
+    func testRecoversFromBackupWhenPrimaryFileIsCorrupt() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("recover-jobs-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: url.appendingPathExtension("backup"))
+        }
+        let repository = JobRepository(fileURL: url)
+        let recoverableJob = SyncJob(name: "Recover me")
+
+        try repository.save([recoverableJob])
+        try repository.save([SyncJob(name: "Newer state")])
+        try Data("not valid JSON".utf8).write(to: url, options: .atomic)
+
+        let result = try repository.loadResult()
+        XCTAssertTrue(result.recoveredFromBackup)
+        XCTAssertEqual(result.jobs, [recoverableJob])
+    }
 }
 
 final class JobTransferTotalsTests: XCTestCase {
@@ -88,5 +106,57 @@ final class JobTransferTotalsTests: XCTestCase {
 
         XCTAssertEqual(totals.fileCount(jobID: jobID, latestSessionOnly: false), 5)
         XCTAssertEqual(totals.fileCount(jobID: jobID, latestSessionOnly: true), 0)
+    }
+}
+
+final class SyncRetryPolicyTests: XCTestCase {
+    func testRetryDelayUsesExponentialBackoffWithFiveMinuteCap() {
+        XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 2, consecutiveFailures: 1), 2)
+        XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 2, consecutiveFailures: 2), 4)
+        XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 2, consecutiveFailures: 3), 8)
+        XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 60, consecutiveFailures: 5), 300)
+        XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 300, consecutiveFailures: 10), 300)
+    }
+}
+
+@MainActor
+final class AppStorePersistenceTests: XCTestCase {
+    func testFailedSaveDoesNotPublishTheDraftJob() {
+        let repository = JobRepository(fileURL: URL(fileURLWithPath: "/dev/null/jobs.json"))
+        let store = AppStore(repository: repository)
+        let bookmark = Data([1])
+        let job = SyncJob(
+            name: "Unsaved",
+            left: Endpoint(kind: .local, localPath: "/source", bookmark: bookmark),
+            right: Endpoint(kind: .local, localPath: "/target", bookmark: bookmark),
+            direction: .leftToRight,
+            intervalSeconds: 5,
+            isEnabled: false
+        )
+
+        XCTAssertFalse(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        XCTAssertTrue(store.jobs.isEmpty)
+        XCTAssertNotNil(store.alertMessage)
+    }
+
+    func testRecoveredJobsRemainPausedForReview() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("store-recovery-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: url.appendingPathExtension("backup"))
+        }
+        let repository = JobRepository(fileURL: url)
+        var recoverableJob = SyncJob(name: "Recovered")
+        recoverableJob.startsOnAppLaunch = true
+        recoverableJob.isEnabled = true
+        try repository.save([recoverableJob])
+        try repository.save([SyncJob(name: "Newer state")])
+        try Data("not valid JSON".utf8).write(to: url, options: .atomic)
+
+        let store = AppStore(repository: repository)
+
+        XCTAssertEqual(store.jobs.map(\.name), ["Recovered"])
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+        XCTAssertNotNil(store.alertMessage)
     }
 }

@@ -20,4 +20,19 @@ final class PathSafetyTests: XCTestCase {
         """
         XCTAssertEqual(FTPEndpointSession.parseMLSD(listing).map(\.name), ["good.jpg"])
     }
+
+    func testRecognizesReservedTransferStagingPaths() {
+        XCTAssertTrue(PathSafety.isInternalStagingPath(".aagedal-sync-123.part"))
+        XCTAssertTrue(PathSafety.isInternalStagingPath("folder/.aagedal-sync-123.backup"))
+        XCTAssertFalse(PathSafety.isInternalStagingPath("folder/aagedal-sync-photo.jpg"))
+    }
+
+    func testDetectsCaseAndUnicodeEquivalentLocalPathCollisions() {
+        XCTAssertEqual(
+            PathSafety.localPathCollision(in: ["Selects/NEWS.JPG", "selects/news.jpg"]),
+            ["Selects/NEWS.JPG", "selects/news.jpg"]
+        )
+        XCTAssertNotNil(PathSafety.localPathCollision(in: ["café.jpg", "cafe\u{301}.jpg"]))
+        XCTAssertNil(PathSafety.localPathCollision(in: ["one.jpg", "two.jpg"]))
+    }
 }

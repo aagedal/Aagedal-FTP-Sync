@@ -11,14 +11,26 @@ struct SyncEngine: Sendable {
             async let leftListing = left.listFiles()
             async let rightListing = right.listFiles()
             let (leftFiles, rightFiles) = try await (leftListing, rightListing)
+            try validateLocalDestinationPaths(job: job, leftFiles: leftFiles, rightFiles: rightFiles)
             let transferred: Int
+            let conflicts: [String]
             switch job.direction {
             case .leftToRight:
                 transferred = try await transferNewer(from: left, files: leftFiles, to: right, files: rightFiles, job: job)
+                conflicts = []
             case .rightToLeft:
                 transferred = try await transferNewer(from: right, files: rightFiles, to: left, files: leftFiles, job: job)
+                conflicts = []
             case .bidirectional:
-                transferred = try await transferBothWays(left: left, leftFiles: leftFiles, right: right, rightFiles: rightFiles, job: job)
+                let result = try await transferBothWays(
+                    left: left,
+                    leftFiles: leftFiles,
+                    right: right,
+                    rightFiles: rightFiles,
+                    job: job
+                )
+                transferred = result.transferred
+                conflicts = result.conflicts
             }
             let deleted = try await cleanupTargetIfNeeded(
                 job: job,
@@ -29,11 +41,35 @@ struct SyncEngine: Sendable {
             )
             await left.close()
             await right.close()
-            return SyncResult(transferred: transferred, deleted: deleted)
+            return SyncResult(transferred: transferred, deleted: deleted, conflicts: conflicts)
         } catch {
             await left.close()
             await right.close()
             throw error
+        }
+    }
+
+    private func validateLocalDestinationPaths(
+        job: SyncJob,
+        leftFiles: [String: SyncFile],
+        rightFiles: [String: SyncFile]
+    ) throws {
+        let paths: Set<String>
+        switch job.direction {
+        case .leftToRight where job.right.kind == .local:
+            paths = Set(leftFiles.keys).union(rightFiles.keys)
+        case .rightToLeft where job.left.kind == .local:
+            paths = Set(leftFiles.keys).union(rightFiles.keys)
+        case .bidirectional where job.left.kind == .local || job.right.kind == .local:
+            paths = Set(leftFiles.keys).union(rightFiles.keys)
+        default:
+            return
+        }
+
+        if let collision = PathSafety.localPathCollision(in: Array(paths)) {
+            throw AppError.transferFailed(
+                "Two paths cannot safely coexist on the local destination: \(collision[0]) and \(collision[1]). Rename one of them before syncing."
+            )
         }
     }
 
@@ -84,7 +120,13 @@ struct SyncEngine: Sendable {
         var transferred = 0
         for file in candidates {
             try Task.checkCancellation()
-            try await transfer(file, from: source, to: destination, preserveDate: job.preserveModificationDates)
+            try await transfer(
+                file,
+                from: source,
+                to: destination,
+                preserveDate: job.preserveModificationDates,
+                verifySize: job.verifyFileSizes
+            )
             transferred += 1
         }
         return transferred
@@ -96,9 +138,10 @@ struct SyncEngine: Sendable {
         right: any EndpointSession,
         rightFiles: [String: SyncFile],
         job: SyncJob
-    ) async throws -> Int {
+    ) async throws -> (transferred: Int, conflicts: [String]) {
         let paths = Set(leftFiles.keys).union(rightFiles.keys)
         var actions: [(SyncFile, any EndpointSession, any EndpointSession)] = []
+        var conflicts: [String] = []
         for path in paths {
             let leftFile = leftFiles[path]
             let rightFile = rightFiles[path]
@@ -115,6 +158,7 @@ struct SyncEngine: Sendable {
                     actions.append((rightFile, right, left))
                 } else if job.verifyFileSizes, leftFile.size != rightFile.size {
                     // Equal timestamps with different sizes are ambiguous. Keep both by refusing to overwrite.
+                    conflicts.append(path)
                     continue
                 }
             default:
@@ -124,9 +168,15 @@ struct SyncEngine: Sendable {
         actions.sort { $0.0.modifiedAt > $1.0.modifiedAt }
         for (file, source, destination) in actions {
             try Task.checkCancellation()
-            try await transfer(file, from: source, to: destination, preserveDate: job.preserveModificationDates)
+            try await transfer(
+                file,
+                from: source,
+                to: destination,
+                preserveDate: job.preserveModificationDates,
+                verifySize: job.verifyFileSizes
+            )
         }
-        return actions.count
+        return (actions.count, conflicts.sorted())
     }
 
     private func needsTransfer(_ source: SyncFile, _ destination: SyncFile?, verifySize: Bool) -> Bool {
@@ -139,7 +189,8 @@ struct SyncEngine: Sendable {
         _ file: SyncFile,
         from source: any EndpointSession,
         to destination: any EndpointSession,
-        preserveDate: Bool
+        preserveDate: Bool,
+        verifySize: Bool
     ) async throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AagedalFTPSync", isDirectory: true)
@@ -147,6 +198,11 @@ struct SyncEngine: Sendable {
         let temporaryURL = temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         try await source.exportFile(file, to: temporaryURL)
-        try await destination.importFile(from: temporaryURL, as: file, preserveDate: preserveDate)
+        try await destination.importFile(
+            from: temporaryURL,
+            as: file,
+            preserveDate: preserveDate,
+            verifySize: verifySize
+        )
     }
 }

@@ -157,18 +157,24 @@ enum JobPhase: Equatable, Sendable {
     case stopped
     case waiting(Date)
     case syncing
-    case succeeded(Date, transferred: Int, deleted: Int)
-    case failed(String)
+    case succeeded(Date, transferred: Int, deleted: Int, conflicts: [String], nextRun: Date?)
+    case failed(String, retryAt: Date?)
 
     var label: String {
         switch self {
         case .stopped: return "Stopped"
         case .waiting: return "Waiting"
         case .syncing: return "Syncing…"
-        case .succeeded(_, let transferred, let deleted):
+        case .succeeded(_, let transferred, let deleted, let conflicts, _):
             let transferText = transferred == 1 ? "1 file transferred" : "\(transferred) files transferred"
-            return deleted > 0 ? "\(transferText), \(deleted) deleted" : transferText
-        case .failed(let message): return message
+            var parts = [transferText]
+            if deleted > 0 { parts.append("\(deleted) deleted") }
+            if conflicts.count == 1 { parts.append("1 conflict skipped: \(conflicts[0])") }
+            else if conflicts.count > 1 { parts.append("\(conflicts.count) conflicts skipped") }
+            return parts.joined(separator: ", ")
+        case .failed(let message, let retryAt):
+            guard let retryAt else { return message }
+            return "\(message) Retry at \(retryAt.formatted(date: .omitted, time: .shortened))."
         }
     }
 }
@@ -176,4 +182,11 @@ enum JobPhase: Equatable, Sendable {
 struct SyncResult: Equatable, Sendable {
     let transferred: Int
     let deleted: Int
+    let conflicts: [String]
+
+    init(transferred: Int, deleted: Int, conflicts: [String] = []) {
+        self.transferred = transferred
+        self.deleted = deleted
+        self.conflicts = conflicts
+    }
 }

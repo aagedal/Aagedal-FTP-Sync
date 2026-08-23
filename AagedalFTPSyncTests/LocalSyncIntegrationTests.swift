@@ -48,6 +48,29 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent("right.nef")), Data("right".utf8))
     }
 
+    func testTwoWaySyncReportsAmbiguousSameTimestampConflict() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let leftFile = fixture.left.appendingPathComponent("conflict.jpg")
+        let rightFile = fixture.right.appendingPathComponent("conflict.jpg")
+        try Data("left".utf8).write(to: leftFile)
+        try Data("different-right".utf8).write(to: rightFile)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        for url in [leftFile, rightFile] {
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: url.path)
+        }
+
+        let result = try await SyncEngine().run(
+            job: fixture.job(direction: .bidirectional),
+            leftPassword: nil,
+            rightPassword: nil
+        )
+
+        XCTAssertEqual(result, SyncResult(transferred: 0, deleted: 0, conflicts: ["conflict.jpg"]))
+        XCTAssertEqual(try Data(contentsOf: leftFile), Data("left".utf8))
+        XCTAssertEqual(try Data(contentsOf: rightFile), Data("different-right".utf8))
+    }
+
     func testCleanupDeletesOnlyOldMatchingFilesFromTarget() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
@@ -83,19 +106,49 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: oldNonMatchingTarget.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: recentTarget.path))
     }
+
+    func testSyncRejectsSymlinkedDestinationDirectory() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("nested/escape.jpg")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("camera-data".utf8).write(to: source)
+        try FileManager.default.createSymbolicLink(
+            at: fixture.right.appendingPathComponent("nested"),
+            withDestinationURL: fixture.outside
+        )
+
+        do {
+            _ = try await SyncEngine().run(
+                job: fixture.job(direction: .leftToRight),
+                leftPassword: nil,
+                rightPassword: nil
+            )
+            XCTFail("The sync should reject a destination path containing a symbolic link")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("symbolic link"))
+        }
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.outside.appendingPathComponent("escape.jpg").path)
+        )
+    }
 }
 
 private final class LocalFixture {
     let root: URL
     let left: URL
     let right: URL
+    let outside: URL
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("AagedalSyncTests-\(UUID().uuidString)")
         left = root.appendingPathComponent("left")
         right = root.appendingPathComponent("right")
+        outside = root.appendingPathComponent("outside")
         try FileManager.default.createDirectory(at: left, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: right, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
     }
 
     func job(direction: SyncDirection) throws -> SyncJob {

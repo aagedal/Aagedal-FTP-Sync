@@ -21,11 +21,18 @@ struct FTPEndpointSession: EndpointSession, Sendable {
             let directory = directories.removeFirst()
             let listing = try await connection.list(path: directory.remote)
             for entry in Self.parseMLSD(listing) {
+                guard !PathSafety.isInternalStagingPath(entry.name) else { continue }
                 let relative = directory.relative.isEmpty ? entry.name : "\(directory.relative)/\(entry.name)"
                 let remote = directory.remote.hasSuffix("/") ? directory.remote + entry.name : directory.remote + "/" + entry.name
                 if entry.isDirectory {
                     directories.append((remote, relative))
                 } else {
+                    if let existing = result[relative],
+                       !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
+                        throw AppError.transferFailed(
+                            "Two server paths differ only by Unicode representation: \(existing.relativePath) and \(relative)."
+                        )
+                    }
                     result[relative] = SyncFile(relativePath: relative, size: entry.size, modifiedAt: entry.modifiedAt)
                 }
             }
@@ -38,11 +45,17 @@ struct FTPEndpointSession: EndpointSession, Sendable {
         try FileManager.default.setAttributes([.modificationDate: file.modifiedAt], ofItemAtPath: temporaryURL.path)
     }
 
-    func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool) async throws {
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
         try await connection.upload(
             localURL: localURL,
             path: remotePath(for: file.relativePath),
-            modifiedAt: preserveDate ? file.modifiedAt : nil
+            modifiedAt: preserveDate ? file.modifiedAt : nil,
+            expectedSize: verifySize ? file.size : nil
         )
     }
 
