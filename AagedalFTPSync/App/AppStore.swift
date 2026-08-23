@@ -4,24 +4,28 @@ import Foundation
 import ServiceManagement
 
 struct JobTransferTotals: Sendable {
-    private var fileCounts: [UUID: Int] = [:]
+    private var cumulativeFileCounts: [UUID: Int] = [:]
+    private var latestSessionFileCounts: [UUID: Int] = [:]
 
     mutating func record(jobID: UUID, fileCount: Int) {
+        latestSessionFileCounts[jobID] = fileCount
         guard fileCount > 0 else { return }
-        fileCounts[jobID, default: 0] += fileCount
+        cumulativeFileCounts[jobID, default: 0] += fileCount
     }
 
-    func fileCount(jobID: UUID? = nil) -> Int {
-        guard let jobID else { return fileCounts.values.reduce(0, +) }
-        return fileCounts[jobID, default: 0]
+    func fileCount(jobID: UUID, latestSessionOnly: Bool) -> Int {
+        let counts = latestSessionOnly ? latestSessionFileCounts : cumulativeFileCounts
+        return counts[jobID, default: 0]
     }
 
     mutating func reset(jobID: UUID) {
-        fileCounts[jobID] = 0
+        cumulativeFileCounts[jobID] = 0
+        latestSessionFileCounts[jobID] = 0
     }
 
     mutating func remove(jobID: UUID) {
-        fileCounts[jobID] = nil
+        cumulativeFileCounts[jobID] = nil
+        latestSessionFileCounts[jobID] = nil
     }
 }
 
@@ -217,7 +221,20 @@ final class AppStore: ObservableObject {
     var isSyncing: Bool { phases.values.contains(.syncing) }
 
     func transferredFileCount(for jobID: UUID? = nil) -> Int {
-        transferTotals.fileCount(jobID: jobID)
+        if let jobID {
+            guard let job = jobs.first(where: { $0.id == jobID }) else { return 0 }
+            return transferTotals.fileCount(
+                jobID: jobID,
+                latestSessionOnly: job.showsLatestSessionTransferCountOnly
+            )
+        }
+
+        return jobs.reduce(into: 0) { count, job in
+            count += transferTotals.fileCount(
+                jobID: job.id,
+                latestSessionOnly: job.showsLatestSessionTransferCountOnly
+            )
+        }
     }
 
     private func restartSchedules() {

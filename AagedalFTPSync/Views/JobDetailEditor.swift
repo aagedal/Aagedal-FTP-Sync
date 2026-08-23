@@ -21,6 +21,8 @@ struct JobDetailEditor: View {
                     Toggle("Two-way sync", isOn: twoWayBinding)
                     Toggle("Run automatically", isOn: $draft.isEnabled)
                     Toggle("Start this job when the app launches", isOn: startOnAppLaunchBinding)
+                    Toggle("Show latest sync session count only", isOn: latestSessionTransferCountBinding)
+                        .help("A sync session is one scheduled check or a manual Sync Now run.")
                     LabeledContent("Check every") {
                         HStack {
                             Slider(value: $draft.intervalSeconds, in: 2...300, step: 1)
@@ -156,6 +158,13 @@ struct JobDetailEditor: View {
         Binding(
             get: { draft.startsOnAppLaunch },
             set: { draft.startsOnAppLaunch = $0 }
+        )
+    }
+
+    private var latestSessionTransferCountBinding: Binding<Bool> {
+        Binding(
+            get: { draft.showsLatestSessionTransferCountOnly },
+            set: { draft.showsLatestSessionTransferCountOnly = $0 }
         )
     }
 

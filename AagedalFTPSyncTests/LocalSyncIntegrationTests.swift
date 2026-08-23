@@ -21,6 +21,20 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual((attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0, timestamp.timeIntervalSince1970, accuracy: 1)
     }
 
+    func testOneWaySyncDoesNotTransferAnUnchangedFileAgain() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("NEWS_001.jpg")
+        try Data("camera-data".utf8).write(to: source)
+        let job = try fixture.job(direction: .leftToRight)
+
+        let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(firstResult, SyncResult(transferred: 1, deleted: 0))
+        XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
+    }
+
     func testTwoWaySyncCopiesUniqueFilesInBothDirections() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

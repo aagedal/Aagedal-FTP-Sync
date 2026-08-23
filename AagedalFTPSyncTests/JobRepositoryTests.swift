@@ -35,6 +35,21 @@ final class JobRepositoryTests: XCTestCase {
         let loaded = try XCTUnwrap(repository.load().first)
         XCTAssertFalse(loaded.startsOnAppLaunch)
     }
+
+    func testLegacyJobUsesCumulativeTransferCount() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("legacy-count-jobs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let repository = JobRepository(fileURL: url)
+
+        try repository.save([SyncJob(name: "Legacy count job")])
+        let data = try Data(contentsOf: url)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        json[0]["latestSessionTransferCountOnly"] = nil
+        try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+
+        let loaded = try XCTUnwrap(repository.load().first)
+        XCTAssertFalse(loaded.showsLatestSessionTransferCountOnly)
+    }
 }
 
 final class JobTransferTotalsTests: XCTestCase {
@@ -47,9 +62,10 @@ final class JobTransferTotalsTests: XCTestCase {
         totals.record(jobID: firstJob, fileCount: 3)
         totals.record(jobID: secondJob, fileCount: 4)
 
-        XCTAssertEqual(totals.fileCount(jobID: firstJob), 5)
-        XCTAssertEqual(totals.fileCount(jobID: secondJob), 4)
-        XCTAssertEqual(totals.fileCount(), 9)
+        XCTAssertEqual(totals.fileCount(jobID: firstJob, latestSessionOnly: false), 5)
+        XCTAssertEqual(totals.fileCount(jobID: secondJob, latestSessionOnly: false), 4)
+        XCTAssertEqual(totals.fileCount(jobID: firstJob, latestSessionOnly: true), 3)
+        XCTAssertEqual(totals.fileCount(jobID: secondJob, latestSessionOnly: true), 4)
     }
 
     func testResetStartsANewJobSession() {
@@ -59,7 +75,18 @@ final class JobTransferTotalsTests: XCTestCase {
         totals.record(jobID: jobID, fileCount: 5)
         totals.reset(jobID: jobID)
 
-        XCTAssertEqual(totals.fileCount(jobID: jobID), 0)
-        XCTAssertEqual(totals.fileCount(), 0)
+        XCTAssertEqual(totals.fileCount(jobID: jobID, latestSessionOnly: false), 0)
+        XCTAssertEqual(totals.fileCount(jobID: jobID, latestSessionOnly: true), 0)
+    }
+
+    func testLatestSessionCountCanReturnToZero() {
+        let jobID = UUID()
+        var totals = JobTransferTotals()
+
+        totals.record(jobID: jobID, fileCount: 5)
+        totals.record(jobID: jobID, fileCount: 0)
+
+        XCTAssertEqual(totals.fileCount(jobID: jobID, latestSessionOnly: false), 5)
+        XCTAssertEqual(totals.fileCount(jobID: jobID, latestSessionOnly: true), 0)
     }
 }

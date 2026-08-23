@@ -100,6 +100,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var isEnabled = true
     // Optional so jobs saved by earlier versions can inherit their previous enabled state.
     var startOnAppLaunch: Bool? = true
+    // Optional so jobs saved by earlier versions keep the cumulative counter behavior.
+    var latestSessionTransferCountOnly: Bool? = false
     var preserveModificationDates = true
     var verifyFileSizes = true
     var targetCleanup: TargetCleanup? = nil
@@ -107,6 +109,11 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var startsOnAppLaunch: Bool {
         get { startOnAppLaunch ?? isEnabled }
         set { startOnAppLaunch = newValue }
+    }
+
+    var showsLatestSessionTransferCountOnly: Bool {
+        get { latestSessionTransferCountOnly ?? false }
+        set { latestSessionTransferCountOnly = newValue }
     }
 
     var validationMessage: String? {

@@ -187,6 +187,9 @@ private struct MenuJobRow: View {
     private var activityLabel: String {
         let count = store.transferredFileCount(for: job.id)
         let files = count == 1 ? "1 file" : "\(count) files"
+        if job.showsLatestSessionTransferCountOnly {
+            return "\(files) synced in latest session"
+        }
         return "\(files) synced since job started"
     }
 

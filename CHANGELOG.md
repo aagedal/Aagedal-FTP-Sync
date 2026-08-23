@@ -8,6 +8,7 @@
 - Added upload, download, two-way, and local-to-local synchronization.
 - Added JPEG, RAW, photo, video, all-file, and custom extension filters.
 - Added recent-file filtering for fast newsroom workflows.
+- Added a per-job option to show the latest sync session's transfer count instead of the cumulative count.
 - Added Keychain credentials and durable security-scoped folder bookmarks.
 - Fixed local folder selection so sandbox permission bookmarks are captured and shown reliably.
 - Added optional age-based cleanup for matching files in a one-way job's local target.
