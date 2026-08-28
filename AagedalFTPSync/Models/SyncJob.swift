@@ -105,6 +105,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var preserveModificationDates = true
     var verifyFileSizes = true
     var targetCleanup: TargetCleanup? = nil
+    // Optional so jobs saved by earlier versions continue to decode.
+    var metadataAutomation: MetadataAutomation? = nil
 
     var startsOnAppLaunch: Bool {
         get { startOnAppLaunch ?? isEnabled }
@@ -142,6 +144,16 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
                     return "Source and target folders must not overlap when cleanup is enabled."
                 }
             }
+        }
+        if let metadataAutomation, metadataAutomation.isEnabled {
+            guard direction != .bidirectional else {
+                return "Automatic metadata is only available for one-way jobs."
+            }
+            let target = direction == .leftToRight ? right : left
+            guard target.kind == .local else {
+                return "Automatic metadata requires a local destination folder."
+            }
+            if let message = metadataAutomation.validationMessage { return message }
         }
         return nil
     }

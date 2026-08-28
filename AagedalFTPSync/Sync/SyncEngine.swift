@@ -115,7 +115,15 @@ struct SyncEngine: Sendable {
     ) async throws -> Int {
         let candidates = sourceFiles.values
             .filter { job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt) }
-            .filter { needsTransfer($0, destinationFiles[$0.relativePath], verifySize: job.verifyFileSizes) }
+            .filter { file in
+                let willRewriteMetadata = job.metadataAutomation?
+                    .assignment(for: file.relativePath, modifiedAt: file.modifiedAt) != nil
+                return needsTransfer(
+                    file,
+                    destinationFiles[file.relativePath],
+                    verifySize: job.verifyFileSizes && !willRewriteMetadata
+                )
+            }
             .sorted { $0.modifiedAt > $1.modifiedAt }
         var transferred = 0
         for file in candidates {
@@ -125,7 +133,9 @@ struct SyncEngine: Sendable {
                 from: source,
                 to: destination,
                 preserveDate: job.preserveModificationDates,
-                verifySize: job.verifyFileSizes
+                verifySize: job.verifyFileSizes,
+                metadataAssignment: job.metadataAutomation?
+                    .assignment(for: file.relativePath, modifiedAt: file.modifiedAt)
             )
             transferred += 1
         }
@@ -173,7 +183,8 @@ struct SyncEngine: Sendable {
                 from: source,
                 to: destination,
                 preserveDate: job.preserveModificationDates,
-                verifySize: job.verifyFileSizes
+                verifySize: job.verifyFileSizes,
+                metadataAssignment: nil
             )
         }
         return (actions.count, conflicts.sorted())
@@ -190,7 +201,8 @@ struct SyncEngine: Sendable {
         from source: any EndpointSession,
         to destination: any EndpointSession,
         preserveDate: Bool,
-        verifySize: Bool
+        verifySize: Bool,
+        metadataAssignment: MetadataAssignment?
     ) async throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AagedalFTPSync", isDirectory: true)
@@ -198,9 +210,24 @@ struct SyncEngine: Sendable {
         let temporaryURL = temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         try await source.exportFile(file, to: temporaryURL)
+
+        let importedFile: SyncFile
+        if let metadataAssignment {
+            try MetadataWriter.apply(metadataAssignment, to: temporaryURL)
+            let attributes = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
+            let rewrittenSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            importedFile = SyncFile(
+                relativePath: file.relativePath,
+                size: rewrittenSize,
+                modifiedAt: file.modifiedAt
+            )
+        } else {
+            importedFile = file
+        }
+
         try await destination.importFile(
             from: temporaryURL,
-            as: file,
+            as: importedFile,
             preserveDate: preserveDate,
             verifySize: verifySize
         )

@@ -75,6 +75,9 @@ struct MenuBarView: View {
             }
             .menuStyle(.borderlessButton)
             Spacer()
+            Button("Metadata…") { openMetadataWindow() }
+                .buttonStyle(.plain)
+                .disabled(store.jobs.isEmpty)
             Button("Settings…") { openJobsWindow(adding: false) }
                 .buttonStyle(.plain)
             Button("About") {
@@ -95,6 +98,13 @@ struct MenuBarView: View {
         if adding { _ = store.addJob() }
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func openMetadataWindow() {
+        if store.selectedJobID == nil { store.selectedJobID = store.jobs.last?.id }
+        RegularWindowController.shared.prepareForOpening()
+        openWindow(id: "metadata-programming")
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -178,6 +188,16 @@ private struct MenuJobRow: View {
             }
             .buttonStyle(.plain)
             .help("Job Settings")
+            Button {
+                store.selectedJobID = job.id
+                RegularWindowController.shared.prepareForOpening()
+                openWindow(id: "metadata-programming")
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            } label: {
+                Image(systemName: "tag")
+            }
+            .buttonStyle(.plain)
+            .help("Metadata Programming")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)

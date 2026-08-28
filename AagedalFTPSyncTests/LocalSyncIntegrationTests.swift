@@ -1,8 +1,71 @@
+import AppKit
 import Foundation
+import SwiftExif
 import XCTest
 @testable import AagedalFTPSync
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testOneWaySyncAppliesScheduledMetadataAndDoesNotRepeatTransfer() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("JAD_0001.jpg")
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        try jpeg.write(to: source)
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "© Example News"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Political conference",
+            startsAt: timestamp.addingTimeInterval(-3_600),
+            endsAt: timestamp.addingTimeInterval(3_600),
+            fields: ScheduledMetadataFields(
+                headline: "Political conference",
+                description: "Delegates gather in Oslo.",
+                keywords: ["politics", "Oslo"]
+            )
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(firstResult, SyncResult(transferred: 1, deleted: 0))
+        XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
+
+        let destination = fixture.right.appendingPathComponent("JAD_0001.jpg")
+        let metadata = try ImageMetadata.read(from: destination)
+        XCTAssertEqual(metadata.iptc.headline, "Political conference")
+        XCTAssertEqual(metadata.iptc.caption, "Delegates gather in Oslo.")
+        XCTAssertEqual(metadata.iptc.byline, "Jane Doe")
+        XCTAssertEqual(metadata.iptc.copyright, "© Example News")
+        XCTAssertEqual(metadata.iptc.keywords, ["politics", "Oslo"])
+    }
+
     func testOneWaySyncCopiesDataAndModificationDate() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

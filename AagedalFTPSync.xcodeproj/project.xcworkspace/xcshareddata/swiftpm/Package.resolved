@@ -1,5 +1,5 @@
 {
-  "originHash" : "06e1233a9a9b220c5f5b14eefc3220aa9e394ac504fece9df28b2a550b7d6017",
+  "originHash" : "35cf74c383e0f8ae252c06811b6247ed7f85ff523d2b778f6003d7b8aa438e4c",
   "pins" : [
     {
       "identity" : "bigint",
@@ -89,6 +89,15 @@
       "state" : {
         "revision" : "869129b7bf4ecc57b97d0193ad29690ca2134750",
         "version" : "1.8.1"
+      }
+    },
+    {
+      "identity" : "swiftexif",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/aagedal/SwiftExif.git",
+      "state" : {
+        "revision" : "47249c72b613ebab8e4514f4adf05bb8000a1908",
+        "version" : "1.9.10"
       }
     }
   ],

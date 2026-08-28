@@ -8,7 +8,7 @@ struct AboutView: View {
                 .foregroundStyle(.tint)
             VStack(spacing: 4) {
                 Text("Aagedal FTP Sync").font(.title2).fontWeight(.semibold)
-                Text("Version 2.0.0").foregroundStyle(.secondary)
+                Text("Version 2.5.0").foregroundStyle(.secondary)
             }
             Text("Fast, careful file delivery for photojournalists and newsrooms.")
                 .multilineTextAlignment(.center)

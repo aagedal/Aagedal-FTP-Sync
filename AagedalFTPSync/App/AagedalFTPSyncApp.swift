@@ -28,6 +28,13 @@ struct AagedalFTPSyncApp: App {
                 .background(RegularWindowTracker())
         }
         .windowResizability(.contentSize)
+
+        Window("Metadata Programming", id: "metadata-programming") {
+            MetadataProgrammingView()
+                .environmentObject(store)
+                .background(RegularWindowTracker())
+        }
+        .defaultSize(width: 1180, height: 760)
     }
 }
 

@@ -16,6 +16,7 @@
 		1DEE0F42F4F0FFDDD5513574 /* FTPListingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 651C6A9CE4B166DED9277960 /* FTPListingTests.swift */; };
 		272053804C39268361FC3A77 /* SyncJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B454FB4A4C0AB0EA736CC08 /* SyncJob.swift */; };
 		321D42AE4C4597EED466F6E5 /* Endpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 192610C9A61A25AF00E657B7 /* Endpoint.swift */; };
+		3710B1ACB6F8926631BD9AEF /* MetadataWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03995AA00C6B22A30666B72E /* MetadataWriter.swift */; };
 		3F722F00953E530954D11527 /* BookmarkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A3505CD91E1A224FE60777 /* BookmarkAccess.swift */; };
 		66D659A9283970C862F17B6F /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA0E07A802A7A2D80FA386CB /* KeychainStore.swift */; };
 		67B74AE97D4B2424175EF24F /* LocalEndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11EF22BFC8BEE74CA0BD737F /* LocalEndpointSession.swift */; };
@@ -23,11 +24,16 @@
 		6C02AAB9B7076B51AA0763DD /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 113A0B3ADC59BFE97A673EA5 /* MenuBarView.swift */; };
 		73D8B50CCE319161F4DE3BCC /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02EC1F74EDD6F1B832D4756B /* AboutView.swift */; };
 		744593AB9031434E395773DE /* EndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCF65723538BA23F95385AED /* EndpointSession.swift */; };
+		9B4B56D05E2335FDC558DC7D /* MetadataAutomationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
+		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
 		A912C00FDB4E91CA2C98B4C3 /* FileFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97DCF709A14A3B3FAC7D6E5E /* FileFilterTests.swift */; };
+		AD887595221D0BD0F0AFB9AC /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 5385F0C5DDB4BAB61B200D2C /* SwiftExif */; };
+		B15170809BD2FCE731273087 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 0640F96321C1AC680371564A /* SwiftExif */; };
 		B3C47DA88D887D6C938B59BE /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F26F9F2F58732670EB2AFEA1 /* AppStore.swift */; };
 		B6D05E27795ADA53187E0B2A /* JobsWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE273065A756601A22D84D27 /* JobsWindowView.swift */; };
 		C27CE06BC60109AE34788F93 /* JobRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */; };
+		D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */; };
 		DB23A9DE82ED66DAF6941E4F /* FTPConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA3A713A82044F0A77CFC2AD /* FTPConnection.swift */; };
 		E1DAEC0A6654788FBE787C04 /* AppError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17C264842979B409D1442940 /* AppError.swift */; };
 		E53F0414C64324DD591A8565 /* FTPEndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094342E4F906A49665E62424 /* FTPEndpointSession.swift */; };
@@ -50,6 +56,7 @@
 
 /* Begin PBXFileReference section */
 		02EC1F74EDD6F1B832D4756B /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		03995AA00C6B22A30666B72E /* MetadataWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataWriter.swift; sourceTree = "<group>"; };
 		094342E4F906A49665E62424 /* FTPEndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPEndpointSession.swift; sourceTree = "<group>"; };
 		0F52E20A9F7F6EA39DCDD0BD /* AagedalFTPSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AagedalFTPSyncApp.swift; sourceTree = "<group>"; };
 		113A0B3ADC59BFE97A673EA5 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
@@ -59,7 +66,9 @@
 		192610C9A61A25AF00E657B7 /* Endpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Endpoint.swift; sourceTree = "<group>"; };
 		2C0249352EC9A962E24F95EE /* SFTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SFTPTransport.swift; sourceTree = "<group>"; };
 		36494EE9F91F82FF44716BBC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingView.swift; sourceTree = "<group>"; };
 		3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepositoryTests.swift; sourceTree = "<group>"; };
+		419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomationTests.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
 		539DC8F63EE64022D624CE17 /* AagedalFTPSync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AagedalFTPSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5B454FB4A4C0AB0EA736CC08 /* SyncJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncJob.swift; sourceTree = "<group>"; };
@@ -80,6 +89,7 @@
 		E20AD42026ACD307821FF756 /* FolderBookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderBookmark.swift; sourceTree = "<group>"; };
 		F26F9F2F58732670EB2AFEA1 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		F36DFB49077346301C4F656C /* PathSafety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathSafety.swift; sourceTree = "<group>"; };
+		F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomation.swift; sourceTree = "<group>"; };
 		FE273065A756601A22D84D27 /* JobsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobsWindowView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -89,6 +99,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				EEA61FB84B702BB8F0D078A3 /* Citadel in Frameworks */,
+				B15170809BD2FCE731273087 /* SwiftExif in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8F4D7D7319A82F52F880CBD1 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AD887595221D0BD0F0AFB9AC /* SwiftExif in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -161,10 +180,19 @@
 				651C6A9CE4B166DED9277960 /* FTPListingTests.swift */,
 				3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */,
 				9F9AD62BA318A3F76F8EB0B2 /* LocalSyncIntegrationTests.swift */,
+				419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */,
 				886036FB1249F217586D7284 /* PathSafetyTests.swift */,
 				98C086F6C3B781DCF036C21D /* SyncJobValidationTests.swift */,
 			);
 			path = AagedalFTPSyncTests;
+			sourceTree = "<group>";
+		};
+		6D14BC136DF530F1F9AA9074 /* Metadata */ = {
+			isa = PBXGroup;
+			children = (
+				03995AA00C6B22A30666B72E /* MetadataWriter.swift */,
+			);
+			path = Metadata;
 			sourceTree = "<group>";
 		};
 		90317C5F1CD8A1C87EEE6F0F /* Views */ = {
@@ -174,6 +202,7 @@
 				B1F77C1BCC8CDA6038939531 /* JobDetailEditor.swift */,
 				FE273065A756601A22D84D27 /* JobsWindowView.swift */,
 				113A0B3ADC59BFE97A673EA5 /* MenuBarView.swift */,
+				3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -182,6 +211,7 @@
 			isa = PBXGroup;
 			children = (
 				C9732ABC6FC9676647A12BCE /* App */,
+				6D14BC136DF530F1F9AA9074 /* Metadata */,
 				ED73E02270F0A3BF6114FFE5 /* Models */,
 				1F2C0711282D8A41CBDE3AC3 /* Persistence */,
 				B0BE127A1CF96BB4A2B4003D /* Resources */,
@@ -224,6 +254,7 @@
 			isa = PBXGroup;
 			children = (
 				192610C9A61A25AF00E657B7 /* Endpoint.swift */,
+				F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */,
 				5B454FB4A4C0AB0EA736CC08 /* SyncJob.swift */,
 			);
 			path = Models;
@@ -237,6 +268,7 @@
 			buildConfigurationList = 65DB20B259D464CBBE845DFE /* Build configuration list for PBXNativeTarget "AagedalFTPSyncTests" */;
 			buildPhases = (
 				EF7585EB2D7688AE696C5312 /* Sources */,
+				8F4D7D7319A82F52F880CBD1 /* Frameworks */,
 			);
 			buildRules = (
 			);
@@ -245,6 +277,7 @@
 			);
 			name = AagedalFTPSyncTests;
 			packageProductDependencies = (
+				5385F0C5DDB4BAB61B200D2C /* SwiftExif */,
 			);
 			productName = AagedalFTPSyncTests;
 			productReference = B6B136282CDABA5C399CD2CC /* AagedalFTPSyncTests.xctest */;
@@ -265,6 +298,7 @@
 			name = AagedalFTPSync;
 			packageProductDependencies = (
 				DAB105AF735664B0A8861E6D /* Citadel */,
+				0640F96321C1AC680371564A /* SwiftExif */,
 			);
 			productName = AagedalFTPSync;
 			productReference = 539DC8F63EE64022D624CE17 /* AagedalFTPSync.app */;
@@ -284,6 +318,7 @@
 						ProvisioningStyle = Automatic;
 					};
 					DA22D5815B19C66F2019C139 = {
+						DevelopmentTeam = "";
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -299,6 +334,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A33FEB87BAC87C0B0358F606 /* XCRemoteSwiftPackageReference "Citadel" */,
+				B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DD55C7F7C585723AD4A65F6E /* Products */;
@@ -343,6 +379,9 @@
 				66D659A9283970C862F17B6F /* KeychainStore.swift in Sources */,
 				67B74AE97D4B2424175EF24F /* LocalEndpointSession.swift in Sources */,
 				6C02AAB9B7076B51AA0763DD /* MenuBarView.swift in Sources */,
+				A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */,
+				D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */,
+				3710B1ACB6F8926631BD9AEF /* MetadataWriter.swift in Sources */,
 				F1FE64BEF3B4B67CC678E60E /* PathSafety.swift in Sources */,
 				03B9BB504A33709EB3DD70B4 /* SFTPEndpointSession.swift in Sources */,
 				09AEF27861375CC02EB37B6D /* SFTPTransport.swift in Sources */,
@@ -359,6 +398,7 @@
 				A912C00FDB4E91CA2C98B4C3 /* FileFilterTests.swift in Sources */,
 				C27CE06BC60109AE34788F93 /* JobRepositoryTests.swift in Sources */,
 				09099C318974ED372F9ADE95 /* LocalSyncIntegrationTests.swift in Sources */,
+				9B4B56D05E2335FDC558DC7D /* MetadataAutomationTests.swift in Sources */,
 				EED6ECBBCC58617795A3D8EB /* PathSafetyTests.swift in Sources */,
 				E9F5C8F408685FF6E937756D /* SyncJobValidationTests.swift in Sources */,
 			);
@@ -430,7 +470,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.0.0;
+				MARKETING_VERSION = 2.5.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -449,12 +489,9 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AagedalFTPSync/Resources/AagedalFTPSync.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 283;
-				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AagedalFTPSync/Resources/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -549,7 +586,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.0.0;
+				MARKETING_VERSION = 2.5.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -567,12 +604,9 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AagedalFTPSync/Resources/AagedalFTPSync.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 283;
-				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AagedalFTPSync/Resources/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -625,9 +659,27 @@
 				version = 0.12.1;
 			};
 		};
+		B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/aagedal/SwiftExif.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.9.10;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0640F96321C1AC680371564A /* SwiftExif */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */;
+			productName = SwiftExif;
+		};
+		5385F0C5DDB4BAB61B200D2C /* SwiftExif */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */;
+			productName = SwiftExif;
+		};
 		DAB105AF735664B0A8861E6D /* Citadel */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A33FEB87BAC87C0B0358F606 /* XCRemoteSwiftPackageReference "Citadel" */;

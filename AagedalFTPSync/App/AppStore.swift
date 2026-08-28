@@ -156,6 +156,28 @@ final class AppStore: ObservableObject {
         persist()
     }
 
+    @discardableResult
+    func saveMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
+        var updatedJob = jobs[index]
+        updatedJob.metadataAutomation = automation
+        if let message = updatedJob.validationMessage {
+            alertMessage = message
+            return false
+        }
+
+        var updatedJobs = jobs
+        updatedJobs[index] = updatedJob
+        do {
+            try repository.save(updatedJobs)
+            jobs = updatedJobs
+            return true
+        } catch {
+            alertMessage = error.localizedDescription
+            return false
+        }
+    }
+
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         if enabled, !jobs[index].isEnabled { transferTotals.reset(jobID: jobID) }

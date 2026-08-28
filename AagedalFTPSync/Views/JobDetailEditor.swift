@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct JobDetailEditor: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.openWindow) private var openWindow
     @State private var draft: SyncJob
     @State private var leftPassword = ""
     @State private var rightPassword = ""
@@ -73,6 +74,22 @@ struct JobDetailEditor: View {
                     }
                 }
 
+                Section("Metadata") {
+                    LabeledContent("Automatic metadata") {
+                        Text(metadataStatus)
+                            .foregroundStyle(currentMetadataAutomation?.isEnabled == true ? .green : .secondary)
+                    }
+                    Button("Open Metadata Programming…") {
+                        store.selectedJobID = draft.id
+                        RegularWindowController.shared.prepareForOpening()
+                        openWindow(id: "metadata-programming")
+                        NSApplication.shared.activate(ignoringOtherApps: true)
+                    }
+                    Text("Assign permanent photographer profiles to filename prefixes, then program Headline, Description, and Keywords on a day timeline.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Safety") {
                     Toggle("Preserve modification dates", isOn: $draft.preserveModificationDates)
                     Toggle("Verify file sizes", isOn: $draft.verifyFileSizes)
@@ -139,6 +156,18 @@ struct JobDetailEditor: View {
     private var intervalLabel: String {
         if draft.intervalSeconds < 60 { return "\(Int(draft.intervalSeconds)) sec" }
         return "\(Int(draft.intervalSeconds / 60)) min"
+    }
+
+    private var metadataStatus: String {
+        guard let metadata = currentMetadataAutomation else { return "Not configured" }
+        let profiles = metadata.photographers.count == 1
+            ? "1 photographer"
+            : "\(metadata.photographers.count) photographers"
+        return metadata.isEnabled ? "On · \(profiles)" : "Off · \(profiles)"
+    }
+
+    private var currentMetadataAutomation: MetadataAutomation? {
+        store.jobs.first(where: { $0.id == draft.id })?.metadataAutomation
     }
 
     private var recentHoursBinding: Binding<Int> {
@@ -292,6 +321,9 @@ struct JobDetailEditor: View {
 
     @discardableResult
     private func save() -> Bool {
+        // Metadata is edited in its own window. Merge the latest persisted programming
+        // so an older job-settings draft cannot overwrite it.
+        draft.metadataAutomation = store.jobs.first(where: { $0.id == draft.id })?.metadataAutomation
         guard store.saveJob(draft, leftPassword: leftPassword, rightPassword: rightPassword) else {
             saveConfirmation = false
             return false
