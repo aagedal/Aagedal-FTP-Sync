@@ -12,6 +12,7 @@ struct MetadataProgrammingView: View {
     @State private var saveConfirmation = false
     @State private var selectedClipIDs: Set<UUID> = []
     @State private var copiedClips: [MetadataScheduleClip] = []
+    @State private var playhead: TimelinePlayhead?
     @State private var snapMinutes = 15
     @State private var pendingClipChange: PendingClipChange?
     @State private var showReprocessConfirmation = false
@@ -34,6 +35,7 @@ struct MetadataProgrammingView: View {
                     systemImage: "tag.slash",
                     description: Text("Create or select a sync job before programming metadata.")
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HSplitView {
                     librarySidebar
@@ -41,14 +43,26 @@ struct MetadataProgrammingView: View {
                     dayTimeline
                         .frame(minWidth: 650)
                 }
+                .frame(maxHeight: .infinity)
             }
 
             Divider()
             footer
         }
-        .frame(minWidth: 1180, minHeight: 650)
+        .frame(
+            minWidth: 1180,
+            maxWidth: .infinity,
+            minHeight: 650,
+            maxHeight: .infinity,
+            alignment: .top
+        )
         .onAppear(perform: loadSelectedJob)
         .onChange(of: store.selectedJobID) { _, _ in loadSelectedJob() }
+        .onChange(of: selectedDate) { _, newDate in
+            if let playhead, !calendar.isDate(playhead.date, inSameDayAs: newDate) {
+                self.playhead = nil
+            }
+        }
         .sheet(isPresented: Binding(
             get: { editingClipID != nil },
             set: { if !$0 { editingClipID = nil } }
@@ -58,8 +72,7 @@ struct MetadataProgrammingView: View {
                 MetadataClipEditor(
                     clip: clip,
                     photographers: draft.photographers,
-                    onSave: updateClip,
-                    onCopy: copyClip
+                    onSave: updateClip
                 )
             }
         }
@@ -266,6 +279,13 @@ struct MetadataProgrammingView: View {
 
                 Spacer()
 
+                if let playheadSummary {
+                    Label(playheadSummary, systemImage: "arrowtriangle.down.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
                 Picker("Snap", selection: $snapMinutes) {
                     Text("5 min").tag(5)
                     Text("15 min").tag(15)
@@ -290,8 +310,8 @@ struct MetadataProgrammingView: View {
                 Button(action: pasteClips) {
                     Image(systemName: "doc.on.clipboard")
                 }
-                .disabled(copiedClips.isEmpty)
-                .help("Paste Clips on Selected Day (Command-V)")
+                .disabled(copiedClips.isEmpty || playhead == nil)
+                .help(pasteHelp)
 
                 Button(role: .destructive, action: deleteSelectedClips) {
                     Image(systemName: "trash")
@@ -311,14 +331,21 @@ struct MetadataProgrammingView: View {
             Divider()
 
             if timelinePhotographers.isEmpty {
-                ContentUnavailableView {
-                    Label("No programming for this day", systemImage: "calendar.badge.plus")
-                } description: {
-                    Text("Select a photographer from the library, then add a metadata clip.")
-                } actions: {
-                    Button("Add Metadata Clip", action: addClip)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(selectedPhotographer == nil)
+                VStack(spacing: 0) {
+                    ScrollView(.horizontal) {
+                        TimelineHourHeader(day: selectedDate)
+                            .frame(minWidth: 920)
+                    }
+
+                    ContentUnavailableView {
+                        Label("No photographers", systemImage: "person.crop.circle.badge.plus")
+                    } description: {
+                        Text("Add a photographer to create a track and start programming metadata.")
+                    } actions: {
+                        Button("Add Photographer", action: addPhotographer)
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
                 ScrollView([.horizontal, .vertical]) {
@@ -333,11 +360,16 @@ struct MetadataProgrammingView: View {
                                 color: color(for: photographer),
                                 snapMinutes: snapMinutes,
                                 selectedClipIDs: selectedClipIDs,
+                                playheadDate: playhead?.date,
+                                showsPlayhead: playhead?.photographerID == photographer.id,
+                                canPaste: !copiedClips.isEmpty && playhead != nil,
                                 onSelect: selectClip,
                                 onEdit: editClip,
                                 onCreate: createClip,
                                 onMove: moveClip,
-                                onResize: resizeClip
+                                onResize: resizeClip,
+                                onPlacePlayhead: placePlayhead,
+                                onPasteAtPlayhead: pasteClips
                             )
                             Divider()
                         }
@@ -374,6 +406,7 @@ struct MetadataProgrammingView: View {
                 .keyboardShortcut("c", modifiers: .command)
             Button("Paste", action: pasteClips)
                 .keyboardShortcut("v", modifiers: .command)
+                .disabled(copiedClips.isEmpty || playhead == nil)
             Button("Select All Clips", action: selectAllClipsForDay)
                 .keyboardShortcut("a", modifiers: .command)
             Button("Edit Clip", action: editSelectedClip)
@@ -575,6 +608,21 @@ struct MetadataProgrammingView: View {
         return draft.photographers.first(where: { $0.id == selectedPhotographerID })
     }
 
+    private var playheadSummary: String? {
+        guard let playhead,
+              let photographer = draft.photographers.first(where: { $0.id == playhead.photographerID }) else {
+            return nil
+        }
+        return "\(photographer.name) · \(playhead.date.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private var pasteHelp: String {
+        if let playheadSummary {
+            return "Paste at \(playheadSummary) (Command-V)"
+        }
+        return "Click a track to place the playhead, then paste (Command-V)"
+    }
+
     private var timelinePhotographers: [PhotographerProfile] {
         draft.photographers
     }
@@ -606,6 +654,9 @@ struct MetadataProgrammingView: View {
             loadedJobID = nil
             draft = MetadataAutomation()
             selectedPhotographerID = nil
+            selectedClipIDs = []
+            copiedClips = []
+            playhead = nil
             return
         }
         loadedJobID = job.id
@@ -613,6 +664,7 @@ struct MetadataProgrammingView: View {
         selectedPhotographerID = draft.photographers.first?.id
         selectedClipIDs = []
         copiedClips = []
+        playhead = nil
     }
 
     private func addPhotographer() {
@@ -654,22 +706,25 @@ struct MetadataProgrammingView: View {
         draft.clips.removeAll { $0.photographerID == photographer.id }
         selectedClipIDs = selectedClipIDs.filter { id in draft.clips.contains(where: { $0.id == id }) }
         selectedPhotographerID = draft.photographers.first?.id
+        if playhead?.photographerID == photographer.id { playhead = nil }
         photographerPendingDeletion = nil
     }
 
     private func addClip() {
         guard let photographer = selectedPhotographer else { return }
         let dayStart = calendar.startOfDay(for: selectedDate)
-        let startHour = calendar.isDateInToday(selectedDate)
+        let defaultStartHour = calendar.isDateInToday(selectedDate)
             ? min(max(calendar.component(.hour, from: Date()), 0), 22)
             : 9
-        let start = calendar.date(byAdding: .hour, value: startHour, to: dayStart) ?? dayStart
+        let defaultStart = calendar.date(byAdding: .hour, value: defaultStartHour, to: dayStart) ?? dayStart
+        let start = playhead?.photographerID == photographer.id ? playhead?.date ?? defaultStart : defaultStart
         let end = calendar.date(byAdding: .hour, value: 1, to: start) ?? start.addingTimeInterval(3_600)
         let clip = MetadataScheduleClip(
             photographerID: photographer.id,
-            name: "Metadata preset",
+            name: "Metadata clip",
             startsAt: start,
-            endsAt: end
+            endsAt: end,
+            fields: ScheduledMetadataFields(headline: "Metadata clip")
         )
         draft.clips.append(clip)
         selectedClipIDs = [clip.id]
@@ -680,13 +735,6 @@ struct MetadataProgrammingView: View {
         guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
         draft.clips[index] = clip
         editingClipID = nil
-    }
-
-    private func copyClip(_ clip: MetadataScheduleClip, to photographerID: UUID) {
-        var copy = clip
-        copy.id = UUID()
-        copy.photographerID = photographerID
-        draft.clips.append(copy)
     }
 
     private func selectClip(_ clip: MetadataScheduleClip) {
@@ -723,11 +771,13 @@ struct MetadataProgrammingView: View {
             photographerID: photographer.id,
             name: "Metadata clip",
             startsAt: start,
-            endsAt: end
+            endsAt: end,
+            fields: ScheduledMetadataFields(headline: "Metadata clip")
         )
         draft.clips.append(clip)
         selectedClipIDs = [clip.id]
         selectedPhotographerID = photographer.id
+        playhead = TimelinePlayhead(photographerID: photographer.id, date: start)
         timelineFocused = true
     }
 
@@ -741,23 +791,28 @@ struct MetadataProgrammingView: View {
     }
 
     private func pasteClips() {
-        guard !copiedClips.isEmpty else { return }
-        let sourceDay = calendar.startOfDay(for: copiedClips.map(\.startsAt).min() ?? selectedDate)
-        let targetDay = calendar.startOfDay(for: selectedDate)
-        let dayOffset = calendar.dateComponents([.day], from: sourceDay, to: targetDay).day ?? 0
-        let sourcePhotographers = Set(copiedClips.map(\.photographerID))
-        let singleTarget = sourcePhotographers.count == 1 ? selectedPhotographerID : nil
+        guard let playhead else { return }
+        pasteClips(to: playhead.date, on: playhead.photographerID)
+    }
 
-        let pasted = copiedClips.map { source -> MetadataScheduleClip in
-            var copy = source
-            copy.id = UUID()
-            copy.photographerID = singleTarget ?? source.photographerID
-            copy.startsAt = calendar.date(byAdding: .day, value: dayOffset, to: source.startsAt) ?? source.startsAt
-            copy.endsAt = calendar.date(byAdding: .day, value: dayOffset, to: source.endsAt) ?? source.endsAt
-            return copy
-        }
+    private func pasteClips(to date: Date, on photographerID: UUID) {
+        guard !copiedClips.isEmpty else { return }
+        let pasted = MetadataTimelineEditing.copies(
+            of: copiedClips,
+            anchoredAt: date,
+            on: photographerID
+        )
+        finishPasting(pasted, playhead: TimelinePlayhead(photographerID: photographerID, date: date))
+    }
+
+    private func finishPasting(_ pasted: [MetadataScheduleClip], playhead newPlayhead: TimelinePlayhead? = nil) {
+        guard !pasted.isEmpty else { return }
         draft.clips.append(contentsOf: pasted)
         selectedClipIDs = Set(pasted.map(\.id))
+        if let newPlayhead {
+            playhead = newPlayhead
+            selectedPhotographerID = newPlayhead.photographerID
+        }
         timelineFocused = true
     }
 
@@ -774,14 +829,28 @@ struct MetadataProgrammingView: View {
         timelineFocused = true
     }
 
-    private func moveClip(_ clip: MetadataScheduleClip, by interval: TimeInterval) {
-        let changed = MetadataTimelineEditing.moving(
+    private func moveClip(_ clip: MetadataScheduleClip, by interval: TimeInterval, duplicating: Bool) {
+        var changed = MetadataTimelineEditing.moving(
             clip,
             by: interval,
             snapMinutes: snapMinutes,
             calendar: calendar
         )
-        applyClipChange(changed)
+        if duplicating {
+            changed.id = UUID()
+            draft.clips.append(changed)
+            selectedClipIDs = [changed.id]
+            selectedPhotographerID = changed.photographerID
+        } else {
+            applyClipChange(changed)
+        }
+    }
+
+    private func placePlayhead(on photographerID: UUID, at date: Date) {
+        playhead = TimelinePlayhead(photographerID: photographerID, date: date)
+        selectedPhotographerID = photographerID
+        selectedClipIDs = []
+        timelineFocused = true
     }
 
     private func resizeClip(
@@ -853,6 +922,7 @@ struct MetadataProgrammingView: View {
 
     private func moveDay(by value: Int) {
         selectedDate = calendar.date(byAdding: .day, value: value, to: selectedDate) ?? selectedDate
+        playhead = nil
         selectedClipIDs = selectedClipIDs.filter { id in
             draft.clips.first(where: { $0.id == id })?.overlaps(dayContaining: selectedDate, calendar: calendar) == true
         }
@@ -1001,6 +1071,11 @@ private struct PendingClipChange: Identifiable {
     let clip: MetadataScheduleClip
 }
 
+private struct TimelinePlayhead: Equatable {
+    let photographerID: UUID
+    let date: Date
+}
+
 private struct TimelineHourHeader: View {
     let day: Date
     private let calendar = Calendar.current
@@ -1049,11 +1124,16 @@ private struct TimelineTrack: View {
     let color: Color
     let snapMinutes: Int
     let selectedClipIDs: Set<UUID>
+    let playheadDate: Date?
+    let showsPlayhead: Bool
+    let canPaste: Bool
     let onSelect: (MetadataScheduleClip) -> Void
     let onEdit: (MetadataScheduleClip) -> Void
     let onCreate: (PhotographerProfile, Date, Date) -> Void
-    let onMove: (MetadataScheduleClip, TimeInterval) -> Void
+    let onMove: (MetadataScheduleClip, TimeInterval, Bool) -> Void
     let onResize: (MetadataScheduleClip, MetadataClipResizeEdge, TimeInterval) -> Void
+    let onPlacePlayhead: (UUID, Date) -> Void
+    let onPasteAtPlayhead: (Date, UUID) -> Void
 
     private let calendar = Calendar.current
     @GestureState private var creationDrag: DragGesture.Value?
@@ -1073,7 +1153,8 @@ private struct TimelineTrack: View {
                         .fill(.clear)
                         .contentShape(Rectangle())
                         .gesture(creationGesture(totalWidth: proxy.size.width))
-                        .help("Drag empty space to create a metadata clip")
+                        .simultaneousGesture(playheadGesture(totalWidth: proxy.size.width))
+                        .help("Click to place the playhead or drag to create a metadata clip")
                     hourGrid
                     overlapHighlights(totalWidth: proxy.size.width)
                     currentTimeMarker(totalWidth: proxy.size.width)
@@ -1089,17 +1170,27 @@ private struct TimelineTrack: View {
                             secondsPerPoint: dayDuration / max(proxy.size.width, 1),
                             onSelect: { onSelect(clip) },
                             onEdit: { onEdit(clip) },
-                            onMove: { onMove(clip, $0) },
+                            onMove: { interval, duplicating in onMove(clip, interval, duplicating) },
                             onResize: { edge, interval in onResize(clip, edge, interval) }
                         )
                         .frame(width: clipWidth(clip, totalWidth: proxy.size.width), height: 44)
                         .offset(x: clipOffset(clip, totalWidth: proxy.size.width))
                     }
+                    playheadMarker(totalWidth: proxy.size.width)
                 }
             }
             .padding(.horizontal, 4)
         }
         .frame(height: 58)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button {
+                if let playheadDate { onPasteAtPlayhead(playheadDate, photographer.id) }
+            } label: {
+                Label(contextMenuPasteTitle, systemImage: "doc.on.clipboard")
+            }
+            .disabled(!canPaste || playheadDate == nil)
+        }
     }
 
     private var dayStart: Date { calendar.startOfDay(for: day) }
@@ -1109,6 +1200,11 @@ private struct TimelineTrack: View {
     }
 
     private var dayDuration: TimeInterval { nextDay.timeIntervalSince(dayStart) }
+
+    private var contextMenuPasteTitle: String {
+        guard let playheadDate else { return "Place Playhead to Paste" }
+        return "Paste at \(playheadDate.formatted(date: .omitted, time: .shortened))"
+    }
 
     private var hourGrid: some View {
         HStack(spacing: 0) {
@@ -1154,6 +1250,21 @@ private struct TimelineTrack: View {
                 let interval = creationInterval(for: value, totalWidth: totalWidth)
                 onCreate(photographer, interval.start, interval.end)
             }
+    }
+
+    private func playheadGesture(totalWidth: CGFloat) -> some Gesture {
+        SpatialTapGesture(coordinateSpace: .local)
+            .onEnded { value in
+                onPlacePlayhead(photographer.id, playheadDate(at: value.location.x, totalWidth: totalWidth))
+            }
+    }
+
+    private func playheadDate(at location: CGFloat, totalWidth: CGFloat) -> Date {
+        let fraction = min(max(location / max(totalWidth, 1), 0), 1)
+        let unsnapped = dayStart.addingTimeInterval(Double(fraction) * dayDuration)
+        let snapped = MetadataTimelineEditing.snapped(unsnapped, toMinutes: snapMinutes, calendar: calendar)
+        let latest = nextDay.addingTimeInterval(-TimeInterval(max(snapMinutes, 1) * 60))
+        return min(max(snapped, dayStart), latest)
     }
 
     private func creationInterval(
@@ -1203,6 +1314,25 @@ private struct TimelineTrack: View {
         }
     }
 
+    @ViewBuilder
+    private func playheadMarker(totalWidth: CGFloat) -> some View {
+        if showsPlayhead, let playheadDate {
+            let offset = CGFloat(playheadDate.timeIntervalSince(dayStart) / dayDuration) * totalWidth
+            ZStack(alignment: .top) {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(width: 2, height: 52)
+                Image(systemName: "arrowtriangle.down.fill")
+                    .font(.caption2)
+                    .foregroundStyle(Color.accentColor)
+                    .offset(y: -3)
+            }
+            .offset(x: offset - 1)
+            .allowsHitTesting(false)
+            .help("Paste starts at \(playheadDate.formatted(date: .omitted, time: .shortened))")
+        }
+    }
+
     private func clippedInterval(
         for clip: MetadataScheduleClip
     ) -> (start: TimeInterval, end: TimeInterval, dayDuration: TimeInterval) {
@@ -1248,7 +1378,7 @@ private struct TimelineClipView: View {
     let secondsPerPoint: TimeInterval
     let onSelect: () -> Void
     let onEdit: () -> Void
-    let onMove: (TimeInterval) -> Void
+    let onMove: (TimeInterval, Bool) -> Void
     let onResize: (MetadataClipResizeEdge, TimeInterval) -> Void
 
     @GestureState private var moveTranslation: CGFloat = 0
@@ -1266,7 +1396,7 @@ private struct TimelineClipView: View {
                         .font(.caption2.weight(.bold))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(clip.name).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(timelineTitle).font(.caption.weight(.semibold)).lineLimit(1)
                     Text(timeLabel).font(.caption2.monospacedDigit()).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -1291,7 +1421,7 @@ private struct TimelineClipView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .offset(x: moveTranslation)
         .gesture(interactionGesture)
-        .help("Click to select, double-click to edit metadata, drag to move, or drag an edge to resize.")
+        .help("Click to select, double-click to edit, drag to move, Option-drag to duplicate, or drag an edge to resize.")
     }
 
     private var interactionGesture: some Gesture {
@@ -1304,7 +1434,17 @@ private struct TimelineClipView: View {
     private var moveGesture: some Gesture {
         DragGesture(minimumDistance: 3)
             .updating($moveTranslation) { value, state, _ in state = value.translation.width }
-            .onEnded { value in onMove(value.translation.width * secondsPerPoint) }
+            .onEnded { value in
+                onMove(
+                    value.translation.width * secondsPerPoint,
+                    NSEvent.modifierFlags.contains(.option)
+                )
+            }
+    }
+
+    private var timelineTitle: String {
+        let headline = clip.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        return headline.isEmpty ? clip.name : headline
     }
 
     private func resizeHandle(edge: MetadataClipResizeEdge) -> some View {
@@ -1330,47 +1470,48 @@ private struct MetadataClipEditor: View {
     @EnvironmentObject private var store: AppStore
     @State private var draft: MetadataScheduleClip
     @State private var keywordsText: String
-    @State private var copyTargetID: UUID?
     @State private var selectedPresetID: UUID?
     @State private var newPresetName: String
     @State private var presetPendingDeletion: MetadataPreset?
-    @State private var showNextDayConfirmation = false
     @State private var validationMessage: String?
 
     let photographers: [PhotographerProfile]
     let onSave: (MetadataScheduleClip) -> Void
-    let onCopy: (MetadataScheduleClip, UUID) -> Void
 
     init(
         clip: MetadataScheduleClip,
         photographers: [PhotographerProfile],
-        onSave: @escaping (MetadataScheduleClip) -> Void,
-        onCopy: @escaping (MetadataScheduleClip, UUID) -> Void
+        onSave: @escaping (MetadataScheduleClip) -> Void
     ) {
-        _draft = State(initialValue: clip)
-        _keywordsText = State(initialValue: clip.fields.keywords.joined(separator: ", "))
-        _copyTargetID = State(initialValue: photographers.first(where: { $0.id != clip.photographerID })?.id)
+        var editorClip = clip
+        if editorClip.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            editorClip.fields.headline = clip.name
+        }
+        _draft = State(initialValue: editorClip)
+        _keywordsText = State(initialValue: editorClip.fields.keywords.joined(separator: ", "))
         _selectedPresetID = State(initialValue: nil)
-        _newPresetName = State(initialValue: clip.name)
+        _newPresetName = State(initialValue: editorClip.fields.headline)
         self.photographers = photographers
         self.onSave = onSave
-        self.onCopy = onCopy
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
-                Section("Metadata Clip") {
-                    TextField("Name", text: $draft.name)
+                Section("Programming") {
                     Picker("Photographer", selection: $draft.photographerID) {
                         ForEach(photographers) { Text($0.name).tag($0.id) }
                     }
-                    DatePicker("Starts", selection: $draft.startsAt)
-                    DatePicker("Ends", selection: $draft.endsAt)
+                    Text("Set the start, end, and duration directly on the timeline.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("IPTC Metadata") {
                     TextField("Headline", text: $draft.fields.headline)
+                    Text("The headline is also used as the clip name on the timeline.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     LabeledContent("Description") {
                         TextEditor(text: $draft.fields.description)
                             .font(.body)
@@ -1416,22 +1557,6 @@ private struct MetadataClipEditor: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if photographers.count > 1 {
-                    Section("Copy") {
-                        HStack {
-                            Picker("Copy this programming to", selection: $copyTargetID) {
-                                ForEach(photographers.filter { $0.id != draft.photographerID }) {
-                                    Text($0.name).tag(Optional($0.id))
-                                }
-                            }
-                            Button("Copy") {
-                                normalizeKeywords()
-                                if let copyTargetID { onCopy(draft, copyTargetID) }
-                            }
-                            .disabled(copyTargetID == nil)
-                        }
-                    }
-                }
             }
             .formStyle(.grouped)
 
@@ -1450,13 +1575,7 @@ private struct MetadataClipEditor: View {
             }
             .padding(14)
         }
-        .frame(width: 620, height: 700)
-        .alert("Extend into the next day?", isPresented: $showNextDayConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Extend and Save") { commitSave() }
-        } message: {
-            Text("This metadata clip ends on a different day. It will also appear on that day’s timeline.")
-        }
+        .frame(width: 620, height: 620)
         .confirmationDialog(
             "Delete reusable preset?",
             isPresented: Binding(
@@ -1478,23 +1597,15 @@ private struct MetadataClipEditor: View {
 
     private func attemptSave() {
         normalizeKeywords()
-        let trimmedName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else {
-            validationMessage = "Give the metadata clip a name."
+        let trimmedHeadline = draft.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedHeadline.isEmpty else {
+            validationMessage = "Give the metadata a headline."
             return
         }
-        guard draft.endsAt > draft.startsAt else {
-            validationMessage = "The clip must end after it starts."
-            return
-        }
-        draft.name = trimmedName
+        draft.fields.headline = trimmedHeadline
+        draft.name = trimmedHeadline
         validationMessage = nil
-
-        if !Calendar.current.isDate(draft.startsAt, inSameDayAs: draft.endsAt) {
-            showNextDayConfirmation = true
-        } else {
-            commitSave()
-        }
+        commitSave()
     }
 
     private func commitSave() {

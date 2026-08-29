@@ -194,6 +194,26 @@ enum MetadataTimelineEditing {
         return result
     }
 
+    static func copies(
+        of clips: [MetadataScheduleClip],
+        anchoredAt targetStart: Date,
+        on targetPhotographerID: UUID?
+    ) -> [MetadataScheduleClip] {
+        guard let sourceStart = clips.map(\.startsAt).min() else { return [] }
+        let sourcePhotographerIDs = Set(clips.map(\.photographerID))
+        let remappedPhotographerID = sourcePhotographerIDs.count == 1 ? targetPhotographerID : nil
+        let offset = targetStart.timeIntervalSince(sourceStart)
+
+        return clips.map { source in
+            var copy = source
+            copy.id = UUID()
+            copy.photographerID = remappedPhotographerID ?? source.photographerID
+            copy.startsAt = source.startsAt.addingTimeInterval(offset)
+            copy.endsAt = source.endsAt.addingTimeInterval(offset)
+            return copy
+        }
+    }
+
     static func resizing(
         _ clip: MetadataScheduleClip,
         edge: MetadataClipResizeEdge,

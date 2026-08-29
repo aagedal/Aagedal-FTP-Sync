@@ -173,6 +173,43 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(moved.endsAt.timeIntervalSince(moved.startsAt), 3_600)
     }
 
+    func testTimelinePasteAnchorsEarliestClipAndRemapsSingleSourceTrack() {
+        let calendar = utcCalendar
+        let sourcePhotographerID = UUID()
+        let targetPhotographerID = UUID()
+        let firstStart = date(2026, 8, 29, 9, 0, calendar: calendar)
+        let secondStart = date(2026, 8, 29, 11, 30, calendar: calendar)
+        let targetStart = date(2026, 8, 30, 14, 15, calendar: calendar)
+        let source = [
+            MetadataScheduleClip(
+                photographerID: sourcePhotographerID,
+                name: "First",
+                startsAt: firstStart,
+                endsAt: firstStart.addingTimeInterval(3_600)
+            ),
+            MetadataScheduleClip(
+                photographerID: sourcePhotographerID,
+                name: "Second",
+                startsAt: secondStart,
+                endsAt: secondStart.addingTimeInterval(1_800)
+            ),
+        ]
+
+        let copies = MetadataTimelineEditing.copies(
+            of: source,
+            anchoredAt: targetStart,
+            on: targetPhotographerID
+        ).sorted { $0.startsAt < $1.startsAt }
+
+        XCTAssertEqual(copies.map(\.photographerID), [targetPhotographerID, targetPhotographerID])
+        XCTAssertEqual(copies[0].startsAt, targetStart)
+        XCTAssertEqual(copies[0].endsAt.timeIntervalSince(copies[0].startsAt), 3_600)
+        XCTAssertEqual(copies[1].startsAt.timeIntervalSince(copies[0].startsAt), 2.5 * 3_600)
+        XCTAssertEqual(copies[1].endsAt.timeIntervalSince(copies[1].startsAt), 1_800)
+        XCTAssertNotEqual(copies[0].id, source[0].id)
+        XCTAssertNotEqual(copies[1].id, source[1].id)
+    }
+
     func testTimelineCreationUsesDraggedRangeAndSnapInterval() {
         let calendar = utcCalendar
         let day = date(2026, 8, 29, 12, 0, calendar: calendar)
