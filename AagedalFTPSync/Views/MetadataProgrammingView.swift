@@ -224,6 +224,18 @@ struct MetadataProgrammingView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help(knownPhotographers.isEmpty ? "Add Photographer" : "Add a new or known photographer")
+                Button { moveSelectedPhotographer(by: -1) } label: {
+                    Image(systemName: "arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canMoveSelectedPhotographer(by: -1))
+                .help("Move Photographer Up")
+                Button { moveSelectedPhotographer(by: 1) } label: {
+                    Image(systemName: "arrow.down")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!canMoveSelectedPhotographer(by: 1))
+                .help("Move Photographer Down")
                 Button(action: requestPhotographerRemoval) {
                     Image(systemName: "minus")
                 }
@@ -246,6 +258,7 @@ struct MetadataProgrammingView: View {
                     .padding(.vertical, 3)
                     .tag(photographer.id)
                 }
+                .onMove(perform: movePhotographers)
             }
             .frame(minHeight: 130)
 
@@ -396,11 +409,13 @@ struct MetadataProgrammingView: View {
                 }
             }
 
-            keyboardShortcuts
+            if timelineFocused {
+                timelineKeyboardShortcuts
+            }
         }
     }
 
-    private var keyboardShortcuts: some View {
+    private var timelineKeyboardShortcuts: some View {
         Group {
             Button("Copy", action: copySelectedClips)
                 .keyboardShortcut("c", modifiers: .command)
@@ -685,6 +700,27 @@ struct MetadataProgrammingView: View {
         }
         draft.photographers.append(photographer)
         selectedPhotographerID = photographer.id
+    }
+
+    private func canMoveSelectedPhotographer(by offset: Int) -> Bool {
+        guard let selectedPhotographerID,
+              let index = draft.photographers.firstIndex(where: { $0.id == selectedPhotographerID }) else {
+            return false
+        }
+        return draft.photographers.indices.contains(index + offset)
+    }
+
+    private func moveSelectedPhotographer(by offset: Int) {
+        guard let selectedPhotographerID,
+              let index = draft.photographers.firstIndex(where: { $0.id == selectedPhotographerID }),
+              draft.photographers.indices.contains(index + offset) else {
+            return
+        }
+        draft.photographers.swapAt(index, index + offset)
+    }
+
+    private func movePhotographers(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        draft.photographers.move(fromOffsets: offsets, toOffset: destination)
     }
 
     private func uniquePrefix() -> String {
@@ -1048,8 +1084,10 @@ private extension MetadataPreviewStatus {
     }
 }
 
-private struct PhotographerEditor: View {
+struct PhotographerEditor: View {
     @Binding var photographer: PhotographerProfile
+
+    private let calendar = Calendar.current
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1059,10 +1097,66 @@ private struct PhotographerEditor: View {
                 .textCase(.uppercase)
             TextField("Creator / byline", text: $photographer.creator)
             TextField("Copyright notice", text: $photographer.copyrightNotice)
+            Toggle("Show work hours on timeline", isOn: workHoursEnabled)
+            if photographer.workHours != nil {
+                HStack {
+                    DatePicker(
+                        "From",
+                        selection: workHourBinding(isStart: true),
+                        displayedComponents: .hourAndMinute
+                    )
+                    DatePicker(
+                        "To",
+                        selection: workHourBinding(isStart: false),
+                        displayedComponents: .hourAndMinute
+                    )
+                }
+            }
             Text("Saved profiles stay available for quick reuse in every sync job.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var workHoursEnabled: Binding<Bool> {
+        Binding(
+            get: { photographer.workHours != nil },
+            set: { isEnabled in
+                photographer.workHours = isEnabled ? photographer.workHours ?? .standard : nil
+            }
+        )
+    }
+
+    private func workHourBinding(isStart: Bool) -> Binding<Date> {
+        Binding(
+            get: {
+                let hours = photographer.workHours ?? .standard
+                let minutes = isStart ? hours.startMinutes : hours.endMinutes
+                return calendar.date(
+                    bySettingHour: minutes / 60,
+                    minute: minutes % 60,
+                    second: 0,
+                    of: Date()
+                ) ?? Date()
+            },
+            set: { date in
+                let components = calendar.dateComponents([.hour, .minute], from: date)
+                let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+                var hours = photographer.workHours ?? .standard
+                if isStart {
+                    hours.startMinutes = min(minutes, 24 * 60 - 2)
+                    if hours.endMinutes <= hours.startMinutes {
+                        hours.endMinutes = min(hours.startMinutes + 60, 24 * 60 - 1)
+                    }
+                } else {
+                    hours.endMinutes = max(minutes, 1)
+                    if hours.endMinutes <= hours.startMinutes {
+                        hours.startMinutes = max(hours.endMinutes - 60, 0)
+                    }
+                }
+                photographer.workHours = hours
+            }
+        )
     }
 }
 
@@ -1155,6 +1249,7 @@ private struct TimelineTrack: View {
                         .gesture(creationGesture(totalWidth: proxy.size.width))
                         .simultaneousGesture(playheadGesture(totalWidth: proxy.size.width))
                         .help("Click to place the playhead or drag to create a metadata clip")
+                    workHoursBackground(totalWidth: proxy.size.width)
                     hourGrid
                     overlapHighlights(totalWidth: proxy.size.width)
                     currentTimeMarker(totalWidth: proxy.size.width)
@@ -1204,6 +1299,18 @@ private struct TimelineTrack: View {
     private var contextMenuPasteTitle: String {
         guard let playheadDate else { return "Place Playhead to Paste" }
         return "Paste at \(playheadDate.formatted(date: .omitted, time: .shortened))"
+    }
+
+    @ViewBuilder
+    private func workHoursBackground(totalWidth: CGFloat) -> some View {
+        if let interval = photographer.workHours?.interval(on: day, calendar: calendar) {
+            Rectangle()
+                .fill(color.opacity(0.12))
+                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 52)
+                .offset(x: intervalOffset(interval, totalWidth: totalWidth))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
     }
 
     private var hourGrid: some View {

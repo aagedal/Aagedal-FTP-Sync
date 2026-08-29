@@ -22,7 +22,8 @@ final class PhotographerProfileRepositoryTests: XCTestCase {
                 name: "Jane Doe",
                 filenamePrefix: "JAD",
                 creator: "Jane Doe",
-                copyrightNotice: "Example News"
+                copyrightNotice: "Example News",
+                workHours: PhotographerWorkHours(startMinutes: 8 * 60 + 30, endMinutes: 16 * 60 + 30)
             ),
             PhotographerProfile(
                 name: "John Smith",
@@ -148,5 +149,81 @@ final class PhotographerLibraryAppStoreTests: XCTestCase {
 
         XCTAssertEqual(store.photographerLibrary, [photographer])
         XCTAssertEqual(try photographerRepository.load(), [photographer])
+    }
+
+    func testEditingSharedPhotographerUpdatesAssignedJobsAndPersists() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photographer-edit-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "Example News"
+        )
+        var job = SyncJob(name: "Picture desk")
+        job.isEnabled = false
+        job.metadataAutomation = MetadataAutomation(photographers: [photographer])
+        try jobRepository.save([job])
+        try photographerRepository.save([photographer])
+        let store = AppStore(
+            repository: jobRepository,
+            photographerProfileRepository: photographerRepository
+        )
+        let updated = PhotographerProfile(
+            id: photographer.id,
+            name: "Jane Photographer",
+            filenamePrefix: "JAP",
+            creator: "Jane Photographer",
+            copyrightNotice: "Example News",
+            workHours: PhotographerWorkHours(startMinutes: 9 * 60, endMinutes: 17 * 60)
+        )
+
+        XCTAssertTrue(store.savePhotographerProfile(updated))
+
+        XCTAssertEqual(store.photographerLibrary, [updated])
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers, [updated])
+        XCTAssertEqual(try photographerRepository.load(), [updated])
+        XCTAssertEqual(try jobRepository.load().first?.metadataAutomation?.photographers, [updated])
+    }
+
+    func testAssignedSharedPhotographerMustBeRemovedFromJobsBeforeDeletion() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photographer-delete-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        let assigned = PhotographerProfile(
+            name: "Assigned",
+            filenamePrefix: "ASG",
+            creator: "",
+            copyrightNotice: ""
+        )
+        let unused = PhotographerProfile(
+            name: "Unused",
+            filenamePrefix: "UNU",
+            creator: "",
+            copyrightNotice: ""
+        )
+        var job = SyncJob(name: "Picture desk")
+        job.isEnabled = false
+        job.metadataAutomation = MetadataAutomation(photographers: [assigned])
+        try jobRepository.save([job])
+        try photographerRepository.save([assigned, unused])
+        let store = AppStore(
+            repository: jobRepository,
+            photographerProfileRepository: photographerRepository
+        )
+
+        XCTAssertFalse(store.removePhotographerProfile(assigned.id))
+        XCTAssertTrue(store.photographerLibrary.contains(where: { $0.id == assigned.id }))
+        XCTAssertTrue(store.removePhotographerProfile(unused.id))
+        XCTAssertFalse(store.photographerLibrary.contains(where: { $0.id == unused.id }))
     }
 }

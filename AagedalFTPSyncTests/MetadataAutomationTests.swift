@@ -97,6 +97,31 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(automation.existingFieldPolicy, .fillEmpty)
     }
 
+    func testLegacyPhotographerJSONLoadsWithoutWorkHours() throws {
+        let id = UUID()
+        let data = Data(
+            """
+            {"id":"\(id.uuidString)","name":"Jane","filenamePrefix":"JAD","creator":"Jane","copyrightNotice":"News"}
+            """.utf8
+        )
+
+        let photographer = try JSONDecoder().decode(PhotographerProfile.self, from: data)
+
+        XCTAssertEqual(photographer.id, id)
+        XCTAssertNil(photographer.workHours)
+    }
+
+    func testPhotographerWorkHoursCreateDailyTimelineInterval() throws {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 30, 12, 0, calendar: calendar)
+        let hours = PhotographerWorkHours(startMinutes: 8 * 60 + 30, endMinutes: 16 * 60 + 45)
+
+        let interval = try XCTUnwrap(hours.interval(on: day, calendar: calendar))
+
+        XCTAssertEqual(interval.start, date(2026, 8, 30, 8, 30, calendar: calendar))
+        XCTAssertEqual(interval.end, date(2026, 8, 30, 16, 45, calendar: calendar))
+    }
+
     func testExifDateParserUsesEmbeddedOffsetAndLocalFallback() throws {
         let oslo = try XCTUnwrap(TimeZone(identifier: "Europe/Oslo"))
         let utc = try XCTUnwrap(TimeZone(secondsFromGMT: 0))

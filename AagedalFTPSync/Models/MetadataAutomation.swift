@@ -50,12 +50,72 @@ enum MetadataExistingFieldPolicy: String, Codable, CaseIterable, Identifiable, S
     }
 }
 
+struct PhotographerWorkHours: Codable, Hashable, Sendable {
+    static let standard = PhotographerWorkHours(startMinutes: 9 * 60, endMinutes: 17 * 60)
+
+    var startMinutes: Int
+    var endMinutes: Int
+
+    func interval(on day: Date, calendar: Calendar = .current) -> DateInterval? {
+        guard (0..<(24 * 60)).contains(startMinutes),
+              (0..<(24 * 60)).contains(endMinutes),
+              endMinutes > startMinutes,
+              let start = calendar.date(
+                bySettingHour: startMinutes / 60,
+                minute: startMinutes % 60,
+                second: 0,
+                of: day
+              ),
+              let end = calendar.date(
+                bySettingHour: endMinutes / 60,
+                minute: endMinutes % 60,
+                second: 0,
+                of: day
+              ),
+              end > start else {
+            return nil
+        }
+        return DateInterval(start: start, end: end)
+    }
+}
+
 struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
     var name: String
     var filenamePrefix: String
     var creator: String
     var copyrightNotice: String
+    var workHours: PhotographerWorkHours? = nil
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        filenamePrefix: String,
+        creator: String,
+        copyrightNotice: String
+    ) {
+        self.id = id
+        self.name = name
+        self.filenamePrefix = filenamePrefix
+        self.creator = creator
+        self.copyrightNotice = copyrightNotice
+    }
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        filenamePrefix: String,
+        creator: String,
+        copyrightNotice: String,
+        workHours: PhotographerWorkHours
+    ) {
+        self.id = id
+        self.name = name
+        self.filenamePrefix = filenamePrefix
+        self.creator = creator
+        self.copyrightNotice = copyrightNotice
+        self.workHours = workHours
+    }
 
     var normalizedPrefix: String {
         filenamePrefix.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()

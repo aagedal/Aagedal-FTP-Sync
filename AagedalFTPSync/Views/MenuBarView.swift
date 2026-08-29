@@ -4,6 +4,7 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,7 +79,9 @@ struct MenuBarView: View {
             Button("Metadata…") { openMetadataWindow() }
                 .buttonStyle(.plain)
                 .disabled(store.jobs.isEmpty)
-            Button("Settings…") { openJobsWindow(adding: false) }
+            Button("Jobs…") { openJobsWindow(adding: false) }
+                .buttonStyle(.plain)
+            Button("Settings…") { openSettingsWindow() }
                 .buttonStyle(.plain)
             Button("About") {
                 RegularWindowController.shared.prepareForOpening()
@@ -105,6 +108,12 @@ struct MenuBarView: View {
         if store.selectedJobID == nil { store.selectedJobID = store.jobs.last?.id }
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "metadata-programming")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func openSettingsWindow() {
+        RegularWindowController.shared.prepareForOpening()
+        openSettings()
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 

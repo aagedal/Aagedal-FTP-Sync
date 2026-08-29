@@ -253,6 +253,91 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func photographerUsageCount(_ photographerID: UUID) -> Int {
+        jobs.reduce(into: 0) { count, job in
+            if job.metadataAutomation?.photographers.contains(where: { $0.id == photographerID }) == true {
+                count += 1
+            }
+        }
+    }
+
+    @discardableResult
+    func savePhotographerProfile(_ profile: PhotographerProfile) -> Bool {
+        let trimmedName = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            alertMessage = "Give the photographer a name."
+            return false
+        }
+        guard !profile.normalizedPrefix.isEmpty else {
+            alertMessage = "Give \(trimmedName) a filename prefix."
+            return false
+        }
+        guard !photographerLibrary.contains(where: {
+            $0.id != profile.id && $0.normalizedPrefix == profile.normalizedPrefix
+        }) else {
+            alertMessage = "The filename prefix \(profile.normalizedPrefix) is already used by another photographer."
+            return false
+        }
+
+        var updatedProfile = profile
+        updatedProfile.name = trimmedName
+        updatedProfile.filenamePrefix = profile.normalizedPrefix
+        var updatedLibrary = photographerLibrary
+        if let index = updatedLibrary.firstIndex(where: { $0.id == profile.id }) {
+            updatedLibrary[index] = updatedProfile
+        } else {
+            updatedLibrary.append(updatedProfile)
+        }
+        updatedLibrary.sort {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+
+        var updatedJobs = jobs
+        for jobIndex in updatedJobs.indices {
+            guard var automation = updatedJobs[jobIndex].metadataAutomation,
+                  let photographerIndex = automation.photographers.firstIndex(where: { $0.id == profile.id }) else {
+                continue
+            }
+            automation.photographers[photographerIndex] = updatedProfile
+            if let message = automation.validationMessage {
+                alertMessage = "\(updatedJobs[jobIndex].name): \(message)"
+                return false
+            }
+            updatedJobs[jobIndex].metadataAutomation = automation
+        }
+
+        do {
+            try photographerProfileRepository.save(updatedLibrary)
+            try repository.save(updatedJobs)
+            photographerLibrary = updatedLibrary
+            jobs = updatedJobs
+            return true
+        } catch {
+            alertMessage = "The photographer could not be saved: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func removePhotographerProfile(_ photographerID: UUID) -> Bool {
+        let usageCount = photographerUsageCount(photographerID)
+        guard usageCount == 0 else {
+            let jobsDescription = usageCount == 1 ? "1 sync job" : "\(usageCount) sync jobs"
+            alertMessage = "Remove this photographer from \(jobsDescription) before deleting the shared profile."
+            return false
+        }
+        let updatedLibrary = photographerLibrary.filter { $0.id != photographerID }
+        guard updatedLibrary.count != photographerLibrary.count else { return true }
+        do {
+            try photographerProfileRepository.save(updatedLibrary)
+            photographerLibrary = updatedLibrary
+            return true
+        } catch {
+            alertMessage = "The photographer could not be removed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
     private func mergedPhotographerLibrary(
         _ existing: [PhotographerProfile],
         with profiles: [PhotographerProfile]
