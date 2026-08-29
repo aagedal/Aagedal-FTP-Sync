@@ -173,6 +173,38 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(moved.endsAt.timeIntervalSince(moved.startsAt), 3_600)
     }
 
+    func testTimelineCreationUsesDraggedRangeAndSnapInterval() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 12, 0, calendar: calendar)
+
+        let interval = MetadataTimelineEditing.creationInterval(
+            on: day,
+            from: Double(9 * 60 + 7) / Double(24 * 60),
+            to: Double(11 * 60 + 22) / Double(24 * 60),
+            snapMinutes: 15,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(interval.start, date(2026, 8, 29, 9, 0, calendar: calendar))
+        XCTAssertEqual(interval.end, date(2026, 8, 29, 11, 15, calendar: calendar))
+    }
+
+    func testTimelineCreationSupportsReverseDragAndMinimumDuration() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 12, 0, calendar: calendar)
+
+        let interval = MetadataTimelineEditing.creationInterval(
+            on: day,
+            from: Double(10 * 60 + 4) / Double(24 * 60),
+            to: Double(10 * 60 + 2) / Double(24 * 60),
+            snapMinutes: 15,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(interval.start, date(2026, 8, 29, 9, 45, calendar: calendar))
+        XCTAssertEqual(interval.end, date(2026, 8, 29, 10, 0, calendar: calendar))
+    }
+
     func testTimelineResizeSnapsAndKeepsMinimumDuration() {
         let calendar = utcCalendar
         let start = date(2026, 8, 29, 9, 0, calendar: calendar)

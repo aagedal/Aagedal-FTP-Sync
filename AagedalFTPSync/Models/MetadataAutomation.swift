@@ -121,6 +121,50 @@ enum MetadataClipResizeEdge: Sendable {
 enum MetadataTimelineEditing {
     static let minimumClipDuration: TimeInterval = 5 * 60
 
+    static func creationInterval(
+        on day: Date,
+        from startFraction: Double,
+        to endFraction: Double,
+        snapMinutes: Int,
+        calendar: Calendar = .current
+    ) -> DateInterval {
+        let dayStart = calendar.startOfDay(for: day)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? dayStart.addingTimeInterval(24 * 60 * 60)
+        let dayDuration = nextDay.timeIntervalSince(dayStart)
+        let lowerFraction = min(max(min(startFraction, endFraction), 0), 1)
+        let upperFraction = min(max(max(startFraction, endFraction), 0), 1)
+        var start = snapped(
+            dayStart.addingTimeInterval(lowerFraction * dayDuration),
+            toMinutes: snapMinutes,
+            calendar: calendar
+        )
+        var end = snapped(
+            dayStart.addingTimeInterval(upperFraction * dayDuration),
+            toMinutes: snapMinutes,
+            calendar: calendar
+        )
+
+        start = min(max(start, dayStart), nextDay)
+        end = min(max(end, dayStart), nextDay)
+        let snappedMinimum = max(minimumClipDuration, TimeInterval(max(snapMinutes, 1) * 60))
+        if end.timeIntervalSince(start) < snappedMinimum {
+            if endFraction < startFraction {
+                start = max(dayStart, end.addingTimeInterval(-snappedMinimum))
+                if end.timeIntervalSince(start) < snappedMinimum {
+                    end = min(nextDay, start.addingTimeInterval(snappedMinimum))
+                }
+            } else {
+                end = min(nextDay, start.addingTimeInterval(snappedMinimum))
+                if end.timeIntervalSince(start) < snappedMinimum {
+                    start = max(dayStart, end.addingTimeInterval(-snappedMinimum))
+                }
+            }
+        }
+
+        return DateInterval(start: start, end: end)
+    }
+
     static func snapped(
         _ date: Date,
         toMinutes minutes: Int,

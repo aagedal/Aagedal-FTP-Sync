@@ -314,9 +314,11 @@ struct MetadataProgrammingView: View {
                                 allClips: draft.clips,
                                 day: selectedDate,
                                 color: color(for: photographer),
+                                snapMinutes: snapMinutes,
                                 selectedClipIDs: selectedClipIDs,
                                 onSelect: selectClip,
-                                onEdit: { editingClipID = $0.id },
+                                onEdit: editClip,
+                                onCreate: createClip,
                                 onMove: moveClip,
                                 onResize: resizeClip
                             )
@@ -675,6 +677,29 @@ struct MetadataProgrammingView: View {
         editingClipID = id
     }
 
+    private func editClip(_ clip: MetadataScheduleClip) {
+        selectedClipIDs = [clip.id]
+        selectedPhotographerID = clip.photographerID
+        editingClipID = clip.id
+    }
+
+    private func createClip(
+        for photographer: PhotographerProfile,
+        from start: Date,
+        to end: Date
+    ) {
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Metadata clip",
+            startsAt: start,
+            endsAt: end
+        )
+        draft.clips.append(clip)
+        selectedClipIDs = [clip.id]
+        selectedPhotographerID = photographer.id
+        timelineFocused = true
+    }
+
     private func copySelectedClips() {
         copiedClips = draft.clips
             .filter { selectedClipIDs.contains($0.id) }
@@ -991,13 +1016,16 @@ private struct TimelineTrack: View {
     let allClips: [MetadataScheduleClip]
     let day: Date
     let color: Color
+    let snapMinutes: Int
     let selectedClipIDs: Set<UUID>
     let onSelect: (MetadataScheduleClip) -> Void
     let onEdit: (MetadataScheduleClip) -> Void
+    let onCreate: (PhotographerProfile, Date, Date) -> Void
     let onMove: (MetadataScheduleClip, TimeInterval) -> Void
     let onResize: (MetadataScheduleClip, MetadataClipResizeEdge, TimeInterval) -> Void
 
     private let calendar = Calendar.current
+    @GestureState private var creationDrag: DragGesture.Value?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1010,10 +1038,16 @@ private struct TimelineTrack: View {
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .gesture(creationGesture(totalWidth: proxy.size.width))
+                        .help("Drag empty space to create a metadata clip")
                     hourGrid
                     gapHighlights(totalWidth: proxy.size.width)
                     overlapHighlights(totalWidth: proxy.size.width)
                     currentTimeMarker(totalWidth: proxy.size.width)
+                    creationPreview(totalWidth: proxy.size.width)
                     ForEach(clips) { clip in
                         TimelineClipView(
                             clip: clip,
@@ -1055,6 +1089,61 @@ private struct TimelineTrack: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func creationPreview(totalWidth: CGFloat) -> some View {
+        if let creationDrag {
+            let interval = creationInterval(for: creationDrag, totalWidth: totalWidth)
+            RoundedRectangle(cornerRadius: 6)
+                .fill(color.opacity(0.14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(color.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                }
+                .overlay(alignment: .leading) {
+                    Text(creationTimeLabel(interval))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(color)
+                        .padding(.horizontal, 8)
+                        .lineLimit(1)
+                }
+                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 44)
+                .offset(x: intervalOffset(interval, totalWidth: totalWidth))
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func creationGesture(totalWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .local)
+            .updating($creationDrag) { value, state, _ in
+                state = value
+            }
+            .onEnded { value in
+                let interval = creationInterval(for: value, totalWidth: totalWidth)
+                onCreate(photographer, interval.start, interval.end)
+            }
+    }
+
+    private func creationInterval(
+        for drag: DragGesture.Value,
+        totalWidth: CGFloat
+    ) -> DateInterval {
+        let safeWidth = max(totalWidth, 1)
+        return MetadataTimelineEditing.creationInterval(
+            on: day,
+            from: Double(drag.startLocation.x / safeWidth),
+            to: Double(drag.location.x / safeWidth),
+            snapMinutes: snapMinutes,
+            calendar: calendar
+        )
+    }
+
+    private func creationTimeLabel(_ interval: DateInterval) -> String {
+        let start = interval.start.formatted(date: .omitted, time: .shortened)
+        let end = interval.end.formatted(date: .omitted, time: .shortened)
+        return "\(start)–\(end)"
     }
 
     @ViewBuilder
@@ -1194,10 +1283,15 @@ private struct TimelineClipView: View {
         }
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .offset(x: moveTranslation)
-        .onTapGesture(count: 2, perform: onEdit)
-        .onTapGesture(perform: onSelect)
-        .gesture(moveGesture)
-        .help("Click to select, Command-click for multiple selection, drag to move, or drag an edge to resize. Double-click to edit.")
+        .gesture(interactionGesture)
+        .help("Click to select, double-click to edit metadata, drag to move, or drag an edge to resize.")
+    }
+
+    private var interactionGesture: some Gesture {
+        TapGesture(count: 2)
+            .onEnded { onEdit() }
+            .exclusively(before: TapGesture().onEnded { onSelect() })
+            .simultaneously(with: moveGesture)
     }
 
     private var moveGesture: some Gesture {
