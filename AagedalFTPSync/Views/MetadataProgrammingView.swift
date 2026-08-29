@@ -41,7 +41,7 @@ struct MetadataProgrammingView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 980, minHeight: 650)
+        .frame(minWidth: 1180, minHeight: 650)
         .onAppear(perform: loadSelectedJob)
         .onChange(of: store.selectedJobID) { _, _ in loadSelectedJob() }
         .sheet(isPresented: Binding(
@@ -103,6 +103,22 @@ struct MetadataProgrammingView: View {
                 }
             }
             .frame(width: 270)
+
+            Picker("Schedule time", selection: $draft.timestampPolicy) {
+                ForEach(MetadataTimestampPolicy.allCases) { policy in
+                    Text(policy.title).tag(policy)
+                }
+            }
+            .frame(width: 245)
+            .help(draft.timestampPolicy.explanation)
+
+            Picker("Existing fields", selection: $draft.existingFieldPolicy) {
+                ForEach(MetadataExistingFieldPolicy.allCases) { policy in
+                    Text(policy.title).tag(policy)
+                }
+            }
+            .frame(width: 190)
+            .help(draft.existingFieldPolicy.explanation)
 
             Toggle("Automatic metadata", isOn: $draft.isEnabled)
                 .toggleStyle(.switch)
@@ -327,7 +343,7 @@ struct MetadataProgrammingView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else {
-                Text("Matching uses the filename prefix and the source file’s modification time.")
+                Text("Matching uses the filename prefix and \(draft.timestampPolicy.title.lowercased()).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

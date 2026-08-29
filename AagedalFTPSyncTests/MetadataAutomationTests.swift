@@ -24,7 +24,7 @@ final class MetadataAutomationTests: XCTestCase {
             clips: [clip]
         )
 
-        let assignment = automation.assignment(for: "incoming/JAD_0123.JPG", modifiedAt: timestamp)
+        let assignment = automation.assignment(for: "incoming/JAD_0123.JPG", scheduledAt: timestamp)
 
         XCTAssertEqual(assignment?.photographer.id, photographer.id)
         XCTAssertEqual(assignment?.clip.id, clip.id)
@@ -47,8 +47,8 @@ final class MetadataAutomationTests: XCTestCase {
         )
         let automation = MetadataAutomation(isEnabled: true, photographers: [photographer], clips: [clip])
 
-        XCTAssertNotNil(automation.assignment(for: "JAD0001.jpg", modifiedAt: start))
-        XCTAssertNil(automation.assignment(for: "JAD0001.jpg", modifiedAt: end))
+        XCTAssertNotNil(automation.assignment(for: "JAD0001.jpg", scheduledAt: start))
+        XCTAssertNil(automation.assignment(for: "JAD0001.jpg", scheduledAt: end))
     }
 
     func testAssignmentChoosesTheMostSpecificMatchingPrefix() {
@@ -76,9 +76,42 @@ final class MetadataAutomationTests: XCTestCase {
         let automation = MetadataAutomation(isEnabled: true, photographers: [broad, specific], clips: clips)
 
         XCTAssertEqual(
-            automation.assignment(for: "ABC_001.jpg", modifiedAt: timestamp)?.photographer.id,
+            automation.assignment(for: "ABC_001.jpg", scheduledAt: timestamp)?.photographer.id,
             specific.id
         )
+    }
+
+    func testOldAutomationJSONDefaultsToSourceModificationTime() throws {
+        let data = Data(#"{"isEnabled":true,"photographers":[],"clips":[]}"#.utf8)
+
+        let automation = try JSONDecoder().decode(MetadataAutomation.self, from: data)
+
+        XCTAssertEqual(automation.timestampPolicy, .sourceModification)
+        XCTAssertEqual(automation.existingFieldPolicy, .overwrite)
+    }
+
+    func testNewAutomationUsesConfirmedProductDefaults() {
+        let automation = MetadataAutomation()
+
+        XCTAssertEqual(automation.timestampPolicy, .sourceModification)
+        XCTAssertEqual(automation.existingFieldPolicy, .fillEmpty)
+    }
+
+    func testExifDateParserUsesEmbeddedOffsetAndLocalFallback() throws {
+        let oslo = try XCTUnwrap(TimeZone(identifier: "Europe/Oslo"))
+        let utc = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+
+        let offsetDate = try XCTUnwrap(MetadataWriter.parseExifDate(
+            "2026:08:29 14:30:45.25+02:00",
+            localTimeZone: utc
+        ))
+        let localDate = try XCTUnwrap(MetadataWriter.parseExifDate(
+            "2026:08:29 14:30:45.25",
+            localTimeZone: oslo
+        ))
+
+        XCTAssertEqual(offsetDate.timeIntervalSince1970, localDate.timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertNil(MetadataWriter.parseExifDate("not-an-exif-date", localTimeZone: utc))
     }
 
     func testValidationRejectsDuplicatePrefixesAndOverlappingClips() {

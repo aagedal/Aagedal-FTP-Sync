@@ -47,6 +47,8 @@ final class LocalSyncIntegrationTests: XCTestCase {
         var job = try fixture.job(direction: .leftToRight)
         job.metadataAutomation = MetadataAutomation(
             isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .overwrite,
             photographers: [photographer],
             clips: [clip]
         )
@@ -64,6 +66,206 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(metadata.iptc.byline, "Jane Doe")
         XCTAssertEqual(metadata.iptc.copyright, "© Example News")
         XCTAssertEqual(metadata.iptc.keywords, ["politics", "Oslo"])
+    }
+
+    func testMetadataWriterCanFillEmptyFieldsOrAlwaysOverwrite() throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let fillURL = fixture.left.appendingPathComponent("JAD_FILL.jpg")
+        let overwriteURL = fixture.left.appendingPathComponent("JAD_OVERWRITE.jpg")
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        var original = try ImageMetadata.read(from: jpeg)
+        try original.iptc.setValue("Existing headline", for: .headline)
+        try original.iptc.setValues(["existing"], for: .keywords)
+        let originalData = try original.writeToData()
+        try originalData.write(to: fillURL)
+        try originalData.write(to: overwriteURL)
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Programmed creator",
+            copyrightNotice: "Programmed copyright"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Policy test",
+            startsAt: timestamp.addingTimeInterval(-60),
+            endsAt: timestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(
+                headline: "Programmed headline",
+                description: "Programmed description",
+                keywords: ["programmed"]
+            )
+        )
+
+        let fillAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .fillEmpty,
+            photographers: [photographer],
+            clips: [clip]
+        )
+        let overwriteAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .overwrite,
+            photographers: [photographer],
+            clips: [clip]
+        )
+        let fillAssignment = try XCTUnwrap(fillAutomation.assignment(for: fillURL.lastPathComponent, scheduledAt: timestamp))
+        let overwriteAssignment = try XCTUnwrap(overwriteAutomation.assignment(for: overwriteURL.lastPathComponent, scheduledAt: timestamp))
+
+        try MetadataWriter.apply(fillAssignment, to: fillURL)
+        try MetadataWriter.apply(overwriteAssignment, to: overwriteURL)
+
+        let filled = try ImageMetadata.read(from: fillURL)
+        XCTAssertEqual(filled.iptc.headline, "Existing headline")
+        XCTAssertEqual(filled.iptc.keywords, ["existing"])
+        XCTAssertEqual(filled.iptc.caption, "Programmed description")
+        XCTAssertEqual(filled.iptc.byline, "Programmed creator")
+        XCTAssertEqual(filled.iptc.copyright, "Programmed copyright")
+
+        let overwritten = try ImageMetadata.read(from: overwriteURL)
+        XCTAssertEqual(overwritten.iptc.headline, "Programmed headline")
+        XCTAssertEqual(overwritten.iptc.keywords, ["programmed"])
+    }
+
+    func testOneWaySyncCanScheduleMetadataByLocalArrivalTime() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("JAD_ARRIVAL.jpg")
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        try jpeg.write(to: source)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000_000_000)],
+            ofItemAtPath: source.path
+        )
+
+        let now = Date()
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Arrival window",
+            startsAt: now.addingTimeInterval(-60),
+            endsAt: now.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(headline: "Arrived now")
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .localArrival,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result, SyncResult(transferred: 1, deleted: 0))
+        let destination = fixture.right.appendingPathComponent("JAD_ARRIVAL.jpg")
+        let metadata = try ImageMetadata.read(from: destination)
+        XCTAssertEqual(metadata.iptc.headline, "Arrived now")
+    }
+
+    func testOneWaySyncCanScheduleMetadataByExifCaptureTime() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("JAD_CAPTURE.jpg")
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        try jpeg.write(to: source)
+
+        let captureValue = "2026:08:29 14:30:45"
+        var sourceMetadata = try ImageMetadata.read(from: source)
+        var exif = ExifData(byteOrder: .bigEndian)
+        let captureData = Data((captureValue + "\0").utf8)
+        exif.exifIFD = IFD(entries: [
+            IFDEntry(
+                tag: ExifTag.dateTimeOriginal,
+                type: .ascii,
+                count: UInt32(captureData.count),
+                valueData: captureData
+            ),
+        ])
+        sourceMetadata.exif = exif
+        try sourceMetadata.write(to: source)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_000_000_000)],
+            ofItemAtPath: source.path
+        )
+        let captureDate = try XCTUnwrap(MetadataWriter.captureDate(from: source))
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Capture window",
+            startsAt: captureDate.addingTimeInterval(-60),
+            endsAt: captureDate.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(headline: "Captured then")
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .cameraCapture,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result, SyncResult(transferred: 1, deleted: 0))
+        let destination = fixture.right.appendingPathComponent("JAD_CAPTURE.jpg")
+        let metadata = try ImageMetadata.read(from: destination)
+        XCTAssertEqual(metadata.iptc.headline, "Captured then")
     }
 
     func testOneWaySyncCopiesDataAndModificationDate() async throws {

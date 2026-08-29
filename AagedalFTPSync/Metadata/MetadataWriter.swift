@@ -2,6 +2,104 @@ import Foundation
 import SwiftExif
 
 enum MetadataWriter {
+    static func schedulingDate(
+        for policy: MetadataTimestampPolicy,
+        sourceModifiedAt: Date,
+        localArrivalAt: Date,
+        fileURL: URL
+    ) -> Date? {
+        switch policy {
+        case .sourceModification:
+            sourceModifiedAt
+        case .localArrival:
+            localArrivalAt
+        case .cameraCapture:
+            captureDate(from: fileURL)
+        }
+    }
+
+    static func captureDate(from fileURL: URL, localTimeZone: TimeZone = .current) -> Date? {
+        guard let metadata = try? ImageMetadata.read(from: fileURL),
+              let exif = metadata.exif,
+              let value = CompositeTagCalculator.subSecDateTimeOriginal(exif) else {
+            return nil
+        }
+        return parseExifDate(value, localTimeZone: localTimeZone)
+    }
+
+    static func parseExifDate(_ value: String, localTimeZone: TimeZone = .current) -> Date? {
+        let pattern = #"^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})?$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: value,
+                range: NSRange(value.startIndex..., in: value)
+              ),
+              match.range == NSRange(value.startIndex..., in: value) else {
+            return nil
+        }
+
+        func component(_ index: Int) -> Int? {
+            let range = match.range(at: index)
+            guard range.location != NSNotFound, let swiftRange = Range(range, in: value) else { return nil }
+            return Int(value[swiftRange])
+        }
+
+        guard let year = component(1),
+              let month = component(2),
+              let day = component(3),
+              let hour = component(4),
+              let minute = component(5),
+              let second = component(6) else {
+            return nil
+        }
+
+        let fractionalRange = match.range(at: 7)
+        let nanosecond: Int
+        if fractionalRange.location != NSNotFound,
+           let range = Range(fractionalRange, in: value) {
+            let digits = String(value[range].prefix(9)).padding(toLength: 9, withPad: "0", startingAt: 0)
+            nanosecond = Int(digits) ?? 0
+        } else {
+            nanosecond = 0
+        }
+
+        let zoneRange = match.range(at: 8)
+        let timeZone: TimeZone
+        if zoneRange.location == NSNotFound {
+            timeZone = localTimeZone
+        } else if let range = Range(zoneRange, in: value) {
+            let zone = String(value[range])
+            if zone == "Z" {
+                timeZone = TimeZone(secondsFromGMT: 0)!
+            } else {
+                let sign = zone.first == "-" ? -1 : 1
+                let parts = zone.dropFirst().split(separator: ":")
+                guard parts.count == 2,
+                      let hours = Int(parts[0]),
+                      let minutes = Int(parts[1]),
+                      let parsed = TimeZone(secondsFromGMT: sign * (hours * 3_600 + minutes * 60)) else {
+                    return nil
+                }
+                timeZone = parsed
+            }
+        } else {
+            return nil
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        return calendar.date(from: DateComponents(
+            timeZone: timeZone,
+            year: year,
+            month: month,
+            day: day,
+            hour: hour,
+            minute: minute,
+            second: second,
+            nanosecond: nanosecond
+        ))
+    }
+
     static func apply(_ assignment: MetadataAssignment, to fileURL: URL) throws {
         var metadata = try ImageMetadata.read(from: fileURL)
         let fields = assignment.clip.fields
@@ -11,13 +109,33 @@ enum MetadataWriter {
         let creator = assignment.photographer.creator.trimmingCharacters(in: .whitespacesAndNewlines)
         let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
         let keywords = fields.normalizedKeywords
+        let shouldOverwrite = assignment.existingFieldPolicy == .overwrite
 
-        if !headline.isEmpty { try metadata.iptc.setValue(headline, for: .headline) }
-        if !description.isEmpty { try metadata.iptc.setValue(description, for: .captionAbstract) }
-        if !keywords.isEmpty { try metadata.iptc.setValues(keywords, for: .keywords) }
-        if !creator.isEmpty { try metadata.iptc.setValue(creator, for: .byline) }
-        if !copyright.isEmpty { try metadata.iptc.setValue(copyright, for: .copyrightNotice) }
+        if !headline.isEmpty,
+           shouldOverwrite || (isEmpty(metadata.iptc.headline) && isEmpty(metadata.xmp?.headline)) {
+            try metadata.iptc.setValue(headline, for: .headline)
+        }
+        if !description.isEmpty,
+           shouldOverwrite || (isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)) {
+            try metadata.iptc.setValue(description, for: .captionAbstract)
+        }
+        if !keywords.isEmpty,
+           shouldOverwrite || (metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)) {
+            try metadata.iptc.setValues(keywords, for: .keywords)
+        }
+        if !creator.isEmpty,
+           shouldOverwrite || (isEmpty(metadata.iptc.byline) && (metadata.xmp?.creator.isEmpty ?? true)) {
+            try metadata.iptc.setValue(creator, for: .byline)
+        }
+        if !copyright.isEmpty,
+           shouldOverwrite || (isEmpty(metadata.iptc.copyright) && isEmpty(metadata.xmp?.rights)) {
+            try metadata.iptc.setValue(copyright, for: .copyrightNotice)
+        }
         metadata.syncIPTCToXMP()
         try metadata.write(to: fileURL)
+    }
+
+    private static func isEmpty(_ value: String?) -> Bool {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
     }
 }

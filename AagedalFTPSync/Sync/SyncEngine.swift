@@ -117,7 +117,7 @@ struct SyncEngine: Sendable {
             .filter { job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt) }
             .filter { file in
                 let willRewriteMetadata = job.metadataAutomation?
-                    .assignment(for: file.relativePath, modifiedAt: file.modifiedAt) != nil
+                    .matchesPhotographer(relativePath: file.relativePath) == true
                 return needsTransfer(
                     file,
                     destinationFiles[file.relativePath],
@@ -134,8 +134,7 @@ struct SyncEngine: Sendable {
                 to: destination,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
-                metadataAssignment: job.metadataAutomation?
-                    .assignment(for: file.relativePath, modifiedAt: file.modifiedAt)
+                metadataAutomation: job.metadataAutomation
             )
             transferred += 1
         }
@@ -184,7 +183,7 @@ struct SyncEngine: Sendable {
                 to: destination,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
-                metadataAssignment: nil
+                metadataAutomation: nil
             )
         }
         return (actions.count, conflicts.sorted())
@@ -202,7 +201,7 @@ struct SyncEngine: Sendable {
         to destination: any EndpointSession,
         preserveDate: Bool,
         verifySize: Bool,
-        metadataAssignment: MetadataAssignment?
+        metadataAutomation: MetadataAutomation?
     ) async throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AagedalFTPSync", isDirectory: true)
@@ -210,6 +209,22 @@ struct SyncEngine: Sendable {
         let temporaryURL = temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         try await source.exportFile(file, to: temporaryURL)
+
+        let metadataAssignment: MetadataAssignment?
+        if let metadataAutomation,
+           let scheduledAt = MetadataWriter.schedulingDate(
+                for: metadataAutomation.timestampPolicy,
+                sourceModifiedAt: file.modifiedAt,
+                localArrivalAt: Date(),
+                fileURL: temporaryURL
+           ) {
+            metadataAssignment = metadataAutomation.assignment(
+                for: file.relativePath,
+                scheduledAt: scheduledAt
+            )
+        } else {
+            metadataAssignment = nil
+        }
 
         let importedFile: SyncFile
         if let metadataAssignment {

@@ -1,5 +1,55 @@
 import Foundation
 
+enum MetadataTimestampPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
+    case sourceModification
+    case localArrival
+    case cameraCapture
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .sourceModification: "Source modification time"
+        case .localArrival: "Local arrival time"
+        case .cameraCapture: "Camera capture time"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .sourceModification:
+            "Match the schedule using the timestamp reported by the source."
+        case .localArrival:
+            "Match the schedule when the file finishes downloading to this Mac."
+        case .cameraCapture:
+            "Match the schedule using Exif DateTimeOriginal. Files without a valid capture time are transferred without scheduled metadata."
+        }
+    }
+}
+
+enum MetadataExistingFieldPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
+    case fillEmpty
+    case overwrite
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .fillEmpty: "Fill empty fields"
+        case .overwrite: "Always overwrite"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .fillEmpty:
+            "Preserve existing metadata and write a programmed value only when that field is empty."
+        case .overwrite:
+            "Replace existing metadata whenever the schedule provides a non-empty value."
+        }
+    }
+}
+
 struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
     var name: String
@@ -208,14 +258,35 @@ enum MetadataTimelineAnalysis {
 struct MetadataAssignment: Equatable, Sendable {
     let photographer: PhotographerProfile
     let clip: MetadataScheduleClip
+    let existingFieldPolicy: MetadataExistingFieldPolicy
 }
 
 struct MetadataAutomation: Codable, Hashable, Sendable {
     var isEnabled = false
+    var timestampPolicy: MetadataTimestampPolicy = .sourceModification
+    var existingFieldPolicy: MetadataExistingFieldPolicy = .fillEmpty
     var photographers: [PhotographerProfile] = []
     var clips: [MetadataScheduleClip] = []
 
-    func assignment(for relativePath: String, modifiedAt: Date) -> MetadataAssignment? {
+    init(
+        isEnabled: Bool = false,
+        timestampPolicy: MetadataTimestampPolicy = .sourceModification,
+        existingFieldPolicy: MetadataExistingFieldPolicy = .fillEmpty,
+        photographers: [PhotographerProfile] = [],
+        clips: [MetadataScheduleClip] = []
+    ) {
+        self.isEnabled = isEnabled
+        self.timestampPolicy = timestampPolicy
+        self.existingFieldPolicy = existingFieldPolicy
+        self.photographers = photographers
+        self.clips = clips
+    }
+
+    func matchesPhotographer(relativePath: String) -> Bool {
+        isEnabled && photographers.contains { $0.matches(relativePath: relativePath) }
+    }
+
+    func assignment(for relativePath: String, scheduledAt: Date) -> MetadataAssignment? {
         guard isEnabled else { return nil }
 
         let matchingPhotographers = photographers
@@ -229,10 +300,14 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
 
         for photographer in matchingPhotographers {
             if let clip = clips
-                .filter({ $0.photographerID == photographer.id && $0.contains(modifiedAt) })
+                .filter({ $0.photographerID == photographer.id && $0.contains(scheduledAt) })
                 .sorted(by: Self.preferredClip)
                 .first {
-                return MetadataAssignment(photographer: photographer, clip: clip)
+                return MetadataAssignment(
+                    photographer: photographer,
+                    clip: clip,
+                    existingFieldPolicy: existingFieldPolicy
+                )
             }
         }
         return nil
@@ -292,5 +367,24 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
     private static func preferredClip(_ lhs: MetadataScheduleClip, _ rhs: MetadataScheduleClip) -> Bool {
         if lhs.startsAt != rhs.startsAt { return lhs.startsAt > rhs.startsAt }
         return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case isEnabled
+        case timestampPolicy
+        case existingFieldPolicy
+        case photographers
+        case clips
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        timestampPolicy = try container.decodeIfPresent(MetadataTimestampPolicy.self, forKey: .timestampPolicy)
+            ?? .sourceModification
+        existingFieldPolicy = try container.decodeIfPresent(MetadataExistingFieldPolicy.self, forKey: .existingFieldPolicy)
+            ?? .overwrite
+        photographers = try container.decodeIfPresent([PhotographerProfile].self, forKey: .photographers) ?? []
+        clips = try container.decodeIfPresent([MetadataScheduleClip].self, forKey: .clips) ?? []
     }
 }
