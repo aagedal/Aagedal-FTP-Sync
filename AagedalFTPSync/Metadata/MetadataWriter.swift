@@ -2,6 +2,22 @@ import Foundation
 import SwiftExif
 
 enum MetadataWriter {
+    enum WriteResult {
+        case embedded(size: Int64)
+        case sidecar(localURL: URL, size: Int64)
+    }
+
+    static func usesXMPSidecar(for relativePath: String) -> Bool {
+        guard let rawExtensions = FilterPreset.raw.extensions else { return false }
+        return rawExtensions.contains(
+            URL(fileURLWithPath: relativePath).pathExtension.lowercased()
+        )
+    }
+
+    static func sidecarRelativePath(for relativePath: String) -> String {
+        (relativePath as NSString).deletingPathExtension + ".xmp"
+    }
+
     static func schedulingDate(
         for policy: MetadataTimestampPolicy,
         sourceModifiedAt: Date,
@@ -133,6 +149,62 @@ enum MetadataWriter {
         }
         metadata.syncIPTCToXMP()
         try metadata.write(to: fileURL)
+    }
+
+    static func apply(
+        _ assignment: MetadataAssignment,
+        to fileURL: URL,
+        relativePath: String
+    ) throws -> WriteResult {
+        guard usesXMPSidecar(for: relativePath) else {
+            try apply(assignment, to: fileURL)
+            return .embedded(size: try fileSize(at: fileURL))
+        }
+
+        let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+        var xmp = (try? XMPSidecar.read(from: sidecarURL)) ?? XMPData()
+        if !FileManager.default.fileExists(atPath: sidecarURL.path),
+           var metadata = try? ImageMetadata.read(from: fileURL) {
+            // Preserve the RAW file's existing XMP and mirror any legacy IPTC fields
+            // into the generated sidecar before applying the programmed values.
+            metadata.syncIPTCToXMP()
+            xmp = metadata.xmp ?? xmp
+        }
+        apply(assignment, to: &xmp)
+
+        try XMPSidecar.write(xmp, to: sidecarURL)
+        return .sidecar(localURL: sidecarURL, size: try fileSize(at: sidecarURL))
+    }
+
+    private static func apply(_ assignment: MetadataAssignment, to xmp: inout XMPData) {
+        let fields = assignment.clip.fields
+        let headline = fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
+        let description = fields.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let creator = assignment.photographer.creator.trimmingCharacters(in: .whitespacesAndNewlines)
+        let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keywords = fields.normalizedKeywords
+        let shouldOverwrite = assignment.existingFieldPolicy == .overwrite
+
+        if !headline.isEmpty, shouldOverwrite || isEmpty(xmp.headline) {
+            xmp.headline = headline
+        }
+        if !description.isEmpty, shouldOverwrite || isEmpty(xmp.description) {
+            xmp.description = description
+        }
+        if !keywords.isEmpty, shouldOverwrite || xmp.subject.isEmpty {
+            xmp.subject = keywords
+        }
+        if !creator.isEmpty, shouldOverwrite || xmp.creator.isEmpty {
+            xmp.creator = [creator]
+        }
+        if !copyright.isEmpty, shouldOverwrite || isEmpty(xmp.rights) {
+            xmp.rights = copyright
+        }
+    }
+
+    private static func fileSize(at url: URL) throws -> Int64 {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return (attributes[.size] as? NSNumber)?.int64Value ?? 0
     }
 
     private static func isEmpty(_ value: String?) -> Bool {

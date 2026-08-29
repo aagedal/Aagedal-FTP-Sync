@@ -1,5 +1,11 @@
 import Foundation
 
+struct MetadataReprocessResult: Equatable, Sendable {
+    let scanned: Int
+    let applied: Int
+    let skipped: Int
+}
+
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
 
@@ -47,6 +53,105 @@ struct SyncEngine: Sendable {
             await right.close()
             throw error
         }
+    }
+
+    func reprocessExistingLocalFiles(job: SyncJob) async throws -> MetadataReprocessResult {
+        guard let automation = job.metadataAutomation, automation.isEnabled else {
+            throw AppError.invalidConfiguration("Enable and save automatic metadata before reprocessing files.")
+        }
+        if let message = automation.validationMessage {
+            throw AppError.invalidConfiguration(message)
+        }
+        guard automation.timestampPolicy != .localArrival else {
+            throw AppError.invalidConfiguration(
+                "Existing files cannot be reprocessed by local arrival time because their original arrival times were not recorded. Choose source modification time or camera capture time."
+            )
+        }
+
+        let destinationEndpoint: Endpoint
+        switch job.direction {
+        case .leftToRight:
+            destinationEndpoint = job.right
+        case .rightToLeft:
+            destinationEndpoint = job.left
+        case .bidirectional:
+            throw AppError.invalidConfiguration("Metadata reprocessing is only available for one-way jobs.")
+        }
+        guard destinationEndpoint.kind == .local else {
+            throw AppError.invalidConfiguration("Metadata reprocessing requires a local destination folder.")
+        }
+
+        let destination = try LocalEndpointSession(endpoint: destinationEndpoint)
+        let destinationFiles = try await destination.listFiles()
+        let files = destinationFiles.values
+            .filter { job.filter.includesFileType(path: $0.relativePath) }
+            .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        var applied = 0
+        var skipped = 0
+
+        for file in files {
+            try Task.checkCancellation()
+            let temporaryURL = try makeTemporaryURL(for: file)
+            let temporarySidecarURL = temporaryURL.deletingPathExtension().appendingPathExtension("xmp")
+            defer {
+                try? FileManager.default.removeItem(at: temporaryURL)
+                try? FileManager.default.removeItem(at: temporarySidecarURL)
+            }
+            try await destination.exportFile(file, to: temporaryURL)
+            if MetadataWriter.usesXMPSidecar(for: file.relativePath),
+               let existingSidecar = destinationFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
+                try await destination.exportFile(existingSidecar, to: temporarySidecarURL)
+            }
+
+            guard let scheduledAt = MetadataWriter.schedulingDate(
+                for: automation.timestampPolicy,
+                sourceModifiedAt: file.modifiedAt,
+                localArrivalAt: file.modifiedAt,
+                fileURL: temporaryURL
+            ), let assignment = automation.assignment(
+                for: file.relativePath,
+                scheduledAt: scheduledAt
+            ) else {
+                skipped += 1
+                continue
+            }
+
+            switch try MetadataWriter.apply(
+                assignment,
+                to: temporaryURL,
+                relativePath: file.relativePath
+            ) {
+            case .embedded(let rewrittenSize):
+                try await destination.importFile(
+                    from: temporaryURL,
+                    as: SyncFile(
+                        relativePath: file.relativePath,
+                        size: rewrittenSize,
+                        modifiedAt: file.modifiedAt
+                    ),
+                    preserveDate: true,
+                    verifySize: true
+                )
+            case .sidecar(let localURL, let sidecarSize):
+                try await destination.importFile(
+                    from: localURL,
+                    as: SyncFile(
+                        relativePath: MetadataWriter.sidecarRelativePath(for: file.relativePath),
+                        size: sidecarSize,
+                        modifiedAt: file.modifiedAt
+                    ),
+                    preserveDate: true,
+                    verifySize: true
+                )
+            }
+            applied += 1
+        }
+
+        return MetadataReprocessResult(
+            scanned: files.count,
+            applied: applied,
+            skipped: skipped
+        )
     }
 
     private func validateLocalDestinationPaths(
@@ -118,6 +223,7 @@ struct SyncEngine: Sendable {
             .filter { file in
                 let willRewriteMetadata = job.metadataAutomation?
                     .matchesPhotographer(relativePath: file.relativePath) == true
+                    && !MetadataWriter.usesXMPSidecar(for: file.relativePath)
                 return needsTransfer(
                     file,
                     destinationFiles[file.relativePath],
@@ -134,7 +240,10 @@ struct SyncEngine: Sendable {
                 to: destination,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
-                metadataAutomation: job.metadataAutomation
+                metadataAutomation: job.metadataAutomation,
+                sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                    ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
+                    : nil
             )
             transferred += 1
         }
@@ -183,7 +292,8 @@ struct SyncEngine: Sendable {
                 to: destination,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
-                metadataAutomation: nil
+                metadataAutomation: nil,
+                sourceSidecar: nil
             )
         }
         return (actions.count, conflicts.sorted())
@@ -201,14 +311,17 @@ struct SyncEngine: Sendable {
         to destination: any EndpointSession,
         preserveDate: Bool,
         verifySize: Bool,
-        metadataAutomation: MetadataAutomation?
+        metadataAutomation: MetadataAutomation?,
+        sourceSidecar: SyncFile?
     ) async throws {
-        let temporaryDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
-        let temporaryURL = temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let temporaryURL = try makeTemporaryURL(for: file)
+        let temporarySidecarURL = temporaryURL.deletingPathExtension().appendingPathExtension("xmp")
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        defer { try? FileManager.default.removeItem(at: temporarySidecarURL) }
         try await source.exportFile(file, to: temporaryURL)
+        if let sourceSidecar {
+            try await source.exportFile(sourceSidecar, to: temporarySidecarURL)
+        }
 
         let metadataAssignment: MetadataAssignment?
         if let metadataAutomation,
@@ -227,15 +340,30 @@ struct SyncEngine: Sendable {
         }
 
         let importedFile: SyncFile
+        var sidecarImport: (url: URL, file: SyncFile)?
         if let metadataAssignment {
-            try MetadataWriter.apply(metadataAssignment, to: temporaryURL)
-            let attributes = try FileManager.default.attributesOfItem(atPath: temporaryURL.path)
-            let rewrittenSize = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-            importedFile = SyncFile(
-                relativePath: file.relativePath,
-                size: rewrittenSize,
-                modifiedAt: file.modifiedAt
-            )
+            switch try MetadataWriter.apply(
+                metadataAssignment,
+                to: temporaryURL,
+                relativePath: file.relativePath
+            ) {
+            case .embedded(let rewrittenSize):
+                importedFile = SyncFile(
+                    relativePath: file.relativePath,
+                    size: rewrittenSize,
+                    modifiedAt: file.modifiedAt
+                )
+            case .sidecar(let localURL, let sidecarSize):
+                importedFile = file
+                sidecarImport = (
+                    localURL,
+                    SyncFile(
+                        relativePath: MetadataWriter.sidecarRelativePath(for: file.relativePath),
+                        size: sidecarSize,
+                        modifiedAt: file.modifiedAt
+                    )
+                )
+            }
         } else {
             importedFile = file
         }
@@ -246,5 +374,24 @@ struct SyncEngine: Sendable {
             preserveDate: preserveDate,
             verifySize: verifySize
         )
+        if let sidecarImport {
+            try await destination.importFile(
+                from: sidecarImport.url,
+                as: sidecarImport.file,
+                preserveDate: preserveDate,
+                verifySize: verifySize
+            )
+        }
+    }
+
+    private func makeTemporaryURL(for file: SyncFile) throws -> URL {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AagedalFTPSync", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: true)
+        let temporaryBaseURL = temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sourceExtension = URL(fileURLWithPath: file.relativePath).pathExtension
+        return sourceExtension.isEmpty
+            ? temporaryBaseURL
+            : temporaryBaseURL.appendingPathExtension(sourceExtension)
     }
 }

@@ -286,6 +286,248 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual((attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0, timestamp.timeIntervalSince1970, accuracy: 1)
     }
 
+    func testOneWaySyncWritesXMPCompanionsForDNGAndCR3WithoutChangingRawData() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let sourceFiles = [
+            fixture.left.appendingPathComponent("selects/JAD_0001.DNG"),
+            fixture.left.appendingPathComponent("selects/JAD_0002.CR3"),
+        ]
+        for (index, source) in sourceFiles.enumerated() {
+            try FileManager.default.createDirectory(
+                at: source.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data("untouched-camera-data-\(index)".utf8).write(to: source)
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+        }
+        var existingXMP = XMPData()
+        existingXMP.city = "Bergen"
+        try XMPSidecar.write(
+            existingXMP,
+            to: sourceFiles[0].deletingPathExtension().appendingPathExtension("xmp")
+        )
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "© Example News"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Political conference",
+            startsAt: timestamp.addingTimeInterval(-60),
+            endsAt: timestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(
+                headline: "Political conference",
+                description: "Delegates gather in Oslo.",
+                keywords: ["politics", "Oslo"]
+            )
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .overwrite,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(firstResult, SyncResult(transferred: 2, deleted: 0))
+        XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
+        for source in sourceFiles {
+            let relativePath = "selects/\(source.lastPathComponent)"
+            let destination = fixture.right.appendingPathComponent(relativePath)
+            XCTAssertEqual(try Data(contentsOf: destination), try Data(contentsOf: source))
+
+            let sidecar = fixture.right.appendingPathComponent(
+                MetadataWriter.sidecarRelativePath(for: relativePath)
+            )
+            let xmp = try XMPSidecar.read(from: sidecar)
+            XCTAssertEqual(xmp.headline, "Political conference")
+            XCTAssertEqual(xmp.description, "Delegates gather in Oslo.")
+            XCTAssertEqual(xmp.subject, ["politics", "Oslo"])
+            XCTAssertEqual(xmp.creator, ["Jane Doe"])
+            XCTAssertEqual(xmp.rights, "© Example News")
+            if source == sourceFiles[0] {
+                XCTAssertEqual(xmp.city, "Bergen")
+            }
+
+            let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
+            XCTAssertEqual(
+                (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
+                timestamp.timeIntervalSince1970,
+                accuracy: 1
+            )
+        }
+    }
+
+    func testEveryCameraRawFilterExtensionUsesXMPSidecars() throws {
+        let rawExtensions = try XCTUnwrap(FilterPreset.raw.extensions)
+
+        for fileExtension in rawExtensions {
+            let relativePath = "incoming/JAD_0001.\(fileExtension.uppercased())"
+            XCTAssertTrue(
+                MetadataWriter.usesXMPSidecar(for: relativePath),
+                "Expected .\(fileExtension) to use an XMP sidecar"
+            )
+            XCTAssertEqual(
+                MetadataWriter.sidecarRelativePath(for: relativePath),
+                "incoming/JAD_0001.xmp"
+            )
+        }
+        XCTAssertFalse(MetadataWriter.usesXMPSidecar(for: "incoming/JAD_0001.jpg"))
+    }
+
+    func testReprocessExistingLocalJPEGAppliesMetadataAndPreservesModificationDate() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let destination = fixture.right.appendingPathComponent("archive/JAD_EXISTING.jpg")
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        try jpeg.write(to: destination)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: destination.path)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "© Example News"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Archive assignment",
+            startsAt: timestamp.addingTimeInterval(-60),
+            endsAt: timestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(
+                headline: "Reprocessed headline",
+                description: "Existing local file.",
+                keywords: ["archive"]
+            )
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.filter.recentHours = 1
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .overwrite,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        let result = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+
+        XCTAssertEqual(result, MetadataReprocessResult(scanned: 1, applied: 1, skipped: 0))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.left.appendingPathComponent("archive/JAD_EXISTING.jpg").path))
+        let metadata = try ImageMetadata.read(from: destination)
+        XCTAssertEqual(metadata.iptc.headline, "Reprocessed headline")
+        XCTAssertEqual(metadata.iptc.caption, "Existing local file.")
+        XCTAssertEqual(metadata.iptc.keywords, ["archive"])
+        let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
+        XCTAssertEqual(
+            (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
+            timestamp.timeIntervalSince1970,
+            accuracy: 1
+        )
+    }
+
+    func testReprocessExistingRawCreatesSidecarWithoutRewritingRaw() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let destination = fixture.right.appendingPathComponent("JAD_EXISTING.CR3")
+        let original = Data("existing-camera-data".utf8)
+        try original.write(to: destination)
+        var existingXMP = XMPData()
+        existingXMP.description = "Existing description"
+        try XMPSidecar.write(
+            existingXMP,
+            to: destination.deletingPathExtension().appendingPathExtension("xmp")
+        )
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: destination.path)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "RAW assignment",
+            startsAt: timestamp.addingTimeInterval(-60),
+            endsAt: timestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(headline: "RAW headline")
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        let result = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+
+        XCTAssertEqual(result, MetadataReprocessResult(scanned: 1, applied: 1, skipped: 0))
+        XCTAssertEqual(try Data(contentsOf: destination), original)
+        let xmp = try XMPSidecar.read(from: fixture.right.appendingPathComponent("JAD_EXISTING.xmp"))
+        XCTAssertEqual(xmp.headline, "RAW headline")
+        XCTAssertEqual(xmp.description, "Existing description")
+        XCTAssertEqual(xmp.creator, ["Jane Doe"])
+    }
+
+    func testReprocessRejectsLocalArrivalPolicy() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "",
+            copyrightNotice: ""
+        )
+        let now = Date()
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .localArrival,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Arrival",
+                startsAt: now.addingTimeInterval(-60),
+                endsAt: now.addingTimeInterval(60)
+            )]
+        )
+
+        do {
+            _ = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+            XCTFail("Local-arrival reprocessing should be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("arrival times were not recorded"))
+        }
+    }
+
     func testOneWaySyncDoesNotTransferAnUnchangedFileAgain() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

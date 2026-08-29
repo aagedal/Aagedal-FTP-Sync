@@ -14,6 +14,7 @@ struct MetadataProgrammingView: View {
     @State private var copiedClips: [MetadataScheduleClip] = []
     @State private var snapMinutes = 15
     @State private var pendingClipChange: PendingClipChange?
+    @State private var showReprocessConfirmation = false
     @FocusState private var timelineFocused: Bool
 
     private let calendar = Calendar.current
@@ -87,6 +88,19 @@ struct MetadataProgrammingView: View {
             }
         } message: { change in
             Text("Resizing \(change.clip.name) crosses midnight, so it will appear on more than one day’s timeline.")
+        }
+        .confirmationDialog(
+            "Reprocess existing local files?",
+            isPresented: $showReprocessConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Reprocess Files") {
+                guard save(), let loadedJobID else { return }
+                store.reprocessExistingLocalFiles(loadedJobID)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(reprocessConfirmationMessage)
         }
     }
 
@@ -354,7 +368,26 @@ struct MetadataProgrammingView: View {
                 Label("Saved", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
-            Button("Save Programming", action: save)
+            if let reprocessStatusText {
+                Text(reprocessStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                showReprocessConfirmation = true
+            } label: {
+                if isReprocessing {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Reprocessing…")
+                } else {
+                    Text("Reprocess Existing Files…")
+                }
+            }
+            .disabled(!canReprocessMetadata)
+            .help(reprocessHelp)
+
+            Button("Save Programming") { _ = save() }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(loadedJobID == nil || draft.validationMessage != nil || (draft.isEnabled && !canEnableMetadata))
@@ -378,6 +411,55 @@ struct MetadataProgrammingView: View {
         guard let selectedJob, selectedJob.direction != .bidirectional else { return false }
         let target = selectedJob.direction == .leftToRight ? selectedJob.right : selectedJob.left
         return target.kind == .local
+    }
+
+    private var canReprocessMetadata: Bool {
+        guard let loadedJobID else { return false }
+        return draft.isEnabled
+            && draft.validationMessage == nil
+            && canEnableMetadata
+            && draft.timestampPolicy != .localArrival
+            && !store.isJobBusy(loadedJobID)
+    }
+
+    private var isReprocessing: Bool {
+        guard let loadedJobID else { return false }
+        return store.metadataReprocessPhases[loadedJobID] == .running
+    }
+
+    private var reprocessStatusText: String? {
+        guard let loadedJobID,
+              let phase = store.metadataReprocessPhases[loadedJobID] else { return nil }
+        switch phase {
+        case .idle:
+            return nil
+        case .running:
+            return "Scanning the local destination…"
+        case .succeeded(_, let result):
+            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped."
+        case .failed(let message):
+            return "Reprocessing failed: \(message)"
+        }
+    }
+
+    private var reprocessHelp: String {
+        if draft.timestampPolicy == .localArrival {
+            return "Arrival timestamps were not recorded for existing files. Choose source modification or camera capture time."
+        }
+        if !draft.isEnabled {
+            return "Enable automatic metadata before reprocessing existing files."
+        }
+        return "Apply the saved schedule to matching files already in the local destination."
+    }
+
+    private var reprocessConfirmationMessage: String {
+        let target = selectedJob.map { job in
+            job.direction == .leftToRight ? job.right.localPath : job.left.localPath
+        } ?? "the local destination"
+        let policyNote = draft.existingFieldPolicy == .fillEmpty
+            ? "Existing non-empty fields will be preserved."
+            : "Non-empty programmed values will overwrite existing fields."
+        return "Matching files in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
     }
 
     private var selectedPhotographer: PhotographerProfile? {
@@ -637,17 +719,19 @@ struct MetadataProgrammingView: View {
         return colors[index % colors.count]
     }
 
-    private func save() {
+    @discardableResult
+    private func save() -> Bool {
         guard let loadedJobID,
               store.saveMetadataAutomation(draft, for: loadedJobID) else {
             saveConfirmation = false
-            return
+            return false
         }
         saveConfirmation = true
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             saveConfirmation = false
         }
+        return true
     }
 }
 
@@ -955,9 +1039,13 @@ private struct TimelineClipView: View {
 
 private struct MetadataClipEditor: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: AppStore
     @State private var draft: MetadataScheduleClip
     @State private var keywordsText: String
     @State private var copyTargetID: UUID?
+    @State private var selectedPresetID: UUID?
+    @State private var newPresetName: String
+    @State private var presetPendingDeletion: MetadataPreset?
     @State private var showNextDayConfirmation = false
     @State private var validationMessage: String?
 
@@ -974,6 +1062,8 @@ private struct MetadataClipEditor: View {
         _draft = State(initialValue: clip)
         _keywordsText = State(initialValue: clip.fields.keywords.joined(separator: ", "))
         _copyTargetID = State(initialValue: photographers.first(where: { $0.id != clip.photographerID })?.id)
+        _selectedPresetID = State(initialValue: nil)
+        _newPresetName = State(initialValue: clip.name)
         self.photographers = photographers
         self.onSave = onSave
         self.onCopy = onCopy
@@ -1004,6 +1094,36 @@ private struct MetadataClipEditor: View {
                     }
                     TextField("Keywords", text: $keywordsText, prompt: Text("politics, conference, Oslo"))
                     Text("Separate keywords with commas. Creator and copyright come from the photographer profile.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Reusable Presets") {
+                    Picker("Preset", selection: $selectedPresetID) {
+                        Text("Choose a preset").tag(Optional<UUID>.none)
+                        ForEach(store.metadataPresets) { preset in
+                            Text(preset.name).tag(Optional(preset.id))
+                        }
+                    }
+
+                    HStack {
+                        Button("Load", action: loadSelectedPreset)
+                            .disabled(selectedPreset == nil)
+                        Button("Update", action: updateSelectedPreset)
+                            .disabled(selectedPreset == nil)
+                        Button("Delete", role: .destructive) {
+                            presetPendingDeletion = selectedPreset
+                        }
+                        .disabled(selectedPreset == nil)
+                    }
+
+                    HStack {
+                        TextField("New preset name", text: $newPresetName)
+                        Button("Save as New", action: saveNewPreset)
+                            .disabled(newPresetName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    Text("Loading copies only the metadata values. Clips remain standalone, so later preset changes do not alter existing programming.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1042,12 +1162,29 @@ private struct MetadataClipEditor: View {
             }
             .padding(14)
         }
-        .frame(width: 590, height: 560)
+        .frame(width: 620, height: 700)
         .alert("Extend into the next day?", isPresented: $showNextDayConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Extend and Save") { commitSave() }
         } message: {
             Text("This metadata clip ends on a different day. It will also appear on that day’s timeline.")
+        }
+        .confirmationDialog(
+            "Delete reusable preset?",
+            isPresented: Binding(
+                get: { presetPendingDeletion != nil },
+                set: { if !$0 { presetPendingDeletion = nil } }
+            ),
+            presenting: presetPendingDeletion
+        ) { preset in
+            Button("Delete \(preset.name)", role: .destructive) {
+                if store.removeMetadataPreset(preset.id) {
+                    selectedPresetID = nil
+                }
+                presetPendingDeletion = nil
+            }
+        } message: { preset in
+            Text("Existing clips that used \(preset.name) keep their copied metadata values.")
         }
     }
 
@@ -1082,5 +1219,31 @@ private struct MetadataClipEditor: View {
             .split(separator: ",")
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    private var selectedPreset: MetadataPreset? {
+        guard let selectedPresetID else { return nil }
+        return store.metadataPresets.first(where: { $0.id == selectedPresetID })
+    }
+
+    private func loadSelectedPreset() {
+        guard let selectedPreset else { return }
+        draft = draft.applying(selectedPreset)
+        keywordsText = draft.fields.keywords.joined(separator: ", ")
+    }
+
+    private func saveNewPreset() {
+        normalizeKeywords()
+        let preset = MetadataPreset(name: newPresetName, fields: draft.fields)
+        guard store.saveMetadataPreset(preset) else { return }
+        selectedPresetID = preset.id
+        newPresetName = draft.name
+    }
+
+    private func updateSelectedPreset() {
+        guard var preset = selectedPreset else { return }
+        normalizeKeywords()
+        preset.fields = draft.fields
+        _ = store.saveMetadataPreset(preset)
     }
 }

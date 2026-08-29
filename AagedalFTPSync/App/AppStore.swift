@@ -29,6 +29,13 @@ struct JobTransferTotals: Sendable {
     }
 }
 
+enum MetadataReprocessPhase: Equatable, Sendable {
+    case idle
+    case running
+    case succeeded(Date, MetadataReprocessResult)
+    case failed(String)
+}
+
 enum SyncRetryPolicy {
     static func delay(baseInterval: Double, consecutiveFailures: Int) -> Double {
         var delay = min(max(baseInterval, 2), 300)
@@ -42,12 +49,15 @@ enum SyncRetryPolicy {
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
+    @Published private(set) var metadataPresets: [MetadataPreset]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
+    @Published private(set) var metadataReprocessPhases: [UUID: MetadataReprocessPhase] = [:]
     @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
     @Published var selectedJobID: UUID?
     @Published var alertMessage: String?
 
     private let repository: JobRepository
+    private let metadataPresetRepository: MetadataPresetRepository
     private let keychain: KeychainStore
     private let engine = SyncEngine()
     private var scheduleTasks: [UUID: Task<Void, Never>] = [:]
@@ -56,21 +66,36 @@ final class AppStore: ObservableObject {
     private var cachedPasswords: [String: String] = [:]
     private var loadedCredentialIDs = Set<String>()
 
-    init(repository: JobRepository = JobRepository(), keychain: KeychainStore = KeychainStore()) {
+    init(
+        repository: JobRepository = JobRepository(),
+        metadataPresetRepository: MetadataPresetRepository = MetadataPresetRepository(),
+        keychain: KeychainStore = KeychainStore()
+    ) {
         self.repository = repository
+        self.metadataPresetRepository = metadataPresetRepository
         self.keychain = keychain
+        do {
+            let loadResult = try metadataPresetRepository.loadResult()
+            metadataPresets = loadResult.presets
+            if loadResult.recoveredFromBackup {
+                alertMessage = "The metadata preset library was damaged, so its most recent backup was restored."
+            }
+        } catch {
+            metadataPresets = []
+            alertMessage = "Saved metadata presets could not be loaded: \(error.localizedDescription)"
+        }
         let recoveredFromBackup: Bool
         do {
             let loadResult = try repository.loadResult()
             jobs = loadResult.jobs
             recoveredFromBackup = loadResult.recoveredFromBackup
             if loadResult.recoveredFromBackup {
-                alertMessage = "The jobs file was damaged, so the most recent backup was restored. Review your jobs before starting them."
+                appendAlert("The jobs file was damaged, so the most recent backup was restored. Review your jobs before starting them.")
             }
         } catch {
             jobs = []
             recoveredFromBackup = false
-            alertMessage = "Saved jobs could not be loaded: \(error.localizedDescription)"
+            appendAlert("Saved jobs could not be loaded: \(error.localizedDescription)")
         }
         refreshLaunchAtLoginStatus()
         selectedJobID = jobs.last?.id
@@ -178,6 +203,48 @@ final class AppStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func saveMetadataPreset(_ preset: MetadataPreset) -> Bool {
+        let normalized = preset.normalized()
+        if let message = normalized.validationMessage {
+            alertMessage = message
+            return false
+        }
+
+        var updatedPresets = metadataPresets
+        if let index = updatedPresets.firstIndex(where: { $0.id == normalized.id }) {
+            updatedPresets[index] = normalized
+        } else {
+            updatedPresets.append(normalized)
+        }
+        updatedPresets.sort {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+
+        do {
+            try metadataPresetRepository.save(updatedPresets)
+            metadataPresets = updatedPresets
+            return true
+        } catch {
+            alertMessage = "The metadata preset could not be saved: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    func removeMetadataPreset(_ presetID: UUID) -> Bool {
+        let updatedPresets = metadataPresets.filter { $0.id != presetID }
+        guard updatedPresets.count != metadataPresets.count else { return true }
+        do {
+            try metadataPresetRepository.save(updatedPresets)
+            metadataPresets = updatedPresets
+            return true
+        } catch {
+            alertMessage = "The metadata preset could not be removed: \(error.localizedDescription)"
+            return false
+        }
+    }
+
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         if enabled, !jobs[index].isEnabled { transferTotals.reset(jobID: jobID) }
@@ -197,12 +264,21 @@ final class AppStore: ObservableObject {
         jobs.removeAll { $0.id == jobID }
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }
         phases[jobID] = nil
+        metadataReprocessPhases[jobID] = nil
         transferTotals.remove(jobID: jobID)
         persist()
     }
 
     func runNow(_ jobID: UUID) {
         Task { _ = await performSync(jobID) }
+    }
+
+    func reprocessExistingLocalFiles(_ jobID: UUID) {
+        Task { await performMetadataReprocess(jobID) }
+    }
+
+    func isJobBusy(_ jobID: UUID) -> Bool {
+        runningJobs.contains(jobID)
     }
 
     func openLocalFolder(_ endpoint: Endpoint) {
@@ -385,9 +461,36 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func performMetadataReprocess(_ jobID: UUID) async {
+        guard !runningJobs.contains(jobID),
+              let job = jobs.first(where: { $0.id == jobID }) else { return }
+        runningJobs.insert(jobID)
+        metadataReprocessPhases[jobID] = .running
+        defer { runningJobs.remove(jobID) }
+
+        do {
+            let result = try await engine.reprocessExistingLocalFiles(job: job)
+            metadataReprocessPhases[jobID] = .succeeded(Date(), result)
+        } catch is CancellationError {
+            metadataReprocessPhases[jobID] = .idle
+        } catch {
+            let message = error.localizedDescription
+            metadataReprocessPhases[jobID] = .failed(message)
+            alertMessage = message
+        }
+    }
+
     private func persist() {
         do { try repository.save(jobs) }
         catch { alertMessage = "Changes could not be saved: \(error.localizedDescription)" }
+    }
+
+    private func appendAlert(_ message: String) {
+        if let alertMessage, !alertMessage.isEmpty {
+            self.alertMessage = alertMessage + "\n\n" + message
+        } else {
+            alertMessage = message
+        }
     }
 
     private func cachedPassword(for credentialID: String) throws -> String? {

@@ -159,4 +159,46 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
         XCTAssertNotNil(store.alertMessage)
     }
+
+    func testMetadataPresetsPersistAcrossAppStoreInstances() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("preset-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let presetRepository = MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json"))
+        let preset = MetadataPreset(
+            name: "  Election  ",
+            fields: ScheduledMetadataFields(keywords: [" politics ", "POLITICS", "Oslo"])
+        )
+
+        let firstStore = AppStore(
+            repository: jobRepository,
+            metadataPresetRepository: presetRepository
+        )
+        XCTAssertTrue(firstStore.saveMetadataPreset(preset))
+
+        let secondStore = AppStore(
+            repository: jobRepository,
+            metadataPresetRepository: presetRepository
+        )
+        XCTAssertEqual(secondStore.metadataPresets.count, 1)
+        XCTAssertEqual(secondStore.metadataPresets[0].name, "Election")
+        XCTAssertEqual(secondStore.metadataPresets[0].fields.keywords, ["politics", "Oslo"])
+    }
+
+    func testFailedPresetSaveDoesNotPublishTheDraft() {
+        let jobURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("preset-failure-jobs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: jobURL) }
+        let store = AppStore(
+            repository: JobRepository(fileURL: jobURL),
+            metadataPresetRepository: MetadataPresetRepository(
+                fileURL: URL(fileURLWithPath: "/dev/null/presets.json")
+            )
+        )
+
+        XCTAssertFalse(store.saveMetadataPreset(MetadataPreset(name: "Unsaved")))
+        XCTAssertTrue(store.metadataPresets.isEmpty)
+        XCTAssertNotNil(store.alertMessage)
+    }
 }
