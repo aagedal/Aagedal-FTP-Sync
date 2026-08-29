@@ -265,8 +265,16 @@ struct MetadataProgrammingView: View {
             if let photographerID = selectedPhotographerID,
                let binding = photographerBinding(for: photographerID) {
                 Divider()
-                PhotographerEditor(photographer: binding)
-                    .padding(12)
+                VStack(alignment: .leading, spacing: 14) {
+                    PhotographerEditor(photographer: binding)
+                    Divider()
+                    PhotographerDayWorkHoursEditor(
+                        photographer: binding,
+                        day: selectedDate,
+                        calendar: calendar
+                    )
+                }
+                .padding(12)
             }
         }
     }
@@ -1097,7 +1105,7 @@ struct PhotographerEditor: View {
                 .textCase(.uppercase)
             TextField("Creator / byline", text: $photographer.creator)
             TextField("Copyright notice", text: $photographer.copyrightNotice)
-            Toggle("Show work hours on timeline", isOn: workHoursEnabled)
+            Toggle("Use default work hours", isOn: workHoursEnabled)
             if photographer.workHours != nil {
                 HStack {
                     DatePicker(
@@ -1112,7 +1120,7 @@ struct PhotographerEditor: View {
                     )
                 }
             }
-            Text("Saved profiles stay available for quick reuse in every sync job.")
+            Text("Default hours apply unless a specific calendar day overrides them.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1157,6 +1165,179 @@ struct PhotographerEditor: View {
                 photographer.workHours = hours
             }
         )
+    }
+}
+
+private enum PhotographerDayWorkHoursMode: String, CaseIterable, Identifiable {
+    case profileDefault
+    case custom
+    case dayOff
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .profileDefault: "Profile Default"
+        case .custom: "Custom Hours"
+        case .dayOff: "Day Off"
+        }
+    }
+}
+
+private struct PhotographerDayWorkHoursEditor: View {
+    @Binding var photographer: PhotographerProfile
+    let day: Date
+    let calendar: Calendar
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Hours for \(day.formatted(date: .abbreviated, time: .omitted))")
+                .font(.headline)
+
+            Picker("Schedule", selection: modeBinding) {
+                ForEach(PhotographerDayWorkHoursMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+
+            if mode == .custom {
+                HStack {
+                    DatePicker(
+                        "From",
+                        selection: customWorkHourBinding(isStart: true),
+                        displayedComponents: .hourAndMinute
+                    )
+                    DatePicker(
+                        "To",
+                        selection: customWorkHourBinding(isStart: false),
+                        displayedComponents: .hourAndMinute
+                    )
+                }
+            } else {
+                Text(dayScheduleDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Menu("Apply to This Week") {
+                Button("Apply to Weekdays") {
+                    applyCurrentScheduleToWeek(weekdaysOnly: true)
+                }
+                Button("Apply to All 7 Days") {
+                    applyCurrentScheduleToWeek(weekdaysOnly: false)
+                }
+                Divider()
+                Button("Reset Week to Profile Defaults") {
+                    resetWeekToProfileDefaults()
+                }
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
+    private var mode: PhotographerDayWorkHoursMode {
+        guard let override = photographer.workHoursOverride(on: day, calendar: calendar) else {
+            return .profileDefault
+        }
+        return override.hours == nil ? .dayOff : .custom
+    }
+
+    private var modeBinding: Binding<PhotographerDayWorkHoursMode> {
+        Binding(
+            get: { mode },
+            set: { newMode in
+                switch newMode {
+                case .profileDefault:
+                    photographer.clearWorkHoursOverride(on: day, calendar: calendar)
+                case .custom:
+                    let hours = photographer.workHours(on: day, calendar: calendar) ?? .standard
+                    photographer.setWorkHoursOverride(hours, on: day, calendar: calendar)
+                case .dayOff:
+                    photographer.setWorkHoursOverride(nil, on: day, calendar: calendar)
+                }
+            }
+        )
+    }
+
+    private var dayScheduleDescription: String {
+        switch mode {
+        case .profileDefault:
+            guard let hours = photographer.workHours else {
+                return "No default hours are set."
+            }
+            return "Using profile default: \(formatted(hours))."
+        case .dayOff:
+            return "This photographer is not working on this date."
+        case .custom:
+            return ""
+        }
+    }
+
+    private func customWorkHourBinding(isStart: Bool) -> Binding<Date> {
+        Binding(
+            get: {
+                let hours = photographer.workHoursOverride(on: day, calendar: calendar)?.hours ?? .standard
+                let minutes = isStart ? hours.startMinutes : hours.endMinutes
+                return calendar.date(
+                    bySettingHour: minutes / 60,
+                    minute: minutes % 60,
+                    second: 0,
+                    of: day
+                ) ?? day
+            },
+            set: { date in
+                let components = calendar.dateComponents([.hour, .minute], from: date)
+                let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
+                var hours = photographer.workHoursOverride(on: day, calendar: calendar)?.hours ?? .standard
+                if isStart {
+                    hours.startMinutes = min(minutes, 24 * 60 - 2)
+                    if hours.endMinutes <= hours.startMinutes {
+                        hours.endMinutes = min(hours.startMinutes + 60, 24 * 60 - 1)
+                    }
+                } else {
+                    hours.endMinutes = max(minutes, 1)
+                    if hours.endMinutes <= hours.startMinutes {
+                        hours.startMinutes = max(hours.endMinutes - 60, 0)
+                    }
+                }
+                photographer.setWorkHoursOverride(hours, on: day, calendar: calendar)
+            }
+        )
+    }
+
+    private func applyCurrentScheduleToWeek(weekdaysOnly: Bool) {
+        guard let week = calendar.dateInterval(of: .weekOfYear, for: day) else { return }
+        let sourceOverride = photographer.workHoursOverride(on: day, calendar: calendar)
+        for offset in 0..<7 {
+            guard let date = calendar.date(byAdding: .day, value: offset, to: week.start),
+                  !weekdaysOnly || !calendar.isDateInWeekend(date) else {
+                continue
+            }
+            if let sourceOverride {
+                photographer.setWorkHoursOverride(sourceOverride.hours, on: date, calendar: calendar)
+            } else {
+                photographer.clearWorkHoursOverride(on: date, calendar: calendar)
+            }
+        }
+    }
+
+    private func resetWeekToProfileDefaults() {
+        guard let week = calendar.dateInterval(of: .weekOfYear, for: day) else { return }
+        for offset in 0..<7 {
+            guard let date = calendar.date(byAdding: .day, value: offset, to: week.start) else { continue }
+            photographer.clearWorkHoursOverride(on: date, calendar: calendar)
+        }
+    }
+
+    private func formatted(_ hours: PhotographerWorkHours) -> String {
+        "\(formatted(minutes: hours.startMinutes))–\(formatted(minutes: hours.endMinutes))"
+    }
+
+    private func formatted(minutes: Int) -> String {
+        String(format: "%02d:%02d", minutes / 60, minutes % 60)
     }
 }
 
@@ -1303,7 +1484,7 @@ private struct TimelineTrack: View {
 
     @ViewBuilder
     private func workHoursBackground(totalWidth: CGFloat) -> some View {
-        if let interval = photographer.workHours?.interval(on: day, calendar: calendar) {
+        if let interval = photographer.workHours(on: day, calendar: calendar)?.interval(on: day, calendar: calendar) {
             Rectangle()
                 .fill(color.opacity(0.12))
                 .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 52)

@@ -109,6 +109,7 @@ final class MetadataAutomationTests: XCTestCase {
 
         XCTAssertEqual(photographer.id, id)
         XCTAssertNil(photographer.workHours)
+        XCTAssertNil(photographer.workHourOverrides)
     }
 
     func testPhotographerWorkHoursCreateDailyTimelineInterval() throws {
@@ -120,6 +121,33 @@ final class MetadataAutomationTests: XCTestCase {
 
         XCTAssertEqual(interval.start, date(2026, 8, 30, 8, 30, calendar: calendar))
         XCTAssertEqual(interval.end, date(2026, 8, 30, 16, 45, calendar: calendar))
+    }
+
+    func testPhotographerWorkHoursSupportDateOverridesAndDaysOff() throws {
+        let calendar = utcCalendar
+        let monday = date(2026, 8, 31, 12, 0, calendar: calendar)
+        let tuesday = date(2026, 9, 1, 12, 0, calendar: calendar)
+        let wednesday = date(2026, 9, 2, 12, 0, calendar: calendar)
+        var photographer = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD",
+            creator: "Jane",
+            copyrightNotice: "News",
+            workHours: PhotographerWorkHours(startMinutes: 9 * 60, endMinutes: 17 * 60)
+        )
+        let lateShift = PhotographerWorkHours(startMinutes: 12 * 60, endMinutes: 20 * 60)
+
+        photographer.setWorkHoursOverride(lateShift, on: monday, calendar: calendar)
+        photographer.setWorkHoursOverride(nil, on: tuesday, calendar: calendar)
+
+        XCTAssertEqual(photographer.workHours(on: monday, calendar: calendar), lateShift)
+        XCTAssertNil(photographer.workHours(on: tuesday, calendar: calendar))
+        XCTAssertEqual(photographer.workHours(on: wednesday, calendar: calendar), photographer.workHours)
+        XCTAssertNotNil(photographer.workHoursOverride(on: tuesday, calendar: calendar))
+
+        photographer.clearWorkHoursOverride(on: monday, calendar: calendar)
+
+        XCTAssertEqual(photographer.workHours(on: monday, calendar: calendar), photographer.workHours)
     }
 
     func testExifDateParserUsesEmbeddedOffsetAndLocalFallback() throws {

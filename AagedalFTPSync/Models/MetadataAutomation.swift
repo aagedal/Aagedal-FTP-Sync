@@ -79,6 +79,37 @@ struct PhotographerWorkHours: Codable, Hashable, Sendable {
     }
 }
 
+struct PhotographerWorkDate: Codable, Hashable, Comparable, Sendable {
+    let year: Int
+    let month: Int
+    let day: Int
+
+    init(_ date: Date, calendar: Calendar = .current) {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        year = components.year ?? 1
+        month = components.month ?? 1
+        day = components.day ?? 1
+    }
+
+    func date(calendar: Calendar = .current) -> Date? {
+        calendar.date(from: DateComponents(year: year, month: month, day: day, hour: 12))
+    }
+
+    static func < (lhs: PhotographerWorkDate, rhs: PhotographerWorkDate) -> Bool {
+        if lhs.year != rhs.year { return lhs.year < rhs.year }
+        if lhs.month != rhs.month { return lhs.month < rhs.month }
+        return lhs.day < rhs.day
+    }
+}
+
+struct PhotographerWorkHoursOverride: Codable, Identifiable, Hashable, Sendable {
+    var date: PhotographerWorkDate
+    /// `nil` is an explicit day off. A missing override uses the profile's default hours.
+    var hours: PhotographerWorkHours?
+
+    var id: PhotographerWorkDate { date }
+}
+
 struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
     var name: String
@@ -86,6 +117,7 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
     var creator: String
     var copyrightNotice: String
     var workHours: PhotographerWorkHours? = nil
+    var workHourOverrides: [PhotographerWorkHoursOverride]? = nil
 
     init(
         id: UUID = UUID(),
@@ -117,6 +149,24 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
         self.workHours = workHours
     }
 
+    init(
+        id: UUID = UUID(),
+        name: String,
+        filenamePrefix: String,
+        creator: String,
+        copyrightNotice: String,
+        workHours: PhotographerWorkHours?,
+        workHourOverrides: [PhotographerWorkHoursOverride]
+    ) {
+        self.id = id
+        self.name = name
+        self.filenamePrefix = filenamePrefix
+        self.creator = creator
+        self.copyrightNotice = copyrightNotice
+        self.workHours = workHours
+        self.workHourOverrides = workHourOverrides
+    }
+
     var normalizedPrefix: String {
         filenamePrefix.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     }
@@ -128,6 +178,40 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
             .lastPathComponent
             .uppercased()
         return filename.hasPrefix(normalizedPrefix)
+    }
+
+    func workHoursOverride(
+        on date: Date,
+        calendar: Calendar = .current
+    ) -> PhotographerWorkHoursOverride? {
+        let workDate = PhotographerWorkDate(date, calendar: calendar)
+        return workHourOverrides?.first { $0.date == workDate }
+    }
+
+    func workHours(on date: Date, calendar: Calendar = .current) -> PhotographerWorkHours? {
+        if let override = workHoursOverride(on: date, calendar: calendar) {
+            return override.hours
+        }
+        return workHours
+    }
+
+    mutating func setWorkHoursOverride(
+        _ hours: PhotographerWorkHours?,
+        on date: Date,
+        calendar: Calendar = .current
+    ) {
+        let workDate = PhotographerWorkDate(date, calendar: calendar)
+        var overrides = workHourOverrides ?? []
+        overrides.removeAll { $0.date == workDate }
+        overrides.append(PhotographerWorkHoursOverride(date: workDate, hours: hours))
+        workHourOverrides = overrides.sorted { $0.date < $1.date }
+    }
+
+    mutating func clearWorkHoursOverride(on date: Date, calendar: Calendar = .current) {
+        let workDate = PhotographerWorkDate(date, calendar: calendar)
+        guard var overrides = workHourOverrides else { return }
+        overrides.removeAll { $0.date == workDate }
+        workHourOverrides = overrides.isEmpty ? nil : overrides
     }
 }
 

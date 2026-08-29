@@ -188,8 +188,16 @@ struct PhotographerSettingsView: View {
 
     private func profileSummary(_ photographer: PhotographerProfile) -> String {
         let prefix = photographer.normalizedPrefix.isEmpty ? "No prefix" : photographer.normalizedPrefix
-        guard let hours = photographer.workHours else { return prefix }
-        return "\(prefix) · \(formatted(minutes: hours.startMinutes))–\(formatted(minutes: hours.endMinutes))"
+        let defaultHours: String
+        if let hours = photographer.workHours {
+            defaultHours = "default \(formatted(minutes: hours.startMinutes))–\(formatted(minutes: hours.endMinutes))"
+        } else {
+            defaultHours = "no default hours"
+        }
+        let overrideCount = photographer.workHourOverrides?.count ?? 0
+        guard overrideCount > 0 else { return "\(prefix) · \(defaultHours)" }
+        let overrides = overrideCount == 1 ? "1 date override" : "\(overrideCount) date overrides"
+        return "\(prefix) · \(defaultHours) · \(overrides)"
     }
 
     private func formatted(minutes: Int) -> String {

@@ -174,13 +174,18 @@ final class PhotographerLibraryAppStoreTests: XCTestCase {
             repository: jobRepository,
             photographerProfileRepository: photographerRepository
         )
-        let updated = PhotographerProfile(
+        var updated = PhotographerProfile(
             id: photographer.id,
             name: "Jane Photographer",
             filenamePrefix: "JAP",
             creator: "Jane Photographer",
             copyrightNotice: "Example News",
             workHours: PhotographerWorkHours(startMinutes: 9 * 60, endMinutes: 17 * 60)
+        )
+        updated.setWorkHoursOverride(
+            PhotographerWorkHours(startMinutes: 12 * 60, endMinutes: 20 * 60),
+            on: Date(timeIntervalSince1970: 1_788_134_400),
+            calendar: Calendar(identifier: .gregorian)
         )
 
         XCTAssertTrue(store.savePhotographerProfile(updated))
