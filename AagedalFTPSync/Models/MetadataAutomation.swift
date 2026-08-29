@@ -63,6 +63,148 @@ struct MetadataScheduleClip: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+enum MetadataClipResizeEdge: Sendable {
+    case start
+    case end
+}
+
+enum MetadataTimelineEditing {
+    static let minimumClipDuration: TimeInterval = 5 * 60
+
+    static func snapped(
+        _ date: Date,
+        toMinutes minutes: Int,
+        calendar: Calendar = .current
+    ) -> Date {
+        guard minutes > 0 else { return date }
+        let dayStart = calendar.startOfDay(for: date)
+        let interval = TimeInterval(minutes * 60)
+        let elapsed = date.timeIntervalSince(dayStart)
+        return dayStart.addingTimeInterval((elapsed / interval).rounded() * interval)
+    }
+
+    static func moving(
+        _ clip: MetadataScheduleClip,
+        by interval: TimeInterval,
+        snapMinutes: Int,
+        calendar: Calendar = .current
+    ) -> MetadataScheduleClip {
+        var result = clip
+        let duration = clip.endsAt.timeIntervalSince(clip.startsAt)
+        result.startsAt = snapped(
+            clip.startsAt.addingTimeInterval(interval),
+            toMinutes: snapMinutes,
+            calendar: calendar
+        )
+        result.endsAt = result.startsAt.addingTimeInterval(duration)
+        return result
+    }
+
+    static func resizing(
+        _ clip: MetadataScheduleClip,
+        edge: MetadataClipResizeEdge,
+        by interval: TimeInterval,
+        snapMinutes: Int,
+        calendar: Calendar = .current
+    ) -> MetadataScheduleClip {
+        var result = clip
+        switch edge {
+        case .start:
+            let proposed = snapped(
+                clip.startsAt.addingTimeInterval(interval),
+                toMinutes: snapMinutes,
+                calendar: calendar
+            )
+            result.startsAt = min(proposed, clip.endsAt.addingTimeInterval(-minimumClipDuration))
+        case .end:
+            let proposed = snapped(
+                clip.endsAt.addingTimeInterval(interval),
+                toMinutes: snapMinutes,
+                calendar: calendar
+            )
+            result.endsAt = max(proposed, clip.startsAt.addingTimeInterval(minimumClipDuration))
+        }
+        return result
+    }
+}
+
+enum MetadataTimelineAnalysis {
+    static func gaps(
+        in clips: [MetadataScheduleClip],
+        for photographerID: UUID,
+        on day: Date,
+        calendar: Calendar = .current
+    ) -> [DateInterval] {
+        let bounds = dayBounds(for: day, calendar: calendar)
+        let intervals = mergedIntervals(
+            clips: clips,
+            photographerID: photographerID,
+            bounds: bounds
+        )
+        var cursor = bounds.start
+        var result: [DateInterval] = []
+        for interval in intervals {
+            if cursor < interval.start {
+                result.append(DateInterval(start: cursor, end: interval.start))
+            }
+            cursor = max(cursor, interval.end)
+        }
+        if cursor < bounds.end {
+            result.append(DateInterval(start: cursor, end: bounds.end))
+        }
+        return result
+    }
+
+    static func overlaps(
+        in clips: [MetadataScheduleClip],
+        for photographerID: UUID,
+        on day: Date,
+        calendar: Calendar = .current
+    ) -> [DateInterval] {
+        let bounds = dayBounds(for: day, calendar: calendar)
+        let intervals = clips
+            .filter { $0.photographerID == photographerID && $0.startsAt < bounds.end && $0.endsAt > bounds.start }
+            .map { DateInterval(start: max($0.startsAt, bounds.start), end: min($0.endsAt, bounds.end)) }
+            .sorted { $0.start < $1.start }
+
+        var result: [DateInterval] = []
+        for (index, interval) in intervals.enumerated() {
+            for other in intervals.dropFirst(index + 1) {
+                guard other.start < interval.end else { break }
+                let overlap = DateInterval(start: other.start, end: min(interval.end, other.end))
+                if overlap.duration > 0 { result.append(overlap) }
+            }
+        }
+        return result
+    }
+
+    private static func dayBounds(for day: Date, calendar: Calendar) -> DateInterval {
+        let start = calendar.startOfDay(for: day)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        return DateInterval(start: start, end: end)
+    }
+
+    private static func mergedIntervals(
+        clips: [MetadataScheduleClip],
+        photographerID: UUID,
+        bounds: DateInterval
+    ) -> [DateInterval] {
+        let intervals = clips
+            .filter { $0.photographerID == photographerID && $0.startsAt < bounds.end && $0.endsAt > bounds.start }
+            .map { DateInterval(start: max($0.startsAt, bounds.start), end: min($0.endsAt, bounds.end)) }
+            .sorted { $0.start < $1.start }
+        var result: [DateInterval] = []
+        for interval in intervals {
+            guard let last = result.last, interval.start <= last.end else {
+                result.append(interval)
+                continue
+            }
+            result[result.count - 1] = DateInterval(start: last.start, end: max(last.end, interval.end))
+        }
+        return result
+    }
+}
+
 struct MetadataAssignment: Equatable, Sendable {
     let photographer: PhotographerProfile
     let clip: MetadataScheduleClip

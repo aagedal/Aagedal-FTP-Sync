@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MetadataProgrammingView: View {
@@ -9,6 +10,11 @@ struct MetadataProgrammingView: View {
     @State private var editingClipID: UUID?
     @State private var photographerPendingDeletion: PhotographerProfile?
     @State private var saveConfirmation = false
+    @State private var selectedClipIDs: Set<UUID> = []
+    @State private var copiedClips: [MetadataScheduleClip] = []
+    @State private var snapMinutes = 15
+    @State private var pendingClipChange: PendingClipChange?
+    @FocusState private var timelineFocused: Bool
 
     private let calendar = Calendar.current
 
@@ -65,6 +71,22 @@ struct MetadataProgrammingView: View {
             }
         } message: { photographer in
             Text("This also removes every metadata clip on \(photographer.name)’s track.")
+        }
+        .alert(
+            "Extend into another day?",
+            isPresented: Binding(
+                get: { pendingClipChange != nil },
+                set: { if !$0 { pendingClipChange = nil } }
+            ),
+            presenting: pendingClipChange
+        ) { change in
+            Button("Cancel", role: .cancel) { pendingClipChange = nil }
+            Button("Apply Change") {
+                applyClipChange(change.clip)
+                pendingClipChange = nil
+            }
+        } message: { change in
+            Text("Resizing \(change.clip.name) crosses midnight, so it will appear on more than one day’s timeline.")
         }
     }
 
@@ -170,6 +192,39 @@ struct MetadataProgrammingView: View {
 
                 Spacer()
 
+                Picker("Snap", selection: $snapMinutes) {
+                    Text("5 min").tag(5)
+                    Text("15 min").tag(15)
+                    Text("30 min").tag(30)
+                    Text("1 hour").tag(60)
+                }
+                .pickerStyle(.menu)
+                .frame(width: 125)
+
+                Button(action: editSelectedClip) {
+                    Image(systemName: "pencil")
+                }
+                .disabled(selectedClipIDs.count != 1)
+                .help("Edit Selected Clip (Return)")
+
+                Button(action: copySelectedClips) {
+                    Image(systemName: "doc.on.doc")
+                }
+                .disabled(selectedClipIDs.isEmpty)
+                .help("Copy Selected Clips (Command-C)")
+
+                Button(action: pasteClips) {
+                    Image(systemName: "doc.on.clipboard")
+                }
+                .disabled(copiedClips.isEmpty)
+                .help("Paste Clips on Selected Day (Command-V)")
+
+                Button(role: .destructive, action: deleteSelectedClips) {
+                    Image(systemName: "trash")
+                }
+                .disabled(selectedClipIDs.isEmpty)
+                .help("Delete Selected Clips")
+
                 Button(action: addClip) {
                     Label("Add Metadata Clip", systemImage: "plus.rectangle.on.rectangle")
                 }
@@ -194,22 +249,70 @@ struct MetadataProgrammingView: View {
             } else {
                 ScrollView([.horizontal, .vertical]) {
                     VStack(spacing: 0) {
-                        TimelineHourHeader()
+                        TimelineHourHeader(day: selectedDate)
                         ForEach(timelinePhotographers) { photographer in
                             TimelineTrack(
                                 photographer: photographer,
                                 clips: clips(for: photographer),
+                                allClips: draft.clips,
                                 day: selectedDate,
                                 color: color(for: photographer),
-                                onEdit: { editingClipID = $0.id }
+                                selectedClipIDs: selectedClipIDs,
+                                onSelect: selectClip,
+                                onEdit: { editingClipID = $0.id },
+                                onMove: moveClip,
+                                onResize: resizeClip
                             )
                             Divider()
                         }
                     }
                     .frame(minWidth: 920)
                 }
+                .focusable()
+                .focused($timelineFocused)
+                .onKeyPress(.leftArrow) {
+                    selectAdjacentClip(horizontalOffset: -1)
+                    return .handled
+                }
+                .onKeyPress(.rightArrow) {
+                    selectAdjacentClip(horizontalOffset: 1)
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    selectAdjacentTrack(offset: -1)
+                    return .handled
+                }
+                .onKeyPress(.downArrow) {
+                    selectAdjacentTrack(offset: 1)
+                    return .handled
+                }
             }
+
+            keyboardShortcuts
         }
+    }
+
+    private var keyboardShortcuts: some View {
+        Group {
+            Button("Copy", action: copySelectedClips)
+                .keyboardShortcut("c", modifiers: .command)
+            Button("Paste", action: pasteClips)
+                .keyboardShortcut("v", modifiers: .command)
+            Button("Select All Clips", action: selectAllClipsForDay)
+                .keyboardShortcut("a", modifiers: .command)
+            Button("Edit Clip", action: editSelectedClip)
+                .keyboardShortcut(.return, modifiers: [])
+            Button("Delete Clips", action: deleteSelectedClips)
+                .keyboardShortcut(.delete, modifiers: [])
+            Button("Previous Day") { moveDay(by: -1) }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("Next Day") { moveDay(by: 1) }
+                .keyboardShortcut("]", modifiers: .command)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
 
     private var footer: some View {
@@ -267,12 +370,7 @@ struct MetadataProgrammingView: View {
     }
 
     private var timelinePhotographers: [PhotographerProfile] {
-        draft.photographers.filter { photographer in
-            draft.clips.contains {
-                $0.photographerID == photographer.id
-                    && $0.overlaps(dayContaining: selectedDate, calendar: calendar)
-            }
-        }
+        draft.photographers
     }
 
     private func clips(for photographer: PhotographerProfile) -> [MetadataScheduleClip] {
@@ -302,6 +400,8 @@ struct MetadataProgrammingView: View {
         loadedJobID = job.id
         draft = job.metadataAutomation ?? MetadataAutomation()
         selectedPhotographerID = draft.photographers.first?.id
+        selectedClipIDs = []
+        copiedClips = []
     }
 
     private func addPhotographer() {
@@ -332,6 +432,7 @@ struct MetadataProgrammingView: View {
     private func removePhotographer(_ photographer: PhotographerProfile) {
         draft.photographers.removeAll { $0.id == photographer.id }
         draft.clips.removeAll { $0.photographerID == photographer.id }
+        selectedClipIDs = selectedClipIDs.filter { id in draft.clips.contains(where: { $0.id == id }) }
         selectedPhotographerID = draft.photographers.first?.id
         photographerPendingDeletion = nil
     }
@@ -351,6 +452,7 @@ struct MetadataProgrammingView: View {
             endsAt: end
         )
         draft.clips.append(clip)
+        selectedClipIDs = [clip.id]
         editingClipID = clip.id
     }
 
@@ -367,8 +469,150 @@ struct MetadataProgrammingView: View {
         draft.clips.append(copy)
     }
 
+    private func selectClip(_ clip: MetadataScheduleClip) {
+        if NSEvent.modifierFlags.contains(.command) {
+            if selectedClipIDs.contains(clip.id) {
+                selectedClipIDs.remove(clip.id)
+            } else {
+                selectedClipIDs.insert(clip.id)
+            }
+        } else {
+            selectedClipIDs = [clip.id]
+        }
+        selectedPhotographerID = clip.photographerID
+        timelineFocused = true
+    }
+
+    private func editSelectedClip() {
+        guard selectedClipIDs.count == 1, let id = selectedClipIDs.first else { return }
+        editingClipID = id
+    }
+
+    private func copySelectedClips() {
+        copiedClips = draft.clips
+            .filter { selectedClipIDs.contains($0.id) }
+            .sorted { lhs, rhs in
+                if lhs.startsAt != rhs.startsAt { return lhs.startsAt < rhs.startsAt }
+                return lhs.photographerID.uuidString < rhs.photographerID.uuidString
+            }
+    }
+
+    private func pasteClips() {
+        guard !copiedClips.isEmpty else { return }
+        let sourceDay = calendar.startOfDay(for: copiedClips.map(\.startsAt).min() ?? selectedDate)
+        let targetDay = calendar.startOfDay(for: selectedDate)
+        let dayOffset = calendar.dateComponents([.day], from: sourceDay, to: targetDay).day ?? 0
+        let sourcePhotographers = Set(copiedClips.map(\.photographerID))
+        let singleTarget = sourcePhotographers.count == 1 ? selectedPhotographerID : nil
+
+        let pasted = copiedClips.map { source -> MetadataScheduleClip in
+            var copy = source
+            copy.id = UUID()
+            copy.photographerID = singleTarget ?? source.photographerID
+            copy.startsAt = calendar.date(byAdding: .day, value: dayOffset, to: source.startsAt) ?? source.startsAt
+            copy.endsAt = calendar.date(byAdding: .day, value: dayOffset, to: source.endsAt) ?? source.endsAt
+            return copy
+        }
+        draft.clips.append(contentsOf: pasted)
+        selectedClipIDs = Set(pasted.map(\.id))
+        timelineFocused = true
+    }
+
+    private func deleteSelectedClips() {
+        guard !selectedClipIDs.isEmpty else { return }
+        draft.clips.removeAll { selectedClipIDs.contains($0.id) }
+        selectedClipIDs = []
+    }
+
+    private func selectAllClipsForDay() {
+        selectedClipIDs = Set(draft.clips.filter {
+            $0.overlaps(dayContaining: selectedDate, calendar: calendar)
+        }.map(\.id))
+        timelineFocused = true
+    }
+
+    private func moveClip(_ clip: MetadataScheduleClip, by interval: TimeInterval) {
+        let changed = MetadataTimelineEditing.moving(
+            clip,
+            by: interval,
+            snapMinutes: snapMinutes,
+            calendar: calendar
+        )
+        applyClipChange(changed)
+    }
+
+    private func resizeClip(
+        _ clip: MetadataScheduleClip,
+        edge: MetadataClipResizeEdge,
+        by interval: TimeInterval
+    ) {
+        let changed = MetadataTimelineEditing.resizing(
+            clip,
+            edge: edge,
+            by: interval,
+            snapMinutes: snapMinutes,
+            calendar: calendar
+        )
+        let originallyCrossedMidnight = !calendar.isDate(clip.startsAt, inSameDayAs: clip.endsAt)
+        let nowCrossesMidnight = !calendar.isDate(changed.startsAt, inSameDayAs: changed.endsAt)
+        if nowCrossesMidnight && !originallyCrossedMidnight {
+            pendingClipChange = PendingClipChange(clip: changed)
+        } else {
+            applyClipChange(changed)
+        }
+    }
+
+    private func applyClipChange(_ clip: MetadataScheduleClip) {
+        guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
+        draft.clips[index] = clip
+        selectedClipIDs = [clip.id]
+        selectedPhotographerID = clip.photographerID
+    }
+
+    private func selectAdjacentClip(horizontalOffset: Int) {
+        let visible = draft.clips
+            .filter { $0.overlaps(dayContaining: selectedDate, calendar: calendar) }
+            .sorted { $0.startsAt < $1.startsAt }
+        guard !visible.isEmpty else { return }
+        guard selectedClipIDs.count == 1,
+              let selectedID = selectedClipIDs.first,
+              let selected = visible.first(where: { $0.id == selectedID }) else {
+            selectClip(visible[horizontalOffset < 0 ? visible.count - 1 : 0])
+            return
+        }
+        let sameTrack = visible.filter { $0.photographerID == selected.photographerID }
+        guard let index = sameTrack.firstIndex(where: { $0.id == selected.id }) else { return }
+        let target = min(max(index + horizontalOffset, 0), sameTrack.count - 1)
+        selectClip(sameTrack[target])
+    }
+
+    private func selectAdjacentTrack(offset: Int) {
+        guard !timelinePhotographers.isEmpty else { return }
+        let selected = selectedClipIDs.count == 1
+            ? draft.clips.first(where: { $0.id == selectedClipIDs.first })
+            : nil
+        let currentPhotographerID = selected?.photographerID ?? selectedPhotographerID
+        let currentIndex = timelinePhotographers.firstIndex(where: { $0.id == currentPhotographerID }) ?? 0
+        let targetIndex = min(max(currentIndex + offset, 0), timelinePhotographers.count - 1)
+        let targetPhotographer = timelinePhotographers[targetIndex]
+        let trackClips = clips(for: targetPhotographer)
+        selectedPhotographerID = targetPhotographer.id
+        guard !trackClips.isEmpty else {
+            selectedClipIDs = []
+            return
+        }
+        let referenceDate = selected?.startsAt ?? calendar.startOfDay(for: selectedDate)
+        let nearest = trackClips.min {
+            abs($0.startsAt.timeIntervalSince(referenceDate)) < abs($1.startsAt.timeIntervalSince(referenceDate))
+        }
+        if let nearest { selectedClipIDs = [nearest.id] }
+    }
+
     private func moveDay(by value: Int) {
         selectedDate = calendar.date(byAdding: .day, value: value, to: selectedDate) ?? selectedDate
+        selectedClipIDs = selectedClipIDs.filter { id in
+            draft.clips.first(where: { $0.id == id })?.overlaps(dayContaining: selectedDate, calendar: calendar) == true
+        }
     }
 
     private func color(for photographer: PhotographerProfile) -> Color {
@@ -409,7 +653,15 @@ private struct PhotographerEditor: View {
     }
 }
 
+private struct PendingClipChange: Identifiable {
+    let id = UUID()
+    let clip: MetadataScheduleClip
+}
+
 private struct TimelineHourHeader: View {
+    let day: Date
+    private let calendar = Calendar.current
+
     var body: some View {
         HStack(spacing: 0) {
             Text("Photographer")
@@ -426,20 +678,37 @@ private struct TimelineHourHeader: View {
                             .foregroundStyle(.secondary)
                             .offset(x: max(0, proxy.size.width * CGFloat(hour) / 24 - 15))
                     }
+                    if calendar.isDateInToday(day) {
+                        Rectangle()
+                            .fill(.red.opacity(0.75))
+                            .frame(width: 1)
+                            .offset(x: currentTimeOffset(totalWidth: proxy.size.width))
+                    }
                 }
             }
         }
         .frame(height: 28)
         .background(.bar)
     }
+
+    private func currentTimeOffset(totalWidth: CGFloat) -> CGFloat {
+        let start = calendar.startOfDay(for: day)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        return CGFloat(Date().timeIntervalSince(start) / end.timeIntervalSince(start)) * totalWidth
+    }
 }
 
 private struct TimelineTrack: View {
     let photographer: PhotographerProfile
     let clips: [MetadataScheduleClip]
+    let allClips: [MetadataScheduleClip]
     let day: Date
     let color: Color
+    let selectedClipIDs: Set<UUID>
+    let onSelect: (MetadataScheduleClip) -> Void
     let onEdit: (MetadataScheduleClip) -> Void
+    let onMove: (MetadataScheduleClip, TimeInterval) -> Void
+    let onResize: (MetadataScheduleClip, MetadataClipResizeEdge, TimeInterval) -> Void
 
     private let calendar = Calendar.current
 
@@ -455,23 +724,25 @@ private struct TimelineTrack: View {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
                     hourGrid
+                    gapHighlights(totalWidth: proxy.size.width)
+                    overlapHighlights(totalWidth: proxy.size.width)
+                    currentTimeMarker(totalWidth: proxy.size.width)
                     ForEach(clips) { clip in
-                        Button { onEdit(clip) } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(clip.name).font(.caption.weight(.semibold)).lineLimit(1)
-                                Text(timeLabel(for: clip)).font(.caption2.monospacedDigit()).lineLimit(1)
-                            }
-                            .padding(.horizontal, 7)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                            .background(color.opacity(0.22), in: RoundedRectangle(cornerRadius: 6))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6).stroke(color.opacity(0.7), lineWidth: 1)
-                            }
-                        }
-                        .buttonStyle(.plain)
+                        TimelineClipView(
+                            clip: clip,
+                            color: color,
+                            isSelected: selectedClipIDs.contains(clip.id),
+                            continuesFromPreviousDay: clip.startsAt < dayStart,
+                            continuesIntoNextDay: clip.endsAt > nextDay,
+                            timeLabel: timeLabel(for: clip),
+                            secondsPerPoint: dayDuration / max(proxy.size.width, 1),
+                            onSelect: { onSelect(clip) },
+                            onEdit: { onEdit(clip) },
+                            onMove: { onMove(clip, $0) },
+                            onResize: { edge, interval in onResize(clip, edge, interval) }
+                        )
                         .frame(width: clipWidth(clip, totalWidth: proxy.size.width), height: 44)
                         .offset(x: clipOffset(clip, totalWidth: proxy.size.width))
-                        .help("Edit \(clip.name)")
                     }
                 }
             }
@@ -479,6 +750,14 @@ private struct TimelineTrack: View {
         }
         .frame(height: 58)
     }
+
+    private var dayStart: Date { calendar.startOfDay(for: day) }
+
+    private var nextDay: Date {
+        calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart.addingTimeInterval(86_400)
+    }
+
+    private var dayDuration: TimeInterval { nextDay.timeIntervalSince(dayStart) }
 
     private var hourGrid: some View {
         HStack(spacing: 0) {
@@ -491,11 +770,59 @@ private struct TimelineTrack: View {
         }
     }
 
+    @ViewBuilder
+    private func gapHighlights(totalWidth: CGFloat) -> some View {
+        ForEach(MetadataTimelineAnalysis.gaps(
+            in: allClips,
+            for: photographer.id,
+            on: day,
+            calendar: calendar
+        ), id: \.self) { interval in
+            Rectangle()
+                .fill(.orange.opacity(0.055))
+                .overlay(alignment: .center) {
+                    if intervalWidth(interval, totalWidth: totalWidth) > 70 {
+                        Text("gap")
+                            .font(.caption2)
+                            .foregroundStyle(.orange.opacity(0.65))
+                    }
+                }
+                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 52)
+                .offset(x: intervalOffset(interval, totalWidth: totalWidth))
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private func overlapHighlights(totalWidth: CGFloat) -> some View {
+        ForEach(MetadataTimelineAnalysis.overlaps(
+            in: allClips,
+            for: photographer.id,
+            on: day,
+            calendar: calendar
+        ), id: \.self) { interval in
+            Rectangle()
+                .fill(.red.opacity(0.2))
+                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 52)
+                .offset(x: intervalOffset(interval, totalWidth: totalWidth))
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private func currentTimeMarker(totalWidth: CGFloat) -> some View {
+        if calendar.isDateInToday(day) {
+            Rectangle()
+                .fill(.red.opacity(0.75))
+                .frame(width: 1, height: 52)
+                .offset(x: CGFloat(Date().timeIntervalSince(dayStart) / dayDuration) * totalWidth)
+                .allowsHitTesting(false)
+        }
+    }
+
     private func clippedInterval(
         for clip: MetadataScheduleClip
     ) -> (start: TimeInterval, end: TimeInterval, dayDuration: TimeInterval) {
-        let dayStart = calendar.startOfDay(for: day)
-        let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart.addingTimeInterval(86_400)
         return (
             max(clip.startsAt, dayStart).timeIntervalSince(dayStart),
             min(clip.endsAt, nextDay).timeIntervalSince(dayStart),
@@ -517,6 +844,96 @@ private struct TimelineTrack: View {
         let start = clip.startsAt.formatted(date: .omitted, time: .shortened)
         let end = clip.endsAt.formatted(date: .omitted, time: .shortened)
         return "\(start)–\(end)"
+    }
+
+    private func intervalOffset(_ interval: DateInterval, totalWidth: CGFloat) -> CGFloat {
+        CGFloat(interval.start.timeIntervalSince(dayStart) / dayDuration) * totalWidth
+    }
+
+    private func intervalWidth(_ interval: DateInterval, totalWidth: CGFloat) -> CGFloat {
+        CGFloat(interval.duration / dayDuration) * totalWidth
+    }
+}
+
+private struct TimelineClipView: View {
+    let clip: MetadataScheduleClip
+    let color: Color
+    let isSelected: Bool
+    let continuesFromPreviousDay: Bool
+    let continuesIntoNextDay: Bool
+    let timeLabel: String
+    let secondsPerPoint: TimeInterval
+    let onSelect: () -> Void
+    let onEdit: () -> Void
+    let onMove: (TimeInterval) -> Void
+    let onResize: (MetadataClipResizeEdge, TimeInterval) -> Void
+
+    @GestureState private var moveTranslation: CGFloat = 0
+    @GestureState private var startTranslation: CGFloat = 0
+    @GestureState private var endTranslation: CGFloat = 0
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(color.opacity(0.22))
+
+            HStack(spacing: 3) {
+                if continuesFromPreviousDay {
+                    Image(systemName: "arrow.left")
+                        .font(.caption2.weight(.bold))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(clip.name).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(timeLabel).font(.caption2.monospacedDigit()).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if continuesIntoNextDay {
+                    Image(systemName: "arrow.right")
+                        .font(.caption2.weight(.bold))
+                }
+            }
+            .padding(.horizontal, 9)
+
+            HStack(spacing: 0) {
+                resizeHandle(edge: .start)
+                Spacer(minLength: 0)
+                resizeHandle(edge: .end)
+            }
+        }
+        .foregroundStyle(color)
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(isSelected ? color : color.opacity(0.7), lineWidth: isSelected ? 2.5 : 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .offset(x: moveTranslation)
+        .onTapGesture(count: 2, perform: onEdit)
+        .onTapGesture(perform: onSelect)
+        .gesture(moveGesture)
+        .help("Click to select, Command-click for multiple selection, drag to move, or drag an edge to resize. Double-click to edit.")
+    }
+
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 3)
+            .updating($moveTranslation) { value, state, _ in state = value.translation.width }
+            .onEnded { value in onMove(value.translation.width * secondsPerPoint) }
+    }
+
+    private func resizeHandle(edge: MetadataClipResizeEdge) -> some View {
+        let translation = edge == .start ? startTranslation : endTranslation
+        return Capsule()
+            .fill(isSelected ? color : color.opacity(0.7))
+            .frame(width: 5, height: 27)
+            .padding(.horizontal, 2)
+            .offset(x: translation)
+            .contentShape(Rectangle().inset(by: -4))
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 1)
+                    .updating(edge == .start ? $startTranslation : $endTranslation) { value, state, _ in
+                        state = value.translation.width
+                    }
+                    .onEnded { value in onResize(edge, value.translation.width * secondsPerPoint) }
+            )
     }
 }
 

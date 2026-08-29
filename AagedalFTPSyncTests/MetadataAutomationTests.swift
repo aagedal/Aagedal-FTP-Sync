@@ -118,4 +118,119 @@ final class MetadataAutomationTests: XCTestCase {
 
         XCTAssertEqual(fields.normalizedKeywords, ["politics", "Oslo"])
     }
+
+    func testTimelineMoveSnapsStartAndPreservesDuration() {
+        let calendar = utcCalendar
+        let start = date(2026, 8, 29, 9, 7, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: UUID(),
+            name: "Morning",
+            startsAt: start,
+            endsAt: start.addingTimeInterval(3_600)
+        )
+
+        let moved = MetadataTimelineEditing.moving(
+            clip,
+            by: 11 * 60,
+            snapMinutes: 15,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(moved.startsAt, date(2026, 8, 29, 9, 15, calendar: calendar))
+        XCTAssertEqual(moved.endsAt.timeIntervalSince(moved.startsAt), 3_600)
+    }
+
+    func testTimelineResizeSnapsAndKeepsMinimumDuration() {
+        let calendar = utcCalendar
+        let start = date(2026, 8, 29, 9, 0, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: UUID(),
+            name: "Morning",
+            startsAt: start,
+            endsAt: start.addingTimeInterval(3_600)
+        )
+
+        let resized = MetadataTimelineEditing.resizing(
+            clip,
+            edge: .start,
+            by: 3_500,
+            snapMinutes: 15,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(resized.startsAt, clip.endsAt.addingTimeInterval(-5 * 60))
+        XCTAssertEqual(resized.endsAt, clip.endsAt)
+    }
+
+    func testTimelineAnalysisFindsGapsAndOverlapsAtDayBoundaries() {
+        let calendar = utcCalendar
+        let photographerID = UUID()
+        let day = date(2026, 8, 29, 12, 0, calendar: calendar)
+        let clips = [
+            MetadataScheduleClip(
+                photographerID: photographerID,
+                name: "Overnight",
+                startsAt: date(2026, 8, 28, 23, 30, calendar: calendar),
+                endsAt: date(2026, 8, 29, 1, 0, calendar: calendar)
+            ),
+            MetadataScheduleClip(
+                photographerID: photographerID,
+                name: "Morning",
+                startsAt: date(2026, 8, 29, 2, 0, calendar: calendar),
+                endsAt: date(2026, 8, 29, 4, 0, calendar: calendar)
+            ),
+            MetadataScheduleClip(
+                photographerID: photographerID,
+                name: "Overlap",
+                startsAt: date(2026, 8, 29, 3, 0, calendar: calendar),
+                endsAt: date(2026, 8, 29, 5, 0, calendar: calendar)
+            ),
+        ]
+
+        let gaps = MetadataTimelineAnalysis.gaps(
+            in: clips,
+            for: photographerID,
+            on: day,
+            calendar: calendar
+        )
+        let overlaps = MetadataTimelineAnalysis.overlaps(
+            in: clips,
+            for: photographerID,
+            on: day,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(gaps.count, 2)
+        XCTAssertEqual(gaps[0], DateInterval(
+            start: date(2026, 8, 29, 1, 0, calendar: calendar),
+            end: date(2026, 8, 29, 2, 0, calendar: calendar)
+        ))
+        XCTAssertEqual(overlaps, [DateInterval(
+            start: date(2026, 8, 29, 3, 0, calendar: calendar),
+            end: date(2026, 8, 29, 4, 0, calendar: calendar)
+        )])
+    }
+
+    private var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private func date(
+        _ year: Int,
+        _ month: Int,
+        _ day: Int,
+        _ hour: Int,
+        _ minute: Int,
+        calendar: Calendar
+    ) -> Date {
+        calendar.date(from: DateComponents(
+            year: year,
+            month: month,
+            day: day,
+            hour: hour,
+            minute: minute
+        ))!
+    }
 }

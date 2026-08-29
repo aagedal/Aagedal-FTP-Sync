@@ -4,6 +4,7 @@
 
 - Start the 2.5 metadata workflow with per-job photographer profiles, filename-prefix matching, scheduled day clips, and SwiftExif-powered IPTC/XMP writing for files synced to local folders.
 - Add a dedicated metadata-programming window with a calendar, photographer library, visual day tracks, cross-day confirmation, and clip copying between photographers.
+- Add direct timeline editing with configurable snapping, edge resizing, multi-clip copy/paste, schedule warnings, continuation markers, and keyboard navigation.
 - Stage FTP, FTPS, and SFTP uploads under private names, verify their sizes when requested, and publish them by rename with rollback protection.
 - Reject local destination paths that traverse symbolic links or collide by case or Unicode normalization.
 - Keep automatic-sync failures visible and use exponential retry backoff up to five minutes.
