@@ -50,6 +50,7 @@ enum SyncRetryPolicy {
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
     @Published private(set) var metadataPresets: [MetadataPreset]
+    @Published private(set) var metadataAuditEntries: [UUID: [MetadataAuditEntry]] = [:]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
     @Published private(set) var metadataReprocessPhases: [UUID: MetadataReprocessPhase] = [:]
     @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
@@ -58,6 +59,7 @@ final class AppStore: ObservableObject {
 
     private let repository: JobRepository
     private let metadataPresetRepository: MetadataPresetRepository
+    private let metadataAuditRepository: MetadataAuditRepository
     private let keychain: KeychainStore
     private let engine = SyncEngine()
     private var scheduleTasks: [UUID: Task<Void, Never>] = [:]
@@ -69,10 +71,12 @@ final class AppStore: ObservableObject {
     init(
         repository: JobRepository = JobRepository(),
         metadataPresetRepository: MetadataPresetRepository = MetadataPresetRepository(),
+        metadataAuditRepository: MetadataAuditRepository = MetadataAuditRepository(),
         keychain: KeychainStore = KeychainStore()
     ) {
         self.repository = repository
         self.metadataPresetRepository = metadataPresetRepository
+        self.metadataAuditRepository = metadataAuditRepository
         self.keychain = keychain
         do {
             let loadResult = try metadataPresetRepository.loadResult()
@@ -96,6 +100,16 @@ final class AppStore: ObservableObject {
             jobs = []
             recoveredFromBackup = false
             appendAlert("Saved jobs could not be loaded: \(error.localizedDescription)")
+        }
+        do {
+            let loadResult = try metadataAuditRepository.loadResult()
+            metadataAuditEntries = Dictionary(grouping: loadResult.entries, by: \.jobID)
+            if loadResult.recoveredFromBackup {
+                appendAlert("The metadata audit trail was damaged, so its most recent backup was restored.")
+            }
+        } catch {
+            metadataAuditEntries = [:]
+            appendAlert("The metadata audit trail could not be loaded: \(error.localizedDescription)")
         }
         refreshLaunchAtLoginStatus()
         selectedJobID = jobs.last?.id
@@ -266,6 +280,12 @@ final class AppStore: ObservableObject {
         phases[jobID] = nil
         metadataReprocessPhases[jobID] = nil
         transferTotals.remove(jobID: jobID)
+        do {
+            let retained = try metadataAuditRepository.remove(jobID: jobID)
+            metadataAuditEntries = Dictionary(grouping: retained, by: \.jobID)
+        } catch {
+            appendAlert("The metadata audit trail for this job could not be removed: \(error.localizedDescription)")
+        }
         persist()
     }
 
@@ -365,6 +385,23 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func metadataAuditTrail(for jobID: UUID) -> [MetadataAuditEntry] {
+        metadataAuditEntries[jobID, default: []]
+    }
+
+    /// Persists a completed run's per-file metadata decisions. Engine callers
+    /// should invoke this independently from transfer-total accounting.
+    func recordMetadataAudit(_ report: MetadataRunReport, jobID: UUID) {
+        let scopedReport = MetadataRunReport(entries: report.entries.filter { $0.jobID == jobID })
+        guard scopedReport.hasActivity else { return }
+        do {
+            let retained = try metadataAuditRepository.append(scopedReport)
+            metadataAuditEntries = Dictionary(grouping: retained, by: \.jobID)
+        } catch {
+            appendAlert("The metadata audit trail could not be saved: \(error.localizedDescription)")
+        }
+    }
+
     private func restartSchedules() {
         for task in scheduleTasks.values { task.cancel() }
         scheduleTasks.removeAll()
@@ -408,12 +445,20 @@ final class AppStore: ObservableObject {
                 let next = Date().addingTimeInterval(delay)
                 switch attempt {
                 case .succeeded:
-                    if case .succeeded(let date, let transferred, let deleted, let conflicts, _) = self.phases[jobID] {
+                    if case .succeeded(
+                        let date,
+                        let transferred,
+                        let deleted,
+                        let conflicts,
+                        let metadataReport,
+                        _
+                    ) = self.phases[jobID] {
                         self.phases[jobID] = .succeeded(
                             date,
                             transferred: transferred,
                             deleted: deleted,
                             conflicts: conflicts,
+                            metadataReport: metadataReport,
                             nextRun: next
                         )
                     }
@@ -443,11 +488,13 @@ final class AppStore: ObservableObject {
             let result = try await engine.run(job: job, leftPassword: leftPassword, rightPassword: rightPassword)
             let completedAt = Date()
             transferTotals.record(jobID: jobID, fileCount: result.transferred)
+            recordMetadataAudit(result.metadataReport, jobID: jobID)
             phases[jobID] = .succeeded(
                 completedAt,
                 transferred: result.transferred,
                 deleted: result.deleted,
                 conflicts: result.conflicts,
+                metadataReport: result.metadataReport,
                 nextRun: nil
             )
             return .succeeded
@@ -470,6 +517,7 @@ final class AppStore: ObservableObject {
 
         do {
             let result = try await engine.reprocessExistingLocalFiles(job: job)
+            recordMetadataAudit(result.metadataReport, jobID: jobID)
             metadataReprocessPhases[jobID] = .succeeded(Date(), result)
         } catch is CancellationError {
             metadataReprocessPhases[jobID] = .idle

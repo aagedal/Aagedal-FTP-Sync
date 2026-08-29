@@ -169,7 +169,14 @@ enum JobPhase: Equatable, Sendable {
     case stopped
     case waiting(Date)
     case syncing
-    case succeeded(Date, transferred: Int, deleted: Int, conflicts: [String], nextRun: Date?)
+    case succeeded(
+        Date,
+        transferred: Int,
+        deleted: Int,
+        conflicts: [String],
+        metadataReport: MetadataRunReport,
+        nextRun: Date?
+    )
     case failed(String, retryAt: Date?)
 
     var label: String {
@@ -177,12 +184,17 @@ enum JobPhase: Equatable, Sendable {
         case .stopped: return "Stopped"
         case .waiting: return "Waiting"
         case .syncing: return "Syncing…"
-        case .succeeded(_, let transferred, let deleted, let conflicts, _):
+        case .succeeded(_, let transferred, let deleted, let conflicts, let metadataReport, _):
             let transferText = transferred == 1 ? "1 file transferred" : "\(transferred) files transferred"
             var parts = [transferText]
             if deleted > 0 { parts.append("\(deleted) deleted") }
             if conflicts.count == 1 { parts.append("1 conflict skipped: \(conflicts[0])") }
             else if conflicts.count > 1 { parts.append("\(conflicts.count) conflicts skipped") }
+            if metadataReport.hasActivity {
+                parts.append(
+                    "metadata: \(metadataReport.applied) applied, \(metadataReport.skipped) skipped, \(metadataReport.failed) failed"
+                )
+            }
             return parts.joined(separator: ", ")
         case .failed(let message, let retryAt):
             guard let retryAt else { return message }
@@ -195,10 +207,17 @@ struct SyncResult: Equatable, Sendable {
     let transferred: Int
     let deleted: Int
     let conflicts: [String]
+    let metadataReport: MetadataRunReport
 
-    init(transferred: Int, deleted: Int, conflicts: [String] = []) {
+    init(
+        transferred: Int,
+        deleted: Int,
+        conflicts: [String] = [],
+        metadataReport: MetadataRunReport = .empty
+    ) {
         self.transferred = transferred
         self.deleted = deleted
         self.conflicts = conflicts
+        self.metadataReport = metadataReport
     }
 }

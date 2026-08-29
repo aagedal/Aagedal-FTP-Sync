@@ -3,8 +3,14 @@ import SwiftExif
 
 enum MetadataWriter {
     enum WriteResult {
-        case embedded(size: Int64)
-        case sidecar(localURL: URL, size: Int64)
+        case embedded(size: Int64, warnings: [String])
+        case sidecar(localURL: URL, size: Int64, warnings: [String])
+
+        var warnings: [String] {
+            switch self {
+            case .embedded(_, let warnings), .sidecar(_, _, let warnings): warnings
+            }
+        }
     }
 
     static func usesXMPSidecar(for relativePath: String) -> Bool {
@@ -116,8 +122,10 @@ enum MetadataWriter {
         ))
     }
 
-    static func apply(_ assignment: MetadataAssignment, to fileURL: URL) throws {
+    @discardableResult
+    static func apply(_ assignment: MetadataAssignment, to fileURL: URL) throws -> [String] {
         var metadata = try ImageMetadata.read(from: fileURL)
+        let readWarnings = metadata.warnings
         let fields = assignment.clip.fields
 
         let headline = fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -148,7 +156,8 @@ enum MetadataWriter {
             try metadata.iptc.setValue(copyright, for: .copyrightNotice)
         }
         metadata.syncIPTCToXMP()
-        try metadata.write(to: fileURL)
+        let writeWarnings = try metadata.write(to: fileURL)
+        return uniqueWarnings(readWarnings + writeWarnings)
     }
 
     static func apply(
@@ -157,23 +166,29 @@ enum MetadataWriter {
         relativePath: String
     ) throws -> WriteResult {
         guard usesXMPSidecar(for: relativePath) else {
-            try apply(assignment, to: fileURL)
-            return .embedded(size: try fileSize(at: fileURL))
+            let warnings = try apply(assignment, to: fileURL)
+            return .embedded(size: try fileSize(at: fileURL), warnings: warnings)
         }
 
         let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("xmp")
         var xmp = (try? XMPSidecar.read(from: sidecarURL)) ?? XMPData()
+        var warnings: [String] = []
         if !FileManager.default.fileExists(atPath: sidecarURL.path),
            var metadata = try? ImageMetadata.read(from: fileURL) {
             // Preserve the RAW file's existing XMP and mirror any legacy IPTC fields
             // into the generated sidecar before applying the programmed values.
+            warnings.append(contentsOf: metadata.warnings)
             metadata.syncIPTCToXMP()
             xmp = metadata.xmp ?? xmp
         }
         apply(assignment, to: &xmp)
 
         try XMPSidecar.write(xmp, to: sidecarURL)
-        return .sidecar(localURL: sidecarURL, size: try fileSize(at: sidecarURL))
+        return .sidecar(
+            localURL: sidecarURL,
+            size: try fileSize(at: sidecarURL),
+            warnings: uniqueWarnings(warnings)
+        )
     }
 
     private static func apply(_ assignment: MetadataAssignment, to xmp: inout XMPData) {
@@ -209,5 +224,13 @@ enum MetadataWriter {
 
     private static func isEmpty(_ value: String?) -> Bool {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+    }
+
+    private static func uniqueWarnings(_ warnings: [String]) -> [String] {
+        var seen = Set<String>()
+        return warnings.filter { warning in
+            !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && seen.insert(warning).inserted
+        }
     }
 }

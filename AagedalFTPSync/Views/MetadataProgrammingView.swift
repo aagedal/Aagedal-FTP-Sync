@@ -15,6 +15,10 @@ struct MetadataProgrammingView: View {
     @State private var snapMinutes = 15
     @State private var pendingClipChange: PendingClipChange?
     @State private var showReprocessConfirmation = false
+    @State private var metadataPreview: MetadataPreviewResult?
+    @State private var metadataPreviewFolderName = ""
+    @State private var metadataPreviewError: String?
+    @State private var isPreviewingMetadata = false
     @FocusState private var timelineFocused: Bool
 
     private let calendar = Calendar.current
@@ -56,6 +60,18 @@ struct MetadataProgrammingView: View {
                     photographers: draft.photographers,
                     onSave: updateClip,
                     onCopy: copyClip
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { metadataPreview != nil },
+            set: { if !$0 { metadataPreview = nil } }
+        )) {
+            if let metadataPreview {
+                MetadataFolderPreviewView(
+                    folderName: metadataPreviewFolderName,
+                    timestampPolicy: draft.timestampPolicy,
+                    result: metadataPreview
                 )
             }
         }
@@ -101,6 +117,17 @@ struct MetadataProgrammingView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(reprocessConfirmationMessage)
+        }
+        .alert(
+            "Preview Failed",
+            isPresented: Binding(
+                get: { metadataPreviewError != nil },
+                set: { if !$0 { metadataPreviewError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { metadataPreviewError = nil }
+        } message: {
+            Text(metadataPreviewError ?? "The folder could not be previewed.")
         }
     }
 
@@ -373,6 +400,17 @@ struct MetadataProgrammingView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Button(action: chooseMetadataPreviewFolder) {
+                if isPreviewingMetadata {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Previewing…")
+                } else {
+                    Text("Preview Local Folder…")
+                }
+            }
+            .disabled(!canPreviewMetadata)
+            .help(previewHelp)
             Button {
                 showReprocessConfirmation = true
             } label: {
@@ -422,6 +460,23 @@ struct MetadataProgrammingView: View {
             && !store.isJobBusy(loadedJobID)
     }
 
+    private var previewValidationMessage: String? {
+        var enabledDraft = draft
+        enabledDraft.isEnabled = true
+        return enabledDraft.validationMessage
+    }
+
+    private var canPreviewMetadata: Bool {
+        loadedJobID != nil && previewValidationMessage == nil && !isPreviewingMetadata
+    }
+
+    private var previewHelp: String {
+        if let previewValidationMessage {
+            return previewValidationMessage
+        }
+        return "Choose a local folder and show which files the unsaved programming draft would tag. No files are changed."
+    }
+
     private var isReprocessing: Bool {
         guard let loadedJobID else { return false }
         return store.metadataReprocessPhases[loadedJobID] == .running
@@ -436,7 +491,7 @@ struct MetadataProgrammingView: View {
         case .running:
             return "Scanning the local destination…"
         case .succeeded(_, let result):
-            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped."
+            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed."
         case .failed(let message):
             return "Reprocessing failed: \(message)"
         }
@@ -460,6 +515,40 @@ struct MetadataProgrammingView: View {
             ? "Existing non-empty fields will be preserved."
             : "Non-empty programmed values will overwrite existing fields."
         return "Matching files in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
+    }
+
+    private func chooseMetadataPreviewFolder() {
+        guard let selectedJob else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Preview Automatic Metadata"
+        panel.message = "Choose a folder to scan. Preview does not modify any files."
+        panel.prompt = "Preview Folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        guard panel.runModal() == .OK, let folderURL = panel.url else { return }
+
+        let previewDraft = draft
+        let filter = selectedJob.filter
+        isPreviewingMetadata = true
+        metadataPreviewError = nil
+        Task {
+            do {
+                let result = try await Task.detached(priority: .userInitiated) {
+                    try MetadataPreviewService.previewLocalFolder(
+                        at: folderURL,
+                        automation: previewDraft,
+                        filter: filter
+                    )
+                }.value
+                metadataPreviewFolderName = folderURL.lastPathComponent
+                metadataPreview = result
+            } catch {
+                metadataPreviewError = error.localizedDescription
+            }
+            isPreviewingMetadata = false
+        }
     }
 
     private var selectedPhotographer: PhotographerProfile? {
@@ -732,6 +821,104 @@ struct MetadataProgrammingView: View {
             saveConfirmation = false
         }
         return true
+    }
+}
+
+private struct MetadataFolderPreviewView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let folderName: String
+    let timestampPolicy: MetadataTimestampPolicy
+    let result: MetadataPreviewResult
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Metadata Preview")
+                        .font(.title2.weight(.semibold))
+                    Text("\(folderName) · \(timestampPolicy.title)")
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            HStack(spacing: 18) {
+                Label("\(result.scanned) scanned", systemImage: "doc.text.magnifyingglass")
+                Label("\(result.willApply) will apply", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Label("\(result.skipped) skipped", systemImage: "minus.circle.fill")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Read-only preview — no files were changed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if result.items.isEmpty {
+                ContentUnavailableView(
+                    "No matching file types",
+                    systemImage: "photo.on.rectangle.angled",
+                    description: Text("The selected job’s file filter found nothing to preview in this folder.")
+                )
+            } else {
+                Table(result.items) {
+                    TableColumn("File") { item in
+                        Text(item.relativePath)
+                            .lineLimit(1)
+                            .help(item.relativePath)
+                    }
+                    .width(min: 220, ideal: 300)
+
+                    TableColumn("Result") { item in
+                        Label(item.status.title, systemImage: item.status.symbolName)
+                            .foregroundStyle(item.status.color)
+                    }
+                    .width(min: 150, ideal: 190)
+
+                    TableColumn("Photographer") { item in
+                        Text(item.photographerName ?? "—")
+                    }
+                    .width(min: 120, ideal: 160)
+
+                    TableColumn("Clip") { item in
+                        Text(item.clipName ?? "—")
+                    }
+                    .width(min: 120, ideal: 180)
+
+                    TableColumn("Schedule time") { item in
+                        if let scheduledAt = item.scheduledAt {
+                            Text(scheduledAt.formatted(date: .abbreviated, time: .standard))
+                        } else {
+                            Text("—")
+                        }
+                    }
+                    .width(min: 160, ideal: 190)
+                }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 960, minHeight: 520)
+    }
+}
+
+private extension MetadataPreviewStatus {
+    var symbolName: String {
+        switch self {
+        case .willApply: "checkmark.circle.fill"
+        case .noMatchingPhotographer: "person.crop.circle.badge.questionmark"
+        case .noScheduledClip: "calendar.badge.exclamationmark"
+        case .captureTimeUnavailable: "camera.badge.ellipsis"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .willApply: .green
+        case .noMatchingPhotographer, .noScheduledClip, .captureTimeUnavailable: .secondary
+        }
     }
 }
 

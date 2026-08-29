@@ -205,7 +205,10 @@ private struct MenuJobRow: View {
 
     private var statusColor: Color {
         if case .failed = phase { return .red }
-        if case .succeeded(_, _, _, let conflicts, _) = phase, !conflicts.isEmpty { return .orange }
+        if case .succeeded(_, _, _, let conflicts, let metadataReport, _) = phase,
+           !conflicts.isEmpty || metadataReport.failed > 0 {
+            return .orange
+        }
         return .secondary
     }
 

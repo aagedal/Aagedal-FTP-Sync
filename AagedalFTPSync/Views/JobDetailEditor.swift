@@ -9,6 +9,7 @@ struct JobDetailEditor: View {
     @State private var rightPassword = ""
     @State private var showDeleteConfirmation = false
     @State private var saveConfirmation = false
+    @State private var showMetadataAudit = false
 
     init(job: SyncJob) {
         _draft = State(initialValue: job)
@@ -88,6 +89,12 @@ struct JobDetailEditor: View {
                     Text("Assign permanent photographer profiles to filename prefixes, then program Headline, Description, and Keywords on a day timeline.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+
+                    DisclosureGroup("Metadata audit trail", isExpanded: $showMetadataAudit) {
+                        MetadataAuditTrailView(entries: store.metadataAuditTrail(for: draft.id))
+                            .frame(minHeight: 220, idealHeight: 300)
+                            .padding(.top, 6)
+                    }
                 }
 
                 Section("Safety") {

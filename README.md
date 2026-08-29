@@ -1,8 +1,8 @@
-# Aagedal FTP Sync 2.0
+# Aagedal FTP Sync 2.5
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.0 is a clean SwiftUI rewrite. It has no hard-coded server and does not bundle rclone.
+Version 2.5 builds automatic editorial metadata programming on the clean SwiftUI rewrite. It has no hard-coded server and does not bundle rclone.
 
 ## What is new
 
@@ -22,6 +22,11 @@ Version 2.0 is a clean SwiftUI rewrite. It has no hard-coded server and does not
 - New files are staged before atomic local replacement
 - Remote path traversal and symbolic-link traversal are rejected
 - Source deletions are never propagated
+- Per-job photographer profiles and timeline clips can apply Headline, Description, Keywords, Creator, and Copyright metadata automatically
+- Scheduling can use source modification, local arrival, or Exif camera-capture time
+- Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
+- A read-only local-folder preview, separate metadata outcome counts, and a per-file audit trail make automation decisions inspectable
+- Original source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
 
 ## Requirements
 
@@ -80,7 +85,7 @@ Local files are copied to a hidden staging file in the destination directory and
 
 ## Architecture
 
-The sync engine works against a small endpoint-session protocol, keeping scheduling and conflict rules independent of transport details. FTP/FTPS is implemented with Apple’s Network framework. SFTP uses the pinned [Citadel 0.12.1](https://github.com/orlandos-nl/Citadel) Swift package. Citadel is the only direct third-party dependency.
+The sync engine works against a small endpoint-session protocol, keeping scheduling and conflict rules independent of transport details. FTP/FTPS is implemented with Apple’s Network framework. SFTP uses the pinned [Citadel 0.12.1](https://github.com/orlandos-nl/Citadel) Swift package, and editorial metadata is read and written with [SwiftExif](https://github.com/aagedal/SwiftExif).
 
 Jobs are stored as readable JSON under the app’s Application Support container. Secrets are referenced by random credential IDs and live only in Keychain.
 

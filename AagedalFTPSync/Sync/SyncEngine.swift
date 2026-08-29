@@ -4,10 +4,36 @@ struct MetadataReprocessResult: Equatable, Sendable {
     let scanned: Int
     let applied: Int
     let skipped: Int
+    let failed: Int
+    let metadataReport: MetadataRunReport
+
+    init(
+        scanned: Int,
+        applied: Int,
+        skipped: Int,
+        failed: Int = 0,
+        metadataReport: MetadataRunReport = .empty
+    ) {
+        self.scanned = scanned
+        self.applied = applied
+        self.skipped = skipped
+        self.failed = failed
+        self.metadataReport = metadataReport
+    }
+}
+
+private struct TransferMetadataOutcome: Sendable {
+    let auditEntry: MetadataAuditEntry?
+    let embeddedMetadataApplied: Bool
 }
 
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
+    private let sourceSignatureRepository: SourceSignatureRepository
+
+    init(sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository()) {
+        self.sourceSignatureRepository = sourceSignatureRepository
+    }
 
     func run(job: SyncJob, leftPassword: String?, rightPassword: String?) async throws -> SyncResult {
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
@@ -18,14 +44,28 @@ struct SyncEngine: Sendable {
             async let rightListing = right.listFiles()
             let (leftFiles, rightFiles) = try await (leftListing, rightListing)
             try validateLocalDestinationPaths(job: job, leftFiles: leftFiles, rightFiles: rightFiles)
-            let transferred: Int
+            let transferResult: (transferred: Int, metadataReport: MetadataRunReport)
             let conflicts: [String]
             switch job.direction {
             case .leftToRight:
-                transferred = try await transferNewer(from: left, files: leftFiles, to: right, files: rightFiles, job: job)
+                transferResult = try await transferNewer(
+                    from: left,
+                    sourceEndpoint: job.left,
+                    files: leftFiles,
+                    to: right,
+                    files: rightFiles,
+                    job: job
+                )
                 conflicts = []
             case .rightToLeft:
-                transferred = try await transferNewer(from: right, files: rightFiles, to: left, files: leftFiles, job: job)
+                transferResult = try await transferNewer(
+                    from: right,
+                    sourceEndpoint: job.right,
+                    files: rightFiles,
+                    to: left,
+                    files: leftFiles,
+                    job: job
+                )
                 conflicts = []
             case .bidirectional:
                 let result = try await transferBothWays(
@@ -35,7 +75,7 @@ struct SyncEngine: Sendable {
                     rightFiles: rightFiles,
                     job: job
                 )
-                transferred = result.transferred
+                transferResult = (result.transferred, .empty)
                 conflicts = result.conflicts
             }
             let deleted = try await cleanupTargetIfNeeded(
@@ -47,7 +87,12 @@ struct SyncEngine: Sendable {
             )
             await left.close()
             await right.close()
-            return SyncResult(transferred: transferred, deleted: deleted, conflicts: conflicts)
+            return SyncResult(
+                transferred: transferResult.transferred,
+                deleted: deleted,
+                conflicts: conflicts,
+                metadataReport: transferResult.metadataReport
+            )
         } catch {
             await left.close()
             await right.close()
@@ -88,6 +133,9 @@ struct SyncEngine: Sendable {
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
         var applied = 0
         var skipped = 0
+        var failed = 0
+        var metadataReport = MetadataRunReport.empty
+        let runID = UUID()
 
         for file in files {
             try Task.checkCancellation()
@@ -108,20 +156,67 @@ struct SyncEngine: Sendable {
                 sourceModifiedAt: file.modifiedAt,
                 localArrivalAt: file.modifiedAt,
                 fileURL: temporaryURL
-            ), let assignment = automation.assignment(
+            ) else {
+                skipped += 1
+                metadataReport.append(MetadataAuditEntry(
+                    runID: runID,
+                    jobID: job.id,
+                    operation: .reprocess,
+                    relativePath: file.relativePath,
+                    status: .skipped,
+                    timestampPolicy: automation.timestampPolicy,
+                    scheduledAt: nil,
+                    detail: "No valid camera capture timestamp was available."
+                ))
+                continue
+            }
+            guard let assignment = automation.assignment(
                 for: file.relativePath,
                 scheduledAt: scheduledAt
             ) else {
                 skipped += 1
+                metadataReport.append(MetadataAuditEntry(
+                    runID: runID,
+                    jobID: job.id,
+                    operation: .reprocess,
+                    relativePath: file.relativePath,
+                    status: .skipped,
+                    timestampPolicy: automation.timestampPolicy,
+                    scheduledAt: scheduledAt,
+                    matchedPhotographer: automation.matchingPhotographer(for: file.relativePath),
+                    detail: metadataSkipDetail(
+                        automation: automation,
+                        relativePath: file.relativePath
+                    )
+                ))
                 continue
             }
 
-            switch try MetadataWriter.apply(
-                assignment,
-                to: temporaryURL,
-                relativePath: file.relativePath
-            ) {
-            case .embedded(let rewrittenSize):
+            let writeResult: MetadataWriter.WriteResult
+            do {
+                writeResult = try MetadataWriter.apply(
+                    assignment,
+                    to: temporaryURL,
+                    relativePath: file.relativePath
+                )
+            } catch {
+                failed += 1
+                metadataReport.append(MetadataAuditEntry(
+                    runID: runID,
+                    jobID: job.id,
+                    operation: .reprocess,
+                    relativePath: file.relativePath,
+                    status: .failed,
+                    timestampPolicy: automation.timestampPolicy,
+                    scheduledAt: scheduledAt,
+                    assignment: assignment,
+                    detail: error.localizedDescription
+                ))
+                continue
+            }
+
+            switch writeResult {
+            case .embedded(let rewrittenSize, _):
                 try await destination.importFile(
                     from: temporaryURL,
                     as: SyncFile(
@@ -132,7 +227,7 @@ struct SyncEngine: Sendable {
                     preserveDate: true,
                     verifySize: true
                 )
-            case .sidecar(let localURL, let sidecarSize):
+            case .sidecar(let localURL, let sidecarSize, _):
                 try await destination.importFile(
                     from: localURL,
                     as: SyncFile(
@@ -145,12 +240,25 @@ struct SyncEngine: Sendable {
                 )
             }
             applied += 1
+            metadataReport.append(MetadataAuditEntry(
+                runID: runID,
+                jobID: job.id,
+                operation: .reprocess,
+                relativePath: file.relativePath,
+                status: .applied,
+                timestampPolicy: automation.timestampPolicy,
+                scheduledAt: scheduledAt,
+                assignment: assignment,
+                swiftExifWarnings: writeResult.warnings
+            ))
         }
 
         return MetadataReprocessResult(
             scanned: files.count,
             applied: applied,
-            skipped: skipped
+            skipped: skipped,
+            failed: failed,
+            metadataReport: metadataReport
         )
     }
 
@@ -213,11 +321,16 @@ struct SyncEngine: Sendable {
 
     private func transferNewer(
         from source: any EndpointSession,
+        sourceEndpoint: Endpoint,
         files sourceFiles: [String: SyncFile],
         to destination: any EndpointSession,
         files destinationFiles: [String: SyncFile],
         job: SyncJob
-    ) async throws -> Int {
+    ) async throws -> (transferred: Int, metadataReport: MetadataRunReport) {
+        let savedSignatures = try await sourceSignatureRepository.signatures(
+            jobID: job.id,
+            sourceEndpoint: sourceEndpoint
+        )
         let candidates = sourceFiles.values
             .filter { job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt) }
             .filter { file in
@@ -227,14 +340,18 @@ struct SyncEngine: Sendable {
                 return needsTransfer(
                     file,
                     destinationFiles[file.relativePath],
-                    verifySize: job.verifyFileSizes && !willRewriteMetadata
+                    verifySize: job.verifyFileSizes,
+                    metadataMayRewriteDestination: willRewriteMetadata,
+                    savedSourceSignature: savedSignatures[file.relativePath]
                 )
             }
             .sorted { $0.modifiedAt > $1.modifiedAt }
         var transferred = 0
+        var metadataReport = MetadataRunReport.empty
+        let runID = UUID()
         for file in candidates {
             try Task.checkCancellation()
-            try await transfer(
+            let outcome = try await transfer(
                 file,
                 from: source,
                 to: destination,
@@ -243,11 +360,23 @@ struct SyncEngine: Sendable {
                 metadataAutomation: job.metadataAutomation,
                 sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                     ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
-                    : nil
+                    : nil,
+                jobID: job.id,
+                runID: runID
             )
+            if let auditEntry = outcome.auditEntry {
+                metadataReport.append(auditEntry)
+            }
+            if outcome.embeddedMetadataApplied {
+                try await sourceSignatureRepository.record(
+                    file,
+                    jobID: job.id,
+                    sourceEndpoint: sourceEndpoint
+                )
+            }
             transferred += 1
         }
-        return transferred
+        return (transferred, metadataReport)
     }
 
     private func transferBothWays(
@@ -286,23 +415,41 @@ struct SyncEngine: Sendable {
         actions.sort { $0.0.modifiedAt > $1.0.modifiedAt }
         for (file, source, destination) in actions {
             try Task.checkCancellation()
-            try await transfer(
+            _ = try await transfer(
                 file,
                 from: source,
                 to: destination,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: nil,
-                sourceSidecar: nil
+                sourceSidecar: nil,
+                jobID: job.id,
+                runID: UUID()
             )
         }
         return (actions.count, conflicts.sorted())
     }
 
-    private func needsTransfer(_ source: SyncFile, _ destination: SyncFile?, verifySize: Bool) -> Bool {
+    private func needsTransfer(
+        _ source: SyncFile,
+        _ destination: SyncFile?,
+        verifySize: Bool,
+        metadataMayRewriteDestination: Bool = false,
+        savedSourceSignature: SourceFileSignature? = nil
+    ) -> Bool {
         guard let destination else { return true }
         if source.modifiedAt > destination.modifiedAt.addingTimeInterval(tolerance) { return true }
-        return verifySize && source.size != destination.size && source.modifiedAt >= destination.modifiedAt.addingTimeInterval(-tolerance)
+        guard verifySize else { return false }
+        if metadataMayRewriteDestination, let savedSourceSignature {
+            // The persisted source signature remains authoritative when the job
+            // does not preserve dates and the destination therefore looks newer.
+            return !savedSourceSignature.matches(source, timestampTolerance: tolerance)
+        }
+        guard source.modifiedAt >= destination.modifiedAt.addingTimeInterval(-tolerance) else { return false }
+        guard metadataMayRewriteDestination else { return source.size != destination.size }
+        // Existing jobs have no saved signatures yet. A single safe bootstrap
+        // transfer records the original source size before future comparisons.
+        return source.size != destination.size
     }
 
     private func transfer(
@@ -312,64 +459,140 @@ struct SyncEngine: Sendable {
         preserveDate: Bool,
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
-        sourceSidecar: SyncFile?
-    ) async throws {
+        sourceSidecar: SyncFile?,
+        jobID: UUID,
+        runID: UUID
+    ) async throws -> TransferMetadataOutcome {
         let temporaryURL = try makeTemporaryURL(for: file)
         let temporarySidecarURL = temporaryURL.deletingPathExtension().appendingPathExtension("xmp")
+        var metadataTemporaryURL: URL?
+        var metadataTemporarySidecarURL: URL?
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
         defer { try? FileManager.default.removeItem(at: temporarySidecarURL) }
+        defer {
+            if let metadataTemporaryURL { try? FileManager.default.removeItem(at: metadataTemporaryURL) }
+            if let metadataTemporarySidecarURL { try? FileManager.default.removeItem(at: metadataTemporarySidecarURL) }
+        }
         try await source.exportFile(file, to: temporaryURL)
         if let sourceSidecar {
             try await source.exportFile(sourceSidecar, to: temporarySidecarURL)
         }
 
+        let activeAutomation = metadataAutomation?.isEnabled == true ? metadataAutomation : nil
+        let scheduledAt: Date?
         let metadataAssignment: MetadataAssignment?
-        if let metadataAutomation,
-           let scheduledAt = MetadataWriter.schedulingDate(
-                for: metadataAutomation.timestampPolicy,
+        if let activeAutomation {
+            scheduledAt = MetadataWriter.schedulingDate(
+                for: activeAutomation.timestampPolicy,
                 sourceModifiedAt: file.modifiedAt,
                 localArrivalAt: Date(),
                 fileURL: temporaryURL
-           ) {
-            metadataAssignment = metadataAutomation.assignment(
-                for: file.relativePath,
-                scheduledAt: scheduledAt
             )
+            metadataAssignment = scheduledAt.flatMap {
+                activeAutomation.assignment(for: file.relativePath, scheduledAt: $0)
+            }
         } else {
+            scheduledAt = nil
             metadataAssignment = nil
         }
 
+        var importedURL = temporaryURL
         let importedFile: SyncFile
         var sidecarImport: (url: URL, file: SyncFile)?
+        var auditEntry: MetadataAuditEntry?
+        var embeddedMetadataApplied = false
         if let metadataAssignment {
-            switch try MetadataWriter.apply(
-                metadataAssignment,
-                to: temporaryURL,
-                relativePath: file.relativePath
-            ) {
-            case .embedded(let rewrittenSize):
-                importedFile = SyncFile(
-                    relativePath: file.relativePath,
-                    size: rewrittenSize,
-                    modifiedAt: file.modifiedAt
+            do {
+                let workURL = try makeTemporaryURL(for: file)
+                let workSidecarURL = workURL.deletingPathExtension().appendingPathExtension("xmp")
+                metadataTemporaryURL = workURL
+                metadataTemporarySidecarURL = workSidecarURL
+                try FileManager.default.copyItem(at: temporaryURL, to: workURL)
+                if sourceSidecar != nil {
+                    try FileManager.default.copyItem(at: temporarySidecarURL, to: workSidecarURL)
+                }
+
+                let writeResult = try MetadataWriter.apply(
+                    metadataAssignment,
+                    to: workURL,
+                    relativePath: file.relativePath
                 )
-            case .sidecar(let localURL, let sidecarSize):
-                importedFile = file
-                sidecarImport = (
-                    localURL,
-                    SyncFile(
-                        relativePath: MetadataWriter.sidecarRelativePath(for: file.relativePath),
-                        size: sidecarSize,
+                importedURL = workURL
+                switch writeResult {
+                case .embedded(let rewrittenSize, _):
+                    importedFile = SyncFile(
+                        relativePath: file.relativePath,
+                        size: rewrittenSize,
                         modifiedAt: file.modifiedAt
                     )
+                    embeddedMetadataApplied = true
+                case .sidecar(let localURL, let sidecarSize, _):
+                    importedFile = file
+                    sidecarImport = (
+                        localURL,
+                        SyncFile(
+                            relativePath: MetadataWriter.sidecarRelativePath(for: file.relativePath),
+                            size: sidecarSize,
+                            modifiedAt: file.modifiedAt
+                        )
+                    )
+                }
+                auditEntry = MetadataAuditEntry(
+                    runID: runID,
+                    jobID: jobID,
+                    operation: .transfer,
+                    relativePath: file.relativePath,
+                    status: .applied,
+                    timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
+                    scheduledAt: scheduledAt,
+                    assignment: metadataAssignment,
+                    swiftExifWarnings: writeResult.warnings
+                )
+            } catch {
+                importedFile = file
+                if let sourceSidecar {
+                    sidecarImport = (temporarySidecarURL, sourceSidecar)
+                }
+                auditEntry = MetadataAuditEntry(
+                    runID: runID,
+                    jobID: jobID,
+                    operation: .transfer,
+                    relativePath: file.relativePath,
+                    status: .failed,
+                    timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
+                    scheduledAt: scheduledAt,
+                    assignment: metadataAssignment,
+                    detail: error.localizedDescription
                 )
             }
         } else {
             importedFile = file
+            if let sourceSidecar {
+                sidecarImport = (temporarySidecarURL, sourceSidecar)
+            }
+            if let activeAutomation {
+                let matchedPhotographer = activeAutomation.matchingPhotographer(for: file.relativePath)
+                auditEntry = MetadataAuditEntry(
+                    runID: runID,
+                    jobID: jobID,
+                    operation: .transfer,
+                    relativePath: file.relativePath,
+                    status: .skipped,
+                    timestampPolicy: activeAutomation.timestampPolicy,
+                    scheduledAt: scheduledAt,
+                    matchedPhotographer: matchedPhotographer,
+                    detail: scheduledAt == nil
+                        ? "No valid camera capture timestamp was available."
+                        : metadataSkipDetail(
+                            automation: activeAutomation,
+                            relativePath: file.relativePath
+                        )
+                )
+            }
         }
 
         try await destination.importFile(
-            from: temporaryURL,
+            from: importedURL,
             as: importedFile,
             preserveDate: preserveDate,
             verifySize: verifySize
@@ -382,6 +605,20 @@ struct SyncEngine: Sendable {
                 verifySize: verifySize
             )
         }
+        return TransferMetadataOutcome(
+            auditEntry: auditEntry,
+            embeddedMetadataApplied: embeddedMetadataApplied
+        )
+    }
+
+    private func metadataSkipDetail(
+        automation: MetadataAutomation,
+        relativePath: String
+    ) -> String {
+        if automation.matchingPhotographer(for: relativePath) == nil {
+            return "No photographer filename prefix matched."
+        }
+        return "No scheduled metadata clip covered the selected timestamp."
     }
 
     private func makeTemporaryURL(for file: SyncFile) throws -> URL {

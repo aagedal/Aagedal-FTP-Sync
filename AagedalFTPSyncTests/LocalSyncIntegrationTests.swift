@@ -56,7 +56,13 @@ final class LocalSyncIntegrationTests: XCTestCase {
         let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
         let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
 
-        XCTAssertEqual(firstResult, SyncResult(transferred: 1, deleted: 0))
+        XCTAssertEqual(firstResult.transferred, 1)
+        XCTAssertEqual(firstResult.deleted, 0)
+        XCTAssertEqual(firstResult.metadataReport.applied, 1)
+        XCTAssertEqual(firstResult.metadataReport.skipped, 0)
+        XCTAssertEqual(firstResult.metadataReport.failed, 0)
+        XCTAssertEqual(firstResult.metadataReport.entries.first?.photographerName, "Jane Doe")
+        XCTAssertEqual(firstResult.metadataReport.entries.first?.clipName, "Political conference")
         XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
 
         let destination = fixture.right.appendingPathComponent("JAD_0001.jpg")
@@ -193,7 +199,10 @@ final class LocalSyncIntegrationTests: XCTestCase {
 
         let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
 
-        XCTAssertEqual(result, SyncResult(transferred: 1, deleted: 0))
+        XCTAssertEqual(result.transferred, 1)
+        XCTAssertEqual(result.deleted, 0)
+        XCTAssertEqual(result.metadataReport.applied, 1)
+        XCTAssertEqual(result.metadataReport.entries.first?.timestampPolicy, .localArrival)
         let destination = fixture.right.appendingPathComponent("JAD_ARRIVAL.jpg")
         let metadata = try ImageMetadata.read(from: destination)
         XCTAssertEqual(metadata.iptc.headline, "Arrived now")
@@ -262,7 +271,10 @@ final class LocalSyncIntegrationTests: XCTestCase {
 
         let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
 
-        XCTAssertEqual(result, SyncResult(transferred: 1, deleted: 0))
+        XCTAssertEqual(result.transferred, 1)
+        XCTAssertEqual(result.deleted, 0)
+        XCTAssertEqual(result.metadataReport.applied, 1)
+        XCTAssertEqual(result.metadataReport.entries.first?.timestampPolicy, .cameraCapture)
         let destination = fixture.right.appendingPathComponent("JAD_CAPTURE.jpg")
         let metadata = try ImageMetadata.read(from: destination)
         XCTAssertEqual(metadata.iptc.headline, "Captured then")
@@ -338,7 +350,10 @@ final class LocalSyncIntegrationTests: XCTestCase {
         let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
         let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
 
-        XCTAssertEqual(firstResult, SyncResult(transferred: 2, deleted: 0))
+        XCTAssertEqual(firstResult.transferred, 2)
+        XCTAssertEqual(firstResult.deleted, 0)
+        XCTAssertEqual(firstResult.metadataReport.applied, 2)
+        XCTAssertEqual(firstResult.metadataReport.failed, 0)
         XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
         for source in sourceFiles {
             let relativePath = "selects/\(source.lastPathComponent)"
@@ -439,7 +454,11 @@ final class LocalSyncIntegrationTests: XCTestCase {
 
         let result = try await SyncEngine().reprocessExistingLocalFiles(job: job)
 
-        XCTAssertEqual(result, MetadataReprocessResult(scanned: 1, applied: 1, skipped: 0))
+        XCTAssertEqual(result.scanned, 1)
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertEqual(result.metadataReport.applied, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.left.appendingPathComponent("archive/JAD_EXISTING.jpg").path))
         let metadata = try ImageMetadata.read(from: destination)
         XCTAssertEqual(metadata.iptc.headline, "Reprocessed headline")
@@ -489,7 +508,11 @@ final class LocalSyncIntegrationTests: XCTestCase {
 
         let result = try await SyncEngine().reprocessExistingLocalFiles(job: job)
 
-        XCTAssertEqual(result, MetadataReprocessResult(scanned: 1, applied: 1, skipped: 0))
+        XCTAssertEqual(result.scanned, 1)
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertEqual(result.metadataReport.applied, 1)
         XCTAssertEqual(try Data(contentsOf: destination), original)
         let xmp = try XMPSidecar.read(from: fixture.right.appendingPathComponent("JAD_EXISTING.xmp"))
         XCTAssertEqual(xmp.headline, "RAW headline")

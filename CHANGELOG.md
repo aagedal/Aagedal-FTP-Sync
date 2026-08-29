@@ -8,6 +8,11 @@
 - Write programmed metadata to XMP sidecars for RAW photos, including DNG and CR3, while preserving the original camera files byte-for-byte.
 - Add a reusable, backup-protected metadata preset library shared across jobs and days while keeping timeline clips as standalone snapshots.
 - Add confirmed, on-demand reprocessing for matching files already in a local destination, preserving modification dates and generating RAW sidecars without rewriting camera files.
+- Report metadata applied, skipped, and failed separately and retain a bounded, backup-protected per-file audit trail with photographer, clip, timestamp policy, diagnostic detail, and SwiftExif warnings.
+- Add a read-only local-folder preview that evaluates an unsaved programming draft before automatic metadata is enabled.
+- Persist original source signatures so equal-timestamp source changes remain detectable after embedded metadata changes destination size.
+- Fall back to the untouched downloaded file when metadata writing fails, while recording the failure and preserving atomic destination replacement.
+- Add JPEG, TIFF, DNG, CR3, HEIC, and XMP-sidecar round-trip and recovery coverage.
 - Stage FTP, FTPS, and SFTP uploads under private names, verify their sizes when requested, and publish them by rename with rollback protection.
 - Reject local destination paths that traverse symbolic links or collide by case or Unicode normalization.
 - Keep automatic-sync failures visible and use exponential retry backoff up to five minutes.
