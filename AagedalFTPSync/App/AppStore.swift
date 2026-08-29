@@ -50,6 +50,7 @@ enum SyncRetryPolicy {
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
     @Published private(set) var metadataPresets: [MetadataPreset]
+    @Published private(set) var photographerLibrary: [PhotographerProfile]
     @Published private(set) var metadataAuditEntries: [UUID: [MetadataAuditEntry]] = [:]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
     @Published private(set) var metadataReprocessPhases: [UUID: MetadataReprocessPhase] = [:]
@@ -59,6 +60,7 @@ final class AppStore: ObservableObject {
 
     private let repository: JobRepository
     private let metadataPresetRepository: MetadataPresetRepository
+    private let photographerProfileRepository: PhotographerProfileRepository
     private let metadataAuditRepository: MetadataAuditRepository
     private let keychain: KeychainStore
     private let engine = SyncEngine()
@@ -71,11 +73,13 @@ final class AppStore: ObservableObject {
     init(
         repository: JobRepository = JobRepository(),
         metadataPresetRepository: MetadataPresetRepository = MetadataPresetRepository(),
+        photographerProfileRepository: PhotographerProfileRepository = PhotographerProfileRepository(),
         metadataAuditRepository: MetadataAuditRepository = MetadataAuditRepository(),
         keychain: KeychainStore = KeychainStore()
     ) {
         self.repository = repository
         self.metadataPresetRepository = metadataPresetRepository
+        self.photographerProfileRepository = photographerProfileRepository
         self.metadataAuditRepository = metadataAuditRepository
         self.keychain = keychain
         do {
@@ -87,6 +91,17 @@ final class AppStore: ObservableObject {
         } catch {
             metadataPresets = []
             alertMessage = "Saved metadata presets could not be loaded: \(error.localizedDescription)"
+        }
+        var photographerLoadAlert: String?
+        do {
+            let loadResult = try photographerProfileRepository.loadResult()
+            photographerLibrary = loadResult.photographers
+            if loadResult.recoveredFromBackup {
+                photographerLoadAlert = "The photographer library was damaged, so its most recent backup was restored."
+            }
+        } catch {
+            photographerLibrary = []
+            photographerLoadAlert = "Saved photographers could not be loaded: \(error.localizedDescription)"
         }
         let recoveredFromBackup: Bool
         do {
@@ -100,6 +115,21 @@ final class AppStore: ObservableObject {
             jobs = []
             recoveredFromBackup = false
             appendAlert("Saved jobs could not be loaded: \(error.localizedDescription)")
+        }
+        if let photographerLoadAlert {
+            appendAlert(photographerLoadAlert)
+        }
+        let migratedPhotographers = mergedPhotographerLibrary(
+            photographerLibrary,
+            with: jobs.flatMap { $0.metadataAutomation?.photographers ?? [] }
+        )
+        if migratedPhotographers != photographerLibrary {
+            do {
+                try photographerProfileRepository.save(migratedPhotographers)
+                photographerLibrary = migratedPhotographers
+            } catch {
+                appendAlert("Photographers from existing jobs could not be added to the shared library: \(error.localizedDescription)")
+            }
         }
         do {
             let loadResult = try metadataAuditRepository.loadResult()
@@ -207,13 +237,37 @@ final class AppStore: ObservableObject {
 
         var updatedJobs = jobs
         updatedJobs[index] = updatedJob
+        let updatedPhotographerLibrary = mergedPhotographerLibrary(
+            photographerLibrary,
+            with: automation.photographers
+        )
         do {
+            try photographerProfileRepository.save(updatedPhotographerLibrary)
             try repository.save(updatedJobs)
+            photographerLibrary = updatedPhotographerLibrary
             jobs = updatedJobs
             return true
         } catch {
-            alertMessage = error.localizedDescription
+            alertMessage = "Metadata programming could not be saved: \(error.localizedDescription)"
             return false
+        }
+    }
+
+    private func mergedPhotographerLibrary(
+        _ existing: [PhotographerProfile],
+        with profiles: [PhotographerProfile]
+    ) -> [PhotographerProfile] {
+        var merged = existing
+        for profile in profiles where !profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !profile.normalizedPrefix.isEmpty {
+            if let index = merged.firstIndex(where: { $0.id == profile.id }) {
+                merged[index] = profile
+            } else {
+                merged.append(profile)
+            }
+        }
+        return merged.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
 

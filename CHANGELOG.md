@@ -4,6 +4,8 @@
 
 - Start the 2.5 metadata workflow with per-job photographer profiles, filename-prefix matching, scheduled day clips, and SwiftExif-powered IPTC/XMP writing for files synced to local folders.
 - Add a dedicated metadata-programming window with a calendar, photographer library, visual day tracks, cross-day confirmation, and clip copying between photographers.
+- Keep photographer profiles in a backup-protected library shared across sessions and sync jobs, with quick reuse from the metadata programmer.
+- Leave unscheduled timeline periods empty instead of rendering orange gap overlays.
 - Add direct timeline editing with configurable snapping, edge resizing, multi-clip copy/paste, schedule warnings, continuation markers, and keyboard navigation.
 - Write programmed metadata to XMP sidecars for RAW photos, including DNG and CR3, while preserving the original camera files byte-for-byte.
 - Add a reusable, backup-protected metadata preset library shared across jobs and days while keeping timeline clips as standalone snapshots.

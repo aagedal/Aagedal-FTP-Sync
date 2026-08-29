@@ -22,7 +22,7 @@ Version 2.5 builds automatic editorial metadata programming on the clean SwiftUI
 - New files are staged before atomic local replacement
 - Remote path traversal and symbolic-link traversal are rejected
 - Source deletions are never propagated
-- Per-job photographer profiles and timeline clips can apply Headline, Description, Keywords, Creator, and Copyright metadata automatically
+- A shared photographer library and per-job timeline clips can apply Headline, Description, Keywords, Creator, and Copyright metadata automatically
 - Scheduling can use source modification, local arrival, or Exif camera-capture time
 - Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
 - A read-only local-folder preview, separate metadata outcome counts, and a per-file audit trail make automation decisions inspectable

@@ -189,11 +189,28 @@ struct MetadataProgrammingView: View {
             HStack {
                 Text("Photographers").font(.headline)
                 Spacer()
-                Button(action: addPhotographer) {
+                Menu {
+                    Button(action: addPhotographer) {
+                        Label("New Photographer", systemImage: "person.badge.plus")
+                    }
+                    if !knownPhotographers.isEmpty {
+                        Divider()
+                        Section("Known Photographers") {
+                            ForEach(knownPhotographers) { photographer in
+                                Button {
+                                    addKnownPhotographer(photographer)
+                                } label: {
+                                    Text("\(photographer.name) (\(photographer.normalizedPrefix))")
+                                }
+                            }
+                        }
+                    }
+                } label: {
                     Image(systemName: "plus")
                 }
-                .buttonStyle(.borderless)
-                .help("Add Photographer")
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help(knownPhotographers.isEmpty ? "Add Photographer" : "Add a new or known photographer")
                 Button(action: requestPhotographerRemoval) {
                     Image(systemName: "minus")
                 }
@@ -562,6 +579,11 @@ struct MetadataProgrammingView: View {
         draft.photographers
     }
 
+    private var knownPhotographers: [PhotographerProfile] {
+        let assignedIDs = Set(draft.photographers.map(\.id))
+        return store.photographerLibrary.filter { !assignedIDs.contains($0.id) }
+    }
+
     private func clips(for photographer: PhotographerProfile) -> [MetadataScheduleClip] {
         draft.clips
             .filter {
@@ -600,6 +622,15 @@ struct MetadataProgrammingView: View {
             creator: "",
             copyrightNotice: ""
         )
+        draft.photographers.append(photographer)
+        selectedPhotographerID = photographer.id
+    }
+
+    private func addKnownPhotographer(_ photographer: PhotographerProfile) {
+        guard !draft.photographers.contains(where: { $0.id == photographer.id }) else {
+            selectedPhotographerID = photographer.id
+            return
+        }
         draft.photographers.append(photographer)
         selectedPhotographerID = photographer.id
     }
@@ -958,7 +989,7 @@ private struct PhotographerEditor: View {
                 .textCase(.uppercase)
             TextField("Creator / byline", text: $photographer.creator)
             TextField("Copyright notice", text: $photographer.copyrightNotice)
-            Text("Profiles stay in the library even on days when they have no timeline clips.")
+            Text("Saved profiles stay available for quick reuse in every sync job.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -1044,7 +1075,6 @@ private struct TimelineTrack: View {
                         .gesture(creationGesture(totalWidth: proxy.size.width))
                         .help("Drag empty space to create a metadata clip")
                     hourGrid
-                    gapHighlights(totalWidth: proxy.size.width)
                     overlapHighlights(totalWidth: proxy.size.width)
                     currentTimeMarker(totalWidth: proxy.size.width)
                     creationPreview(totalWidth: proxy.size.width)
@@ -1144,29 +1174,6 @@ private struct TimelineTrack: View {
         let start = interval.start.formatted(date: .omitted, time: .shortened)
         let end = interval.end.formatted(date: .omitted, time: .shortened)
         return "\(start)–\(end)"
-    }
-
-    @ViewBuilder
-    private func gapHighlights(totalWidth: CGFloat) -> some View {
-        ForEach(MetadataTimelineAnalysis.gaps(
-            in: allClips,
-            for: photographer.id,
-            on: day,
-            calendar: calendar
-        ), id: \.self) { interval in
-            Rectangle()
-                .fill(.orange.opacity(0.055))
-                .overlay(alignment: .center) {
-                    if intervalWidth(interval, totalWidth: totalWidth) > 70 {
-                        Text("gap")
-                            .font(.caption2)
-                            .foregroundStyle(.orange.opacity(0.65))
-                    }
-                }
-                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 52)
-                .offset(x: intervalOffset(interval, totalWidth: totalWidth))
-                .allowsHitTesting(false)
-        }
     }
 
     @ViewBuilder
