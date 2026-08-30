@@ -179,22 +179,22 @@ struct MetadataProgrammingView: View {
         HStack(spacing: 14) {
             Label("Metadata Programming", systemImage: "tag.fill")
                 .font(.title2.weight(.semibold))
-
-            Spacer()
+                .fixedSize()
 
             Picker("Sync job", selection: selectedJobBinding) {
                 ForEach(store.jobs) { job in
                     Text(job.name).tag(Optional(job.id))
                 }
             }
-            .frame(width: 270)
+            .frame(minWidth: 240, idealWidth: 270, maxWidth: 270)
 
             Picker("Schedule time", selection: $draft.timestampPolicy) {
                 ForEach(MetadataTimestampPolicy.allCases) { policy in
                     Text(policy.title).tag(policy)
                 }
             }
-            .frame(width: 245)
+            .frame(minWidth: 245, idealWidth: 320, maxWidth: 320)
+            .layoutPriority(1)
             .help(draft.timestampPolicy.explanation)
 
             Picker("Existing fields", selection: $draft.existingFieldPolicy) {
@@ -202,8 +202,11 @@ struct MetadataProgrammingView: View {
                     Text(policy.title).tag(policy)
                 }
             }
-            .frame(width: 190)
+            .frame(minWidth: 190, idealWidth: 235, maxWidth: 235)
+            .layoutPriority(1)
             .help(draft.existingFieldPolicy.explanation)
+
+            Spacer(minLength: 0)
 
             Toggle("Automatic metadata", isOn: $draft.isEnabled)
                 .toggleStyle(.switch)
@@ -262,13 +265,6 @@ struct MetadataProgrammingView: View {
 
                 Spacer()
 
-                if let playheadSummary {
-                    Label(playheadSummary, systemImage: "arrowtriangle.down.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
                 Picker("Snap", selection: $snapMinutes) {
                     Text("5 min").tag(5)
                     Text("15 min").tag(15)
@@ -280,32 +276,38 @@ struct MetadataProgrammingView: View {
 
                 Button(action: editSelectedClip) {
                     Image(systemName: "pencil")
+                        .frame(width: 16, height: 16)
                 }
                 .disabled(selectedClipIDs.count != 1)
                 .help("Edit Selected Clip (Return)")
 
                 Button(action: copySelectedClips) {
                     Image(systemName: "doc.on.doc")
+                        .frame(width: 16, height: 16)
                 }
                 .disabled(selectedClipIDs.isEmpty)
                 .help("Copy Selected Clips (Command-C)")
 
                 Button(action: pasteClips) {
                     Image(systemName: "doc.on.clipboard")
+                        .frame(width: 16, height: 16)
                 }
                 .disabled(copiedClips.isEmpty || playhead == nil)
                 .help(pasteHelp)
 
                 Button(role: .destructive, action: deleteSelectedClips) {
                     Image(systemName: "trash")
+                        .frame(width: 16, height: 16)
                 }
                 .disabled(selectedClipIDs.isEmpty)
                 .help("Delete Selected Clips")
 
                 Button(action: addClip) {
-                    Label("Add Metadata Clip", systemImage: "plus.rectangle.on.rectangle")
+                    Image(systemName: "plus.rectangle.on.rectangle")
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Add Metadata Clip")
                 .disabled(selectedPhotographer == nil)
                 .help(selectedPhotographer == nil ? "Select a photographer first" : "Add a clip to the selected photographer")
             }
@@ -1722,7 +1724,7 @@ private struct TimelineAddPhotographerRow: View {
                     }
                 }
             } label: {
-                Label("Add Photographer Track", systemImage: "plus.circle.fill")
+                Label("Add Photographer", systemImage: "plus.circle.fill")
                     .font(.callout.weight(.medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 12)
@@ -2225,21 +2227,34 @@ private struct TimelineClipView: View {
     }
 
     private var interactionGesture: some Gesture {
-        TapGesture(count: 2)
-            .onEnded { onEdit() }
-            .exclusively(before: TapGesture().onEnded { onSelect() })
-            .simultaneously(with: moveGesture)
+        selectionAndMoveGesture
+            .simultaneously(with: TapGesture(count: 2).onEnded { onEdit() })
     }
 
-    private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 3)
-            .updating($moveTranslation) { value, state, _ in state = value.translation.width }
+    private var selectionAndMoveGesture: some Gesture {
+        // A single tap used to be exclusive with the double-tap gesture, which
+        // delayed selection until the system's double-click interval elapsed.
+        // Treat a zero-distance drag as an immediate click while retaining the
+        // same movement threshold for dragging clips.
+        DragGesture(minimumDistance: 0)
+            .updating($moveTranslation) { value, state, _ in
+                guard gestureDistance(value.translation) >= 3 else { return }
+                state = value.translation.width
+            }
             .onEnded { value in
+                guard gestureDistance(value.translation) >= 3 else {
+                    onSelect()
+                    return
+                }
                 onMove(
                     value.translation.width * secondsPerPoint,
                     NSEvent.modifierFlags.contains(.option)
                 )
             }
+    }
+
+    private func gestureDistance(_ translation: CGSize) -> CGFloat {
+        hypot(translation.width, translation.height)
     }
 
     private var timelineTitle: String {

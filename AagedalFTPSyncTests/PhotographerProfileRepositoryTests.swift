@@ -61,6 +61,39 @@ final class PhotographerProfileRepositoryTests: XCTestCase {
         XCTAssertEqual(result.photographers, recoverable)
     }
 
+    func testTransferCodecRoundTripsVersionedPhotographerList() throws {
+        let photographers = [
+            PhotographerProfile(
+                name: "Jane Doe",
+                filenamePrefix: "JAD, CAM2",
+                creator: "Jane Doe",
+                copyrightNotice: "Example News",
+                workHours: PhotographerWorkHours(startMinutes: 8 * 60, endMinutes: 16 * 60)
+            ),
+        ]
+
+        let data = try PhotographerLibraryTransferCodec.encode(photographers)
+        let transfer = try JSONDecoder().decode(PhotographerLibraryTransfer.self, from: data)
+
+        XCTAssertEqual(transfer.format, PhotographerLibraryTransfer.formatIdentifier)
+        XCTAssertEqual(transfer.version, PhotographerLibraryTransfer.currentVersion)
+        XCTAssertEqual(try PhotographerLibraryTransferCodec.decode(data), photographers)
+    }
+
+    func testTransferCodecAcceptsLegacyRawPhotographerArray() throws {
+        let photographers = [
+            PhotographerProfile(
+                name: "Jane Doe",
+                filenamePrefix: "JAD",
+                creator: "Jane Doe",
+                copyrightNotice: "Example News"
+            ),
+        ]
+        let data = try JSONEncoder().encode(photographers)
+
+        XCTAssertEqual(try PhotographerLibraryTransferCodec.decode(data), photographers)
+    }
+
     private func temporaryFileURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("photographers-\(UUID().uuidString).json")
@@ -307,5 +340,100 @@ final class PhotographerLibraryAppStoreTests: XCTestCase {
         XCTAssertEqual(store.alertMessage, "The filename initials CAM2 are already used by another photographer.")
         XCTAssertNil(store.jobs.first?.metadataAutomation)
         XCTAssertEqual(store.photographerLibrary, [existing])
+    }
+
+    func testImportMergesPhotographersAndUpdatesAssignedJobs() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photographer-import-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        let assigned = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "Old copyright"
+        )
+        let retained = PhotographerProfile(
+            name: "Retained",
+            filenamePrefix: "RET",
+            creator: "Retained",
+            copyrightNotice: ""
+        )
+        var job = SyncJob(name: "Picture desk")
+        job.isEnabled = false
+        job.metadataAutomation = MetadataAutomation(photographers: [assigned])
+        try jobRepository.save([job])
+        try photographerRepository.save([assigned, retained])
+        let store = AppStore(
+            repository: jobRepository,
+            photographerProfileRepository: photographerRepository
+        )
+        let updated = PhotographerProfile(
+            id: assigned.id,
+            name: "Legacy name",
+            filenamePrefix: " jad, cam2 ",
+            creator: "Jane Updated",
+            copyrightNotice: "New copyright"
+        )
+        let added = PhotographerProfile(
+            name: "Alice",
+            filenamePrefix: "ALI",
+            creator: "Alice",
+            copyrightNotice: "Example News"
+        )
+        let data = try PhotographerLibraryTransferCodec.encode([updated, added])
+
+        let result = store.importPhotographerLibrary(from: data)
+
+        XCTAssertEqual(result, PhotographerLibraryImportResult(
+            addedCount: 1,
+            updatedCount: 1,
+            unchangedCount: 0
+        ))
+        let importedUpdate = store.photographerLibrary.first { $0.id == assigned.id }
+        XCTAssertEqual(importedUpdate?.name, "Jane Updated")
+        XCTAssertEqual(importedUpdate?.creator, "Jane Updated")
+        XCTAssertEqual(importedUpdate?.filenamePrefix, "JAD, CAM2")
+        XCTAssertTrue(store.photographerLibrary.contains(where: { $0.id == retained.id }))
+        XCTAssertTrue(store.photographerLibrary.contains(where: { $0.id == added.id }))
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers, [importedUpdate].compactMap { $0 })
+        XCTAssertEqual(try photographerRepository.load(), store.photographerLibrary)
+        XCTAssertEqual(try jobRepository.load(), store.jobs)
+    }
+
+    func testImportRejectsConflictingInitialsWithoutChangingLibrary() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photographer-import-conflict-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        let existing = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD, CAM2",
+            creator: "Jane",
+            copyrightNotice: ""
+        )
+        try photographerRepository.save([existing])
+        let store = AppStore(
+            repository: jobRepository,
+            photographerProfileRepository: photographerRepository
+        )
+        let conflicting = PhotographerProfile(
+            name: "John",
+            filenamePrefix: "cam2",
+            creator: "John",
+            copyrightNotice: ""
+        )
+        let data = try PhotographerLibraryTransferCodec.encode([conflicting])
+
+        XCTAssertNil(store.importPhotographerLibrary(from: data))
+        XCTAssertEqual(store.alertMessage, "The photographers could not be imported: The filename initials CAM2 are already used by another photographer.")
+        XCTAssertEqual(store.photographerLibrary, [existing])
+        XCTAssertEqual(try photographerRepository.load(), [existing])
     }
 }

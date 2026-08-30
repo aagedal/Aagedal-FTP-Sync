@@ -46,6 +46,12 @@ enum SyncRetryPolicy {
     }
 }
 
+struct PhotographerLibraryImportResult: Equatable, Sendable {
+    let addedCount: Int
+    let updatedCount: Int
+    let unchangedCount: Int
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
@@ -271,6 +277,26 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func photographerLibraryExportData() -> Data? {
+        do {
+            return try PhotographerLibraryTransferCodec.encode(photographerLibrary)
+        } catch {
+            alertMessage = "The photographer list could not be exported: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func importPhotographerLibrary(from data: Data) -> PhotographerLibraryImportResult? {
+        do {
+            let importedProfiles = try PhotographerLibraryTransferCodec.decode(data)
+            return try importPhotographerProfiles(importedProfiles)
+        } catch {
+            alertMessage = "The photographers could not be imported: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     @discardableResult
     func savePhotographerProfile(_ profile: PhotographerProfile) -> Bool {
         let normalizedProfile = profile.usingCreatorAsPhotographerName()
@@ -347,6 +373,78 @@ final class AppStore: ObservableObject {
             alertMessage = "The photographer could not be removed: \(error.localizedDescription)"
             return false
         }
+    }
+
+    private func importPhotographerProfiles(
+        _ importedProfiles: [PhotographerProfile]
+    ) throws -> PhotographerLibraryImportResult {
+        var seenIDs = Set<UUID>()
+        var normalizedProfiles: [PhotographerProfile] = []
+        normalizedProfiles.reserveCapacity(importedProfiles.count)
+
+        for profile in importedProfiles {
+            guard seenIDs.insert(profile.id).inserted else {
+                throw AppError.invalidConfiguration("The imported list contains the same photographer more than once.")
+            }
+            var normalized = profile.usingCreatorAsPhotographerName()
+            let trimmedName = normalized.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty else {
+                throw AppError.invalidConfiguration("An imported photographer does not have a name.")
+            }
+            guard !normalized.normalizedPrefixes.isEmpty else {
+                throw AppError.invalidConfiguration("Give \(trimmedName) filename initials before importing this list.")
+            }
+            normalized.name = trimmedName
+            normalized.creator = trimmedName
+            normalized.filenamePrefix = normalized.formattedFilenamePrefixes
+            normalizedProfiles.append(normalized)
+        }
+
+        let existingByID = Dictionary(uniqueKeysWithValues: photographerLibrary.map { ($0.id, $0) })
+        var mergedByID = existingByID
+        for profile in normalizedProfiles {
+            mergedByID[profile.id] = profile
+        }
+        let updatedLibrary = mergedByID.values.sorted {
+            $0.photographerName.localizedCaseInsensitiveCompare($1.photographerName) == .orderedAscending
+        }
+        if let duplicate = duplicateFilenameInitials(in: updatedLibrary) {
+            throw AppError.invalidConfiguration("The filename initials \(duplicate) are already used by another photographer.")
+        }
+
+        let importedByID = Dictionary(uniqueKeysWithValues: normalizedProfiles.map { ($0.id, $0) })
+        var updatedJobs = jobs
+        for jobIndex in updatedJobs.indices {
+            guard var automation = updatedJobs[jobIndex].metadataAutomation else { continue }
+            var changed = false
+            for photographerIndex in automation.photographers.indices {
+                let photographerID = automation.photographers[photographerIndex].id
+                guard let imported = importedByID[photographerID] else { continue }
+                automation.photographers[photographerIndex] = imported
+                changed = true
+            }
+            guard changed else { continue }
+            if let message = automation.validationMessage {
+                throw AppError.invalidConfiguration("\(updatedJobs[jobIndex].name): \(message)")
+            }
+            updatedJobs[jobIndex].metadataAutomation = automation
+        }
+
+        try photographerProfileRepository.save(updatedLibrary)
+        try repository.save(updatedJobs)
+        photographerLibrary = updatedLibrary
+        jobs = updatedJobs
+
+        let addedCount = normalizedProfiles.filter { existingByID[$0.id] == nil }.count
+        let updatedCount = normalizedProfiles.filter {
+            guard let existing = existingByID[$0.id] else { return false }
+            return existing != $0
+        }.count
+        return PhotographerLibraryImportResult(
+            addedCount: addedCount,
+            updatedCount: updatedCount,
+            unchangedCount: normalizedProfiles.count - addedCount - updatedCount
+        )
     }
 
     private func mergedPhotographerLibrary(

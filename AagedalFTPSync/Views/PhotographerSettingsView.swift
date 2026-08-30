@@ -1,11 +1,18 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PhotographerSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selectedPhotographerID: UUID?
     @State private var draft: PhotographerProfile?
     @State private var photographerPendingDeletion: PhotographerProfile?
+    @State private var showPhotographerImporter = false
+    @State private var showPhotographerExporter = false
+    @State private var exportDocument = PhotographerLibraryFile(data: Data())
+    @State private var importSummary: String?
+    @State private var photographerSearch = ""
+    @State private var photographerSortOrder = PhotographerSortOrder.ascending
 
     var body: some View {
         HSplitView {
@@ -14,6 +21,29 @@ struct PhotographerSettingsView: View {
                     Text("Known Photographers")
                         .font(.headline)
                     Spacer()
+                    Menu {
+                        Picker("Sort Order", selection: $photographerSortOrder) {
+                            Text("Name, A–Z").tag(PhotographerSortOrder.ascending)
+                            Text("Name, Z–A").tag(PhotographerSortOrder.descending)
+                        }
+
+                        Divider()
+
+                        Button("Import Photographers…", systemImage: "square.and.arrow.down") {
+                            showPhotographerImporter = true
+                        }
+                        .disabled(hasUnsavedChanges)
+
+                        Button("Export Photographers…", systemImage: "square.and.arrow.up") {
+                            prepareExport()
+                        }
+                        .disabled(store.photographerLibrary.isEmpty)
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help(hasUnsavedChanges ? "Sort, export, or save changes before importing" : "Sort, import, or export photographers")
                     Button(action: addPhotographer) {
                         Image(systemName: "plus")
                     }
@@ -28,10 +58,15 @@ struct PhotographerSettingsView: View {
                 }
                 .padding(12)
 
+                TextField("Search photographers", text: $photographerSearch)
+                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 10)
+
                 Divider()
 
                 List(selection: $selectedPhotographerID) {
-                    ForEach(store.photographerLibrary) { photographer in
+                    ForEach(visiblePhotographers) { photographer in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(photographer.photographerName)
                                 .fontWeight(.medium)
@@ -41,6 +76,11 @@ struct PhotographerSettingsView: View {
                         }
                         .padding(.vertical, 3)
                         .tag(photographer.id)
+                    }
+                }
+                .overlay {
+                    if visiblePhotographers.isEmpty, !photographerSearch.isEmpty {
+                        ContentUnavailableView.search(text: photographerSearch)
                     }
                 }
             }
@@ -82,7 +122,12 @@ struct PhotographerSettingsView: View {
             }
             .frame(minWidth: 390, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 700, height: 450)
+        .frame(
+            minWidth: 700,
+            maxWidth: .infinity,
+            minHeight: 450,
+            maxHeight: .infinity
+        )
         .onAppear {
             if selectedPhotographerID == nil {
                 selectedPhotographerID = store.photographerLibrary.first?.id
@@ -91,6 +136,29 @@ struct PhotographerSettingsView: View {
         }
         .onChange(of: selectedPhotographerID) { _, _ in
             loadSelectedProfile()
+        }
+        .onChange(of: store.photographerLibrary) { _, library in
+            if let selectedPhotographerID,
+               !library.contains(where: { $0.id == selectedPhotographerID }) {
+                self.selectedPhotographerID = library.first?.id
+            }
+            loadSelectedProfile()
+        }
+        .fileImporter(
+            isPresented: $showPhotographerImporter,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false,
+            onCompletion: importPhotographers
+        )
+        .fileExporter(
+            isPresented: $showPhotographerExporter,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: "Known Photographers"
+        ) { result in
+            if case .failure(let error) = result {
+                store.alertMessage = "The photographer list could not be exported: \(error.localizedDescription)"
+            }
         }
         .confirmationDialog(
             "Delete shared photographer?",
@@ -119,11 +187,40 @@ struct PhotographerSettingsView: View {
         } message: {
             Text(store.alertMessage ?? "")
         }
+        .alert("Photographers Imported", isPresented: Binding(
+            get: { importSummary != nil },
+            set: { if !$0 { importSummary = nil } }
+        )) {
+            Button("OK") { importSummary = nil }
+        } message: {
+            Text(importSummary ?? "")
+        }
     }
 
     private var selectedProfile: PhotographerProfile? {
         guard let selectedPhotographerID else { return nil }
         return store.photographerLibrary.first { $0.id == selectedPhotographerID }
+    }
+
+    private var visiblePhotographers: [PhotographerProfile] {
+        let query = photographerSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = query.isEmpty ? store.photographerLibrary : store.photographerLibrary.filter { photographer in
+            photographer.photographerName.localizedCaseInsensitiveContains(query)
+                || photographer.formattedFilenamePrefixes.localizedCaseInsensitiveContains(query)
+                || photographer.copyrightNotice.localizedCaseInsensitiveContains(query)
+        }
+        return filtered.sorted { lhs, rhs in
+            let comparison = lhs.photographerName.localizedCaseInsensitiveCompare(rhs.photographerName)
+            if comparison == .orderedSame {
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            switch photographerSortOrder {
+            case .ascending:
+                return comparison == .orderedAscending
+            case .descending:
+                return comparison == .orderedDescending
+            }
+        }
     }
 
     private var draftBinding: Binding<PhotographerProfile>? {
@@ -159,6 +256,52 @@ struct PhotographerSettingsView: View {
     private func saveDraft() {
         guard let draft, store.savePhotographerProfile(draft) else { return }
         self.draft = store.photographerLibrary.first { $0.id == draft.id }
+    }
+
+    private func prepareExport() {
+        guard let data = store.photographerLibraryExportData() else { return }
+        exportDocument = PhotographerLibraryFile(data: data)
+        showPhotographerExporter = true
+    }
+
+    private func importPhotographers(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let accessedSecurityScopedResource = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessedSecurityScopedResource {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            let data = try Data(contentsOf: url)
+            guard let result = store.importPhotographerLibrary(from: data) else { return }
+            if selectedPhotographerID == nil {
+                selectedPhotographerID = store.photographerLibrary.first?.id
+            }
+            importSummary = importDescription(result)
+        } catch {
+            store.alertMessage = "The photographers could not be imported: \(error.localizedDescription)"
+        }
+    }
+
+    private func importDescription(_ result: PhotographerLibraryImportResult) -> String {
+        let totalCount = result.addedCount + result.updatedCount + result.unchangedCount
+        guard totalCount > 0 else {
+            return "The file did not contain any photographers. No changes were made."
+        }
+
+        var changes: [String] = []
+        if result.addedCount > 0 {
+            changes.append("\(result.addedCount) added")
+        }
+        if result.updatedCount > 0 {
+            changes.append("\(result.updatedCount) updated")
+        }
+        if result.unchangedCount > 0 {
+            changes.append("\(result.unchangedCount) unchanged")
+        }
+        let photographers = totalCount == 1 ? "photographer" : "photographers"
+        return "Imported \(totalCount) \(photographers): \(changes.joined(separator: ", "))."
     }
 
     private func requestDeletion() {
@@ -216,4 +359,30 @@ struct PhotographerSettingsView: View {
         default: "Used by \(count) sync jobs."
         }
     }
+}
+
+private struct PhotographerLibraryFile: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private enum PhotographerSortOrder: Hashable {
+    case ascending
+    case descending
 }
