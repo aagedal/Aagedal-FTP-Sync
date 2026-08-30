@@ -1,15 +1,21 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct MetadataProgrammingView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.openWindow) private var openWindow
     @State private var selectedDate = Date()
     @State private var draft = MetadataAutomation()
     @State private var loadedJobID: UUID?
     @State private var selectedPhotographerID: UUID?
+    @State private var editingPhotographerID: UUID?
+    @State private var draggedPhotographerID: UUID?
     @State private var editingClipID: UUID?
     @State private var photographerPendingDeletion: PhotographerProfile?
     @State private var saveConfirmation = false
+    @State private var lastSavedDraft: MetadataAutomation?
+    @State private var autosaveTask: Task<Void, Never>?
     @State private var selectedClipIDs: Set<UUID> = []
     @State private var copiedClips: [MetadataScheduleClip] = []
     @State private var playhead: TimelinePlayhead?
@@ -39,7 +45,7 @@ struct MetadataProgrammingView: View {
             } else {
                 HSplitView {
                     librarySidebar
-                        .frame(minWidth: 285, idealWidth: 315, maxWidth: 370)
+                        .frame(minWidth: 245, idealWidth: 275, maxWidth: 320)
                     dayTimeline
                         .frame(minWidth: 650)
                 }
@@ -57,7 +63,19 @@ struct MetadataProgrammingView: View {
             alignment: .top
         )
         .onAppear(perform: loadSelectedJob)
-        .onChange(of: store.selectedJobID) { _, _ in loadSelectedJob() }
+        .onDisappear {
+            flushAutosave()
+        }
+        .onChange(of: store.selectedJobID) { _, _ in
+            flushAutosave()
+            loadSelectedJob()
+        }
+        .onChange(of: draft) { _, _ in
+            scheduleAutosave()
+        }
+        .onChange(of: store.photographerLibrary) { _, _ in
+            refreshDraftPhotographersFromLibrary()
+        }
         .onChange(of: selectedDate) { _, newDate in
             if let playhead, !calendar.isDate(playhead.date, inSameDayAs: newDate) {
                 self.playhead = nil
@@ -73,6 +91,19 @@ struct MetadataProgrammingView: View {
                     clip: clip,
                     photographers: draft.photographers,
                     onSave: updateClip
+                )
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { editingPhotographerID != nil },
+            set: { if !$0 { editingPhotographerID = nil } }
+        )) {
+            if let photographerID = editingPhotographerID,
+               let binding = photographerBinding(for: photographerID) {
+                TimelinePhotographerEditor(
+                    photographer: binding,
+                    day: selectedDate,
+                    onDone: { editingPhotographerID = nil }
                 )
             }
         }
@@ -186,98 +217,27 @@ struct MetadataProgrammingView: View {
 
     private var librarySidebar: some View {
         VStack(spacing: 0) {
-            GroupBox("Calendar") {
-                ProgrammingMonthCalendar(
-                    selection: $selectedDate,
-                    programmedDays: programmedDays,
-                    calendar: calendar
-                )
-            }
+            ProgrammingMonthCalendar(
+                selection: $selectedDate,
+                programmedDays: programmedDays,
+                calendar: calendar
+            )
             .padding(12)
 
+            Spacer(minLength: 12)
             Divider()
 
-            HStack {
-                Text("Photographers").font(.headline)
-                Spacer()
-                Menu {
-                    Button(action: addPhotographer) {
-                        Label("New Photographer", systemImage: "person.badge.plus")
-                    }
-                    if !knownPhotographers.isEmpty {
-                        Divider()
-                        Section("Known Photographers") {
-                            ForEach(knownPhotographers) { photographer in
-                                Button {
-                                    addKnownPhotographer(photographer)
-                                } label: {
-                                    Text("\(photographer.photographerName) (\(photographer.formattedFilenamePrefixes))")
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help(knownPhotographers.isEmpty ? "Add Photographer" : "Add a new or known photographer")
-                Button { moveSelectedPhotographer(by: -1) } label: {
-                    Image(systemName: "arrow.up")
-                }
-                .buttonStyle(.borderless)
-                .disabled(!canMoveSelectedPhotographer(by: -1))
-                .help("Move Photographer Up")
-                Button { moveSelectedPhotographer(by: 1) } label: {
-                    Image(systemName: "arrow.down")
-                }
-                .buttonStyle(.borderless)
-                .disabled(!canMoveSelectedPhotographer(by: 1))
-                .help("Move Photographer Down")
-                Button(action: requestPhotographerRemoval) {
-                    Image(systemName: "minus")
-                }
-                .buttonStyle(.borderless)
-                .disabled(selectedPhotographer == nil)
-                .help("Remove Photographer")
+            Button {
+                RegularWindowController.shared.prepareForOpening()
+                openWindow(id: "photographers")
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            } label: {
+                Label("Manage All Photographers…", systemImage: "person.2")
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
-
-            List(selection: $selectedPhotographerID) {
-                ForEach(draft.photographers) { photographer in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(photographer.photographerName.isEmpty
-                            ? "Untitled Photographer"
-                            : photographer.photographerName)
-                            .fontWeight(.medium)
-                        Text(photographer.normalizedPrefixes.isEmpty
-                            ? "No filename initials"
-                            : photographer.formattedFilenamePrefixes)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 3)
-                    .tag(photographer.id)
-                }
-                .onMove(perform: movePhotographers)
-            }
-            .frame(minHeight: 130)
-
-            if let photographerID = selectedPhotographerID,
-               let binding = photographerBinding(for: photographerID) {
-                Divider()
-                VStack(alignment: .leading, spacing: 14) {
-                    PhotographerEditor(photographer: binding)
-                    Divider()
-                    PhotographerWorkHoursControl(
-                        photographer: binding,
-                        day: selectedDate,
-                        calendar: calendar
-                    )
-                }
-                .padding(12)
-            }
+            .buttonStyle(.plain)
+            .padding(12)
+            .help("Open the shared photographer library in a separate window")
         }
     }
 
@@ -353,27 +313,20 @@ struct MetadataProgrammingView: View {
 
             Divider()
 
-            if timelinePhotographers.isEmpty {
-                VStack(spacing: 0) {
-                    ScrollView(.horizontal) {
-                        TimelineHourHeader(day: selectedDate)
-                            .frame(minWidth: 920)
-                    }
-
-                    ContentUnavailableView {
-                        Label("No photographers", systemImage: "person.crop.circle.badge.plus")
-                    } description: {
-                        Text("Add a photographer to create a track and start programming metadata.")
-                    } actions: {
-                        Button("Add Photographer", action: addPhotographer)
-                            .buttonStyle(.borderedProminent)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            } else {
+            GeometryReader { viewport in
                 ScrollView([.horizontal, .vertical]) {
                     VStack(spacing: 0) {
                         TimelineHourHeader(day: selectedDate)
+
+                        if timelinePhotographers.isEmpty {
+                            ContentUnavailableView {
+                                Label("No photographer tracks", systemImage: "person.crop.circle.badge.plus")
+                            } description: {
+                                Text("Use the row below to add a new or known photographer.")
+                            }
+                            .frame(height: 180)
+                        }
+
                         ForEach(timelinePhotographers) { photographer in
                             TimelineTrack(
                                 photographer: photographer,
@@ -386,6 +339,24 @@ struct MetadataProgrammingView: View {
                                 playheadDate: playhead?.date,
                                 showsPlayhead: playhead?.photographerID == photographer.id,
                                 canPaste: !copiedClips.isEmpty && playhead != nil,
+                                isSelected: selectedPhotographerID == photographer.id,
+                                processedFileCount: processedFileCount(for: photographer),
+                                onSelectPhotographer: {
+                                    selectedPhotographerID = photographer.id
+                                    selectedClipIDs = []
+                                    timelineFocused = true
+                                },
+                                onEditPhotographer: {
+                                    selectedPhotographerID = photographer.id
+                                    editingPhotographerID = photographer.id
+                                },
+                                onRequestRemove: {
+                                    selectedPhotographerID = photographer.id
+                                    photographerPendingDeletion = photographer
+                                },
+                                onBeginReordering: {
+                                    draggedPhotographerID = photographer.id
+                                },
                                 onSelect: selectClip,
                                 onEdit: editClip,
                                 onCreate: createClip,
@@ -394,10 +365,27 @@ struct MetadataProgrammingView: View {
                                 onPlacePlayhead: placePlayhead,
                                 onPasteAtPlayhead: pasteClips
                             )
+                            .onDrop(
+                                of: [UTType.text],
+                                delegate: PhotographerTrackDropDelegate(
+                                    destinationID: photographer.id,
+                                    photographers: $draft.photographers,
+                                    draggedPhotographerID: $draggedPhotographerID
+                                )
+                            )
                             Divider()
                         }
+
+                        TimelineAddPhotographerRow(
+                            knownPhotographers: knownPhotographers,
+                            onAddNew: addPhotographer,
+                            onAddKnown: addKnownPhotographer
+                        )
                     }
-                    .frame(minWidth: 920)
+                    .frame(
+                        width: max(viewport.size.width, 920),
+                        alignment: .topLeading
+                    )
                 }
                 .focusable()
                 .focused($timelineFocused)
@@ -468,7 +456,13 @@ struct MetadataProgrammingView: View {
 
             Spacer()
 
-            if saveConfirmation {
+            if draft != lastSavedDraft, canAutosaveDraft {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Saving…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if saveConfirmation {
                 Label("Saved", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
@@ -477,13 +471,13 @@ struct MetadataProgrammingView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Button(action: chooseMetadataPreviewFolder) {
+            Button(action: previewConfiguredLocalFolder) {
                 if isPreviewingMetadata {
                     ProgressView()
                         .controlSize(.small)
                     Text("Previewing…")
                 } else {
-                    Text("Preview Local Folder…")
+                    Text("Preview Local Folder")
                 }
             }
             .disabled(!canPreviewMetadata)
@@ -501,11 +495,6 @@ struct MetadataProgrammingView: View {
             }
             .disabled(!canReprocessMetadata)
             .help(reprocessHelp)
-
-            Button("Save Programming") { _ = save() }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut("s", modifiers: [.command, .shift])
-                .disabled(loadedJobID == nil || draft.validationMessage != nil || (draft.isEnabled && !canEnableMetadata))
         }
         .padding(14)
     }
@@ -528,6 +517,28 @@ struct MetadataProgrammingView: View {
         return target.kind == .local
     }
 
+    private var metadataLocalEndpoint: Endpoint? {
+        guard let selectedJob, selectedJob.direction != .bidirectional else { return nil }
+        let target = selectedJob.direction == .leftToRight ? selectedJob.right : selectedJob.left
+        return target.kind == .local ? target : nil
+    }
+
+    private var canAutosaveDraft: Bool {
+        guard let loadedJobID else { return false }
+        return canPersistDraft(draft, for: loadedJobID)
+    }
+
+    private func canPersistDraft(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
+        guard automation.validationMessage == nil,
+              let job = store.jobs.first(where: { $0.id == jobID }) else {
+            return false
+        }
+        guard automation.isEnabled else { return true }
+        guard job.direction != .bidirectional else { return false }
+        let target = job.direction == .leftToRight ? job.right : job.left
+        return target.kind == .local
+    }
+
     private var canReprocessMetadata: Bool {
         guard let loadedJobID else { return false }
         return draft.isEnabled
@@ -544,14 +555,20 @@ struct MetadataProgrammingView: View {
     }
 
     private var canPreviewMetadata: Bool {
-        loadedJobID != nil && previewValidationMessage == nil && !isPreviewingMetadata
+        loadedJobID != nil
+            && metadataLocalEndpoint?.bookmark != nil
+            && previewValidationMessage == nil
+            && !isPreviewingMetadata
     }
 
     private var previewHelp: String {
         if let previewValidationMessage {
             return previewValidationMessage
         }
-        return "Choose a local folder and show which files the unsaved programming draft would tag. No files are changed."
+        guard let metadataLocalEndpoint else {
+            return "Automatic metadata requires a one-way job with a local destination."
+        }
+        return "Preview the unsaved programming draft against \(metadataLocalEndpoint.localPath). No files are changed."
     }
 
     private var isReprocessing: Bool {
@@ -594,26 +611,19 @@ struct MetadataProgrammingView: View {
         return "Matching files in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
     }
 
-    private func chooseMetadataPreviewFolder() {
-        guard let selectedJob else { return }
-        let panel = NSOpenPanel()
-        panel.title = "Preview Automatic Metadata"
-        panel.message = "Choose a folder to scan. Preview does not modify any files."
-        panel.prompt = "Preview Folder"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = false
-        guard panel.runModal() == .OK, let folderURL = panel.url else { return }
-
+    private func previewConfiguredLocalFolder() {
+        guard let selectedJob, let metadataLocalEndpoint else { return }
         let previewDraft = draft
         let filter = selectedJob.filter
         isPreviewingMetadata = true
         metadataPreviewError = nil
         Task {
             do {
+                let folderAccess = try BookmarkAccess(endpoint: metadataLocalEndpoint)
+                let folderURL = folderAccess.url
                 let result = try await Task.detached(priority: .userInitiated) {
-                    try MetadataPreviewService.previewLocalFolder(
+                    _ = folderAccess
+                    return try MetadataPreviewService.previewLocalFolder(
                         at: folderURL,
                         automation: previewDraft,
                         filter: filter
@@ -682,6 +692,14 @@ struct MetadataProgrammingView: View {
             .sorted { $0.startsAt < $1.startsAt }
     }
 
+    private func processedFileCount(for photographer: PhotographerProfile) -> Int {
+        guard let loadedJobID else { return 0 }
+        let processedPaths = store.metadataAuditTrail(for: loadedJobID).lazy
+            .filter { $0.status == .applied && $0.photographerID == photographer.id }
+            .map(\.relativePath)
+        return Set(processedPaths).count
+    }
+
     private func photographerBinding(for id: UUID) -> Binding<PhotographerProfile>? {
         guard let index = draft.photographers.firstIndex(where: { $0.id == id }) else { return nil }
         return Binding(
@@ -691,10 +709,15 @@ struct MetadataProgrammingView: View {
     }
 
     private func loadSelectedJob() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        saveConfirmation = false
         guard let job = selectedJob else {
             loadedJobID = nil
             draft = MetadataAutomation()
+            lastSavedDraft = nil
             selectedPhotographerID = nil
+            editingPhotographerID = nil
             selectedClipIDs = []
             copiedClips = []
             playhead = nil
@@ -702,10 +725,41 @@ struct MetadataProgrammingView: View {
         }
         loadedJobID = job.id
         draft = job.metadataAutomation ?? MetadataAutomation()
+        lastSavedDraft = draft
         selectedPhotographerID = draft.photographers.first?.id
+        editingPhotographerID = nil
         selectedClipIDs = []
         copiedClips = []
         playhead = nil
+    }
+
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        saveConfirmation = false
+        guard draft != lastSavedDraft, canAutosaveDraft else { return }
+
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            _ = save()
+            autosaveTask = nil
+        }
+    }
+
+    private func flushAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        guard draft != lastSavedDraft else { return }
+        _ = save()
+    }
+
+    private func refreshDraftPhotographersFromLibrary() {
+        let libraryByID = Dictionary(uniqueKeysWithValues: store.photographerLibrary.map { ($0.id, $0) })
+        for index in draft.photographers.indices {
+            if let updatedProfile = libraryByID[draft.photographers[index].id] {
+                draft.photographers[index] = updatedProfile
+            }
+        }
     }
 
     private func addPhotographer() {
@@ -728,27 +782,6 @@ struct MetadataProgrammingView: View {
         selectedPhotographerID = photographer.id
     }
 
-    private func canMoveSelectedPhotographer(by offset: Int) -> Bool {
-        guard let selectedPhotographerID,
-              let index = draft.photographers.firstIndex(where: { $0.id == selectedPhotographerID }) else {
-            return false
-        }
-        return draft.photographers.indices.contains(index + offset)
-    }
-
-    private func moveSelectedPhotographer(by offset: Int) {
-        guard let selectedPhotographerID,
-              let index = draft.photographers.firstIndex(where: { $0.id == selectedPhotographerID }),
-              draft.photographers.indices.contains(index + offset) else {
-            return
-        }
-        draft.photographers.swapAt(index, index + offset)
-    }
-
-    private func movePhotographers(fromOffsets offsets: IndexSet, toOffset destination: Int) {
-        draft.photographers.move(fromOffsets: offsets, toOffset: destination)
-    }
-
     private func uniquePrefix() -> String {
         let used = Set(draft.photographers.flatMap(\.normalizedPrefixes))
         for prefix in ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"] where !used.contains(prefix) {
@@ -757,10 +790,6 @@ struct MetadataProgrammingView: View {
         var number = draft.photographers.count + 1
         while used.contains("P\(number)") { number += 1 }
         return "P\(number)"
-    }
-
-    private func requestPhotographerRemoval() {
-        photographerPendingDeletion = selectedPhotographer
     }
 
     private func removePhotographer(_ photographer: PhotographerProfile) {
@@ -998,16 +1027,14 @@ struct MetadataProgrammingView: View {
 
     @discardableResult
     private func save() -> Bool {
-        guard let loadedJobID,
+        guard canAutosaveDraft,
+              let loadedJobID,
               store.saveMetadataAutomation(draft, for: loadedJobID) else {
             saveConfirmation = false
             return false
         }
+        lastSavedDraft = draft
         saveConfirmation = true
-        Task {
-            try? await Task.sleep(for: .seconds(1.5))
-            saveConfirmation = false
-        }
         return true
     }
 }
@@ -1643,6 +1670,111 @@ private struct TimelinePlayhead: Equatable {
     let date: Date
 }
 
+private struct TimelinePhotographerEditor: View {
+    @Binding var photographer: PhotographerProfile
+    let day: Date
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Edit Photographer Track")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                Button("Done", action: onDone)
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            PhotographerEditor(photographer: $photographer)
+            Divider()
+            PhotographerWorkHoursControl(
+                photographer: $photographer,
+                day: day
+            )
+        }
+        .padding(20)
+        .frame(width: 480)
+    }
+}
+
+private struct TimelineAddPhotographerRow: View {
+    let knownPhotographers: [PhotographerProfile]
+    let onAddNew: () -> Void
+    let onAddKnown: (PhotographerProfile) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Menu {
+                Button(action: onAddNew) {
+                    Label("New Photographer", systemImage: "person.badge.plus")
+                }
+
+                if !knownPhotographers.isEmpty {
+                    Divider()
+                    Section("Known Photographers") {
+                        ForEach(knownPhotographers) { photographer in
+                            Button {
+                                onAddKnown(photographer)
+                            } label: {
+                                Text("\(photographer.photographerName) (\(photographer.formattedFilenamePrefixes))")
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("Add Photographer Track", systemImage: "plus.circle.fill")
+                    .font(.callout.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 12)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 177)
+            .help(knownPhotographers.isEmpty ? "Add a photographer" : "Add a new or known photographer")
+
+            Rectangle()
+                .fill(.quaternary.opacity(0.25))
+                .overlay(alignment: .leading) {
+                    Text("Tracks are matched using filename initials")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 12)
+                }
+        }
+        .frame(height: 52)
+    }
+}
+
+private struct PhotographerTrackDropDelegate: DropDelegate {
+    let destinationID: UUID
+    @Binding var photographers: [PhotographerProfile]
+    @Binding var draggedPhotographerID: UUID?
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedPhotographerID,
+              draggedPhotographerID != destinationID,
+              let sourceIndex = photographers.firstIndex(where: { $0.id == draggedPhotographerID }),
+              let destinationIndex = photographers.firstIndex(where: { $0.id == destinationID }) else {
+            return
+        }
+
+        withAnimation(.snappy(duration: 0.18)) {
+            photographers.move(
+                fromOffsets: IndexSet(integer: sourceIndex),
+                toOffset: destinationIndex > sourceIndex ? destinationIndex + 1 : destinationIndex
+            )
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedPhotographerID = nil
+        return true
+    }
+}
+
 private struct TimelineHourHeader: View {
     let day: Date
     private let calendar = Calendar.current
@@ -1657,7 +1789,7 @@ private struct TimelineHourHeader: View {
 
             GeometryReader { proxy in
                 ZStack(alignment: .topLeading) {
-                    ForEach(Array(stride(from: 0, through: 24, by: 3)), id: \.self) { hour in
+                    ForEach(Array(stride(from: 0, to: 24, by: 3)), id: \.self) { hour in
                         Text(String(format: "%02d:00", hour))
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
@@ -1669,11 +1801,34 @@ private struct TimelineHourHeader: View {
                             .frame(width: 1)
                             .offset(x: currentTimeOffset(totalWidth: proxy.size.width))
                     }
+
                 }
             }
+
+            VStack(spacing: 0) {
+                Text("24:00")
+                    .monospacedDigit()
+                Text(nextDayLabel)
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(Color.accentColor)
+            .frame(width: 68)
+            .frame(maxHeight: .infinity)
+            .background(Color.accentColor.opacity(0.1))
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.accentColor.opacity(0.7))
+                    .frame(width: 2)
+            }
+            .accessibilityLabel("Next day, \(nextDayLabel), starts at midnight")
         }
-        .frame(height: 28)
+        .frame(height: 34)
         .background(.bar)
+    }
+
+    private var nextDayLabel: String {
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: day) ?? day
+        return nextDay.formatted(.dateTime.weekday(.abbreviated).day())
     }
 
     private func currentTimeOffset(totalWidth: CGFloat) -> CGFloat {
@@ -1694,6 +1849,12 @@ private struct TimelineTrack: View {
     let playheadDate: Date?
     let showsPlayhead: Bool
     let canPaste: Bool
+    let isSelected: Bool
+    let processedFileCount: Int
+    let onSelectPhotographer: () -> Void
+    let onEditPhotographer: () -> Void
+    let onRequestRemove: () -> Void
+    let onBeginReordering: () -> Void
     let onSelect: (MetadataScheduleClip) -> Void
     let onEdit: (MetadataScheduleClip) -> Void
     let onCreate: (PhotographerProfile, Date, Date) -> Void
@@ -1707,12 +1868,48 @@ private struct TimelineTrack: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(photographer.photographerName).fontWeight(.medium).lineLimit(1)
-                Text(photographer.formattedFilenamePrefixes).font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14)
+                    .contentShape(Rectangle().inset(by: -6))
+                    .onDrag {
+                        onBeginReordering()
+                        return NSItemProvider(object: photographer.id.uuidString as NSString)
+                    }
+                    .help("Drag to reorder this track")
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(photographer.photographerName).fontWeight(.medium).lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(photographer.formattedFilenamePrefixes)
+                            .lineLimit(1)
+                        Label(processedFileCount.formatted(), systemImage: "checkmark")
+                            .font(.caption2.monospacedDigit().weight(.medium))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                            .help(processedFileHelp)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 2)
+
+                Button(action: onEditPhotographer) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Edit photographer and work hours")
             }
-            .frame(width: 165, alignment: .leading)
-            .padding(.leading, 12)
+            .padding(.horizontal, 8)
+            .frame(width: 177, alignment: .leading)
+            .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onSelectPhotographer)
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
@@ -1748,10 +1945,28 @@ private struct TimelineTrack: View {
                 }
             }
             .padding(.horizontal, 4)
+
+            Rectangle()
+                .fill(Color.accentColor.opacity(0.08))
+                .frame(width: 68)
+                .overlay(alignment: .leading) {
+                    Rectangle()
+                        .fill(Color.accentColor.opacity(0.65))
+                        .frame(width: 2)
+                }
+                .allowsHitTesting(false)
+                .accessibilityLabel("Next day")
         }
         .frame(height: 58)
         .contentShape(Rectangle())
         .contextMenu {
+            Button(action: onEditPhotographer) {
+                Label("Edit Photographer…", systemImage: "slider.horizontal.3")
+            }
+            Button(role: .destructive, action: onRequestRemove) {
+                Label("Remove Track", systemImage: "minus.circle")
+            }
+            Divider()
             Button {
                 if let playheadDate { onPasteAtPlayhead(playheadDate, photographer.id) }
             } label: {
@@ -1762,6 +1977,11 @@ private struct TimelineTrack: View {
     }
 
     private var dayStart: Date { calendar.startOfDay(for: day) }
+
+    private var processedFileHelp: String {
+        let files = processedFileCount == 1 ? "1 unique file" : "\(processedFileCount) unique files"
+        return "Metadata successfully applied to \(files) for this photographer in the current job."
+    }
 
     private var nextDay: Date {
         calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart.addingTimeInterval(86_400)

@@ -36,6 +36,13 @@ struct AagedalFTPSyncApp: App {
         }
         .defaultSize(width: 1180, height: 760)
 
+        Window("Photographers", id: "photographers") {
+            PhotographerSettingsView()
+                .environmentObject(store)
+                .background(RegularWindowTracker())
+        }
+        .defaultSize(width: 700, height: 450)
+
         Settings {
             PhotographerSettingsView()
                 .environmentObject(store)
