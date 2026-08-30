@@ -30,6 +30,30 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(assignment?.clip.id, clip.id)
     }
 
+    func testAssignmentMatchesAnyCommaSeparatedCameraInitials() {
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: " jad, JDX, jad ",
+            creator: "Jane Doe",
+            copyrightNotice: "© Example News"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Conference",
+            startsAt: timestamp.addingTimeInterval(-60),
+            endsAt: timestamp.addingTimeInterval(60)
+        )
+        let automation = MetadataAutomation(isEnabled: true, photographers: [photographer], clips: [clip])
+
+        XCTAssertEqual(photographer.normalizedPrefixes, ["JAD", "JDX"])
+        XCTAssertEqual(photographer.formattedFilenamePrefixes, "JAD, JDX")
+        XCTAssertEqual(
+            automation.assignment(for: "incoming/JDX_0123.JPG", scheduledAt: timestamp)?.photographer.id,
+            photographer.id
+        )
+    }
+
     func testAssignmentUsesHalfOpenTimeRange() {
         let start = Date(timeIntervalSince1970: 1_700_000_000)
         let end = start.addingTimeInterval(3_600)
@@ -56,6 +80,36 @@ final class MetadataAutomationTests: XCTestCase {
         let broad = PhotographerProfile(
             name: "Broad",
             filenamePrefix: "A",
+            creator: "Broad",
+            copyrightNotice: ""
+        )
+        let specific = PhotographerProfile(
+            name: "Specific",
+            filenamePrefix: "ABC",
+            creator: "Specific",
+            copyrightNotice: ""
+        )
+        let clips = [broad, specific].map {
+            MetadataScheduleClip(
+                photographerID: $0.id,
+                name: $0.name,
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60)
+            )
+        }
+        let automation = MetadataAutomation(isEnabled: true, photographers: [broad, specific], clips: clips)
+
+        XCTAssertEqual(
+            automation.assignment(for: "ABC_001.jpg", scheduledAt: timestamp)?.photographer.id,
+            specific.id
+        )
+    }
+
+    func testSpecificityUsesTheInitialsThatMatchedTheFilename() {
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let broad = PhotographerProfile(
+            name: "Broad",
+            filenamePrefix: "UNRELATED, A",
             creator: "Broad",
             copyrightNotice: ""
         )
@@ -199,7 +253,7 @@ final class MetadataAutomationTests: XCTestCase {
 
         XCTAssertEqual(
             automation.validationMessage,
-            "The filename prefix JAD is assigned to more than one photographer."
+            "The filename initials JAD are assigned to more than one photographer."
         )
 
         automation.photographers = [first]
@@ -219,6 +273,27 @@ final class MetadataAutomationTests: XCTestCase {
         ]
 
         XCTAssertEqual(automation.validationMessage, "Jane has overlapping metadata clips.")
+    }
+
+    func testValidationRejectsDuplicateSecondaryCameraInitials() {
+        let first = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD, CAM2",
+            creator: "Jane",
+            copyrightNotice: ""
+        )
+        let second = PhotographerProfile(
+            name: "John",
+            filenamePrefix: "JOS, cam2",
+            creator: "John",
+            copyrightNotice: ""
+        )
+        let automation = MetadataAutomation(photographers: [first, second])
+
+        XCTAssertEqual(
+            automation.validationMessage,
+            "The filename initials CAM2 are assigned to more than one photographer."
+        )
     }
 
     func testKeywordsAreTrimmedAndDeduplicated() {

@@ -177,7 +177,7 @@ final class PhotographerLibraryAppStoreTests: XCTestCase {
         var updated = PhotographerProfile(
             id: photographer.id,
             name: "Jane Photographer",
-            filenamePrefix: "JAP",
+            filenamePrefix: " jap, JAX, jap ",
             creator: "Jane Photographer",
             copyrightNotice: "Example News",
             workHours: PhotographerWorkHours(startMinutes: 9 * 60, endMinutes: 17 * 60)
@@ -187,13 +187,15 @@ final class PhotographerLibraryAppStoreTests: XCTestCase {
             on: Date(timeIntervalSince1970: 1_788_134_400),
             calendar: Calendar(identifier: .gregorian)
         )
+        var expected = updated
+        expected.filenamePrefix = "JAP, JAX"
 
         XCTAssertTrue(store.savePhotographerProfile(updated))
 
-        XCTAssertEqual(store.photographerLibrary, [updated])
-        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers, [updated])
-        XCTAssertEqual(try photographerRepository.load(), [updated])
-        XCTAssertEqual(try jobRepository.load().first?.metadataAutomation?.photographers, [updated])
+        XCTAssertEqual(store.photographerLibrary, [expected])
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers, [expected])
+        XCTAssertEqual(try photographerRepository.load(), [expected])
+        XCTAssertEqual(try jobRepository.load().first?.metadataAutomation?.photographers, [expected])
     }
 
     func testAssignedSharedPhotographerMustBeRemovedFromJobsBeforeDeletion() throws {
@@ -230,5 +232,80 @@ final class PhotographerLibraryAppStoreTests: XCTestCase {
         XCTAssertTrue(store.photographerLibrary.contains(where: { $0.id == assigned.id }))
         XCTAssertTrue(store.removePhotographerProfile(unused.id))
         XCTAssertFalse(store.photographerLibrary.contains(where: { $0.id == unused.id }))
+    }
+
+    func testSharedLibraryRejectsDuplicateSecondaryCameraInitials() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("photographer-duplicate-initials-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        let first = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD, CAM2",
+            creator: "Jane",
+            copyrightNotice: ""
+        )
+        try photographerRepository.save([first])
+        let store = AppStore(
+            repository: jobRepository,
+            photographerProfileRepository: photographerRepository
+        )
+        let second = PhotographerProfile(
+            name: "John",
+            filenamePrefix: "JOS, cam2",
+            creator: "John",
+            copyrightNotice: ""
+        )
+
+        XCTAssertFalse(store.savePhotographerProfile(second))
+        XCTAssertEqual(store.alertMessage, "The filename initials CAM2 are already used by another photographer.")
+        XCTAssertEqual(store.photographerLibrary, [first])
+    }
+
+    func testProgrammingCannotIntroduceDuplicateInitialsIntoSharedLibrary() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("programming-duplicate-initials-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        let existing = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD, CAM2",
+            creator: "Jane",
+            copyrightNotice: ""
+        )
+        let bookmark = Data([1])
+        let job = SyncJob(
+            name: "Picture desk",
+            left: Endpoint(kind: .local, localPath: "/source", bookmark: bookmark),
+            right: Endpoint(kind: .local, localPath: "/target", bookmark: bookmark),
+            direction: .leftToRight,
+            isEnabled: false
+        )
+        try jobRepository.save([job])
+        try photographerRepository.save([existing])
+        let store = AppStore(
+            repository: jobRepository,
+            photographerProfileRepository: photographerRepository
+        )
+        let incoming = PhotographerProfile(
+            name: "John",
+            filenamePrefix: "JOS, cam2",
+            creator: "John",
+            copyrightNotice: ""
+        )
+
+        XCTAssertFalse(store.saveMetadataAutomation(
+            MetadataAutomation(photographers: [incoming]),
+            for: job.id
+        ))
+        XCTAssertEqual(store.alertMessage, "The filename initials CAM2 are already used by another photographer.")
+        XCTAssertNil(store.jobs.first?.metadataAutomation)
+        XCTAssertEqual(store.photographerLibrary, [existing])
     }
 }

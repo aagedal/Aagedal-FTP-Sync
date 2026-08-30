@@ -100,6 +100,16 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
         return true
     }
 
+    func removeFile(_ file: SyncFile) async throws {
+        let source = try safeURL(for: file.relativePath)
+        guard fileManager.fileExists(atPath: source.path) else { return }
+        let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw AppError.transferFailed("Only regular source files can be moved to the processed folder.")
+        }
+        try fileManager.removeItem(at: source)
+    }
+
     private func safeURL(for relativePath: String) throws -> URL {
         guard PathSafety.isSafeRelativePath(relativePath) else {
             throw AppError.transferFailed("A file contained an unsafe relative path and was skipped.")

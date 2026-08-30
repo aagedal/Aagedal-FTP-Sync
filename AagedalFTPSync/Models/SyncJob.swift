@@ -106,6 +106,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var verifyFileSizes = true
     var targetCleanup: TargetCleanup? = nil
     // Optional so jobs saved by earlier versions continue to decode.
+    var processedFolder: Endpoint? = nil
+    // Optional so jobs saved by earlier versions continue to decode.
     var metadataAutomation: MetadataAutomation? = nil
 
     var startsOnAppLaunch: Bool {
@@ -145,6 +147,32 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
                 }
             }
         }
+        if let processedFolder {
+            guard direction != .bidirectional else {
+                return "Moving processed files is only available for one-way jobs."
+            }
+            guard processedFolder.kind == .local else {
+                return "The processed-files location must be a local folder."
+            }
+            if let message = processedFolder.validationMessage {
+                return "Processed folder: \(message)"
+            }
+            guard metadataAutomation?.isEnabled == true else {
+                return "Enable automatic metadata before moving files to a processed folder."
+            }
+            let processedURL = URL(fileURLWithPath: processedFolder.localPath)
+                .standardizedFileURL.resolvingSymlinksInPath()
+            for endpoint in [left, right] where endpoint.kind == .local {
+                let endpointURL = URL(fileURLWithPath: endpoint.localPath)
+                    .standardizedFileURL.resolvingSymlinksInPath()
+                let foldersOverlap = processedURL == endpointURL
+                    || processedURL.path.hasPrefix(endpointURL.path + "/")
+                    || endpointURL.path.hasPrefix(processedURL.path + "/")
+                guard !foldersOverlap else {
+                    return "The processed folder must be separate from the source and destination folders."
+                }
+            }
+        }
         if let metadataAutomation, metadataAutomation.isEnabled {
             guard direction != .bidirectional else {
                 return "Automatic metadata is only available for one-way jobs."
@@ -173,6 +201,7 @@ enum JobPhase: Equatable, Sendable {
         Date,
         transferred: Int,
         deleted: Int,
+        processed: Int,
         conflicts: [String],
         metadataReport: MetadataRunReport,
         nextRun: Date?
@@ -184,10 +213,13 @@ enum JobPhase: Equatable, Sendable {
         case .stopped: return "Stopped"
         case .waiting: return "Waiting"
         case .syncing: return "Syncing…"
-        case .succeeded(_, let transferred, let deleted, let conflicts, let metadataReport, _):
+        case .succeeded(_, let transferred, let deleted, let processed, let conflicts, let metadataReport, _):
             let transferText = transferred == 1 ? "1 file transferred" : "\(transferred) files transferred"
             var parts = [transferText]
             if deleted > 0 { parts.append("\(deleted) deleted") }
+            if processed > 0 {
+                parts.append(processed == 1 ? "1 moved to processed" : "\(processed) moved to processed")
+            }
             if conflicts.count == 1 { parts.append("1 conflict skipped: \(conflicts[0])") }
             else if conflicts.count > 1 { parts.append("\(conflicts.count) conflicts skipped") }
             if metadataReport.hasActivity {
@@ -206,17 +238,20 @@ enum JobPhase: Equatable, Sendable {
 struct SyncResult: Equatable, Sendable {
     let transferred: Int
     let deleted: Int
+    let processed: Int
     let conflicts: [String]
     let metadataReport: MetadataRunReport
 
     init(
         transferred: Int,
         deleted: Int,
+        processed: Int = 0,
         conflicts: [String] = [],
         metadataReport: MetadataRunReport = .empty
     ) {
         self.transferred = transferred
         self.deleted = deleted
+        self.processed = processed
         self.conflicts = conflicts
         self.metadataReport = metadataReport
     }

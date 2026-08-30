@@ -5,6 +5,234 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testSuccessfulMetadataWriteMovesTaggedFileToPerJobProcessedFolder() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("incoming/JAD_0001.jpg")
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        try jpeg.write(to: source)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "© Example News"
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .overwrite,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Processed assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Ready for desk")
+            )]
+        )
+        job.processedFolder = try fixture.endpoint(for: fixture.processed)
+
+        let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(firstResult.processed, 1)
+        XCTAssertEqual(firstResult.metadataReport.applied, 1)
+        XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        let relativePath = "incoming/JAD_0001.jpg"
+        let destination = fixture.right.appendingPathComponent(relativePath)
+        let processed = fixture.processed.appendingPathComponent(relativePath)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: processed.path))
+        XCTAssertEqual(try ImageMetadata.read(from: destination).iptc.headline, "Ready for desk")
+        XCTAssertEqual(try ImageMetadata.read(from: processed).iptc.headline, "Ready for desk")
+    }
+
+    func testMetadataSkipLeavesSourceOutsideProcessedFolder() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("JAD_UNSCHEDULED.jpg")
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        try jpeg.write(to: source)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Different day",
+                startsAt: timestamp.addingTimeInterval(3_600),
+                endsAt: timestamp.addingTimeInterval(7_200)
+            )]
+        )
+        job.processedFolder = try fixture.endpoint(for: fixture.processed)
+
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result.processed, 0)
+        XCTAssertEqual(result.metadataReport.skipped, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.processed.appendingPathComponent(source.lastPathComponent).path
+            )
+        )
+    }
+
+    func testSuccessfulRawMetadataMovesRawAndGeneratedSidecarToProcessedFolder() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "incoming/JAD_0002.CR3"
+        let source = fixture.left.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let rawData = Data("untouched-camera-data".utf8)
+        try rawData.write(to: source)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "RAW assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Processed RAW")
+            )]
+        )
+        job.processedFolder = try fixture.endpoint(for: fixture.processed)
+
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result.processed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        let processedRaw = fixture.processed.appendingPathComponent(relativePath)
+        let processedSidecar = fixture.processed.appendingPathComponent(
+            MetadataWriter.sidecarRelativePath(for: relativePath)
+        )
+        XCTAssertEqual(try Data(contentsOf: processedRaw), rawData)
+        XCTAssertEqual(try XMPSidecar.read(from: processedSidecar).headline, "Processed RAW")
+        XCTAssertEqual(
+            try XMPSidecar.read(
+                from: fixture.right.appendingPathComponent(
+                    MetadataWriter.sidecarRelativePath(for: relativePath)
+                )
+            ).headline,
+            "Processed RAW"
+        )
+    }
+
+    func testProcessedFolderCollisionNeverOverwritesOrRemovesSource() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let filename = "JAD_COLLISION.jpg"
+        let source = fixture.left.appendingPathComponent(filename)
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 3,
+            hasAlpha: false,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ), let jpeg = bitmap.representation(using: .jpeg, properties: [:]) else {
+            return XCTFail("Could not create the JPEG fixture")
+        }
+        try jpeg.write(to: source)
+        let existingProcessedData = Data("keep existing processed file".utf8)
+        let processed = fixture.processed.appendingPathComponent(filename)
+        try existingProcessedData.write(to: processed)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Collision assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Do not archive over existing")
+            )]
+        )
+        job.processedFolder = try fixture.endpoint(for: fixture.processed)
+
+        do {
+            _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTFail("A processed-folder filename collision should fail safely")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("already contains a file"))
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try Data(contentsOf: processed), existingProcessedData)
+    }
+
     func testOneWaySyncAppliesScheduledMetadataAndDoesNotRepeatTransfer() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
@@ -680,15 +908,18 @@ private final class LocalFixture {
     let root: URL
     let left: URL
     let right: URL
+    let processed: URL
     let outside: URL
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("AagedalSyncTests-\(UUID().uuidString)")
         left = root.appendingPathComponent("left")
         right = root.appendingPathComponent("right")
+        processed = root.appendingPathComponent("processed")
         outside = root.appendingPathComponent("outside")
         try FileManager.default.createDirectory(at: left, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: right, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: processed, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
     }
 
@@ -708,7 +939,7 @@ private final class LocalFixture {
 
     func cleanUp() { try? FileManager.default.removeItem(at: root) }
 
-    private func endpoint(for url: URL) throws -> Endpoint {
+    func endpoint(for url: URL) throws -> Endpoint {
         let bookmark = try FolderBookmark.create(for: url)
         return Endpoint(kind: .local, localPath: bookmark.resolvedURL.path, bookmark: bookmark.data)
     }

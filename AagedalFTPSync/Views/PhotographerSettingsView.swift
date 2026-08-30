@@ -183,14 +183,16 @@ struct PhotographerSettingsView: View {
     }
 
     private func uniquePrefix() -> String {
-        let usedPrefixes = Set(store.photographerLibrary.map(\.normalizedPrefix))
+        let usedPrefixes = Set(store.photographerLibrary.flatMap(\.normalizedPrefixes))
         var number = store.photographerLibrary.count + 1
         while usedPrefixes.contains("P\(number)") { number += 1 }
         return "P\(number)"
     }
 
     private func profileSummary(_ photographer: PhotographerProfile) -> String {
-        let prefix = photographer.normalizedPrefix.isEmpty ? "No prefix" : photographer.normalizedPrefix
+        let prefix = photographer.normalizedPrefixes.isEmpty
+            ? "No initials"
+            : photographer.formattedFilenamePrefixes
         let defaultHours: String
         if let hours = photographer.workHours {
             defaultHours = "default \(formatted(minutes: hours.startMinutes))–\(formatted(minutes: hours.endMinutes))"

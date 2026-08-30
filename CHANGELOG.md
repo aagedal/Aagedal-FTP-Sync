@@ -4,7 +4,9 @@
 
 - Start the 2.5 metadata workflow with per-job photographer profiles, filename-prefix matching, scheduled day clips, and SwiftExif-powered IPTC/XMP writing for files synced to local folders.
 - Add a dedicated metadata-programming window with a calendar, photographer library, visual day tracks, cross-day confirmation, and clip copying between photographers.
+- Replace the compact system calendar with a full-width month grid that highlights programmed days and keeps month and today navigation close at hand.
 - Keep photographer profiles in a backup-protected library shared across sessions and sync jobs, with quick reuse from the metadata programmer.
+- Support comma-separated filename initials so one photographer can use multiple cameras with different filename prefixes.
 - Add per-job photographer reordering, default and date-specific work-hour backgrounds with week-level editing, and a Settings window for managing shared photographer profiles.
 - Leave unscheduled timeline periods empty instead of rendering orange gap overlays.
 - Add direct timeline editing with configurable snapping, edge resizing, multi-clip copy/paste, schedule warnings, continuation markers, and keyboard navigation.
@@ -13,6 +15,7 @@
 - Add confirmed, on-demand reprocessing for matching files already in a local destination, preserving modification dates and generating RAW sidecars without rewriting camera files.
 - Report metadata applied, skipped, and failed separately and retain a bounded, backup-protected per-file audit trail with photographer, clip, timestamp policy, diagnostic detail, and SwiftExif warnings.
 - Add a read-only local-folder preview that evaluates an unsaved programming draft before automatic metadata is enabled.
+- Add an opt-in local processed folder per job that receives successfully tagged files and RAW sidecars before originals are removed from local or remote sources.
 - Persist original source signatures so equal-timestamp source changes remain detectable after embedded metadata changes destination size.
 - Fall back to the untouched downloaded file when metadata writing fails, while recording the failure and preserving atomic destination replacement.
 - Add JPEG, TIFF, DNG, CR3, HEIC, and XMP-sidecar round-trip and recovery coverage.

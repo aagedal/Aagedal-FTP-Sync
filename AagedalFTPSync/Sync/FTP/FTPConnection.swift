@@ -233,6 +233,10 @@ actor FTPConnection {
         control = nil
     }
 
+    func delete(path: String) async throws {
+        _ = try await command("DELE \(escaped(path))", accepting: 200..<300)
+    }
+
     private func ensureDirectory(_ path: String) async throws {
         guard path != "/", !path.isEmpty else { return }
         var current = ""

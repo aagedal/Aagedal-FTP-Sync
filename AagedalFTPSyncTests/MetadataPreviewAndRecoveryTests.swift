@@ -154,8 +154,10 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: folder) }
         let sourceFolder = folder.appendingPathComponent("source")
         let destinationFolder = folder.appendingPathComponent("destination")
+        let processedFolder = folder.appendingPathComponent("processed")
         try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: processedFolder, withIntermediateDirectories: true)
         let source = sourceFolder.appendingPathComponent("JAD_BROKEN.jpg")
         let original = Data("not valid image data".utf8)
         try original.write(to: source)
@@ -188,6 +190,7 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
                 fields: ScheduledMetadataFields(headline: "Cannot be embedded")
             )]
         )
+        job.processedFolder = try localEndpoint(for: processedFolder)
         let signatureRepository = SourceSignatureRepository(
             fileURL: folder.appendingPathComponent("state/signatures.json")
         )
@@ -199,6 +202,7 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         )
 
         XCTAssertEqual(result.transferred, 1)
+        XCTAssertEqual(result.processed, 0)
         XCTAssertEqual(result.metadataReport.applied, 0)
         XCTAssertEqual(result.metadataReport.failed, 1)
         XCTAssertEqual(result.metadataReport.entries.first?.photographerName, "Jane Doe")
@@ -206,6 +210,12 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         XCTAssertEqual(
             try Data(contentsOf: destinationFolder.appendingPathComponent(source.lastPathComponent)),
             original
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: processedFolder.appendingPathComponent(source.lastPathComponent).path
+            )
         )
     }
 

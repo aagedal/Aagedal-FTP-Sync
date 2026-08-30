@@ -167,8 +167,22 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
         self.workHourOverrides = workHourOverrides
     }
 
-    var normalizedPrefix: String {
-        filenamePrefix.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    /// Comma-separated camera filename initials, normalized for matching.
+    /// Keeping the persisted value as a string preserves profiles created by
+    /// versions that supported only one prefix.
+    var normalizedPrefixes: [String] {
+        var seen = Set<String>()
+        return filenamePrefix
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .compactMap { value in
+                let prefix = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                guard !prefix.isEmpty, seen.insert(prefix).inserted else { return nil }
+                return prefix
+            }
+    }
+
+    var formattedFilenamePrefixes: String {
+        normalizedPrefixes.joined(separator: ", ")
     }
 
     /// The IPTC Creator is also the photographer's display name. Falling back to
@@ -186,13 +200,20 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
         return profile
     }
 
-    func matches(relativePath: String) -> Bool {
-        guard !normalizedPrefix.isEmpty else { return false }
+    func matchingPrefixLength(relativePath: String) -> Int? {
+        guard !normalizedPrefixes.isEmpty else { return nil }
         let filename = URL(fileURLWithPath: relativePath)
             .deletingPathExtension()
             .lastPathComponent
             .uppercased()
-        return filename.hasPrefix(normalizedPrefix)
+        return normalizedPrefixes
+            .filter { filename.hasPrefix($0) }
+            .map(\.count)
+            .max()
+    }
+
+    func matches(relativePath: String) -> Bool {
+        matchingPrefixLength(relativePath: relativePath) != nil
     }
 
     func workHoursOverride(
@@ -515,8 +536,10 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         let matchingPhotographers = photographers
             .filter { $0.matches(relativePath: relativePath) }
             .sorted {
-                if $0.normalizedPrefix.count != $1.normalizedPrefix.count {
-                    return $0.normalizedPrefix.count > $1.normalizedPrefix.count
+                let lhsLength = $0.matchingPrefixLength(relativePath: relativePath) ?? 0
+                let rhsLength = $1.matchingPrefixLength(relativePath: relativePath) ?? 0
+                if lhsLength != rhsLength {
+                    return lhsLength > rhsLength
                 }
                 return $0.id.uuidString < $1.id.uuidString
             }
@@ -543,20 +566,25 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
 
         let namedPhotographers = photographers.filter {
             !$0.photographerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || !$0.normalizedPrefix.isEmpty
+                || !$0.normalizedPrefixes.isEmpty
         }
         if let photographer = namedPhotographers.first(where: {
             $0.photographerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }) {
-            return "Give the photographer using prefix \(photographer.normalizedPrefix) a name."
+            return "Give the photographer using initials \(photographer.formattedFilenamePrefixes) a name."
         }
-        if let photographer = namedPhotographers.first(where: { $0.normalizedPrefix.isEmpty }) {
-            return "Give \(photographer.photographerName) a filename prefix."
+        if let photographer = namedPhotographers.first(where: { $0.normalizedPrefixes.isEmpty }) {
+            return "Give \(photographer.photographerName) filename initials."
         }
 
-        let groupedPrefixes = Dictionary(grouping: namedPhotographers, by: \PhotographerProfile.normalizedPrefix)
-        if let duplicate = groupedPrefixes.first(where: { $0.value.count > 1 })?.key {
-            return "The filename prefix \(duplicate) is assigned to more than one photographer."
+        var prefixOwners: [String: Set<UUID>] = [:]
+        for photographer in namedPhotographers {
+            for prefix in photographer.normalizedPrefixes {
+                prefixOwners[prefix, default: []].insert(photographer.id)
+            }
+        }
+        if let duplicate = prefixOwners.keys.sorted().first(where: { prefixOwners[$0, default: []].count > 1 }) {
+            return "The filename initials \(duplicate) are assigned to more than one photographer."
         }
         if isEnabled, clips.isEmpty {
             return "Add at least one metadata clip before enabling automatic metadata."

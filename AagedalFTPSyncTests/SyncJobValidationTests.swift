@@ -58,6 +58,50 @@ final class SyncJobValidationTests: XCTestCase {
         XCTAssertEqual(job.validationMessage, "Source and target folders must not overlap when cleanup is enabled.")
     }
 
+    func testProcessedFolderRequiresAutomaticMetadata() {
+        var job = validJob(direction: .leftToRight)
+        job.processedFolder = Endpoint(
+            kind: .local,
+            localPath: "/Users/example/Processed",
+            bookmark: Data([1])
+        )
+
+        XCTAssertEqual(
+            job.validationMessage,
+            "Enable automatic metadata before moving files to a processed folder."
+        )
+    }
+
+    func testProcessedFolderRejectsTwoWayJobs() {
+        var job = validJob(direction: .bidirectional)
+        job.metadataAutomation = validMetadataAutomation()
+        job.processedFolder = Endpoint(
+            kind: .local,
+            localPath: "/Users/example/Processed",
+            bookmark: Data([1])
+        )
+
+        XCTAssertEqual(
+            job.validationMessage,
+            "Moving processed files is only available for one-way jobs."
+        )
+    }
+
+    func testProcessedFolderMustNotOverlapLocalDestination() {
+        var job = validJob(direction: .leftToRight)
+        job.metadataAutomation = validMetadataAutomation()
+        job.processedFolder = Endpoint(
+            kind: .local,
+            localPath: "/Users/example/Pictures/Processed",
+            bookmark: Data([1])
+        )
+
+        XCTAssertEqual(
+            job.validationMessage,
+            "The processed folder must be separate from the source and destination folders."
+        )
+    }
+
     private func validJob(direction: SyncDirection) -> SyncJob {
         let remote = Endpoint(
             kind: .sftp,
@@ -77,6 +121,25 @@ final class SyncJobValidationTests: XCTestCase {
             direction: direction,
             intervalSeconds: 5,
             isEnabled: false
+        )
+    }
+
+    private func validMetadataAutomation() -> MetadataAutomation {
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        return MetadataAutomation(
+            isEnabled: true,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Assignment",
+                startsAt: Date(timeIntervalSince1970: 100),
+                endsAt: Date(timeIntervalSince1970: 200)
+            )]
         )
     }
 }

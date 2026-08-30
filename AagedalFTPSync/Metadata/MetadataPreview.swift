@@ -185,8 +185,10 @@ enum MetadataPreviewService {
         photographers
             .filter { $0.matches(relativePath: relativePath) }
             .sorted {
-                if $0.normalizedPrefix.count != $1.normalizedPrefix.count {
-                    return $0.normalizedPrefix.count > $1.normalizedPrefix.count
+                let lhsLength = $0.matchingPrefixLength(relativePath: relativePath) ?? 0
+                let rhsLength = $1.matchingPrefixLength(relativePath: relativePath) ?? 0
+                if lhsLength != rhsLength {
+                    return lhsLength > rhsLength
                 }
                 return $0.id.uuidString < $1.id.uuidString
             }

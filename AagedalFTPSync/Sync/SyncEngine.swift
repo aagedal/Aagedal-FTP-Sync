@@ -25,6 +25,7 @@ struct MetadataReprocessResult: Equatable, Sendable {
 private struct TransferMetadataOutcome: Sendable {
     let auditEntry: MetadataAuditEntry?
     let embeddedMetadataApplied: Bool
+    let movedToProcessed: Bool
 }
 
 struct SyncEngine: Sendable {
@@ -39,12 +40,16 @@ struct SyncEngine: Sendable {
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
         let left = try EndpointSessionFactory.make(endpoint: job.left, password: leftPassword)
         let right = try EndpointSessionFactory.make(endpoint: job.right, password: rightPassword)
+        let processedDestination: (any EndpointSession)? = try job.processedFolder.map {
+            try EndpointSessionFactory.make(endpoint: $0, password: nil)
+        }
         do {
             async let leftListing = left.listFiles()
             async let rightListing = right.listFiles()
-            let (leftFiles, rightFiles) = try await (leftListing, rightListing)
+            async let processedListing = processedDestination?.listFiles() ?? [:]
+            let (leftFiles, rightFiles, processedFiles) = try await (leftListing, rightListing, processedListing)
             try validateLocalDestinationPaths(job: job, leftFiles: leftFiles, rightFiles: rightFiles)
-            let transferResult: (transferred: Int, metadataReport: MetadataRunReport)
+            let transferResult: (transferred: Int, processed: Int, metadataReport: MetadataRunReport)
             let conflicts: [String]
             switch job.direction {
             case .leftToRight:
@@ -54,6 +59,8 @@ struct SyncEngine: Sendable {
                     files: leftFiles,
                     to: right,
                     files: rightFiles,
+                    processedDestination: processedDestination,
+                    processedFiles: processedFiles,
                     job: job
                 )
                 conflicts = []
@@ -64,6 +71,8 @@ struct SyncEngine: Sendable {
                     files: rightFiles,
                     to: left,
                     files: leftFiles,
+                    processedDestination: processedDestination,
+                    processedFiles: processedFiles,
                     job: job
                 )
                 conflicts = []
@@ -75,7 +84,7 @@ struct SyncEngine: Sendable {
                     rightFiles: rightFiles,
                     job: job
                 )
-                transferResult = (result.transferred, .empty)
+                transferResult = (result.transferred, 0, .empty)
                 conflicts = result.conflicts
             }
             let deleted = try await cleanupTargetIfNeeded(
@@ -87,15 +96,18 @@ struct SyncEngine: Sendable {
             )
             await left.close()
             await right.close()
+            await processedDestination?.close()
             return SyncResult(
                 transferred: transferResult.transferred,
                 deleted: deleted,
+                processed: transferResult.processed,
                 conflicts: conflicts,
                 metadataReport: transferResult.metadataReport
             )
         } catch {
             await left.close()
             await right.close()
+            await processedDestination?.close()
             throw error
         }
     }
@@ -369,8 +381,10 @@ struct SyncEngine: Sendable {
         files sourceFiles: [String: SyncFile],
         to destination: any EndpointSession,
         files destinationFiles: [String: SyncFile],
+        processedDestination: (any EndpointSession)?,
+        processedFiles: [String: SyncFile],
         job: SyncJob
-    ) async throws -> (transferred: Int, metadataReport: MetadataRunReport) {
+    ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport) {
         let savedSignatures = try await sourceSignatureRepository.signatures(
             jobID: job.id,
             sourceEndpoint: sourceEndpoint
@@ -381,16 +395,19 @@ struct SyncEngine: Sendable {
                 let willRewriteMetadata = job.metadataAutomation?
                     .matchesPhotographer(relativePath: file.relativePath) == true
                     && !MetadataWriter.usesXMPSidecar(for: file.relativePath)
-                return needsTransfer(
+                let destinationNeedsTransfer = needsTransfer(
                     file,
                     destinationFiles[file.relativePath],
                     verifySize: job.verifyFileSizes,
                     metadataMayRewriteDestination: willRewriteMetadata,
                     savedSourceSignature: savedSignatures[file.relativePath]
                 )
+                return destinationNeedsTransfer
+                    || (processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation))
             }
             .sorted { $0.modifiedAt > $1.modifiedAt }
         var transferred = 0
+        var processed = 0
         var metadataReport = MetadataRunReport.empty
         let runID = UUID()
         for file in candidates {
@@ -399,6 +416,8 @@ struct SyncEngine: Sendable {
                 file,
                 from: source,
                 to: destination,
+                processedDestination: processedDestination,
+                processedFiles: processedFiles,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: job.metadataAutomation,
@@ -418,9 +437,10 @@ struct SyncEngine: Sendable {
                     sourceEndpoint: sourceEndpoint
                 )
             }
+            if outcome.movedToProcessed { processed += 1 }
             transferred += 1
         }
-        return (transferred, metadataReport)
+        return (transferred, processed, metadataReport)
     }
 
     private func transferBothWays(
@@ -463,6 +483,8 @@ struct SyncEngine: Sendable {
                 file,
                 from: source,
                 to: destination,
+                processedDestination: nil,
+                processedFiles: [:],
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: nil,
@@ -500,6 +522,8 @@ struct SyncEngine: Sendable {
         _ file: SyncFile,
         from source: any EndpointSession,
         to destination: any EndpointSession,
+        processedDestination: (any EndpointSession)?,
+        processedFiles: [String: SyncFile],
         preserveDate: Bool,
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
@@ -649,10 +673,70 @@ struct SyncEngine: Sendable {
                 verifySize: verifySize
             )
         }
+        var movedToProcessed = false
+        if auditEntry?.status == .applied, let processedDestination {
+            try await importProcessedFile(
+                from: importedURL,
+                as: importedFile,
+                existing: processedFiles[importedFile.relativePath],
+                to: processedDestination
+            )
+            if let sidecarImport {
+                try await importProcessedFile(
+                    from: sidecarImport.url,
+                    as: sidecarImport.file,
+                    existing: processedFiles[sidecarImport.file.relativePath],
+                    to: processedDestination
+                )
+            }
+            if let sourceSidecar {
+                try await source.removeFile(sourceSidecar)
+            }
+            try await source.removeFile(file)
+            movedToProcessed = true
+        }
         return TransferMetadataOutcome(
             auditEntry: auditEntry,
-            embeddedMetadataApplied: embeddedMetadataApplied
+            embeddedMetadataApplied: embeddedMetadataApplied,
+            movedToProcessed: movedToProcessed
         )
+    }
+
+    private func importProcessedFile(
+        from localURL: URL,
+        as file: SyncFile,
+        existing: SyncFile?,
+        to processedDestination: any EndpointSession
+    ) async throws {
+        if existing != nil {
+            throw AppError.transferFailed(
+                "The processed folder already contains a file at \(file.relativePath). Nothing there was overwritten, and the source was left untouched."
+            )
+        }
+        try await processedDestination.importFile(
+            from: localURL,
+            as: file,
+            preserveDate: true,
+            verifySize: true
+        )
+    }
+
+    private func shouldAttemptProcessedMove(
+        _ file: SyncFile,
+        automation: MetadataAutomation?
+    ) -> Bool {
+        guard let automation, automation.isEnabled,
+              automation.matchesPhotographer(relativePath: file.relativePath) else {
+            return false
+        }
+        switch automation.timestampPolicy {
+        case .sourceModification:
+            return automation.assignment(for: file.relativePath, scheduledAt: file.modifiedAt) != nil
+        case .localArrival:
+            return automation.assignment(for: file.relativePath, scheduledAt: Date()) != nil
+        case .cameraCapture:
+            return true
+        }
     }
 
     private func metadataSkipDetail(
@@ -660,7 +744,7 @@ struct SyncEngine: Sendable {
         relativePath: String
     ) -> String {
         if automation.matchingPhotographer(for: relativePath) == nil {
-            return "No photographer filename prefix matched."
+            return "No photographer filename initials matched."
         }
         return "No scheduled metadata clip covered the selected timestamp."
     }

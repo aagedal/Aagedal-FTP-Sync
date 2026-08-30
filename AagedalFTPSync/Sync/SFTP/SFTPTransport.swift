@@ -115,6 +115,11 @@ actor SFTPTransport {
         }
     }
 
+    func remove(file: SyncFile) async throws {
+        let sftp = try await connect()
+        try await sftp.remove(at: remotePath(for: file.relativePath))
+    }
+
     func close() async {
         if let sftpClient { try? await sftpClient.close() }
         if let sshClient { await sshClient.close() }

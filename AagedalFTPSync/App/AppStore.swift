@@ -229,8 +229,10 @@ final class AppStore: ObservableObject {
     func saveMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
         var normalizedAutomation = automation
-        normalizedAutomation.photographers = automation.photographers.map {
-            $0.usingCreatorAsPhotographerName()
+        normalizedAutomation.photographers = automation.photographers.map { profile in
+            var normalized = profile.usingCreatorAsPhotographerName()
+            normalized.filenamePrefix = normalized.formattedFilenamePrefixes
+            return normalized
         }
         var updatedJob = jobs[index]
         updatedJob.metadataAutomation = normalizedAutomation
@@ -245,6 +247,10 @@ final class AppStore: ObservableObject {
             photographerLibrary,
             with: normalizedAutomation.photographers
         )
+        if let duplicate = duplicateFilenameInitials(in: updatedPhotographerLibrary) {
+            alertMessage = "The filename initials \(duplicate) are already used by another photographer."
+            return false
+        }
         do {
             try photographerProfileRepository.save(updatedPhotographerLibrary)
             try repository.save(updatedJobs)
@@ -273,19 +279,20 @@ final class AppStore: ObservableObject {
             alertMessage = "Give the photographer a name."
             return false
         }
-        guard !normalizedProfile.normalizedPrefix.isEmpty else {
-            alertMessage = "Give \(trimmedName) a filename prefix."
+        guard !normalizedProfile.normalizedPrefixes.isEmpty else {
+            alertMessage = "Give \(trimmedName) filename initials."
             return false
         }
-        guard !photographerLibrary.contains(where: {
-            $0.id != normalizedProfile.id && $0.normalizedPrefix == normalizedProfile.normalizedPrefix
-        }) else {
-            alertMessage = "The filename prefix \(normalizedProfile.normalizedPrefix) is already used by another photographer."
+        let otherPrefixes = Set(photographerLibrary
+            .filter { $0.id != normalizedProfile.id }
+            .flatMap(\.normalizedPrefixes))
+        if let duplicate = normalizedProfile.normalizedPrefixes.first(where: otherPrefixes.contains) {
+            alertMessage = "The filename initials \(duplicate) are already used by another photographer."
             return false
         }
 
         var updatedProfile = normalizedProfile
-        updatedProfile.filenamePrefix = normalizedProfile.normalizedPrefix
+        updatedProfile.filenamePrefix = normalizedProfile.formattedFilenamePrefixes
         var updatedLibrary = photographerLibrary
         if let index = updatedLibrary.firstIndex(where: { $0.id == profile.id }) {
             updatedLibrary[index] = updatedProfile
@@ -348,7 +355,7 @@ final class AppStore: ObservableObject {
     ) -> [PhotographerProfile] {
         var merged = existing
         for profile in profiles where !profile.photographerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !profile.normalizedPrefix.isEmpty {
+            && !profile.normalizedPrefixes.isEmpty {
             if let index = merged.firstIndex(where: { $0.id == profile.id }) {
                 merged[index] = profile
             } else {
@@ -358,6 +365,19 @@ final class AppStore: ObservableObject {
         return merged.sorted {
             $0.photographerName.localizedCaseInsensitiveCompare($1.photographerName) == .orderedAscending
         }
+    }
+
+    private func duplicateFilenameInitials(in profiles: [PhotographerProfile]) -> String? {
+        var owners: [String: UUID] = [:]
+        for profile in profiles {
+            for prefix in profile.normalizedPrefixes {
+                if let owner = owners[prefix], owner != profile.id {
+                    return prefix
+                }
+                owners[prefix] = profile.id
+            }
+        }
+        return nil
     }
 
     @discardableResult
@@ -592,6 +612,7 @@ final class AppStore: ObservableObject {
                         let date,
                         let transferred,
                         let deleted,
+                        let processed,
                         let conflicts,
                         let metadataReport,
                         _
@@ -600,6 +621,7 @@ final class AppStore: ObservableObject {
                             date,
                             transferred: transferred,
                             deleted: deleted,
+                            processed: processed,
                             conflicts: conflicts,
                             metadataReport: metadataReport,
                             nextRun: next
@@ -636,6 +658,7 @@ final class AppStore: ObservableObject {
                 completedAt,
                 transferred: result.transferred,
                 deleted: result.deleted,
+                processed: result.processed,
                 conflicts: result.conflicts,
                 metadataReport: result.metadataReport,
                 nextRun: nil

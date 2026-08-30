@@ -23,10 +23,12 @@ Version 2.5 builds automatic editorial metadata programming on the clean SwiftUI
 - Remote path traversal and symbolic-link traversal are rejected
 - Source deletions are never propagated
 - A shared photographer library and per-job timeline clips can apply Headline, Description, Keywords, Creator, and Copyright metadata automatically
+- Each photographer can have multiple comma-separated filename initials for assignments using more than one camera
 - Scheduling can use source modification, local arrival, or Exif camera-capture time
 - Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
 - A read-only local-folder preview, separate metadata outcome counts, and a per-file audit trail make automation decisions inspectable
 - Original source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
+- An optional per-job processed folder can receive successfully tagged files before their originals are removed from local, FTP, FTPS, or SFTP sources
 
 ## Requirements
 
@@ -71,6 +73,8 @@ The menu-bar panel provides start/stop controls, status, one-click sync, and a p
 One-way jobs copy files that are missing or newer at the destination. Two-way jobs copy unique files in both directions and use the newer modification date when both sides contain a path. If timestamps are effectively equal but sizes differ, the app reports a conflict and refuses to overwrite either file because the correct version is ambiguous.
 
 Version 2.0 intentionally does not mirror source deletions. A temporary network outage, empty server listing, or accidental source-folder change therefore cannot erase newsroom files.
+
+For one-way jobs with automatic metadata, a per-job local processed folder can be enabled explicitly. The app first writes and verifies the destination, then places the metadata-written file—and an XMP companion for RAW—into the processed folder. Only after both copies succeed does it remove the original from the source. Metadata skips, metadata failures, and processed-folder collisions leave the source untouched. The processed folder must be separate from local source and destination folders.
 
 For one-way jobs with a local target, you can optionally remove matching target files after a chosen age. Cleanup requires a recent-file source window, and its deletion age must be longer than that window—for example, sync files from the last hour and remove matching target files older than two hours. The app evaluates only target entries for deletion, re-checks each file's type and modification date immediately before removal, and never issues a delete operation to the source. Cleanup is unavailable for two-way jobs, remote targets, and overlapping local folders.
 

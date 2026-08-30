@@ -65,6 +65,10 @@ struct FTPEndpointSession: EndpointSession, Sendable {
         )
     }
 
+    func removeFile(_ file: SyncFile) async throws {
+        try await connection.delete(path: remotePath(for: file.relativePath))
+    }
+
     func close() async { await connection.close() }
 
     private var normalizedRoot: String {

@@ -8,7 +8,7 @@ struct AboutView: View {
                 .foregroundStyle(.tint)
             VStack(spacing: 4) {
                 Text("Aagedal FTP Sync").font(.title2).fontWeight(.semibold)
-                Text("Version 2.5.0").foregroundStyle(.secondary)
+                Text("Version \(appVersion)").foregroundStyle(.secondary)
             }
             Text("Fast, careful file delivery for photojournalists and newsrooms.")
                 .multilineTextAlignment(.center)
@@ -23,5 +23,9 @@ struct AboutView: View {
                 .font(.caption)
         }
         .padding(28)
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     }
 }

@@ -11,6 +11,7 @@ protocol EndpointSession: Sendable {
         verifySize: Bool
     ) async throws
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool
+    func removeFile(_ file: SyncFile) async throws
     func close() async
 }
 
@@ -21,6 +22,10 @@ extension EndpointSession {
 
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
         throw AppError.invalidConfiguration("Cleanup was attempted on an unsupported target.")
+    }
+
+    func removeFile(_ file: SyncFile) async throws {
+        throw AppError.invalidConfiguration("Moving a processed source file is not supported by this location.")
     }
 
     func close() async {}

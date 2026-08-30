@@ -10,6 +10,8 @@ struct JobDetailEditor: View {
     @State private var showDeleteConfirmation = false
     @State private var saveConfirmation = false
     @State private var showMetadataAudit = false
+    @State private var showProcessedFolderPicker = false
+    @State private var processedFolderError: String?
 
     init(job: SyncJob) {
         _draft = State(initialValue: job)
@@ -86,7 +88,7 @@ struct JobDetailEditor: View {
                         openWindow(id: "metadata-programming")
                         NSApplication.shared.activate(ignoringOtherApps: true)
                     }
-                    Text("Assign permanent photographer profiles to filename prefixes, then program Headline, Description, and Keywords on a day timeline.")
+                    Text("Assign permanent photographer profiles to filename initials, then program Headline, Description, and Keywords on a day timeline.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -94,6 +96,32 @@ struct JobDetailEditor: View {
                         MetadataAuditTrailView(entries: store.metadataAuditTrail(for: draft.id))
                             .frame(minHeight: 220, idealHeight: 300)
                             .padding(.top, 6)
+                    }
+                }
+
+                Section("After metadata") {
+                    Toggle(
+                        "Move successfully tagged source files to a processed folder",
+                        isOn: processedFolderEnabledBinding
+                    )
+
+                    if let processedFolder = draft.processedFolder {
+                        LabeledContent("Processed folder") {
+                            HStack {
+                                Text(processedFolder.localPath.isEmpty ? "Not selected" : processedFolder.localPath)
+                                    .foregroundStyle(processedFolder.localPath.isEmpty ? .secondary : .primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Button("Choose…") { showProcessedFolderPicker = true }
+                            }
+                        }
+                        Text("After the destination and metadata-written file are verified, the tagged file is placed here and the original is removed from its source. Metadata skips and failures leave the source untouched.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("Post-processing") {
+                            Text("Keep source files in place").foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -110,7 +138,7 @@ struct JobDetailEditor: View {
                                 Text(targetCleanupLabel).monospacedDigit()
                             }
                         }
-                        Text("Only matching file types in the local target are removed. The source is never touched. The deletion age must be greater than the source file-age window.")
+                        Text("Cleanup removes only matching file types from the local target and never touches the source. The deletion age must be greater than the source file-age window.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if !hasLocalOneWayTarget {
                         Text("Automatic cleanup is available for one-way jobs whose target is a local folder.")
@@ -152,6 +180,36 @@ struct JobDetailEditor: View {
         .onAppear {
             leftPassword = store.password(for: draft.left)
             rightPassword = store.password(for: draft.right)
+        }
+        .fileImporter(
+            isPresented: $showProcessedFolderPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do {
+                    let bookmark = try FolderBookmark.create(for: url)
+                    draft.processedFolder = Endpoint(
+                        kind: .local,
+                        localPath: bookmark.resolvedURL.path,
+                        bookmark: bookmark.data
+                    )
+                } catch {
+                    processedFolderError = "Folder access could not be saved: \(error.localizedDescription)"
+                }
+            case .failure(let error):
+                processedFolderError = "The processed folder could not be selected: \(error.localizedDescription)"
+            }
+        }
+        .alert("Processed Folder", isPresented: Binding(
+            get: { processedFolderError != nil },
+            set: { if !$0 { processedFolderError = nil } }
+        )) {
+            Button("OK") { processedFolderError = nil }
+        } message: {
+            Text(processedFolderError ?? "")
         }
         .confirmationDialog("Delete “\(draft.name)”?", isPresented: $showDeleteConfirmation) {
             Button("Delete Job", role: .destructive) { store.removeJob(draft.id) }
@@ -200,6 +258,22 @@ struct JobDetailEditor: View {
         Binding(
             get: { draft.showsLatestSessionTransferCountOnly },
             set: { draft.showsLatestSessionTransferCountOnly = $0 }
+        )
+    }
+
+    private var processedFolderEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { draft.processedFolder != nil },
+            set: { enabled in
+                if enabled {
+                    if draft.processedFolder == nil {
+                        draft.processedFolder = .local
+                        showProcessedFolderPicker = true
+                    }
+                } else {
+                    draft.processedFolder = nil
+                }
+            }
         )
     }
 

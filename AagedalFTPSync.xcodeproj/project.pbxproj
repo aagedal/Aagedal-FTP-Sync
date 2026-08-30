@@ -38,6 +38,7 @@
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
 		A912C00FDB4E91CA2C98B4C3 /* FileFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97DCF709A14A3B3FAC7D6E5E /* FileFilterTests.swift */; };
+		AA1076CD38765D19227AF21F /* PhotographerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFD7C0B7D522D2DE507BA375 /* PhotographerSettingsView.swift */; };
 		AD887595221D0BD0F0AFB9AC /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 5385F0C5DDB4BAB61B200D2C /* SwiftExif */; };
 		B01A7C900948FDDA2383CC94 /* MetadataPreset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 350292561BFD12A24A59A67B /* MetadataPreset.swift */; };
 		B15170809BD2FCE731273087 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 0640F96321C1AC680371564A /* SwiftExif */; };
@@ -46,7 +47,6 @@
 		B769B40159B643B46C24C555 /* MetadataAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C984C555D147B80CC7FDE729 /* MetadataAuditTests.swift */; };
 		C27CE06BC60109AE34788F93 /* JobRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */; };
 		D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */; };
-		DA8219A18C7F49CF9B4C1E91 /* PhotographerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B1B64E4C5B34C0E90AB6C26 /* PhotographerSettingsView.swift */; };
 		DB23A9DE82ED66DAF6941E4F /* FTPConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA3A713A82044F0A77CFC2AD /* FTPConnection.swift */; };
 		E1DAEC0A6654788FBE787C04 /* AppError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17C264842979B409D1442940 /* AppError.swift */; };
 		E53F0414C64324DD591A8565 /* FTPEndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094342E4F906A49665E62424 /* FTPEndpointSession.swift */; };
@@ -87,7 +87,6 @@
 		419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomationTests.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
-		4B1B64E4C5B34C0E90AB6C26 /* PhotographerSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerSettingsView.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
 		539DC8F63EE64022D624CE17 /* AagedalFTPSync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AagedalFTPSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5B454FB4A4C0AB0EA736CC08 /* SyncJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncJob.swift; sourceTree = "<group>"; };
@@ -113,6 +112,7 @@
 		D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngine.swift; sourceTree = "<group>"; };
 		D5AF6BCFE2CFB96A935039B7 /* MetadataAuditTrailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAuditTrailView.swift; sourceTree = "<group>"; };
 		D9A3505CD91E1A224FE60777 /* BookmarkAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkAccess.swift; sourceTree = "<group>"; };
+		DFD7C0B7D522D2DE507BA375 /* PhotographerSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerSettingsView.swift; sourceTree = "<group>"; };
 		E20AD42026ACD307821FF756 /* FolderBookmark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderBookmark.swift; sourceTree = "<group>"; };
 		F180097B77641B0CA2B18DB1 /* PhotographerProfileRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerProfileRepositoryTests.swift; sourceTree = "<group>"; };
 		F26F9F2F58732670EB2AFEA1 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
@@ -242,7 +242,7 @@
 				113A0B3ADC59BFE97A673EA5 /* MenuBarView.swift */,
 				D5AF6BCFE2CFB96A935039B7 /* MetadataAuditTrailView.swift */,
 				3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */,
-				4B1B64E4C5B34C0E90AB6C26 /* PhotographerSettingsView.swift */,
+				DFD7C0B7D522D2DE507BA375 /* PhotographerSettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -356,10 +356,11 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					7E3AC5B0A41B68200E1D998B = {
-						DevelopmentTeam = "";
+						DevelopmentTeam = 3R5QGG9DW6;
 						ProvisioningStyle = Automatic;
 					};
 					DA22D5815B19C66F2019C139 = {
+						DevelopmentTeam = 3R5QGG9DW6;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -428,10 +429,10 @@
 				4A8ED69FC5E89F620E4C7B8B /* MetadataPresetRepository.swift in Sources */,
 				A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */,
 				D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */,
-				DA8219A18C7F49CF9B4C1E91 /* PhotographerSettingsView.swift in Sources */,
 				3710B1ACB6F8926631BD9AEF /* MetadataWriter.swift in Sources */,
 				F1FE64BEF3B4B67CC678E60E /* PathSafety.swift in Sources */,
 				FBE2E72C3D51ABCC3F05B457 /* PhotographerProfileRepository.swift in Sources */,
+				AA1076CD38765D19227AF21F /* PhotographerSettingsView.swift in Sources */,
 				03B9BB504A33709EB3DD70B4 /* SFTPEndpointSession.swift in Sources */,
 				09AEF27861375CC02EB37B6D /* SFTPTransport.swift in Sources */,
 				53A288A039BF1709C1AE3329 /* SourceSignatureRepository.swift in Sources */,
@@ -505,7 +506,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -544,12 +545,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AagedalFTPSync/Resources/AagedalFTPSync.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AagedalFTPSync/Resources/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -566,6 +565,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -583,6 +583,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -630,7 +631,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 25;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -662,12 +663,10 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AagedalFTPSync/Resources/AagedalFTPSync.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 25;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AagedalFTPSync/Resources/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
