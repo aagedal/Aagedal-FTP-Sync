@@ -171,6 +171,21 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
         filenamePrefix.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     }
 
+    /// The IPTC Creator is also the photographer's display name. Falling back to
+    /// the legacy name keeps profiles created by older versions readable.
+    var photographerName: String {
+        let trimmedCreator = creator.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedCreator.isEmpty ? name : creator
+    }
+
+    func usingCreatorAsPhotographerName() -> PhotographerProfile {
+        var profile = self
+        let canonicalName = photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        profile.name = canonicalName
+        profile.creator = canonicalName
+        return profile
+    }
+
     func matches(relativePath: String) -> Bool {
         guard !normalizedPrefix.isEmpty else { return false }
         let filename = URL(fileURLWithPath: relativePath)
@@ -527,16 +542,16 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         }
 
         let namedPhotographers = photographers.filter {
-            !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            !$0.photographerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !$0.normalizedPrefix.isEmpty
         }
         if let photographer = namedPhotographers.first(where: {
-            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            $0.photographerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }) {
             return "Give the photographer using prefix \(photographer.normalizedPrefix) a name."
         }
         if let photographer = namedPhotographers.first(where: { $0.normalizedPrefix.isEmpty }) {
-            return "Give \(photographer.name) a filename prefix."
+            return "Give \(photographer.photographerName) a filename prefix."
         }
 
         let groupedPrefixes = Dictionary(grouping: namedPhotographers, by: \PhotographerProfile.normalizedPrefix)
@@ -565,7 +580,8 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
                 .filter { $0.photographerID == photographerID }
                 .sorted { $0.startsAt < $1.startsAt }
             for pair in zip(photographerClips, photographerClips.dropFirst()) where pair.0.endsAt > pair.1.startsAt {
-                let photographerName = photographers.first(where: { $0.id == photographerID })?.name ?? "A photographer"
+                let photographerName = photographers.first(where: { $0.id == photographerID })?.photographerName
+                    ?? "A photographer"
                 return "\(photographerName) has overlapping metadata clips."
             }
         }

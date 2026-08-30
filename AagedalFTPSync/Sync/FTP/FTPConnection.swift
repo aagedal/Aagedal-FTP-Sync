@@ -159,6 +159,28 @@ actor FTPConnection {
         return String(decoding: data, as: UTF8.self)
     }
 
+    func modificationDate(path: String) async throws -> Date {
+        try await connectIfNeeded()
+        let reply = try await command("MDTM \(escaped(path))", accepting: 200..<300)
+        guard let date = Self.parseModificationDate(reply.lines.joined(separator: " ")) else {
+            throw AppError.transferFailed("The FTP server returned an invalid MDTM response for \(path).")
+        }
+        return date
+    }
+
+    static func parseModificationDate(_ response: String) -> Date? {
+        let pattern = #"(?:^|\s)(\d{14})(?:\.\d+)?(?:\s|$)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(
+                in: response,
+                range: NSRange(response.startIndex..., in: response)
+              ),
+              let timestampRange = Range(match.range(at: 1), in: response) else {
+            return nil
+        }
+        return ftpDateFormatter.date(from: String(response[timestampRange]))
+    }
+
     func download(path: String, to outputURL: URL) async throws {
         _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: outputURL)

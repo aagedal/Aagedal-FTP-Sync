@@ -112,6 +112,30 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertNil(photographer.workHourOverrides)
     }
 
+    func testIPTCCreatorIsUsedAsPhotographerName() {
+        let photographer = PhotographerProfile(
+            name: "Legacy display name",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "News"
+        )
+
+        XCTAssertEqual(photographer.photographerName, "Jane Doe")
+        XCTAssertEqual(photographer.usingCreatorAsPhotographerName().name, "Jane Doe")
+    }
+
+    func testLegacyNameIsUsedWhenCreatorIsEmpty() {
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "",
+            copyrightNotice: "News"
+        )
+
+        XCTAssertEqual(photographer.photographerName, "Jane Doe")
+        XCTAssertEqual(photographer.usingCreatorAsPhotographerName().creator, "Jane Doe")
+    }
+
     func testPhotographerWorkHoursCreateDailyTimelineInterval() throws {
         let calendar = utcCalendar
         let day = date(2026, 8, 30, 12, 0, calendar: calendar)

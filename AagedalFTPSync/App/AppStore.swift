@@ -228,8 +228,12 @@ final class AppStore: ObservableObject {
     @discardableResult
     func saveMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
+        var normalizedAutomation = automation
+        normalizedAutomation.photographers = automation.photographers.map {
+            $0.usingCreatorAsPhotographerName()
+        }
         var updatedJob = jobs[index]
-        updatedJob.metadataAutomation = automation
+        updatedJob.metadataAutomation = normalizedAutomation
         if let message = updatedJob.validationMessage {
             alertMessage = message
             return false
@@ -239,7 +243,7 @@ final class AppStore: ObservableObject {
         updatedJobs[index] = updatedJob
         let updatedPhotographerLibrary = mergedPhotographerLibrary(
             photographerLibrary,
-            with: automation.photographers
+            with: normalizedAutomation.photographers
         )
         do {
             try photographerProfileRepository.save(updatedPhotographerLibrary)
@@ -263,25 +267,25 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func savePhotographerProfile(_ profile: PhotographerProfile) -> Bool {
-        let trimmedName = profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedProfile = profile.usingCreatorAsPhotographerName()
+        let trimmedName = normalizedProfile.photographerName
         guard !trimmedName.isEmpty else {
             alertMessage = "Give the photographer a name."
             return false
         }
-        guard !profile.normalizedPrefix.isEmpty else {
+        guard !normalizedProfile.normalizedPrefix.isEmpty else {
             alertMessage = "Give \(trimmedName) a filename prefix."
             return false
         }
         guard !photographerLibrary.contains(where: {
-            $0.id != profile.id && $0.normalizedPrefix == profile.normalizedPrefix
+            $0.id != normalizedProfile.id && $0.normalizedPrefix == normalizedProfile.normalizedPrefix
         }) else {
-            alertMessage = "The filename prefix \(profile.normalizedPrefix) is already used by another photographer."
+            alertMessage = "The filename prefix \(normalizedProfile.normalizedPrefix) is already used by another photographer."
             return false
         }
 
-        var updatedProfile = profile
-        updatedProfile.name = trimmedName
-        updatedProfile.filenamePrefix = profile.normalizedPrefix
+        var updatedProfile = normalizedProfile
+        updatedProfile.filenamePrefix = normalizedProfile.normalizedPrefix
         var updatedLibrary = photographerLibrary
         if let index = updatedLibrary.firstIndex(where: { $0.id == profile.id }) {
             updatedLibrary[index] = updatedProfile
@@ -289,7 +293,7 @@ final class AppStore: ObservableObject {
             updatedLibrary.append(updatedProfile)
         }
         updatedLibrary.sort {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            $0.photographerName.localizedCaseInsensitiveCompare($1.photographerName) == .orderedAscending
         }
 
         var updatedJobs = jobs
@@ -343,7 +347,7 @@ final class AppStore: ObservableObject {
         with profiles: [PhotographerProfile]
     ) -> [PhotographerProfile] {
         var merged = existing
-        for profile in profiles where !profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        for profile in profiles where !profile.photographerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !profile.normalizedPrefix.isEmpty {
             if let index = merged.firstIndex(where: { $0.id == profile.id }) {
                 merged[index] = profile
@@ -352,7 +356,7 @@ final class AppStore: ObservableObject {
             }
         }
         return merged.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            $0.photographerName.localizedCaseInsensitiveCompare($1.photographerName) == .orderedAscending
         }
     }
 
@@ -655,7 +659,13 @@ final class AppStore: ObservableObject {
         defer { runningJobs.remove(jobID) }
 
         do {
-            let result = try await engine.reprocessExistingLocalFiles(job: job)
+            let leftPassword = job.left.kind.isRemote ? try cachedPassword(for: job.left.credentialID) : nil
+            let rightPassword = job.right.kind.isRemote ? try cachedPassword(for: job.right.credentialID) : nil
+            let result = try await engine.reprocessExistingLocalFiles(
+                job: job,
+                leftPassword: leftPassword,
+                rightPassword: rightPassword
+            )
             recordMetadataAudit(result.metadataReport, jobID: jobID)
             metadataReprocessPhases[jobID] = .succeeded(Date(), result)
         } catch is CancellationError {

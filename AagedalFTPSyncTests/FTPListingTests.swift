@@ -16,6 +16,15 @@ final class FTPListingTests: XCTestCase {
         XCTAssertTrue(entries[2].isDirectory)
     }
 
+    func testParsesMDTMModificationDateAsUTC() throws {
+        let date = try XCTUnwrap(FTPConnection.parseModificationDate("213 20260830080942.125"))
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date),
+                       DateComponents(year: 2026, month: 8, day: 30, hour: 8, minute: 9, second: 42))
+    }
+
     func testNoDataNetworkErrorIsTreatedAsEndOfStream() {
         XCTAssertTrue(NetworkStream.isEndOfStream(.posix(.ENODATA)))
         XCTAssertFalse(NetworkStream.isEndOfStream(.posix(.ECONNRESET)))

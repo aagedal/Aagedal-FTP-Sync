@@ -100,7 +100,11 @@ struct SyncEngine: Sendable {
         }
     }
 
-    func reprocessExistingLocalFiles(job: SyncJob) async throws -> MetadataReprocessResult {
+    func reprocessExistingLocalFiles(
+        job: SyncJob,
+        leftPassword: String? = nil,
+        rightPassword: String? = nil
+    ) async throws -> MetadataReprocessResult {
         guard let automation = job.metadataAutomation, automation.isEnabled else {
             throw AppError.invalidConfiguration("Enable and save automatic metadata before reprocessing files.")
         }
@@ -128,6 +132,12 @@ struct SyncEngine: Sendable {
 
         let destination = try LocalEndpointSession(endpoint: destinationEndpoint)
         let destinationFiles = try await destination.listFiles()
+        let sourceFiles = await sourceFilesForReprocessing(
+            job: job,
+            automation: automation,
+            leftPassword: leftPassword,
+            rightPassword: rightPassword
+        )
         let files = destinationFiles.values
             .filter { job.filter.includesFileType(path: $0.relativePath) }
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
@@ -153,7 +163,7 @@ struct SyncEngine: Sendable {
 
             guard let scheduledAt = MetadataWriter.schedulingDate(
                 for: automation.timestampPolicy,
-                sourceModifiedAt: file.modifiedAt,
+                sourceModifiedAt: sourceFiles[file.relativePath]?.modifiedAt ?? file.modifiedAt,
                 localArrivalAt: file.modifiedAt,
                 fileURL: temporaryURL
             ) else {
@@ -260,6 +270,40 @@ struct SyncEngine: Sendable {
             failed: failed,
             metadataReport: metadataReport
         )
+    }
+
+    private func sourceFilesForReprocessing(
+        job: SyncJob,
+        automation: MetadataAutomation,
+        leftPassword: String?,
+        rightPassword: String?
+    ) async -> [String: SyncFile] {
+        guard automation.timestampPolicy == .sourceModification else { return [:] }
+
+        let sourceEndpoint: Endpoint
+        let password: String?
+        switch job.direction {
+        case .leftToRight:
+            sourceEndpoint = job.left
+            password = leftPassword
+        case .rightToLeft:
+            sourceEndpoint = job.right
+            password = rightPassword
+        case .bidirectional:
+            return [:]
+        }
+
+        guard let source = try? EndpointSessionFactory.make(endpoint: sourceEndpoint, password: password) else {
+            return [:]
+        }
+        do {
+            let files = try await source.listFiles()
+            await source.close()
+            return files
+        } catch {
+            await source.close()
+            return [:]
+        }
     }
 
     private func validateLocalDestinationPaths(

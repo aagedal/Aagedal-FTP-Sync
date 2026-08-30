@@ -20,6 +20,7 @@ struct FTPEndpointSession: EndpointSession, Sendable {
             try Task.checkCancellation()
             let directory = directories.removeFirst()
             let listing = try await connection.list(path: directory.remote)
+            let isMachineReadable = listing.lowercased().contains("type=")
             for entry in Self.parseMLSD(listing) {
                 guard !PathSafety.isInternalStagingPath(entry.name) else { continue }
                 let relative = directory.relative.isEmpty ? entry.name : "\(directory.relative)/\(entry.name)"
@@ -33,7 +34,12 @@ struct FTPEndpointSession: EndpointSession, Sendable {
                             "Two server paths differ only by Unicode representation: \(existing.relativePath) and \(relative)."
                         )
                     }
-                    result[relative] = SyncFile(relativePath: relative, size: entry.size, modifiedAt: entry.modifiedAt)
+                    // LIST dates do not declare a timezone. Prefer MDTM, whose
+                    // timestamp is defined as UTC, when MLSD is unavailable.
+                    let modifiedAt = isMachineReadable
+                        ? entry.modifiedAt
+                        : (try? await connection.modificationDate(path: remote)) ?? entry.modifiedAt
+                    result[relative] = SyncFile(relativePath: relative, size: entry.size, modifiedAt: modifiedAt)
                 }
             }
         }

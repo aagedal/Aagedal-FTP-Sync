@@ -130,7 +130,7 @@ enum MetadataWriter {
 
         let headline = fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
         let description = fields.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let creator = assignment.photographer.creator.trimmingCharacters(in: .whitespacesAndNewlines)
+        let creator = assignment.photographer.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
         let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
         let keywords = fields.normalizedKeywords
         let shouldOverwrite = assignment.existingFieldPolicy == .overwrite
@@ -195,7 +195,7 @@ enum MetadataWriter {
         let fields = assignment.clip.fields
         let headline = fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
         let description = fields.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let creator = assignment.photographer.creator.trimmingCharacters(in: .whitespacesAndNewlines)
+        let creator = assignment.photographer.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
         let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
         let keywords = fields.normalizedKeywords
         let shouldOverwrite = assignment.existingFieldPolicy == .overwrite

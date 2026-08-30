@@ -96,11 +96,11 @@ struct MetadataProgrammingView: View {
             ),
             presenting: photographerPendingDeletion
         ) { photographer in
-            Button("Remove \(photographer.name)", role: .destructive) {
+            Button("Remove \(photographer.photographerName)", role: .destructive) {
                 removePhotographer(photographer)
             }
         } message: { photographer in
-            Text("This also removes every metadata clip on \(photographer.name)’s track.")
+            Text("This also removes every metadata clip on \(photographer.photographerName)’s track.")
         }
         .alert(
             "Extend into another day?",
@@ -213,7 +213,7 @@ struct MetadataProgrammingView: View {
                                 Button {
                                     addKnownPhotographer(photographer)
                                 } label: {
-                                    Text("\(photographer.name) (\(photographer.normalizedPrefix))")
+                                    Text("\(photographer.photographerName) (\(photographer.normalizedPrefix))")
                                 }
                             }
                         }
@@ -249,7 +249,9 @@ struct MetadataProgrammingView: View {
             List(selection: $selectedPhotographerID) {
                 ForEach(draft.photographers) { photographer in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(photographer.name.isEmpty ? "Untitled Photographer" : photographer.name)
+                        Text(photographer.photographerName.isEmpty
+                            ? "Untitled Photographer"
+                            : photographer.photographerName)
                             .fontWeight(.medium)
                         Text(photographer.normalizedPrefix.isEmpty ? "No filename prefix" : "\(photographer.normalizedPrefix)…")
                             .font(.caption)
@@ -268,7 +270,7 @@ struct MetadataProgrammingView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     PhotographerEditor(photographer: binding)
                     Divider()
-                    PhotographerDayWorkHoursEditor(
+                    PhotographerWorkHoursControl(
                         photographer: binding,
                         day: selectedDate,
                         calendar: calendar
@@ -636,7 +638,7 @@ struct MetadataProgrammingView: View {
               let photographer = draft.photographers.first(where: { $0.id == playhead.photographerID }) else {
             return nil
         }
-        return "\(photographer.name) · \(playhead.date.formatted(date: .omitted, time: .shortened))"
+        return "\(photographer.photographerName) · \(playhead.date.formatted(date: .omitted, time: .shortened))"
     }
 
     private var pasteHelp: String {
@@ -694,7 +696,7 @@ struct MetadataProgrammingView: View {
         let photographer = PhotographerProfile(
             name: "Photographer",
             filenamePrefix: uniquePrefix(),
-            creator: "",
+            creator: "Photographer",
             copyrightNotice: ""
         )
         draft.photographers.append(photographer)
@@ -1095,17 +1097,121 @@ private extension MetadataPreviewStatus {
 struct PhotographerEditor: View {
     @Binding var photographer: PhotographerProfile
 
-    private let calendar = Calendar.current
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Photographer Profile").font(.headline)
-            TextField("Name", text: $photographer.name)
+            TextField("Photographer / creator", text: photographerNameBinding)
             TextField("Filename prefix", text: $photographer.filenamePrefix)
                 .textCase(.uppercase)
-            TextField("Creator / byline", text: $photographer.creator)
             TextField("Copyright notice", text: $photographer.copyrightNotice)
-            Toggle("Use default work hours", isOn: workHoursEnabled)
+            Text("Used as the photographer name and IPTC Creator/byline.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var photographerNameBinding: Binding<String> {
+        Binding(
+            get: { photographer.photographerName },
+            set: { newValue in
+                photographer.name = newValue
+                photographer.creator = newValue
+            }
+        )
+    }
+}
+
+struct PhotographerWorkHoursControl: View {
+    @Binding var photographer: PhotographerProfile
+    let day: Date?
+    let calendar: Calendar
+    @State private var isPresented = false
+
+    init(
+        photographer: Binding<PhotographerProfile>,
+        day: Date? = nil,
+        calendar: Calendar = .current
+    ) {
+        _photographer = photographer
+        self.day = day
+        self.calendar = calendar
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "clock")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Work Hours")
+                    .fontWeight(.medium)
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button("Edit…") {
+                isPresented = true
+            }
+            .popover(isPresented: $isPresented, arrowEdge: .trailing) {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Work Hours")
+                        .font(.title3.weight(.semibold))
+
+                    PhotographerDefaultWorkHoursEditor(
+                        photographer: $photographer,
+                        calendar: calendar
+                    )
+
+                    if let day {
+                        Divider()
+                        PhotographerDayWorkHoursEditor(
+                            photographer: $photographer,
+                            day: day,
+                            calendar: calendar
+                        )
+                    }
+                }
+                .padding(18)
+                .frame(width: 430)
+            }
+        }
+    }
+
+    private var summary: String {
+        guard let day else {
+            guard let hours = photographer.workHours else { return "No profile default" }
+            return "Profile default \(formatted(hours))"
+        }
+
+        let date = day.formatted(date: .abbreviated, time: .omitted)
+        if let override = photographer.workHoursOverride(on: day, calendar: calendar) {
+            guard let hours = override.hours else { return "Day off on \(date)" }
+            return "Custom \(formatted(hours)) on \(date)"
+        }
+        guard let hours = photographer.workHours else { return "No hours set for \(date)" }
+        return "Profile default \(formatted(hours)) on \(date)"
+    }
+
+    private func formatted(_ hours: PhotographerWorkHours) -> String {
+        "\(formatted(minutes: hours.startMinutes))–\(formatted(minutes: hours.endMinutes))"
+    }
+
+    private func formatted(minutes: Int) -> String {
+        String(format: "%02d:%02d", minutes / 60, minutes % 60)
+    }
+}
+
+private struct PhotographerDefaultWorkHoursEditor: View {
+    @Binding var photographer: PhotographerProfile
+    let calendar: Calendar
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Use profile default hours", isOn: workHoursEnabled)
             if photographer.workHours != nil {
                 HStack {
                     DatePicker(
@@ -1416,7 +1522,7 @@ private struct TimelineTrack: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(photographer.name).fontWeight(.medium).lineLimit(1)
+                Text(photographer.photographerName).fontWeight(.medium).lineLimit(1)
                 Text(photographer.normalizedPrefix).font(.caption).foregroundStyle(.secondary)
             }
             .frame(width: 165, alignment: .leading)

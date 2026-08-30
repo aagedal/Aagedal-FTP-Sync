@@ -422,8 +422,19 @@ final class LocalSyncIntegrationTests: XCTestCase {
             return XCTFail("Could not create the JPEG fixture")
         }
         try jpeg.write(to: destination)
+        let source = fixture.left.appendingPathComponent("archive/JAD_EXISTING.jpg")
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try jpeg.write(to: source)
         let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
-        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: destination.path)
+        let shiftedDestinationTimestamp = timestamp.addingTimeInterval(-2 * 3_600)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+        try FileManager.default.setAttributes(
+            [.modificationDate: shiftedDestinationTimestamp],
+            ofItemAtPath: destination.path
+        )
 
         let photographer = PhotographerProfile(
             name: "Jane Doe",
@@ -459,7 +470,7 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(result.skipped, 0)
         XCTAssertEqual(result.failed, 0)
         XCTAssertEqual(result.metadataReport.applied, 1)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.left.appendingPathComponent("archive/JAD_EXISTING.jpg").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
         let metadata = try ImageMetadata.read(from: destination)
         XCTAssertEqual(metadata.iptc.headline, "Reprocessed headline")
         XCTAssertEqual(metadata.iptc.caption, "Existing local file.")
@@ -467,7 +478,7 @@ final class LocalSyncIntegrationTests: XCTestCase {
         let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
         XCTAssertEqual(
             (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0,
-            timestamp.timeIntervalSince1970,
+            shiftedDestinationTimestamp.timeIntervalSince1970,
             accuracy: 1
         )
     }

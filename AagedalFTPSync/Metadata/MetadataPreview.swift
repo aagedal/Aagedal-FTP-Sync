@@ -132,7 +132,7 @@ enum MetadataPreviewService {
                     scheduledAt: nil,
                     status: .captureTimeUnavailable,
                     photographerID: photographer.id,
-                    photographerName: photographer.name,
+                    photographerName: photographer.photographerName,
                     clipID: nil,
                     clipName: nil
                 ))
@@ -149,7 +149,7 @@ enum MetadataPreviewService {
                     scheduledAt: scheduledAt,
                     status: .willApply,
                     photographerID: assignment.photographer.id,
-                    photographerName: assignment.photographer.name,
+                    photographerName: assignment.photographer.photographerName,
                     clipID: assignment.clip.id,
                     clipName: assignment.clip.name
                 ))
@@ -160,7 +160,7 @@ enum MetadataPreviewService {
                     scheduledAt: scheduledAt,
                     status: .noScheduledClip,
                     photographerID: photographer.id,
-                    photographerName: photographer.name,
+                    photographerName: photographer.photographerName,
                     clipID: nil,
                     clipName: nil
                 ))

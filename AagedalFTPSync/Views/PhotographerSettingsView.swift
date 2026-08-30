@@ -33,7 +33,7 @@ struct PhotographerSettingsView: View {
                 List(selection: $selectedPhotographerID) {
                     ForEach(store.photographerLibrary) { photographer in
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(photographer.name)
+                            Text(photographer.photographerName)
                                 .fontWeight(.medium)
                             Text(profileSummary(photographer))
                                 .font(.caption)
@@ -50,6 +50,8 @@ struct PhotographerSettingsView: View {
                 if let draftBinding {
                     VStack(alignment: .leading, spacing: 16) {
                         PhotographerEditor(photographer: draftBinding)
+                        Divider()
+                        PhotographerWorkHoursControl(photographer: draftBinding)
 
                         if let draft {
                             let usageCount = store.photographerUsageCount(draft.id)
@@ -98,7 +100,7 @@ struct PhotographerSettingsView: View {
             ),
             presenting: photographerPendingDeletion
         ) { photographer in
-            Button("Delete \(photographer.name)", role: .destructive) {
+            Button("Delete \(photographer.photographerName)", role: .destructive) {
                 deletePhotographer(photographer)
             }
         } message: { photographer in
@@ -142,10 +144,11 @@ struct PhotographerSettingsView: View {
     }
 
     private func addPhotographer() {
+        let name = uniqueName()
         let photographer = PhotographerProfile(
-            name: uniqueName(),
+            name: name,
             filenamePrefix: uniquePrefix(),
-            creator: "",
+            creator: name,
             copyrightNotice: ""
         )
         guard store.savePhotographerProfile(photographer) else { return }
