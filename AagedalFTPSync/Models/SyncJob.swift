@@ -89,6 +89,64 @@ struct TargetCleanup: Codable, Hashable, Sendable {
     var olderThanHours: Int = 2
 }
 
+enum ProcessedFilesLocation: String, Codable, CaseIterable, Identifiable, Sendable {
+    case customFolder
+    case processedSubfolder
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .customFolder: "Custom Folder"
+        case .processedSubfolder: "Processed sub-folder"
+        }
+    }
+}
+
+enum ManagedOutputFolder: Sendable {
+    case syncedFiles
+    case processedFiles
+
+    var directoryName: String {
+        switch self {
+        case .syncedFiles: "Synced Files"
+        case .processedFiles: "Processed Files"
+        }
+    }
+
+    func url(
+        inside selectedRoot: URL,
+        createIfNeeded: Bool,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let root = selectedRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = root.appendingPathComponent(directoryName, isDirectory: true).standardizedFileURL
+        guard candidate.path.hasPrefix(root.path + "/") else {
+            throw AppError.transferFailed("The managed folder structure attempted to leave its selected main folder.")
+        }
+
+        if fileManager.fileExists(atPath: candidate.path) {
+            let values = try candidate.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isSymbolicLink != true else {
+                throw AppError.transferFailed("The managed folder \(directoryName) cannot be a symbolic link.")
+            }
+            guard values.isDirectory == true else {
+                throw AppError.transferFailed("The main folder already contains a file named \(directoryName).")
+            }
+        } else if createIfNeeded {
+            try fileManager.createDirectory(at: candidate, withIntermediateDirectories: false)
+        } else {
+            throw AppError.invalidConfiguration("The managed folder \(directoryName) has not been created yet.")
+        }
+
+        let resolvedCandidate = candidate.resolvingSymlinksInPath()
+        guard resolvedCandidate.path.hasPrefix(root.path + "/") else {
+            throw AppError.transferFailed("The managed folder \(directoryName) attempted to leave its selected main folder.")
+        }
+        return resolvedCandidate
+    }
+}
+
 struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
     var name = "Newsroom photos"
@@ -107,6 +165,10 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var targetCleanup: TargetCleanup? = nil
     // Optional so jobs saved by earlier versions continue to decode.
     var processedFolder: Endpoint? = nil
+    // Optional so 2.5 jobs with a processed folder retain the custom-folder behavior.
+    var processedFilesLocation: ProcessedFilesLocation? = nil
+    // Optional so jobs saved before 2.6 retain their flat processed-folder behavior.
+    var sortProcessedFilesByPhotographer: Bool? = nil
     // Optional so jobs saved by earlier versions continue to decode.
     var metadataAutomation: MetadataAutomation? = nil
 
@@ -118,6 +180,51 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var showsLatestSessionTransferCountOnly: Bool {
         get { latestSessionTransferCountOnly ?? false }
         set { latestSessionTransferCountOnly = newValue }
+    }
+
+    var movesProcessedFiles: Bool {
+        processedFolder != nil || processedFilesLocation != nil
+    }
+
+    var effectiveProcessedFilesLocation: ProcessedFilesLocation {
+        processedFilesLocation ?? .customFolder
+    }
+
+    var sortsProcessedFilesByPhotographer: Bool {
+        get { sortProcessedFilesByPhotographer ?? false }
+        set { sortProcessedFilesByPhotographer = newValue }
+    }
+
+    var usesManagedFolderStructure: Bool {
+        movesProcessedFiles && effectiveProcessedFilesLocation == .processedSubfolder
+    }
+
+    var destinationEndpoint: Endpoint? {
+        switch direction {
+        case .leftToRight: right
+        case .rightToLeft: left
+        case .bidirectional: nil
+        }
+    }
+
+    var sourceEndpoint: Endpoint? {
+        switch direction {
+        case .leftToRight: left
+        case .rightToLeft: right
+        case .bidirectional: nil
+        }
+    }
+
+    var localDestinationSubdirectory: String? {
+        usesManagedFolderStructure ? ManagedOutputFolder.syncedFiles.directoryName : nil
+    }
+
+    var localDestinationDisplayPath: String? {
+        guard let destinationEndpoint, destinationEndpoint.kind == .local else { return nil }
+        guard let localDestinationSubdirectory else { return destinationEndpoint.localPath }
+        return URL(fileURLWithPath: destinationEndpoint.localPath)
+            .appendingPathComponent(localDestinationSubdirectory, isDirectory: true)
+            .path
     }
 
     var validationMessage: String? {
@@ -147,29 +254,53 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
                 }
             }
         }
-        if let processedFolder {
+        if movesProcessedFiles {
             guard direction != .bidirectional else {
                 return "Moving processed files is only available for one-way jobs."
-            }
-            guard processedFolder.kind == .local else {
-                return "The processed-files location must be a local folder."
-            }
-            if let message = processedFolder.validationMessage {
-                return "Processed folder: \(message)"
             }
             guard metadataAutomation?.isEnabled == true else {
                 return "Enable automatic metadata before moving files to a processed folder."
             }
-            let processedURL = URL(fileURLWithPath: processedFolder.localPath)
-                .standardizedFileURL.resolvingSymlinksInPath()
-            for endpoint in [left, right] where endpoint.kind == .local {
-                let endpointURL = URL(fileURLWithPath: endpoint.localPath)
+
+            switch effectiveProcessedFilesLocation {
+            case .customFolder:
+                guard let processedFolder else {
+                    return "Choose a custom processed folder."
+                }
+                guard processedFolder.kind == .local else {
+                    return "The processed-files location must be a local folder."
+                }
+                if let message = processedFolder.validationMessage {
+                    return "Processed folder: \(message)"
+                }
+                let processedURL = URL(fileURLWithPath: processedFolder.localPath)
                     .standardizedFileURL.resolvingSymlinksInPath()
-                let foldersOverlap = processedURL == endpointURL
-                    || processedURL.path.hasPrefix(endpointURL.path + "/")
-                    || endpointURL.path.hasPrefix(processedURL.path + "/")
-                guard !foldersOverlap else {
-                    return "The processed folder must be separate from the source and destination folders."
+                for endpoint in [left, right] where endpoint.kind == .local {
+                    let endpointURL = URL(fileURLWithPath: endpoint.localPath)
+                        .standardizedFileURL.resolvingSymlinksInPath()
+                    let foldersOverlap = processedURL == endpointURL
+                        || processedURL.path.hasPrefix(endpointURL.path + "/")
+                        || endpointURL.path.hasPrefix(processedURL.path + "/")
+                    guard !foldersOverlap else {
+                        return "The processed folder must be separate from the source and destination folders."
+                    }
+                }
+
+            case .processedSubfolder:
+                guard let destinationEndpoint, destinationEndpoint.kind == .local else {
+                    return "The managed folder structure requires a local destination folder."
+                }
+                if let sourceEndpoint, sourceEndpoint.kind == .local {
+                    let sourceURL = URL(fileURLWithPath: sourceEndpoint.localPath)
+                        .standardizedFileURL.resolvingSymlinksInPath()
+                    let mainURL = URL(fileURLWithPath: destinationEndpoint.localPath)
+                        .standardizedFileURL.resolvingSymlinksInPath()
+                    let foldersOverlap = sourceURL == mainURL
+                        || sourceURL.path.hasPrefix(mainURL.path + "/")
+                        || mainURL.path.hasPrefix(sourceURL.path + "/")
+                    guard !foldersOverlap else {
+                        return "The managed main folder must be separate from the local source folder."
+                    }
                 }
             }
         }

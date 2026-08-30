@@ -570,7 +570,7 @@ struct MetadataProgrammingView: View {
         guard let metadataLocalEndpoint else {
             return "Automatic metadata requires a one-way job with a local destination."
         }
-        return "Preview the unsaved programming draft against \(metadataLocalEndpoint.localPath). No files are changed."
+        return "Preview the unsaved programming draft against \(selectedJob?.localDestinationDisplayPath ?? metadataLocalEndpoint.localPath). No files are changed."
     }
 
     private var isReprocessing: Bool {
@@ -604,9 +604,7 @@ struct MetadataProgrammingView: View {
     }
 
     private var reprocessConfirmationMessage: String {
-        let target = selectedJob.map { job in
-            job.direction == .leftToRight ? job.right.localPath : job.left.localPath
-        } ?? "the local destination"
+        let target = selectedJob?.localDestinationDisplayPath ?? "the local destination"
         let policyNote = draft.existingFieldPolicy == .fillEmpty
             ? "Existing non-empty fields will be preserved."
             : "Non-empty programmed values will overwrite existing fields."
@@ -622,7 +620,15 @@ struct MetadataProgrammingView: View {
         Task {
             do {
                 let folderAccess = try BookmarkAccess(endpoint: metadataLocalEndpoint)
-                let folderURL = folderAccess.url
+                let folderURL: URL
+                if selectedJob.usesManagedFolderStructure {
+                    folderURL = try ManagedOutputFolder.syncedFiles.url(
+                        inside: folderAccess.url,
+                        createIfNeeded: true
+                    )
+                } else {
+                    folderURL = folderAccess.url
+                }
                 let result = try await Task.detached(priority: .userInitiated) {
                     _ = folderAccess
                     return try MetadataPreviewService.previewLocalFolder(

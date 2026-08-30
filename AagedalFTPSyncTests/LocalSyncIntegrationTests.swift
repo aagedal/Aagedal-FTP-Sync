@@ -5,6 +5,131 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testManagedStructureCreatesSiblingRootsAndSortsProcessedRawByPhotographer() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "incoming/JAD_2600.CR3"
+        let source = fixture.left.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let rawData = Data("managed-structure-camera-data".utf8)
+        try rawData.write(to: source)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+
+        let photographer = PhotographerProfile(
+            name: "Jane/News: Desk",
+            filenamePrefix: "JAD",
+            creator: "Jane/News: Desk",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Managed assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Managed RAW")
+            )]
+        )
+        job.processedFilesLocation = .processedSubfolder
+        job.sortsProcessedFilesByPhotographer = true
+
+        let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(firstResult.processed, 1)
+        XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+
+        let syncedRoot = fixture.right.appendingPathComponent("Synced Files")
+        let processedRoot = fixture.right
+            .appendingPathComponent("Processed Files")
+            .appendingPathComponent("Jane News Desk")
+        let syncedRaw = syncedRoot.appendingPathComponent(relativePath)
+        let syncedSidecar = syncedRoot.appendingPathComponent(
+            MetadataWriter.sidecarRelativePath(for: relativePath)
+        )
+        let processedRaw = processedRoot.appendingPathComponent(relativePath)
+        let processedSidecar = processedRoot.appendingPathComponent(
+            MetadataWriter.sidecarRelativePath(for: relativePath)
+        )
+
+        XCTAssertEqual(try Data(contentsOf: syncedRaw), rawData)
+        XCTAssertEqual(try Data(contentsOf: processedRaw), rawData)
+        XCTAssertEqual(try XMPSidecar.read(from: syncedSidecar).headline, "Managed RAW")
+        XCTAssertEqual(try XMPSidecar.read(from: processedSidecar).headline, "Managed RAW")
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.right.appendingPathComponent(relativePath).path
+            )
+        )
+    }
+
+    func testManagedStructureReprocessingScansOnlySyncedFiles() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "JAD_REPROCESS.CR3"
+        let syncedRoot = fixture.right.appendingPathComponent("Synced Files")
+        let processedRoot = fixture.right.appendingPathComponent("Processed Files")
+        try FileManager.default.createDirectory(at: syncedRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: processedRoot, withIntermediateDirectories: true)
+        let syncedRaw = syncedRoot.appendingPathComponent(relativePath)
+        let processedRaw = processedRoot.appendingPathComponent(relativePath)
+        try Data("synced-raw".utf8).write(to: syncedRaw)
+        try Data("processed-raw".utf8).write(to: processedRaw)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: syncedRaw.path)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: processedRaw.path)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Reprocess managed download",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Synced only")
+            )]
+        )
+        job.processedFilesLocation = .processedSubfolder
+
+        let result = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+
+        XCTAssertEqual(result.scanned, 1)
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(
+            try XMPSidecar.read(
+                from: syncedRoot.appendingPathComponent(
+                    MetadataWriter.sidecarRelativePath(for: relativePath)
+                )
+            ).headline,
+            "Synced only"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: processedRoot.appendingPathComponent(
+                    MetadataWriter.sidecarRelativePath(for: relativePath)
+                ).path
+            )
+        )
+    }
+
     func testSuccessfulMetadataWriteMovesTaggedFileToPerJobProcessedFolder() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

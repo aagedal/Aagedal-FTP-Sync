@@ -51,6 +51,31 @@ final class JobRepositoryTests: XCTestCase {
         XCTAssertFalse(loaded.showsLatestSessionTransferCountOnly)
     }
 
+    func testLegacyProcessedFolderDefaultsToCustomFolderWithoutPhotographerSorting() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-processed-jobs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let repository = JobRepository(fileURL: url)
+        var job = SyncJob(name: "Legacy processed folder")
+        job.processedFolder = Endpoint(
+            kind: .local,
+            localPath: "/Users/example/Processed",
+            bookmark: Data([1])
+        )
+
+        try repository.save([job])
+        let data = try Data(contentsOf: url)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        json[0]["processedFilesLocation"] = nil
+        json[0]["sortProcessedFilesByPhotographer"] = nil
+        try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+
+        let loaded = try XCTUnwrap(repository.load().first)
+        XCTAssertTrue(loaded.movesProcessedFiles)
+        XCTAssertEqual(loaded.effectiveProcessedFilesLocation, .customFolder)
+        XCTAssertFalse(loaded.sortsProcessedFilesByPhotographer)
+    }
+
     func testRecoversFromBackupWhenPrimaryFileIsCorrupt() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recover-jobs-\(UUID().uuidString).json")
         defer {

@@ -47,7 +47,7 @@ struct JobDetailEditor: View {
                         directionControl
 
                         EndpointSummaryCard(
-                            title: draft.direction == .bidirectional ? "Location B" : "Destination",
+                            title: destinationLocationTitle,
                             endpoint: secondEndpointBinding,
                             password: secondPasswordBinding
                         )
@@ -105,17 +105,48 @@ struct JobDetailEditor: View {
                         isOn: processedFolderEnabledBinding
                     )
 
-                    if let processedFolder = draft.processedFolder {
-                        LabeledContent("Processed folder") {
-                            HStack {
-                                Text(processedFolder.localPath.isEmpty ? "Not selected" : processedFolder.localPath)
-                                    .foregroundStyle(processedFolder.localPath.isEmpty ? .secondary : .primary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Button("Choose…") { showProcessedFolderPicker = true }
+                    if draft.movesProcessedFiles {
+                        Picker("Processed files location", selection: processedFilesLocationBinding) {
+                            ForEach(ProcessedFilesLocation.allCases) { location in
+                                Text(location.title).tag(location)
                             }
                         }
-                        Text("After the destination and metadata-written file are verified, the tagged file is placed here and the original is removed from its source. Metadata skips and failures leave the source untouched.")
+                        .pickerStyle(.segmented)
+
+                        switch draft.effectiveProcessedFilesLocation {
+                        case .customFolder:
+                            LabeledContent("Processed folder") {
+                                HStack {
+                                    Text(customProcessedFolderPath)
+                                        .foregroundStyle(draft.processedFolder?.localPath.isEmpty == false ? .primary : .secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Button("Choose…") { showProcessedFolderPicker = true }
+                                }
+                            }
+                        case .processedSubfolder:
+                            LabeledContent("Main folder") {
+                                Text(draft.destinationEndpoint?.localPath.isEmpty == false
+                                    ? draft.destinationEndpoint?.localPath ?? "Not selected"
+                                    : "Not selected")
+                                    .foregroundStyle(draft.destinationEndpoint?.localPath.isEmpty == false ? .primary : .secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            VStack(alignment: .leading, spacing: 3) {
+                                Label("Downloads: Synced Files", systemImage: "folder")
+                                Label("Processed copies: Processed Files", systemImage: "folder")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
+
+                        Toggle(
+                            "Sort pictures into per Photographer sub-folders",
+                            isOn: sortProcessedFilesByPhotographerBinding
+                        )
+
+                        Text("After the synced and processed copies are verified, the original is removed from its source. Metadata skips, failures, and processed-file collisions leave the source untouched.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
@@ -196,6 +227,7 @@ struct JobDetailEditor: View {
                         localPath: bookmark.resolvedURL.path,
                         bookmark: bookmark.data
                     )
+                    draft.processedFilesLocation = .customFolder
                 } catch {
                     processedFolderError = "Folder access could not be saved: \(error.localizedDescription)"
                 }
@@ -221,6 +253,16 @@ struct JobDetailEditor: View {
     private var intervalLabel: String {
         if draft.intervalSeconds < 60 { return "\(Int(draft.intervalSeconds)) sec" }
         return "\(Int(draft.intervalSeconds / 60)) min"
+    }
+
+    private var destinationLocationTitle: String {
+        if draft.direction == .bidirectional { return "Location B" }
+        return draft.usesManagedFolderStructure ? "Main Folder" : "Destination"
+    }
+
+    private var customProcessedFolderPath: String {
+        guard let path = draft.processedFolder?.localPath, !path.isEmpty else { return "Not selected" }
+        return path
     }
 
     private var metadataStatus: String {
@@ -263,17 +305,40 @@ struct JobDetailEditor: View {
 
     private var processedFolderEnabledBinding: Binding<Bool> {
         Binding(
-            get: { draft.processedFolder != nil },
+            get: { draft.movesProcessedFiles },
             set: { enabled in
                 if enabled {
-                    if draft.processedFolder == nil {
+                    if !draft.movesProcessedFiles {
+                        draft.processedFilesLocation = .customFolder
                         draft.processedFolder = .local
                         showProcessedFolderPicker = true
                     }
                 } else {
                     draft.processedFolder = nil
+                    draft.processedFilesLocation = nil
+                    draft.sortsProcessedFilesByPhotographer = false
                 }
             }
+        )
+    }
+
+    private var processedFilesLocationBinding: Binding<ProcessedFilesLocation> {
+        Binding(
+            get: { draft.effectiveProcessedFilesLocation },
+            set: { location in
+                draft.processedFilesLocation = location
+                if location == .customFolder, draft.processedFolder == nil {
+                    draft.processedFolder = .local
+                    showProcessedFolderPicker = true
+                }
+            }
+        )
+    }
+
+    private var sortProcessedFilesByPhotographerBinding: Binding<Bool> {
+        Binding(
+            get: { draft.sortsProcessedFilesByPhotographer },
+            set: { draft.sortsProcessedFilesByPhotographer = $0 }
         )
     }
 

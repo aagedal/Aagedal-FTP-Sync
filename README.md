@@ -1,8 +1,8 @@
-# Aagedal FTP Sync 2.5
+# Aagedal FTP Sync 2.6
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.5 builds automatic editorial metadata programming on the clean SwiftUI rewrite. It has no hard-coded server and does not bundle rclone.
+Version 2.6 adds a managed download and processed-file structure to the automatic editorial metadata workflow. It has no hard-coded server and does not bundle rclone.
 
 ## What is new
 
@@ -28,7 +28,8 @@ Version 2.5 builds automatic editorial metadata programming on the clean SwiftUI
 - Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
 - A read-only local-folder preview, separate metadata outcome counts, and a per-file audit trail make automation decisions inspectable
 - Original source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
-- An optional per-job processed folder can receive successfully tagged files before their originals are removed from local, FTP, FTPS, or SFTP sources
+- Successfully tagged files can use a custom processed folder or a managed main folder containing sibling `Synced Files` and `Processed Files` folders
+- Processed pictures can optionally be sorted into sanitized per-photographer sub-folders while preserving their source-relative paths
 
 ## Requirements
 
@@ -74,7 +75,7 @@ One-way jobs copy files that are missing or newer at the destination. Two-way jo
 
 Version 2.0 intentionally does not mirror source deletions. A temporary network outage, empty server listing, or accidental source-folder change therefore cannot erase newsroom files.
 
-For one-way jobs with automatic metadata, a per-job local processed folder can be enabled explicitly. The app first writes and verifies the destination, then places the metadata-written file—and an XMP companion for RAW—into the processed folder. Only after both copies succeed does it remove the original from the source. Metadata skips, metadata failures, and processed-folder collisions leave the source untouched. The processed folder must be separate from local source and destination folders.
+For one-way jobs with automatic metadata, processed-file handoff can be enabled explicitly. Custom Folder mode keeps the existing independently selected local processed folder. Processed sub-folder mode treats the selected local destination as a managed main folder and creates sibling `Synced Files` and `Processed Files` roots, ensuring processed copies are never enumerated as ordinary downloads. Processed pictures can optionally receive a photographer-name folder above their preserved source-relative path. The app removes the original from the source only after the synced copy, metadata-written processed copy, and any RAW XMP sidecar are verified. Metadata skips, failures, and processed-file collisions leave the source untouched.
 
 For one-way jobs with a local target, you can optionally remove matching target files after a chosen age. Cleanup requires a recent-file source window, and its deletion age must be longer than that window—for example, sync files from the last hour and remove matching target files older than two hours. The app evaluates only target entries for deletion, re-checks each file's type and modification date immediately before removal, and never issues a delete operation to the source. Cleanup is unavailable for two-way jobs, remote targets, and overlapping local folders.
 

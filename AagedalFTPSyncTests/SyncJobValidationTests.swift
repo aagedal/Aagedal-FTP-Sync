@@ -102,6 +102,48 @@ final class SyncJobValidationTests: XCTestCase {
         )
     }
 
+    func testManagedProcessedStructureUsesLocalDestinationAsMainFolder() {
+        var job = validJob(direction: .leftToRight)
+        job.metadataAutomation = validMetadataAutomation()
+        job.processedFilesLocation = .processedSubfolder
+        job.sortsProcessedFilesByPhotographer = true
+
+        XCTAssertNil(job.validationMessage)
+        XCTAssertTrue(job.movesProcessedFiles)
+        XCTAssertTrue(job.usesManagedFolderStructure)
+        XCTAssertEqual(
+            job.localDestinationDisplayPath,
+            "/Users/example/Pictures/Synced Files"
+        )
+    }
+
+    func testManagedProcessedStructureRejectsOverlappingLocalSource() {
+        let bookmark = Data([1])
+        var job = SyncJob(
+            name: "Test",
+            left: Endpoint(
+                kind: .local,
+                localPath: "/Users/example/Pictures/incoming",
+                bookmark: bookmark
+            ),
+            right: Endpoint(
+                kind: .local,
+                localPath: "/Users/example/Pictures",
+                bookmark: bookmark
+            ),
+            direction: .leftToRight,
+            intervalSeconds: 5,
+            isEnabled: false
+        )
+        job.metadataAutomation = validMetadataAutomation()
+        job.processedFilesLocation = .processedSubfolder
+
+        XCTAssertEqual(
+            job.validationMessage,
+            "The managed main folder must be separate from the local source folder."
+        )
+    }
+
     private func validJob(direction: SyncDirection) -> SyncJob {
         let remote = Endpoint(
             kind: .sftp,

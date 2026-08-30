@@ -2,14 +2,20 @@ import Foundation
 
 struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
     private let access: BookmarkAccess
+    private let rootURL: URL
     private let fileManager = FileManager.default
 
-    init(endpoint: Endpoint) throws {
+    init(endpoint: Endpoint, managedFolder: ManagedOutputFolder? = nil) throws {
         access = try BookmarkAccess(endpoint: endpoint)
+        if let managedFolder {
+            rootURL = try managedFolder.url(inside: access.url, createIfNeeded: true)
+        } else {
+            rootURL = access.url.standardizedFileURL.resolvingSymlinksInPath()
+        }
     }
 
     func listFiles() async throws -> [String: SyncFile] {
-        let root = access.url.standardizedFileURL.resolvingSymlinksInPath()
+        let root = rootURL
         let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey]
         guard let enumerator = fileManager.enumerator(
             at: root,
@@ -86,7 +92,7 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
         let target = try safeURL(for: file.relativePath)
         guard fileManager.fileExists(atPath: target.path) else { return false }
-        let root = access.url.standardizedFileURL.resolvingSymlinksInPath()
+        let root = rootURL
         let resolvedTarget = target.resolvingSymlinksInPath()
         guard resolvedTarget.path.hasPrefix(root.path + "/") else {
             throw AppError.transferFailed("A target path attempted to leave its selected folder.")
@@ -114,7 +120,7 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
         guard PathSafety.isSafeRelativePath(relativePath) else {
             throw AppError.transferFailed("A file contained an unsafe relative path and was skipped.")
         }
-        let root = access.url.standardizedFileURL.resolvingSymlinksInPath()
+        let root = rootURL
         let candidate = root.appendingPathComponent(relativePath).standardizedFileURL
         guard candidate.path.hasPrefix(root.path + "/") else {
             throw AppError.transferFailed("A file path attempted to leave its selected folder.")

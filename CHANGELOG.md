@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 2.6.0 — 2026-08-30
+
+- Add Custom Folder and Processed sub-folder modes for processed-file handoff.
+- Add a managed main-folder layout with isolated `Synced Files` and `Processed Files` sibling roots.
+- Optionally sort processed pictures into safe per-photographer sub-folders while retaining source-relative paths and RAW sidecars.
+
+## 2.5.0
 
 - Start the 2.5 metadata workflow with per-job photographer profiles, filename-prefix matching, scheduled day clips, and SwiftExif-powered IPTC/XMP writing for files synced to local folders.
 - Add a dedicated metadata-programming window with a calendar, photographer library, visual day tracks, cross-day confirmation, and clip copying between photographers.

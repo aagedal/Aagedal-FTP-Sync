@@ -52,16 +52,26 @@ enum EndpointConnectionTester {
 }
 
 enum EndpointSessionFactory {
-    static func make(endpoint: Endpoint, password: String?) throws -> any EndpointSession {
+    static func make(
+        endpoint: Endpoint,
+        password: String?,
+        managedFolder: ManagedOutputFolder? = nil
+    ) throws -> any EndpointSession {
         switch endpoint.kind {
         case .local:
-            return try LocalEndpointSession(endpoint: endpoint)
+            return try LocalEndpointSession(endpoint: endpoint, managedFolder: managedFolder)
         case .ftp, .ftps:
+            guard managedFolder == nil else {
+                throw AppError.invalidConfiguration("Managed output folders require a local destination.")
+            }
             guard let password else {
                 throw AppError.invalidConfiguration("No password is saved for \(endpoint.host).")
             }
             return FTPEndpointSession(endpoint: endpoint, password: password)
         case .sftp:
+            guard managedFolder == nil else {
+                throw AppError.invalidConfiguration("Managed output folders require a local destination.")
+            }
             guard let password else {
                 throw AppError.invalidConfiguration("No password is saved for \(endpoint.host).")
             }

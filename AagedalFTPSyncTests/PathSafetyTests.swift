@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import AagedalFTPSync
 
@@ -34,5 +35,21 @@ final class PathSafetyTests: XCTestCase {
         )
         XCTAssertNotNil(PathSafety.localPathCollision(in: ["café.jpg", "cafe\u{301}.jpg"]))
         XCTAssertNil(PathSafety.localPathCollision(in: ["one.jpg", "two.jpg"]))
+    }
+
+    func testManagedOutputFolderRejectsExpectedDirectoryNameUsedByAFile() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("managed-output-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("occupied".utf8).write(
+            to: root.appendingPathComponent(ManagedOutputFolder.syncedFiles.directoryName)
+        )
+
+        XCTAssertThrowsError(
+            try ManagedOutputFolder.syncedFiles.url(inside: root, createIfNeeded: true)
+        ) { error in
+            XCTAssertTrue(error.localizedDescription.contains("already contains a file named Synced Files"))
+        }
     }
 }

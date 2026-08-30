@@ -38,10 +38,39 @@ struct SyncEngine: Sendable {
 
     func run(job: SyncJob, leftPassword: String?, rightPassword: String?) async throws -> SyncResult {
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
-        let left = try EndpointSessionFactory.make(endpoint: job.left, password: leftPassword)
-        let right = try EndpointSessionFactory.make(endpoint: job.right, password: rightPassword)
-        let processedDestination: (any EndpointSession)? = try job.processedFolder.map {
-            try EndpointSessionFactory.make(endpoint: $0, password: nil)
+        let leftManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .rightToLeft
+            ? .syncedFiles
+            : nil
+        let rightManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .leftToRight
+            ? .syncedFiles
+            : nil
+        let left = try EndpointSessionFactory.make(
+            endpoint: job.left,
+            password: leftPassword,
+            managedFolder: leftManagedFolder
+        )
+        let right = try EndpointSessionFactory.make(
+            endpoint: job.right,
+            password: rightPassword,
+            managedFolder: rightManagedFolder
+        )
+        let processedDestination: (any EndpointSession)?
+        switch job.movesProcessedFiles ? job.effectiveProcessedFilesLocation : nil {
+        case .customFolder:
+            processedDestination = try job.processedFolder.map {
+                try EndpointSessionFactory.make(endpoint: $0, password: nil)
+            }
+        case .processedSubfolder:
+            guard let destinationEndpoint = job.destinationEndpoint else {
+                throw AppError.invalidConfiguration("Managed output folders require a one-way job.")
+            }
+            processedDestination = try EndpointSessionFactory.make(
+                endpoint: destinationEndpoint,
+                password: nil,
+                managedFolder: .processedFiles
+            )
+        case nil:
+            processedDestination = nil
         }
         do {
             async let leftListing = left.listFiles()
@@ -142,7 +171,10 @@ struct SyncEngine: Sendable {
             throw AppError.invalidConfiguration("Metadata reprocessing requires a local destination folder.")
         }
 
-        let destination = try LocalEndpointSession(endpoint: destinationEndpoint)
+        let destination = try LocalEndpointSession(
+            endpoint: destinationEndpoint,
+            managedFolder: job.usesManagedFolderStructure ? .syncedFiles : nil
+        )
         let destinationFiles = try await destination.listFiles()
         let sourceFiles = await sourceFilesForReprocessing(
             job: job,
@@ -444,6 +476,7 @@ struct SyncEngine: Sendable {
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: job.metadataAutomation,
+                sortProcessedFilesByPhotographer: job.sortsProcessedFilesByPhotographer,
                 sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                     ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
                     : nil,
@@ -511,6 +544,7 @@ struct SyncEngine: Sendable {
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: nil,
+                sortProcessedFilesByPhotographer: false,
                 sourceSidecar: nil,
                 jobID: job.id,
                 runID: UUID()
@@ -550,6 +584,7 @@ struct SyncEngine: Sendable {
         preserveDate: Bool,
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
+        sortProcessedFilesByPhotographer: Bool,
         sourceSidecar: SyncFile?,
         jobID: UUID,
         runID: UUID
@@ -697,18 +732,32 @@ struct SyncEngine: Sendable {
             )
         }
         var movedToProcessed = false
-        if auditEntry?.status == .applied, let processedDestination {
+        if auditEntry?.status == .applied,
+           let metadataAssignment,
+           let processedDestination {
+            let processedFile = processedCopy(
+                of: importedFile,
+                assignment: metadataAssignment,
+                automation: activeAutomation,
+                sortedByPhotographer: sortProcessedFilesByPhotographer
+            )
             try await importProcessedFile(
                 from: importedURL,
-                as: importedFile,
-                existing: processedFiles[importedFile.relativePath],
+                as: processedFile,
+                existing: processedFiles[processedFile.relativePath],
                 to: processedDestination
             )
             if let sidecarImport {
+                let processedSidecar = processedCopy(
+                    of: sidecarImport.file,
+                    assignment: metadataAssignment,
+                    automation: activeAutomation,
+                    sortedByPhotographer: sortProcessedFilesByPhotographer
+                )
                 try await importProcessedFile(
                     from: sidecarImport.url,
-                    as: sidecarImport.file,
-                    existing: processedFiles[sidecarImport.file.relativePath],
+                    as: processedSidecar,
+                    existing: processedFiles[processedSidecar.relativePath],
                     to: processedDestination
                 )
             }
@@ -723,6 +772,86 @@ struct SyncEngine: Sendable {
             embeddedMetadataApplied: embeddedMetadataApplied,
             movedToProcessed: movedToProcessed
         )
+    }
+
+    private func processedCopy(
+        of file: SyncFile,
+        assignment: MetadataAssignment,
+        automation: MetadataAutomation?,
+        sortedByPhotographer: Bool
+    ) -> SyncFile {
+        guard sortedByPhotographer else { return file }
+        let folder = photographerFolderName(
+            for: assignment.photographer,
+            photographers: automation?.photographers ?? [assignment.photographer]
+        )
+        return SyncFile(
+            relativePath: folder + "/" + file.relativePath,
+            size: file.size,
+            modifiedAt: file.modifiedAt
+        )
+    }
+
+    private func photographerFolderName(
+        for photographer: PhotographerProfile,
+        photographers: [PhotographerProfile]
+    ) -> String {
+        let base = safeFolderComponent(
+            photographer.photographerName,
+            fallback: "Photographer",
+            maximumScalars: 44
+        )
+        let comparisonKey = folderComparisonKey(base)
+        let hasDuplicateName = photographers.contains { candidate in
+            candidate.id != photographer.id
+                && folderComparisonKey(
+                    safeFolderComponent(
+                        candidate.photographerName,
+                        fallback: "Photographer",
+                        maximumScalars: 44
+                    )
+                ) == comparisonKey
+        }
+        guard hasDuplicateName else { return base }
+
+        let initials = photographer.normalizedPrefixes.first ?? String(photographer.id.uuidString.prefix(8))
+        let suffix = safeFolderComponent(
+            initials,
+            fallback: String(photographer.id.uuidString.prefix(8)),
+            maximumScalars: 10
+        )
+        return safeFolderComponent("\(base) (\(suffix))", fallback: "Photographer")
+    }
+
+    private func safeFolderComponent(
+        _ value: String,
+        fallback: String,
+        maximumScalars: Int = 60
+    ) -> String {
+        let replacedScalars = value.unicodeScalars.map { scalar -> Character in
+            if scalar == "/" || scalar == ":" || CharacterSet.controlCharacters.contains(scalar) {
+                return " "
+            }
+            return Character(String(scalar))
+        }
+        let collapsed = String(replacedScalars)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .precomposedStringWithCanonicalMapping
+        var limited = String(collapsed.unicodeScalars.prefix(maximumScalars))
+        if limited.isEmpty || limited == "." || limited == ".." {
+            return fallback
+        }
+        if PathSafety.isInternalStagingPath(limited) {
+            let visibleName = limited.drop(while: { $0 == "." })
+            limited = String("Photographer \(visibleName)".unicodeScalars.prefix(maximumScalars))
+        }
+        return limited
+    }
+
+    private func folderComparisonKey(_ value: String) -> String {
+        value.precomposedStringWithCanonicalMapping
+            .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 
     private func importProcessedFile(
