@@ -130,7 +130,10 @@ actor SFTPTransport {
     private func connect() async throws -> SFTPClient {
         if let sftpClient, sftpClient.isActive { return sftpClient }
         let hostID = "\(endpoint.host.lowercased()):\(endpoint.port)"
-        let validator = SSHHostKeyValidator.custom(TrustOnFirstUseValidator(hostID: hostID))
+        let validator = SSHHostKeyValidator.custom(PinnedHostKeyValidator(
+            hostID: hostID,
+            expectedFingerprint: endpoint.hostKeyFingerprint
+        ))
         let username = endpoint.username
         let secret = password
         let settings = SSHClientSettings(
@@ -211,24 +214,36 @@ private final class SSHClientBox: @unchecked Sendable {
     func close() async { try? await client.close() }
 }
 
-private final class TrustOnFirstUseValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
+private final class PinnedHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
     private let hostID: String
-    private let defaults = UserDefaults.standard
-    private let lock = NSLock()
+    private let expectedFingerprint: String?
 
-    init(hostID: String) { self.hostID = hostID }
+    init(hostID: String, expectedFingerprint: String) {
+        self.hostID = hostID
+        self.expectedFingerprint = SSHHostKeyFingerprint.normalized(expectedFingerprint)
+    }
 
     func validateHostKey(hostKey: NIOSSHPublicKey, validationCompletePromise: EventLoopPromise<Void>) {
         let publicKey = String(openSSHPublicKey: hostKey)
-        let storageKey = "trusted-ssh-host-key.\(hostID)"
-        lock.lock()
-        defer { lock.unlock() }
-        if let trusted = defaults.string(forKey: storageKey) {
-            if trusted == publicKey { validationCompletePromise.succeed(()) }
-            else { validationCompletePromise.fail(AppError.transferFailed("The SSH host key for \(hostID) changed. Connection refused to protect your files.")) }
-        } else {
-            defaults.set(publicKey, forKey: storageKey)
-            validationCompletePromise.succeed(())
+        guard let actualFingerprint = SSHHostKeyFingerprint.make(fromOpenSSHKey: publicKey) else {
+            validationCompletePromise.fail(AppError.transferFailed("The SSH server returned an invalid host key."))
+            return
         }
+        guard let expectedFingerprint else {
+            validationCompletePromise.fail(AppError.untrustedSSHHostKey(
+                hostID: hostID,
+                fingerprint: actualFingerprint
+            ))
+            return
+        }
+        guard expectedFingerprint == actualFingerprint else {
+            validationCompletePromise.fail(AppError.changedSSHHostKey(
+                hostID: hostID,
+                expected: expectedFingerprint,
+                actual: actualFingerprint
+            ))
+            return
+        }
+        validationCompletePromise.succeed(())
     }
 }

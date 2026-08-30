@@ -149,7 +149,8 @@ final class SyncJobValidationTests: XCTestCase {
             kind: .sftp,
             host: "photos.example.com",
             username: "desk",
-            remotePath: "/incoming"
+            remotePath: "/incoming",
+            hostKeyFingerprint: "SHA256:ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0"
         )
         let local = Endpoint(
             kind: .local,

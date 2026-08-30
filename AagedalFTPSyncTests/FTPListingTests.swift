@@ -29,4 +29,36 @@ final class FTPListingTests: XCTestCase {
         XCTAssertTrue(NetworkStream.isEndOfStream(.posix(.ENODATA)))
         XCTAssertFalse(NetworkStream.isEndOfStream(.posix(.ECONNRESET)))
     }
+
+    func testDirectoryListingAccumulatorEnforcesMaximumSize() throws {
+        var accumulator = BoundedDataAccumulator(maximumBytes: 5)
+        try accumulator.append(Data("123".utf8), context: "test listing")
+        try accumulator.append(Data("45".utf8), context: "test listing")
+
+        XCTAssertEqual(String(decoding: accumulator.data, as: UTF8.self), "12345")
+        XCTAssertThrowsError(try accumulator.append(Data("6".utf8), context: "test listing"))
+    }
+
+    func testFTPLineBufferRejectsOverlongLineWithoutDelimiter() {
+        var buffer = FTPLineBuffer()
+        buffer.append(Data("123456".utf8))
+
+        XCTAssertThrowsError(try buffer.nextLine(maximumBytes: 5))
+    }
+
+    func testFTPLineBufferRejectsOverlongCompletedLine() {
+        var buffer = FTPLineBuffer()
+        buffer.append(Data("123456\r\n".utf8))
+
+        XCTAssertThrowsError(try buffer.nextLine(maximumBytes: 5))
+    }
+
+    func testFTPLineBufferPreservesFollowingReply() throws {
+        var buffer = FTPLineBuffer()
+        buffer.append(Data("220 hello\r\n221 bye\r\n".utf8))
+
+        XCTAssertEqual(try buffer.nextLine(maximumBytes: 64), "220 hello")
+        XCTAssertEqual(try buffer.nextLine(maximumBytes: 64), "221 bye")
+        XCTAssertNil(try buffer.nextLine(maximumBytes: 64))
+    }
 }

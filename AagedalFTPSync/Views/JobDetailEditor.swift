@@ -681,14 +681,14 @@ private struct EndpointEditor: View {
                     Text("FTPS uses implicit TLS (normally port 990) and validates the server certificate.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text("On first connection, the SSH host key is recorded; later changes are rejected.")
+                    TextField(
+                        "Host key fingerprint",
+                        text: $endpoint.hostKeyFingerprint,
+                        prompt: Text("SHA256:…")
+                    )
+                    .textContentType(.none)
+                    Text("Test the connection to discover the fingerprint, verify it with the server administrator, then trust it. SFTP stays blocked until the fingerprint is saved.")
                         .font(.caption).foregroundStyle(.secondary)
-                    if !endpoint.host.isEmpty {
-                        Button("Forget trusted host key") {
-                            UserDefaults.standard.removeObject(forKey: "trusted-ssh-host-key.\(endpoint.host.lowercased()):\(endpoint.port)")
-                        }
-                        .controlSize(.small)
-                    }
                 }
             }
         }
@@ -737,7 +737,7 @@ private struct EndpointEditor: View {
                     Label("Test Connection", systemImage: "network")
                 }
             }
-            .disabled(endpoint.validationMessage != nil || connectionTestState == .testing)
+            .disabled(endpoint.connectionValidationMessage != nil || connectionTestState == .testing)
 
             if connectionTestState == .succeeded {
                 Label("Connection successful", systemImage: "checkmark.circle.fill")
@@ -751,6 +751,22 @@ private struct EndpointEditor: View {
                 .foregroundStyle(.red)
                 .font(.caption)
                 .textSelection(.enabled)
+        }
+
+        if case .awaitingHostKey(let hostID, let fingerprint) = connectionTestState {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Verify the SSH host key for \(hostID) before continuing.", systemImage: "key.horizontal")
+                    .foregroundStyle(.orange)
+                Text(fingerprint)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                Button("Trust Verified Fingerprint") {
+                    endpoint.hostKeyFingerprint = fingerprint
+                }
+                .controlSize(.small)
+                .help("Only trust this fingerprint after comparing it with a value supplied independently by the server administrator.")
+            }
+            .font(.caption)
         }
     }
 
@@ -768,7 +784,11 @@ private struct EndpointEditor: View {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
-                connectionTestState = .failed(error.localizedDescription)
+                if case let AppError.untrustedSSHHostKey(hostID, fingerprint) = error {
+                    connectionTestState = .awaitingHostKey(hostID: hostID, fingerprint: fingerprint)
+                } else {
+                    connectionTestState = .failed(error.localizedDescription)
+                }
             }
         }
     }
@@ -784,5 +804,6 @@ private enum ConnectionTestState: Equatable {
     case idle
     case testing
     case succeeded
+    case awaitingHostKey(hostID: String, fingerprint: String)
     case failed(String)
 }

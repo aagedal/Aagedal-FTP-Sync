@@ -5,6 +5,11 @@
 - Add Custom Folder and Processed sub-folder modes for processed-file handoff.
 - Add a managed main-folder layout with isolated `Synced Files` and `Processed Files` sibling roots.
 - Optionally sort processed pictures into safe per-photographer sub-folders while retaining source-relative paths and RAW sidecars.
+- Patch the transitive SwiftNIO SSH memory-corruption vulnerability CVE-2026-43798 and add its upstream regression coverage.
+- Upgrade Swift Crypto to 4.5.1 to address CVE-2026-43823.
+- Require explicit verification and approval of SFTP `SHA256:` host-key fingerprints before a job can be saved or credentials accepted.
+- Bound FTP/FTPS reply lines, multiline replies, and directory listings, with inactivity timeouts for network reads and writes.
+- Add a documented vendored-dependency baseline and a regression guard script.
 
 ## 2.5.0
 

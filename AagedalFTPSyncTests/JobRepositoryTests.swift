@@ -76,6 +76,27 @@ final class JobRepositoryTests: XCTestCase {
         XCTAssertFalse(loaded.sortsProcessedFilesByPhotographer)
     }
 
+    func testLegacyEndpointWithoutHostKeyFingerprintStillLoadsForReview() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-host-key-jobs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let repository = JobRepository(fileURL: url)
+        var job = SyncJob(name: "Legacy SFTP job")
+        job.left = Endpoint(kind: .sftp, host: "photos.example.com", username: "desk")
+
+        try repository.save([job])
+        let data = try Data(contentsOf: url)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        var left = try XCTUnwrap(json[0]["left"] as? [String: Any])
+        left["hostKeyFingerprint"] = nil
+        json[0]["left"] = left
+        try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+
+        let loaded = try XCTUnwrap(repository.load().first)
+        XCTAssertEqual(loaded.left.hostKeyFingerprint, "")
+        XCTAssertNotNil(loaded.left.validationMessage)
+    }
+
     func testRecoversFromBackupWhenPrimaryFileIsCorrupt() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recover-jobs-\(UUID().uuidString).json")
         defer {

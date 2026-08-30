@@ -62,6 +62,23 @@ struct Endpoint: Codable, Hashable, Sendable {
         self.hostKeyFingerprint = hostKeyFingerprint
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case kind, localPath, bookmark, host, port, username, remotePath, credentialID, hostKeyFingerprint
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decode(EndpointKind.self, forKey: .kind)
+        localPath = try container.decode(String.self, forKey: .localPath)
+        bookmark = try container.decodeIfPresent(Data.self, forKey: .bookmark)
+        host = try container.decode(String.self, forKey: .host)
+        port = try container.decode(Int.self, forKey: .port)
+        username = try container.decode(String.self, forKey: .username)
+        remotePath = try container.decode(String.self, forKey: .remotePath)
+        credentialID = try container.decode(String.self, forKey: .credentialID)
+        hostKeyFingerprint = try container.decodeIfPresent(String.self, forKey: .hostKeyFingerprint) ?? ""
+    }
+
     static var local: Endpoint { Endpoint(kind: .local) }
     static var remote: Endpoint { Endpoint(kind: .ftps) }
 
@@ -71,7 +88,7 @@ struct Endpoint: Codable, Hashable, Sendable {
         return "\(kind.rawValue)://\(host):\(port)\(path)"
     }
 
-    var validationMessage: String? {
+    var connectionValidationMessage: String? {
         if kind == .local {
             return localPath.isEmpty || bookmark == nil ? "Choose a folder." : nil
         }
@@ -79,6 +96,14 @@ struct Endpoint: Codable, Hashable, Sendable {
         if !(1...65_535).contains(port) { return "Port must be between 1 and 65535." }
         if username.isEmpty { return "Enter a username." }
         if !remotePath.hasPrefix("/") { return "Remote path must begin with /." }
+        return nil
+    }
+
+    var validationMessage: String? {
+        if let connectionValidationMessage { return connectionValidationMessage }
+        if kind == .sftp, SSHHostKeyFingerprint.normalized(hostKeyFingerprint) == nil {
+            return "Verify and trust the server's SSH host-key fingerprint."
+        }
         return nil
     }
 }

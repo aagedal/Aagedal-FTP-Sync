@@ -17,7 +17,7 @@ Version 2.6 adds a managed download and processed-file structure to the automati
 - Original filenames and modification dates are preserved when the server supports it
 - Passwords are kept in macOS Keychain, never in the jobs file
 - Security-scoped folder bookmarks survive sandboxed app restarts
-- SFTP host keys are pinned on first use; unexpected changes are rejected
+- SFTP host keys require explicit SHA-256 fingerprint verification; unexpected changes are rejected
 - FTPS certificates use normal system trust validation
 - New files are staged before atomic local replacement
 - Remote path traversal and symbolic-link traversal are rejected
@@ -64,8 +64,9 @@ xcodebuild test \
 2. Choose **Create Sync Job**.
 3. Configure the left and right endpoints and choose a direction.
 4. For local endpoints, use **Choose…** so macOS can grant durable folder access.
-5. Pick a quick file filter. **All photos** includes common JPEG, HEIC, TIFF, and camera RAW formats.
-6. Save the job. Enable **Run automatically** or use **Sync Now**.
+5. For SFTP, test the connection, independently verify the displayed `SHA256:` host-key fingerprint with the server administrator, and choose **Trust Verified Fingerprint**.
+6. Pick a quick file filter. **All photos** includes common JPEG, HEIC, TIFF, and camera RAW formats.
+7. Save the job. Enable **Run automatically** or use **Sync Now**.
 
 The menu-bar panel provides start/stop controls, status, one-click sync, and a per-job quick filter. The settings window contains the full job editor.
 
@@ -85,12 +86,14 @@ Local files are copied to a hidden staging file in the destination directory and
 
 - **FTP:** Supported for compatibility, but credentials and files are unencrypted. The app warns when it is selected.
 - **FTPS:** Implicit TLS with system certificate validation, normally on port 990.
-- **SFTP:** Password authentication over SSH. The first observed host key is stored locally. If it changes, the connection is refused until the user explicitly forgets the trusted key in the job editor.
+- **SFTP:** Password authentication over SSH. A job cannot be saved until the user explicitly verifies and trusts the server's SHA-256 host-key fingerprint. A changed key is always refused and both expected and received fingerprints are shown for investigation.
 - **Local:** Folder access is persisted with a security-scoped bookmark and restored on launch.
 
 ## Architecture
 
-The sync engine works against a small endpoint-session protocol, keeping scheduling and conflict rules independent of transport details. FTP/FTPS is implemented with Apple’s Network framework. SFTP uses the pinned [Citadel 0.12.1](https://github.com/orlandos-nl/Citadel) Swift package, and editorial metadata is read and written with [SwiftExif](https://github.com/aagedal/SwiftExif).
+The sync engine works against a small endpoint-session protocol, keeping scheduling and conflict rules independent of transport details. FTP/FTPS is implemented with Apple’s Network framework. SFTP uses a security-patched local baseline of [Citadel 0.12.1](https://github.com/orlandos-nl/Citadel); its provenance and local changes are documented in [`Vendor/README.md`](Vendor/README.md). Editorial metadata is read and written with [SwiftExif](https://github.com/aagedal/SwiftExif).
+
+Dependency security and release verification are documented in [`SECURITY.md`](SECURITY.md).
 
 Jobs are stored as readable JSON under the app’s Application Support container. Secrets are referenced by random credential IDs and live only in Keychain.
 
