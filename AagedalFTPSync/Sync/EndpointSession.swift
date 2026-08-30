@@ -10,6 +10,12 @@ protocol EndpointSession: Sendable {
         preserveDate: Bool,
         verifySize: Bool
     ) async throws
+    func importFileIfAbsent(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool
     func removeFile(_ file: SyncFile) async throws
     func close() async
@@ -24,6 +30,15 @@ extension EndpointSession {
         throw AppError.invalidConfiguration("Cleanup was attempted on an unsupported target.")
     }
 
+    func importFileIfAbsent(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        throw AppError.invalidConfiguration("Collision-safe processed-file import is not supported by this location.")
+    }
+
     func removeFile(_ file: SyncFile) async throws {
         throw AppError.invalidConfiguration("Moving a processed source file is not supported by this location.")
     }
@@ -32,15 +47,21 @@ extension EndpointSession {
 }
 
 enum EndpointConnectionTester {
-    static func test(endpoint: Endpoint, password: String) async throws {
+    static func test(
+        endpoint: Endpoint,
+        password: String,
+        sessionFactory: @Sendable (Endpoint, String) throws -> any EndpointSession = { endpoint, password in
+            try EndpointSessionFactory.make(endpoint: endpoint, password: password)
+        }
+    ) async throws {
         guard endpoint.kind.isRemote else {
             throw AppError.invalidConfiguration("Connection testing is only available for remote locations.")
         }
-        if let message = endpoint.validationMessage {
+        if let message = endpoint.connectionValidationMessage {
             throw AppError.invalidConfiguration(message)
         }
 
-        let session = try EndpointSessionFactory.make(endpoint: endpoint, password: password)
+        let session = try sessionFactory(endpoint, password)
         do {
             try await session.testConnection()
             await session.close()

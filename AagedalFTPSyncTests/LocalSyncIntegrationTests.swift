@@ -301,6 +301,130 @@ final class LocalSyncIntegrationTests: XCTestCase {
         )
     }
 
+    func testProcessedSidecarCollisionDoesNotLeavePartialRawCopy() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "incoming/JAD_PARTIAL.CR3"
+        let source = fixture.left.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("source-raw".utf8).write(to: source)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+
+        let processedRaw = fixture.processed.appendingPathComponent(relativePath)
+        let processedSidecar = fixture.processed.appendingPathComponent(
+            MetadataWriter.sidecarRelativePath(for: relativePath)
+        )
+        try FileManager.default.createDirectory(
+            at: processedSidecar.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let existingSidecarData = Data("existing-sidecar".utf8)
+        try existingSidecarData.write(to: processedSidecar)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Partial pair collision",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "New metadata")
+            )]
+        )
+        job.processedFolder = try fixture.endpoint(for: fixture.processed)
+
+        do {
+            _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTFail("A processed sidecar collision should fail safely")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("already contains a file"))
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: processedRaw.path))
+        XCTAssertEqual(try Data(contentsOf: processedSidecar), existingSidecarData)
+    }
+
+    func testRawFilesWithSameStemAreRejectedBeforeAnyOutputIsWritten() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePaths = ["incoming/JAD_0099.CR3", "incoming/JAD_0099.DNG"]
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        for relativePath in relativePaths {
+            let source = fixture.left.appendingPathComponent(relativePath)
+            try FileManager.default.createDirectory(
+                at: source.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(relativePath.utf8).write(to: source)
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+        }
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Conflicting RAW sidecars",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Must not overwrite")
+            )]
+        )
+        job.processedFolder = try fixture.endpoint(for: fixture.processed)
+
+        do {
+            _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTFail("RAW files that generate the same sidecar should be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("would both write"))
+        }
+
+        for relativePath in relativePaths {
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: fixture.left.appendingPathComponent(relativePath).path
+                )
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: fixture.right.appendingPathComponent(relativePath).path
+                )
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: fixture.processed.appendingPathComponent(relativePath).path
+                )
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.right.appendingPathComponent("incoming/JAD_0099.xmp").path
+            )
+        )
+    }
+
     func testProcessedFolderCollisionNeverOverwritesOrRemovesSource() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
@@ -733,6 +857,44 @@ final class LocalSyncIntegrationTests: XCTestCase {
                 accuracy: 1
             )
         }
+    }
+
+    func testAllFilesFilterTreatsExistingXMPAsRawCompanion() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "selects/JAD_COMPANION.CR3"
+        let source = fixture.left.appendingPathComponent(relativePath)
+        let sourceSidecar = fixture.left.appendingPathComponent(
+            MetadataWriter.sidecarRelativePath(for: relativePath)
+        )
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let rawData = Data("raw-with-existing-companion".utf8)
+        try rawData.write(to: source)
+        var existingXMP = XMPData()
+        existingXMP.city = "Bergen"
+        try XMPSidecar.write(existingXMP, to: sourceSidecar)
+
+        var job = try fixture.job(direction: .leftToRight)
+        job.filter = FileFilter(preset: .all)
+
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result, SyncResult(transferred: 1, deleted: 0))
+        XCTAssertEqual(
+            try Data(contentsOf: fixture.right.appendingPathComponent(relativePath)),
+            rawData
+        )
+        XCTAssertEqual(
+            try XMPSidecar.read(
+                from: fixture.right.appendingPathComponent(
+                    MetadataWriter.sidecarRelativePath(for: relativePath)
+                )
+            ).city,
+            "Bergen"
+        )
     }
 
     func testEveryCameraRawFilterExtensionUsesXMPSidecars() throws {

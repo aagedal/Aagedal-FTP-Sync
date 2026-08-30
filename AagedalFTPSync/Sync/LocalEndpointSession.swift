@@ -60,9 +60,43 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
         preserveDate: Bool,
         verifySize: Bool
     ) async throws {
+        try importFile(
+            from: localURL,
+            as: file,
+            preserveDate: preserveDate,
+            verifySize: verifySize,
+            replaceExisting: true
+        )
+    }
+
+    func importFileIfAbsent(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        try importFile(
+            from: localURL,
+            as: file,
+            preserveDate: preserveDate,
+            verifySize: verifySize,
+            replaceExisting: false
+        )
+    }
+
+    private func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool,
+        replaceExisting: Bool
+    ) throws {
         let destination = try safeURL(for: file.relativePath)
         let directory = destination.deletingLastPathComponent()
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !replaceExisting, fileManager.fileExists(atPath: destination.path) {
+            throw AppError.transferFailed("A file already exists at \(file.relativePath).")
+        }
         let staging = directory.appendingPathComponent(".aagedal-sync-\(UUID().uuidString).part")
         do {
             try fileManager.copyItem(at: localURL, to: staging)
@@ -78,13 +112,16 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
             if preserveDate {
                 try fileManager.setAttributes([.modificationDate: file.modifiedAt], ofItemAtPath: staging.path)
             }
-            if fileManager.fileExists(atPath: destination.path) {
+            if replaceExisting, fileManager.fileExists(atPath: destination.path) {
                 _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
             } else {
                 try fileManager.moveItem(at: staging, to: destination)
             }
         } catch {
             try? fileManager.removeItem(at: staging)
+            if !replaceExisting, fileManager.fileExists(atPath: destination.path) {
+                throw AppError.transferFailed("A file already exists at \(file.relativePath).")
+            }
             throw error
         }
     }

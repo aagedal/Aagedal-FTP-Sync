@@ -26,6 +26,7 @@ private struct TransferMetadataOutcome: Sendable {
     let auditEntry: MetadataAuditEntry?
     let embeddedMetadataApplied: Bool
     let movedToProcessed: Bool
+    let publishedProcessedPaths: Set<String>
 }
 
 struct SyncEngine: Sendable {
@@ -444,7 +445,7 @@ struct SyncEngine: Sendable {
             jobID: job.id,
             sourceEndpoint: sourceEndpoint
         )
-        let candidates = sourceFiles.values
+        let preliminaryCandidates = sourceFiles.values
             .filter { job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt) }
             .filter { file in
                 let willRewriteMetadata = job.metadataAutomation?
@@ -460,9 +461,23 @@ struct SyncEngine: Sendable {
                 return destinationNeedsTransfer
                     || (processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation))
             }
+        let handledSourceSidecars = Set(preliminaryCandidates.compactMap { file -> String? in
+            guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return nil }
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+            return sourceFiles[sidecarPath] == nil ? nil : sidecarPath
+        })
+        let candidates = preliminaryCandidates
+            .filter { !handledSourceSidecars.contains($0.relativePath) }
             .sorted { $0.modifiedAt > $1.modifiedAt }
+        try validateGeneratedSidecarOutputPaths(
+            candidates: candidates,
+            sourceFiles: sourceFiles,
+            automation: job.metadataAutomation,
+            enforceLocalPathRules: job.destinationEndpoint?.kind == .local
+        )
         var transferred = 0
         var processed = 0
+        var occupiedProcessedPaths = Set(processedFiles.keys)
         var metadataReport = MetadataRunReport.empty
         let runID = UUID()
         for file in candidates {
@@ -472,7 +487,7 @@ struct SyncEngine: Sendable {
                 from: source,
                 to: destination,
                 processedDestination: processedDestination,
-                processedFiles: processedFiles,
+                occupiedProcessedPaths: occupiedProcessedPaths,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: job.metadataAutomation,
@@ -494,6 +509,7 @@ struct SyncEngine: Sendable {
                 )
             }
             if outcome.movedToProcessed { processed += 1 }
+            occupiedProcessedPaths.formUnion(outcome.publishedProcessedPaths)
             transferred += 1
         }
         return (transferred, processed, metadataReport)
@@ -540,7 +556,7 @@ struct SyncEngine: Sendable {
                 from: source,
                 to: destination,
                 processedDestination: nil,
-                processedFiles: [:],
+                occupiedProcessedPaths: [],
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: nil,
@@ -580,7 +596,7 @@ struct SyncEngine: Sendable {
         from source: any EndpointSession,
         to destination: any EndpointSession,
         processedDestination: (any EndpointSession)?,
-        processedFiles: [String: SyncFile],
+        occupiedProcessedPaths: Set<String>,
         preserveDate: Bool,
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
@@ -732,6 +748,7 @@ struct SyncEngine: Sendable {
             )
         }
         var movedToProcessed = false
+        var publishedProcessedPaths = Set<String>()
         if auditEntry?.status == .applied,
            let metadataAssignment,
            let processedDestination {
@@ -741,12 +758,7 @@ struct SyncEngine: Sendable {
                 automation: activeAutomation,
                 sortedByPhotographer: sortProcessedFilesByPhotographer
             )
-            try await importProcessedFile(
-                from: importedURL,
-                as: processedFile,
-                existing: processedFiles[processedFile.relativePath],
-                to: processedDestination
-            )
+            var processedOutputs = [(localURL: importedURL, file: processedFile)]
             if let sidecarImport {
                 let processedSidecar = processedCopy(
                     of: sidecarImport.file,
@@ -754,13 +766,40 @@ struct SyncEngine: Sendable {
                     automation: activeAutomation,
                     sortedByPhotographer: sortProcessedFilesByPhotographer
                 )
-                try await importProcessedFile(
-                    from: sidecarImport.url,
-                    as: processedSidecar,
-                    existing: processedFiles[processedSidecar.relativePath],
-                    to: processedDestination
-                )
+                processedOutputs.append((sidecarImport.url, processedSidecar))
             }
+            try validateProcessedOutputPaths(
+                processedOutputs.map { $0.file.relativePath },
+                occupiedPaths: occupiedProcessedPaths
+            )
+
+            var importedProcessedFiles: [SyncFile] = []
+            do {
+                for output in processedOutputs {
+                    try await importProcessedFile(
+                        from: output.localURL,
+                        as: output.file,
+                        to: processedDestination
+                    )
+                    importedProcessedFiles.append(output.file)
+                }
+            } catch {
+                var rollbackFailures: [String] = []
+                for importedFile in importedProcessedFiles.reversed() {
+                    do {
+                        try await processedDestination.removeFile(importedFile)
+                    } catch {
+                        rollbackFailures.append(importedFile.relativePath)
+                    }
+                }
+                if !rollbackFailures.isEmpty {
+                    throw AppError.transferFailed(
+                        "The processed RAW/XMP pair could not be completed, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The source was left untouched."
+                    )
+                }
+                throw error
+            }
+            publishedProcessedPaths = Set(processedOutputs.map { $0.file.relativePath })
             if let sourceSidecar {
                 try await source.removeFile(sourceSidecar)
             }
@@ -770,7 +809,8 @@ struct SyncEngine: Sendable {
         return TransferMetadataOutcome(
             auditEntry: auditEntry,
             embeddedMetadataApplied: embeddedMetadataApplied,
-            movedToProcessed: movedToProcessed
+            movedToProcessed: movedToProcessed,
+            publishedProcessedPaths: publishedProcessedPaths
         )
     }
 
@@ -857,20 +897,73 @@ struct SyncEngine: Sendable {
     private func importProcessedFile(
         from localURL: URL,
         as file: SyncFile,
-        existing: SyncFile?,
         to processedDestination: any EndpointSession
     ) async throws {
-        if existing != nil {
-            throw AppError.transferFailed(
-                "The processed folder already contains a file at \(file.relativePath). Nothing there was overwritten, and the source was left untouched."
-            )
-        }
-        try await processedDestination.importFile(
+        try await processedDestination.importFileIfAbsent(
             from: localURL,
             as: file,
             preserveDate: true,
             verifySize: true
         )
+    }
+
+    private func validateProcessedOutputPaths(
+        _ outputPaths: [String],
+        occupiedPaths: Set<String>
+    ) throws {
+        if let collision = outputPaths.first(where: occupiedPaths.contains) {
+            throw AppError.transferFailed(
+                "The processed folder already contains a file at \(collision). Nothing there was overwritten, and the source was left untouched."
+            )
+        }
+        if let collision = PathSafety.localPathCollision(in: Array(occupiedPaths) + outputPaths) {
+            throw AppError.transferFailed(
+                "Two processed paths cannot safely coexist: \(collision[0]) and \(collision[1]). Nothing was overwritten, and the source was left untouched."
+            )
+        }
+        if Set(outputPaths).count != outputPaths.count {
+            throw AppError.transferFailed(
+                "Two processed outputs would use the same path. Nothing was overwritten, and the source was left untouched."
+            )
+        }
+    }
+
+    private func validateGeneratedSidecarOutputPaths(
+        candidates: [SyncFile],
+        sourceFiles: [String: SyncFile],
+        automation: MetadataAutomation?,
+        enforceLocalPathRules: Bool
+    ) throws {
+        var ownerByPath: [String: String] = [:]
+        var outputPaths: [String] = []
+
+        func register(_ outputPath: String, owner: String) throws {
+            if let existingOwner = ownerByPath[outputPath], existingOwner != owner {
+                throw AppError.transferFailed(
+                    "The source files \(existingOwner) and \(owner) would both write \(outputPath). Rename one before syncing so no XMP sidecar can be overwritten."
+                )
+            }
+            ownerByPath[outputPath] = owner
+            outputPaths.append(outputPath)
+        }
+
+        for candidate in candidates {
+            try register(candidate.relativePath, owner: candidate.relativePath)
+            guard MetadataWriter.usesXMPSidecar(for: candidate.relativePath) else { continue }
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: candidate.relativePath)
+            let willPublishSidecar = sourceFiles[sidecarPath] != nil
+                || shouldAttemptProcessedMove(candidate, automation: automation)
+            if willPublishSidecar {
+                try register(sidecarPath, owner: candidate.relativePath)
+            }
+        }
+
+        if enforceLocalPathRules,
+           let collision = PathSafety.localPathCollision(in: outputPaths) {
+            throw AppError.transferFailed(
+                "Two transfer outputs cannot safely coexist on the local destination: \(collision[0]) and \(collision[1]). Rename one before syncing."
+            )
+        }
     }
 
     private func shouldAttemptProcessedMove(
