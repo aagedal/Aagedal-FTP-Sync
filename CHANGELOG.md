@@ -15,6 +15,7 @@
 - Add confirmed, on-demand reprocessing for matching files already in a local destination, preserving modification dates and generating RAW sidecars without rewriting camera files.
 - Report metadata applied, skipped, and failed separately and retain a bounded, backup-protected per-file audit trail with photographer, clip, timestamp policy, diagnostic detail, and SwiftExif warnings.
 - Add a read-only local-folder preview that evaluates an unsaved programming draft before automatic metadata is enabled.
+- Make metadata preview and reprocessing idempotent by recognizing already-applied IPTC/XMP values and preserving existing non-empty fields without rewriting files.
 - Add an opt-in local processed folder per job that receives successfully tagged files and RAW sidecars before originals are removed from local or remote sources.
 - Persist original source signatures so equal-timestamp source changes remain detectable after embedded metadata changes destination size.
 - Fall back to the untouched downloaded file when metadata writing fails, while recording the failure and preserving atomic destination replacement.

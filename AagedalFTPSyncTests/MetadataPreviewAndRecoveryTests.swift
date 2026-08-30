@@ -116,6 +116,56 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         XCTAssertNil(result.items[0].scheduledAt)
     }
 
+    func testPreviewRecognizesMetadataThatIsAlreadyApplied() throws {
+        let folder = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let file = folder.appendingPathComponent("JAD_APPLIED.jpg")
+        try XCTUnwrap(makeImageData(type: .jpeg)).write(to: file)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "© Example News"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Assignment",
+            startsAt: timestamp.addingTimeInterval(-60),
+            endsAt: timestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(
+                headline: "Already tagged",
+                description: "Preview should recognize this.",
+                keywords: ["fixture", "applied"]
+            )
+        )
+        let automation = MetadataAutomation(
+            isEnabled: true,
+            existingFieldPolicy: .overwrite,
+            photographers: [photographer],
+            clips: [clip]
+        )
+        let assignment = try XCTUnwrap(
+            automation.assignment(for: file.lastPathComponent, scheduledAt: timestamp)
+        )
+        try MetadataWriter.apply(assignment, to: file)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: file.path)
+
+        let result = try MetadataPreviewService.previewLocalFolder(
+            at: folder,
+            automation: automation,
+            filter: FileFilter(preset: .photos),
+            arrivalDate: timestamp
+        )
+
+        XCTAssertEqual(result.scanned, 1)
+        XCTAssertEqual(result.willApply, 0)
+        XCTAssertEqual(result.alreadyApplied, 1)
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertEqual(result.items.first?.status, .alreadyApplied)
+    }
+
     func testLocalImportVerificationFailureLeavesExistingDestinationUntouched() async throws {
         let folder = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }

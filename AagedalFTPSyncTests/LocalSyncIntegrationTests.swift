@@ -709,6 +709,15 @@ final class LocalSyncIntegrationTests: XCTestCase {
             shiftedDestinationTimestamp.timeIntervalSince1970,
             accuracy: 1
         )
+
+        let secondResult = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+        XCTAssertEqual(secondResult.scanned, 1)
+        XCTAssertEqual(secondResult.applied, 0)
+        XCTAssertEqual(secondResult.skipped, 1)
+        XCTAssertEqual(secondResult.failed, 0)
+        XCTAssertTrue(
+            secondResult.metadataReport.entries.first?.detail?.contains("already applied") == true
+        )
     }
 
     func testReprocessExistingRawCreatesSidecarWithoutRewritingRaw() async throws {

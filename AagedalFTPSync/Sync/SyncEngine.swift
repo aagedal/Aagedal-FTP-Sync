@@ -214,6 +214,29 @@ struct SyncEngine: Sendable {
                 continue
             }
 
+            if let assessment = try? MetadataWriter.assess(
+                assignment,
+                at: temporaryURL,
+                relativePath: file.relativePath
+            ), assessment != .willApply {
+                skipped += 1
+                let detail = assessment == .alreadyApplied
+                    ? "The programmed metadata is already applied."
+                    : "Existing non-empty metadata was preserved; no programmed fields needed changing."
+                metadataReport.append(MetadataAuditEntry(
+                    runID: runID,
+                    jobID: job.id,
+                    operation: .reprocess,
+                    relativePath: file.relativePath,
+                    status: .skipped,
+                    timestampPolicy: automation.timestampPolicy,
+                    scheduledAt: scheduledAt,
+                    assignment: assignment,
+                    detail: detail
+                ))
+                continue
+            }
+
             let writeResult: MetadataWriter.WriteResult
             do {
                 writeResult = try MetadataWriter.apply(

@@ -2,6 +2,8 @@ import Foundation
 
 enum MetadataPreviewStatus: String, Codable, Sendable {
     case willApply
+    case alreadyApplied
+    case existingMetadataPreserved
     case noMatchingPhotographer
     case noScheduledClip
     case captureTimeUnavailable
@@ -9,6 +11,8 @@ enum MetadataPreviewStatus: String, Codable, Sendable {
     var title: String {
         switch self {
         case .willApply: "Will apply"
+        case .alreadyApplied: "Already applied"
+        case .existingMetadataPreserved: "Existing metadata preserved"
         case .noMatchingPhotographer: "No matching photographer"
         case .noScheduledClip: "No scheduled clip"
         case .captureTimeUnavailable: "Capture time unavailable"
@@ -34,7 +38,8 @@ struct MetadataPreviewResult: Equatable, Sendable {
 
     var scanned: Int { items.count }
     var willApply: Int { items.count { $0.status == .willApply } }
-    var skipped: Int { scanned - willApply }
+    var alreadyApplied: Int { items.count { $0.status == .alreadyApplied } }
+    var skipped: Int { scanned - willApply - alreadyApplied }
 }
 
 /// Builds the same photographer and schedule assignments used during sync without
@@ -143,11 +148,26 @@ enum MetadataPreviewService {
                 for: relativePath,
                 scheduledAt: scheduledAt
             ) {
+                let status: MetadataPreviewStatus
+                switch try? MetadataWriter.assess(
+                    assignment,
+                    at: canonicalURL,
+                    relativePath: relativePath
+                ) {
+                case .alreadyApplied:
+                    status = .alreadyApplied
+                case .existingMetadataPreserved:
+                    status = .existingMetadataPreserved
+                case .willApply, nil:
+                    // Keep unreadable files as attempts: the write path will report
+                    // the concrete metadata error if reprocessing is requested.
+                    status = .willApply
+                }
                 items.append(MetadataPreviewItem(
                     relativePath: relativePath,
                     sourceModifiedAt: sourceModifiedAt,
                     scheduledAt: scheduledAt,
-                    status: .willApply,
+                    status: status,
                     photographerID: assignment.photographer.id,
                     photographerName: assignment.photographer.photographerName,
                     clipID: assignment.clip.id,

@@ -2,6 +2,12 @@ import Foundation
 import SwiftExif
 
 enum MetadataWriter {
+    enum ApplicationAssessment: Equatable, Sendable {
+        case willApply
+        case alreadyApplied
+        case existingMetadataPreserved
+    }
+
     enum WriteResult {
         case embedded(size: Int64, warnings: [String])
         case sidecar(localURL: URL, size: Int64, warnings: [String])
@@ -47,6 +53,22 @@ enum MetadataWriter {
             return nil
         }
         return parseExifDate(value, localTimeZone: localTimeZone)
+    }
+
+    static func assess(
+        _ assignment: MetadataAssignment,
+        at fileURL: URL,
+        relativePath: String
+    ) throws -> ApplicationAssessment {
+        if usesXMPSidecar(for: relativePath) {
+            let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+            guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
+                return .willApply
+            }
+            return assessment(for: assignment, xmp: try XMPSidecar.read(from: sidecarURL))
+        }
+
+        return assessment(for: assignment, metadata: try ImageMetadata.read(from: fileURL))
     }
 
     static func parseExifDate(_ value: String, localTimeZone: TimeZone = .current) -> Date? {
@@ -215,6 +237,130 @@ enum MetadataWriter {
         if !copyright.isEmpty, shouldOverwrite || isEmpty(xmp.rights) {
             xmp.rights = copyright
         }
+    }
+
+    private enum FieldAssessment: Equatable {
+        case matches
+        case willChange
+        case preserved
+    }
+
+    private static func assessment(
+        for assignment: MetadataAssignment,
+        metadata: ImageMetadata
+    ) -> ApplicationAssessment {
+        let fields = assignment.clip.fields
+        let overwrite = assignment.existingFieldPolicy == .overwrite
+        var assessments: [FieldAssessment] = []
+
+        assess(
+            fields.headline,
+            currentValues: [metadata.iptc.headline, metadata.xmp?.headline],
+            overwrite: overwrite,
+            into: &assessments
+        )
+        assess(
+            fields.description,
+            currentValues: [metadata.iptc.caption, metadata.xmp?.description],
+            overwrite: overwrite,
+            into: &assessments
+        )
+        assess(
+            fields.normalizedKeywords,
+            currentValues: [metadata.iptc.keywords, metadata.xmp?.subject ?? []],
+            overwrite: overwrite,
+            into: &assessments
+        )
+        assess(
+            assignment.photographer.photographerName,
+            currentValues: [metadata.iptc.byline] + (metadata.xmp?.creator.map(Optional.some) ?? []),
+            overwrite: overwrite,
+            into: &assessments
+        )
+        assess(
+            assignment.photographer.copyrightNotice,
+            currentValues: [metadata.iptc.copyright, metadata.xmp?.rights],
+            overwrite: overwrite,
+            into: &assessments
+        )
+
+        return combinedAssessment(assessments)
+    }
+
+    private static func assessment(
+        for assignment: MetadataAssignment,
+        xmp: XMPData
+    ) -> ApplicationAssessment {
+        let fields = assignment.clip.fields
+        let overwrite = assignment.existingFieldPolicy == .overwrite
+        var assessments: [FieldAssessment] = []
+
+        assess(fields.headline, currentValues: [xmp.headline], overwrite: overwrite, into: &assessments)
+        assess(fields.description, currentValues: [xmp.description], overwrite: overwrite, into: &assessments)
+        assess(fields.normalizedKeywords, currentValues: [xmp.subject], overwrite: overwrite, into: &assessments)
+        assess(
+            assignment.photographer.photographerName,
+            currentValues: xmp.creator.map(Optional.some),
+            overwrite: overwrite,
+            into: &assessments
+        )
+        assess(
+            assignment.photographer.copyrightNotice,
+            currentValues: [xmp.rights],
+            overwrite: overwrite,
+            into: &assessments
+        )
+
+        return combinedAssessment(assessments)
+    }
+
+    private static func assess(
+        _ desiredValue: String,
+        currentValues: [String?],
+        overwrite: Bool,
+        into assessments: inout [FieldAssessment]
+    ) {
+        let desired = desiredValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !desired.isEmpty else { return }
+        let populated = currentValues.compactMap { value -> String? in
+            guard let value else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if !populated.isEmpty, populated.allSatisfy({ $0 == desired }) {
+            assessments.append(.matches)
+        } else if overwrite || populated.isEmpty {
+            assessments.append(.willChange)
+        } else {
+            assessments.append(.preserved)
+        }
+    }
+
+    private static func assess(
+        _ desiredValues: [String],
+        currentValues: [[String]],
+        overwrite: Bool,
+        into assessments: inout [FieldAssessment]
+    ) {
+        guard !desiredValues.isEmpty else { return }
+        let populated = currentValues.filter { !$0.isEmpty }
+        if !populated.isEmpty, populated.allSatisfy({ $0 == desiredValues }) {
+            assessments.append(.matches)
+        } else if overwrite || populated.isEmpty {
+            assessments.append(.willChange)
+        } else {
+            assessments.append(.preserved)
+        }
+    }
+
+    private static func combinedAssessment(_ assessments: [FieldAssessment]) -> ApplicationAssessment {
+        if assessments.contains(where: { $0 == .willChange }) {
+            return .willApply
+        }
+        if assessments.contains(where: { $0 == .preserved }) {
+            return .existingMetadataPreserved
+        }
+        return .alreadyApplied
     }
 
     private static func fileSize(at url: URL) throws -> Int64 {

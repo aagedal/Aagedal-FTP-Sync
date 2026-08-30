@@ -1066,6 +1066,8 @@ private struct MetadataFolderPreviewView: View {
                 Label("\(result.scanned) scanned", systemImage: "doc.text.magnifyingglass")
                 Label("\(result.willApply) will apply", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+                Label("\(result.alreadyApplied) already applied", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.blue)
                 Label("\(result.skipped) skipped", systemImage: "minus.circle.fill")
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1292,6 +1294,8 @@ private extension MetadataPreviewStatus {
     var symbolName: String {
         switch self {
         case .willApply: "checkmark.circle.fill"
+        case .alreadyApplied: "checkmark.seal.fill"
+        case .existingMetadataPreserved: "lock.circle.fill"
         case .noMatchingPhotographer: "person.crop.circle.badge.questionmark"
         case .noScheduledClip: "calendar.badge.exclamationmark"
         case .captureTimeUnavailable: "camera.badge.ellipsis"
@@ -1301,7 +1305,11 @@ private extension MetadataPreviewStatus {
     var color: Color {
         switch self {
         case .willApply: .green
-        case .noMatchingPhotographer, .noScheduledClip, .captureTimeUnavailable: .secondary
+        case .alreadyApplied: .blue
+        case .existingMetadataPreserved,
+             .noMatchingPhotographer,
+             .noScheduledClip,
+             .captureTimeUnavailable: .secondary
         }
     }
 }
