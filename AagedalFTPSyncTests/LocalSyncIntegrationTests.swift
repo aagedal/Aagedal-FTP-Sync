@@ -5,6 +5,62 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testLocalArrivalDateIsSetForNewAndReplacementPublication() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let input = fixture.outside.appendingPathComponent("arrival-input.jpg")
+        try Data("new contents".utf8).write(to: input)
+        let oldDate = Date(timeIntervalSince1970: 1_000_000)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: input.path)
+        let session = try LocalEndpointSession(endpoint: fixture.endpoint(for: fixture.right))
+        let file = SyncFile(relativePath: "arrival.jpg", size: 12, modifiedAt: oldDate)
+
+        let firstStart = Date()
+        try await session.importFile(from: input, as: file, preserveDate: false, verifySize: true)
+        let firstDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: fixture.right.appendingPathComponent("arrival.jpg").path)[.modificationDate] as? Date
+        )
+        XCTAssertGreaterThanOrEqual(firstDate, firstStart.addingTimeInterval(-1))
+
+        try Data("replacement!".utf8).write(to: input)
+        let replacement = SyncFile(relativePath: "arrival.jpg", size: 12, modifiedAt: oldDate)
+        let replacementStart = Date()
+        try await session.importFile(from: input, as: replacement, preserveDate: false, verifySize: true)
+        let replacementDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: fixture.right.appendingPathComponent("arrival.jpg").path)[.modificationDate] as? Date
+        )
+        XCTAssertGreaterThanOrEqual(replacementDate, replacementStart.addingTimeInterval(-1))
+    }
+
+    func testTransactionalLocalPairRemovalRollsBackWhenSecondStageFails() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let raw = fixture.left.appendingPathComponent("PAIR.CR3")
+        let xmp = fixture.left.appendingPathComponent("PAIR.xmp")
+        let rawData = Data("raw".utf8)
+        let xmpData = Data("xmp".utf8)
+        try rawData.write(to: raw)
+        try xmpData.write(to: xmp)
+        let sharedHolding = fixture.left.appendingPathComponent(".aagedal-sync-injected.hold")
+        let session = try LocalEndpointSession(
+            endpoint: fixture.endpoint(for: fixture.left),
+            holdingURLFactory: { _ in sharedHolding }
+        )
+        let timestamp = Date()
+
+        do {
+            try await session.removeFilesTransactionally([
+                SyncFile(relativePath: "PAIR.CR3", size: 3, modifiedAt: timestamp),
+                SyncFile(relativePath: "PAIR.xmp", size: 3, modifiedAt: timestamp),
+            ])
+            XCTFail("The injected second staging move should fail")
+        } catch {}
+
+        XCTAssertEqual(try Data(contentsOf: raw), rawData)
+        XCTAssertEqual(try Data(contentsOf: xmp), xmpData)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sharedHolding.path))
+    }
+
     func testFastStartDestinationLookupRejectsCaseEquivalentCollision() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
@@ -1540,7 +1596,7 @@ private final class LocalFixture {
     func job(direction: SyncDirection) throws -> SyncJob {
         let leftEndpoint = try endpoint(for: left)
         let rightEndpoint = try endpoint(for: right)
-        return SyncJob(
+        var job = SyncJob(
             name: "Test",
             left: leftEndpoint,
             right: rightEndpoint,
@@ -1549,6 +1605,8 @@ private final class LocalFixture {
             intervalSeconds: 5,
             isEnabled: false
         )
+        job.startsOnAppLaunch = false
+        return job
     }
 
     func cleanUp() { try? FileManager.default.removeItem(at: root) }

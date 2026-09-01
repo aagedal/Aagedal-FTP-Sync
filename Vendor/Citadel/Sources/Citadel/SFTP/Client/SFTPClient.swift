@@ -224,6 +224,26 @@ public final class SFTPClient: Sendable {
         
         return attributes.attributes
     }
+
+    /// Reads attributes without following a symbolic link. A missing path
+    /// returns `nil`; all other server errors remain failures.
+    public func getLinkAttributes(at filePath: String) async throws -> SFTPFileAttributes? {
+        self.logger.info("SFTP requesting link attributes at '\(filePath)'")
+        let response = try await sendRequest(.lstat(.init(
+            requestId: allocateRequestId(),
+            path: filePath
+        )))
+        switch response {
+        case .attributes(let attributes):
+            return attributes.attributes
+        case .status(let status) where status.errorCode == .noSuchFile:
+            return nil
+        case .status(let status):
+            throw SFTPError.errorStatus(status)
+        default:
+            throw SFTPError.invalidResponse
+        }
+    }
     
     /// Open a file at the specified path on the SFTP server.
     ///

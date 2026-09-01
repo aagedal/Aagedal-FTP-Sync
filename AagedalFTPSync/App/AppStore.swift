@@ -113,6 +113,11 @@ final class AppStore: ObservableObject {
     private let keychain: KeychainStore
     private let engine: SyncEngine
     private var scheduleTasks: [UUID: Task<Void, Never>] = [:]
+    private var manualSyncTasks: [UUID: Task<Void, Never>] = [:]
+    private var scheduledSyncTasks: [UUID: Task<SyncAttempt, Never>] = [:]
+    private var pendingScheduledSyncJobs: Set<UUID> = []
+    private var metadataReprocessTasks: [UUID: Task<Void, Never>] = [:]
+    private var resetTasks: [UUID: Task<Void, Never>] = [:]
     private var runningJobs: Set<UUID> = []
     private var transferTotals = JobTransferTotals()
     private var cachedPasswords: [String: String] = [:]
@@ -126,7 +131,8 @@ final class AppStore: ObservableObject {
         syncFailureRepository: SyncFailureRepository = SyncFailureRepository(),
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
         jobResetService: JobResetService = JobResetService(),
-        keychain: KeychainStore = KeychainStore()
+        keychain: KeychainStore = KeychainStore(),
+        engine: SyncEngine? = nil
     ) {
         self.repository = repository
         self.metadataPresetRepository = metadataPresetRepository
@@ -135,7 +141,7 @@ final class AppStore: ObservableObject {
         self.syncFailureRepository = syncFailureRepository
         self.sourceSignatureRepository = sourceSignatureRepository
         self.jobResetService = jobResetService
-        engine = SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
+        self.engine = engine ?? SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
         self.keychain = keychain
         do {
             let loadResult = try metadataPresetRepository.loadResult()
@@ -215,11 +221,15 @@ final class AppStore: ObservableObject {
             jobs[index].isEnabled = shouldStart
             phases[jobs[index].id] = .stopped
         }
-        Task { [weak self] in self?.restartSchedules() }
+        restartSchedules()
     }
 
     deinit {
         for task in scheduleTasks.values { task.cancel() }
+        for task in manualSyncTasks.values { task.cancel() }
+        for task in scheduledSyncTasks.values { task.cancel() }
+        for task in metadataReprocessTasks.values { task.cancel() }
+        for task in resetTasks.values { task.cancel() }
     }
 
     func addJob() -> SyncJob {
@@ -795,6 +805,10 @@ final class AppStore: ObservableObject {
     }
 
     func removeJob(_ jobID: UUID) {
+        guard !isJobBusy(jobID) else {
+            alertMessage = "Wait for the current operation to finish before deleting this job."
+            return
+        }
         scheduleTasks[jobID]?.cancel()
         scheduleTasks[jobID] = nil
         guard let job = jobs.first(where: { $0.id == jobID }) else { return }
@@ -824,14 +838,19 @@ final class AppStore: ObservableObject {
     }
 
     func runNow(_ jobID: UUID) {
-        guard !runningJobs.contains(jobID), !resettingJobs.contains(jobID),
+        guard !isJobBusy(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return }
         if job.isEnabled {
             scheduleTasks[jobID]?.cancel()
             scheduleTasks[jobID] = nil
             schedule(jobID)
         } else {
-            Task { _ = await performSync(jobID) }
+            let task = Task { [weak self] in
+                guard let self else { return }
+                _ = await self.performSync(jobID)
+                self.manualSyncTasks[jobID] = nil
+            }
+            manualSyncTasks[jobID] = task
         }
     }
 
@@ -839,15 +858,27 @@ final class AppStore: ObservableObject {
         _ jobID: UUID,
         scope: MetadataReprocessScope = .all
     ) {
-        Task { await performMetadataReprocess(jobID, scope: scope) }
+        guard !isJobBusy(jobID) else { return }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performMetadataReprocess(jobID, scope: scope)
+            self.metadataReprocessTasks[jobID] = nil
+        }
+        metadataReprocessTasks[jobID] = task
     }
 
     func isJobBusy(_ jobID: UUID) -> Bool {
-        runningJobs.contains(jobID) || resettingJobs.contains(jobID)
+        runningJobs.contains(jobID)
+            || resettingJobs.contains(jobID)
+            || manualSyncTasks[jobID] != nil
+            || scheduledSyncTasks[jobID] != nil
+            || pendingScheduledSyncJobs.contains(jobID)
+            || metadataReprocessTasks[jobID] != nil
+            || resetTasks[jobID] != nil
     }
 
     func resetJob(_ jobID: UUID) {
-        guard !runningJobs.contains(jobID), !resettingJobs.contains(jobID),
+        guard !isJobBusy(jobID),
               let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         let job = jobs[index]
         if let message = JobResetService.validationMessage(for: job) {
@@ -863,7 +894,7 @@ final class AppStore: ObservableObject {
         resettingJobs.insert(jobID)
         persist()
 
-        Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self else { return }
             defer { resettingJobs.remove(jobID) }
             do {
@@ -883,7 +914,9 @@ final class AppStore: ObservableObject {
             } catch {
                 appendAlert("“\(job.name)” could not be fully reset: \(error.localizedDescription)")
             }
+            resetTasks[jobID] = nil
         }
+        resetTasks[jobID] = task
     }
 
     func openLocalFolder(_ endpoint: Endpoint) {
@@ -1006,22 +1039,33 @@ final class AppStore: ObservableObject {
     private func restartSchedules() {
         for task in scheduleTasks.values { task.cancel() }
         scheduleTasks.removeAll()
+        pendingScheduledSyncJobs.removeAll()
         for job in jobs where job.isEnabled { schedule(job.id) }
     }
 
     private func reschedule(_ jobID: UUID) {
         scheduleTasks[jobID]?.cancel()
         scheduleTasks[jobID] = nil
+        pendingScheduledSyncJobs.remove(jobID)
         if jobs.first(where: { $0.id == jobID })?.isEnabled == true { schedule(jobID) }
         else if !runningJobs.contains(jobID) { phases[jobID] = .stopped }
     }
 
     private func schedule(_ jobID: UUID) {
+        pendingScheduledSyncJobs.insert(jobID)
         scheduleTasks[jobID] = Task { [weak self] in
             guard let self else { return }
             var consecutiveFailures = 0
             while !Task.isCancelled {
-                let attempt = await self.performSync(jobID)
+                let operation = Task { await self.performSync(jobID) }
+                self.scheduledSyncTasks[jobID] = operation
+                self.pendingScheduledSyncJobs.remove(jobID)
+                let attempt = await withTaskCancellationHandler {
+                    await operation.value
+                } onCancel: {
+                    operation.cancel()
+                }
+                self.scheduledSyncTasks[jobID] = nil
                 guard !Task.isCancelled,
                       let job = self.jobs.first(where: { $0.id == jobID }),
                       job.isEnabled else { break }

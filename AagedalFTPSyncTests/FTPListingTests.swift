@@ -3,7 +3,7 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FTPListingTests: XCTestCase {
-    func testFastStartPublishesFiveNewestFilesBeforeFullListing() async throws {
+    func testRemoteSyncPublishesOnlyAfterFullListingValidation() async throws {
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
         let files = Dictionary(uniqueKeysWithValues: (0..<8).map { index in
             let path = "NEWS_\(index).JPG"
@@ -52,10 +52,7 @@ final class FTPListingTests: XCTestCase {
         let firstFullListingIndex = try XCTUnwrap(events.firstIndex(of: "source-full-list"))
         let earlyImports = events[..<firstFullListingIndex].filter { $0.hasPrefix("import:") }
 
-        XCTAssertEqual(
-            Array(earlyImports),
-            ["import:NEWS_7.JPG", "import:NEWS_6.JPG", "import:NEWS_5.JPG", "import:NEWS_4.JPG", "import:NEWS_3.JPG"]
-        )
+        XCTAssertTrue(earlyImports.isEmpty)
         XCTAssertEqual(result.transferred, 8)
         XCTAssertEqual(importedPaths, Set(files.keys))
         XCTAssertEqual(importCount, 8)
@@ -64,6 +61,69 @@ final class FTPListingTests: XCTestCase {
         let secondImportCount = await destination.importCount
         XCTAssertEqual(secondResult.transferred, 0)
         XCTAssertEqual(secondImportCount, 8)
+    }
+
+    func testSameStemRAWFilesAcrossFormerFastStartBoundaryPublishNothing() async throws {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        var files = Dictionary(uniqueKeysWithValues: (0..<4).map { index in
+            let path = "NEWS_\(index).JPG"
+            return (path, SyncFile(
+                relativePath: path,
+                size: Int64(index + 1),
+                modifiedAt: baseDate.addingTimeInterval(Double(20 - index))
+            ))
+        })
+        files["SAME.CR2"] = SyncFile(
+            relativePath: "SAME.CR2",
+            size: 10,
+            modifiedAt: baseDate.addingTimeInterval(10)
+        )
+        files["SAME.NEF"] = SyncFile(
+            relativePath: "SAME.NEF",
+            size: 11,
+            modifiedAt: baseDate.addingTimeInterval(9)
+        )
+        files["SAME.xmp"] = SyncFile(
+            relativePath: "SAME.xmp",
+            size: 12,
+            modifiedAt: baseDate.addingTimeInterval(8)
+        )
+        let timeline = FastStartTimeline()
+        let source = FastStartSource(files: files, timeline: timeline)
+        let destination = FastStartDestination(timeline: timeline)
+        let signatureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fast-start-collision-signatures-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: signatureURL) }
+        let engine = SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: signatureURL),
+            sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                if endpoint.kind.isRemote { return source }
+                return destination
+            }
+        )
+        var job = SyncJob()
+        job.left = Endpoint(
+            kind: .ftp,
+            host: "photos.example.com",
+            username: "reporter",
+            remotePath: "/incoming"
+        )
+        job.right = Endpoint(
+            kind: .local,
+            localPath: "/mock-downloads",
+            bookmark: Data("mock".utf8)
+        )
+        job.direction = .leftToRight
+        job.filter = FileFilter(preset: .photos)
+
+        do {
+            _ = try await engine.run(job: job, leftPassword: "secret", rightPassword: nil)
+            XCTFail("Same-stem RAW files must be rejected before publication")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("would both write SAME.xmp"))
+        }
+        let importCount = await destination.importCount
+        XCTAssertEqual(importCount, 0)
     }
 
     func testParsesMachineReadableListing() throws {

@@ -133,6 +133,24 @@ struct FTPEndpointSession: EndpointSession, FastStartSourceSession, Sendable {
         try await connection.delete(path: remotePath(for: file.relativePath))
     }
 
+    func removeFilesTransactionally(_ files: [SyncFile]) async throws {
+        let sources = files.map { remotePath(for: $0.relativePath) }
+        let staged = sources.map { source in
+            let parent = (source as NSString).deletingLastPathComponent
+            let name = ".aagedal-sync-\(UUID().uuidString).hold"
+            return parent == "/" ? "/\(name)" : "\(parent)/\(name)"
+        }
+        try await TransactionalRemoval.stageAndDelete(
+            sources: sources,
+            holdings: staged,
+            labels: files.map(\.relativePath),
+            move: { source, destination in
+                try await connection.rename(source, to: destination)
+            },
+            delete: { holding in try await connection.delete(path: holding) }
+        )
+    }
+
     func close() async { await connection.close() }
 
     private var normalizedRoot: String {

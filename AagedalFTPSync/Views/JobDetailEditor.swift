@@ -195,6 +195,8 @@ struct JobDetailEditor: View {
             Divider()
             HStack {
                 Button("Delete Job", role: .destructive) { showDeleteConfirmation = true }
+                    .disabled(store.isJobBusy(draft.id))
+                    .help(store.isJobBusy(draft.id) ? "Wait for the current job operation to finish." : "Delete this job.")
                 Button("Reset Job…", role: .destructive) { showResetConfirmation = true }
                     .disabled(resetUnavailableReason != nil)
                     .help(resetUnavailableReason ?? "Delete downloaded files and clear this job's download history.")

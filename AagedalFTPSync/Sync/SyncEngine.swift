@@ -51,40 +51,6 @@ private struct TransferMetadataOutcome: Sendable {
     let publishedProcessedPaths: Set<String>
 }
 
-private struct FastStartTransferResult: Sendable {
-    let transferredPaths: Set<String>
-    let metadataReport: MetadataRunReport
-
-    static let empty = FastStartTransferResult(transferredPaths: [], metadataReport: .empty)
-}
-
-enum FastStartPolicy {
-    static let batchSize = 5
-    static let refinementCount = 50
-
-    static func candidates(
-        from files: [String: SyncFile],
-        filter: FileFilter,
-        requireAccurateDate: Bool
-    ) -> [SyncFile] {
-        let handledSidecars = Set(files.values.compactMap { file -> String? in
-            guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return nil }
-            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-            return files[sidecarPath] == nil ? nil : sidecarPath
-        })
-        let filtered = files.values.filter { file in
-            !handledSidecars.contains(file.relativePath)
-                && (requireAccurateDate
-                    ? filter.includes(path: file.relativePath, modifiedAt: file.modifiedAt)
-                    : filter.includesFileType(path: file.relativePath))
-        }
-        return Array(filtered.sorted {
-            if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
-            return $0.relativePath < $1.relativePath
-        }.prefix(refinementCount))
-    }
-}
-
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
     private let sourceSignatureRepository: SourceSignatureRepository
@@ -137,31 +103,27 @@ struct SyncEngine: Sendable {
             processedDestination = nil
         }
         do {
-            let fastStartResult: FastStartTransferResult
-            switch job.direction {
-            case .leftToRight:
-                fastStartResult = try await transferFastStartBatch(
-                    from: left,
-                    sourceEndpoint: job.left,
-                    to: right,
-                    job: job
-                )
-            case .rightToLeft:
-                fastStartResult = try await transferFastStartBatch(
-                    from: right,
-                    sourceEndpoint: job.right,
-                    to: left,
-                    job: job
-                )
-            case .bidirectional:
-                fastStartResult = .empty
-            }
-
             async let leftListing = left.listFiles()
             async let rightListing = right.listFiles()
             async let processedListing = processedDestination?.listFiles() ?? [:]
             let (leftFiles, rightFiles, processedFiles) = try await (leftListing, rightListing, processedListing)
             try validateLocalDestinationPaths(job: job, leftFiles: leftFiles, rightFiles: rightFiles)
+            switch job.direction {
+            case .leftToRight:
+                try validateCompleteOutputNamespace(
+                    sourceFiles: leftFiles,
+                    destinationFiles: rightFiles,
+                    job: job
+                )
+            case .rightToLeft:
+                try validateCompleteOutputNamespace(
+                    sourceFiles: rightFiles,
+                    destinationFiles: leftFiles,
+                    job: job
+                )
+            case .bidirectional:
+                break
+            }
             let transferResult: (transferred: Int, processed: Int, metadataReport: MetadataRunReport)
             let conflicts: [String]
             switch job.direction {
@@ -174,7 +136,6 @@ struct SyncEngine: Sendable {
                     files: rightFiles,
                     processedDestination: processedDestination,
                     processedFiles: processedFiles,
-                    alreadyTransferredPaths: fastStartResult.transferredPaths,
                     job: job
                 )
                 conflicts = []
@@ -187,7 +148,6 @@ struct SyncEngine: Sendable {
                     files: leftFiles,
                     processedDestination: processedDestination,
                     processedFiles: processedFiles,
-                    alreadyTransferredPaths: fastStartResult.transferredPaths,
                     job: job
                 )
                 conflicts = []
@@ -202,8 +162,7 @@ struct SyncEngine: Sendable {
                 transferResult = (result.transferred, 0, .empty)
                 conflicts = result.conflicts
             }
-            var metadataReport = fastStartResult.metadataReport
-            metadataReport.append(contentsOf: transferResult.metadataReport)
+            let metadataReport = transferResult.metadataReport
             let deleted = try await cleanupTargetIfNeeded(
                 job: job,
                 left: left,
@@ -215,7 +174,7 @@ struct SyncEngine: Sendable {
             await right.close()
             await processedDestination?.close()
             return SyncResult(
-                transferred: fastStartResult.transferredPaths.count + transferResult.transferred,
+                transferred: transferResult.transferred,
                 deleted: deleted,
                 processed: transferResult.processed,
                 conflicts: conflicts,
@@ -510,6 +469,28 @@ struct SyncEngine: Sendable {
         }
     }
 
+    private func validateCompleteOutputNamespace(
+        sourceFiles: [String: SyncFile],
+        destinationFiles: [String: SyncFile],
+        job: SyncJob
+    ) throws {
+        let eligible = sourceFiles.values.filter {
+            job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt)
+        }
+        let handledSidecars = Set(eligible.compactMap { file -> String? in
+            guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return nil }
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+            return sourceFiles[sidecarPath] == nil ? nil : sidecarPath
+        })
+        try validateGeneratedSidecarOutputPaths(
+            candidates: eligible.filter { !handledSidecars.contains($0.relativePath) },
+            sourceFiles: sourceFiles,
+            automation: job.metadataAutomation,
+            enforceLocalPathRules: job.destinationEndpoint?.kind == .local,
+            occupiedDestinationPaths: Set(destinationFiles.keys)
+        )
+    }
+
     private func cleanupTargetIfNeeded(
         job: SyncJob,
         left: any EndpointSession,
@@ -543,123 +524,6 @@ struct SyncEngine: Sendable {
         return deleted
     }
 
-    private func transferFastStartBatch(
-        from source: any EndpointSession,
-        sourceEndpoint: Endpoint,
-        to destination: any EndpointSession,
-        job: SyncJob
-    ) async throws -> FastStartTransferResult {
-        guard sourceEndpoint.kind.isRemote,
-              job.destinationEndpoint?.kind == .local,
-              let fastSource = source as? any FastStartSourceSession,
-              let destinationLookup = destination as? any EndpointFileLookupSession else {
-            return .empty
-        }
-
-        var discoveredFiles = try await fastSource.listFilesForFastStart(
-            filter: job.filter,
-            minimumCount: FastStartPolicy.refinementCount
-        )
-        guard !discoveredFiles.isEmpty else { return .empty }
-
-        let preliminaryCandidates = FastStartPolicy.candidates(
-            from: discoveredFiles,
-            filter: job.filter,
-            requireAccurateDate: false
-        )
-        var missingCandidates: [SyncFile] = []
-        for candidate in preliminaryCandidates {
-            let destinationFile = try await destinationLookup.fileInfo(
-                relativePath: candidate.relativePath
-            )
-            guard destinationFile == nil else { continue }
-            missingCandidates.append(candidate)
-            if missingCandidates.count == FastStartPolicy.batchSize { break }
-        }
-        guard !missingCandidates.isEmpty else { return .empty }
-
-        var filesToRefresh = Dictionary(
-            uniqueKeysWithValues: missingCandidates.map { ($0.relativePath, $0) }
-        )
-        for candidate in missingCandidates where MetadataWriter.usesXMPSidecar(for: candidate.relativePath) {
-            let sidecarPath = MetadataWriter.sidecarRelativePath(for: candidate.relativePath)
-            if let sidecar = discoveredFiles[sidecarPath] {
-                filesToRefresh[sidecarPath] = sidecar
-            }
-        }
-        let refreshedFiles = try await fastSource.refreshMetadataForFastStart(
-            Array(filesToRefresh.values)
-        )
-        let refreshedFilesByPath = Dictionary(
-            uniqueKeysWithValues: refreshedFiles.map { ($0.relativePath, $0) }
-        )
-        for file in refreshedFiles { discoveredFiles[file.relativePath] = file }
-
-        let accurateCandidates = FastStartPolicy.candidates(
-            from: refreshedFilesByPath,
-            filter: job.filter,
-            requireAccurateDate: true
-        )
-        var selectedCandidates: [SyncFile] = []
-        for file in accurateCandidates {
-            if MetadataWriter.usesXMPSidecar(for: file.relativePath) {
-                let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-                let willPublishSidecar = discoveredFiles[sidecarPath] != nil
-                    || shouldAttemptProcessedMove(file, automation: job.metadataAutomation)
-                if willPublishSidecar {
-                    _ = try await destinationLookup.fileInfo(relativePath: sidecarPath)
-                }
-            }
-            selectedCandidates.append(file)
-            if selectedCandidates.count == FastStartPolicy.batchSize { break }
-        }
-        guard !selectedCandidates.isEmpty else { return .empty }
-
-        try validateGeneratedSidecarOutputPaths(
-            candidates: selectedCandidates,
-            sourceFiles: discoveredFiles,
-            automation: job.metadataAutomation,
-            enforceLocalPathRules: true
-        )
-        var transferredPaths = Set<String>()
-        var metadataReport = MetadataRunReport.empty
-        let runID = UUID()
-        for file in selectedCandidates {
-            try Task.checkCancellation()
-            let sourceSidecar = MetadataWriter.usesXMPSidecar(for: file.relativePath)
-                ? discoveredFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
-                : nil
-            let outcome = try await transfer(
-                file,
-                from: source,
-                to: destination,
-                processedDestination: nil,
-                occupiedProcessedPaths: [],
-                existingProcessedFiles: [:],
-                preserveDate: job.preserveModificationDates,
-                verifySize: job.verifyFileSizes,
-                metadataAutomation: job.metadataAutomation,
-                sortProcessedFilesByPhotographer: false,
-                sourceSidecar: sourceSidecar,
-                jobID: job.id,
-                runID: runID
-            )
-            if let auditEntry = outcome.auditEntry { metadataReport.append(auditEntry) }
-            if outcome.embeddedMetadataApplied {
-                try await sourceSignatureRepository.record(
-                    file,
-                    jobID: job.id,
-                    sourceEndpoint: sourceEndpoint
-                )
-            }
-            transferredPaths.insert(file.relativePath)
-        }
-        return FastStartTransferResult(
-            transferredPaths: transferredPaths,
-            metadataReport: metadataReport
-        )
-    }
-
     private func transferNewer(
         from source: any EndpointSession,
         sourceEndpoint: Endpoint,
@@ -668,7 +532,6 @@ struct SyncEngine: Sendable {
         files destinationFiles: [String: SyncFile],
         processedDestination: (any EndpointSession)?,
         processedFiles: [String: SyncFile],
-        alreadyTransferredPaths: Set<String> = [],
         job: SyncJob
     ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport) {
         let savedSignatures = try await sourceSignatureRepository.signatures(
@@ -703,7 +566,8 @@ struct SyncEngine: Sendable {
             candidates: candidates,
             sourceFiles: sourceFiles,
             automation: job.metadataAutomation,
-            enforceLocalPathRules: job.destinationEndpoint?.kind == .local
+            enforceLocalPathRules: job.destinationEndpoint?.kind == .local,
+            occupiedDestinationPaths: Set(destinationFiles.keys)
         )
         var transferred = 0
         var processed = 0
@@ -729,8 +593,7 @@ struct SyncEngine: Sendable {
                 jobID: job.id,
                 runID: runID
             )
-            if let auditEntry = outcome.auditEntry,
-               !alreadyTransferredPaths.contains(file.relativePath) || auditEntry.status == .failed {
+            if let auditEntry = outcome.auditEntry {
                 metadataReport.append(auditEntry)
             }
             if outcome.embeddedMetadataApplied {
@@ -742,7 +605,7 @@ struct SyncEngine: Sendable {
             }
             if outcome.movedToProcessed { processed += 1 }
             occupiedProcessedPaths.formUnion(outcome.publishedProcessedPaths)
-            if !alreadyTransferredPaths.contains(file.relativePath) { transferred += 1 }
+            transferred += 1
         }
         return (transferred, processed, metadataReport)
     }
@@ -1047,10 +910,7 @@ struct SyncEngine: Sendable {
                 }
             }
             publishedProcessedPaths = Set(outputPaths)
-            if let sourceSidecar {
-                try await source.removeFile(sourceSidecar)
-            }
-            try await source.removeFile(file)
+            try await source.removeFilesTransactionally([file] + (sourceSidecar.map { [$0] } ?? []))
             movedToProcessed = true
         }
         return TransferMetadataOutcome(
@@ -1198,7 +1058,8 @@ struct SyncEngine: Sendable {
         candidates: [SyncFile],
         sourceFiles: [String: SyncFile],
         automation: MetadataAutomation?,
-        enforceLocalPathRules: Bool
+        enforceLocalPathRules: Bool,
+        occupiedDestinationPaths: Set<String> = []
     ) throws {
         var ownerByPath: [String: String] = [:]
         var outputPaths: [String] = []
@@ -1225,7 +1086,9 @@ struct SyncEngine: Sendable {
         }
 
         if enforceLocalPathRules,
-           let collision = PathSafety.localPathCollision(in: outputPaths) {
+           let collision = PathSafety.localPathCollision(
+               in: Array(occupiedDestinationPaths) + outputPaths
+           ) {
             throw AppError.transferFailed(
                 "Two transfer outputs cannot safely coexist on the local destination: \(collision[0]) and \(collision[1]). Rename one before syncing."
             )

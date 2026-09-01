@@ -3,6 +3,83 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class JobRepositoryTests: XCTestCase {
+    @MainActor
+    func testRemoveJobRefusesWhileManualSyncTaskIsActive() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("busy-job-removal-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        var job = SyncJob(name: "Busy")
+        job.left = Endpoint(kind: .local, localPath: "/mock-left", bookmark: Data("left".utf8))
+        job.right = Endpoint(kind: .local, localPath: "/mock-right", bookmark: Data("right".utf8))
+        job.direction = .leftToRight
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        try repository.save([job])
+        let session = BlockingEndpointSession()
+        let engine = SyncEngine(sessionFactory: { _, _, _ in session })
+        let store = AppStore(
+            repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(fileURL: root.appendingPathComponent("photographers.json")),
+            metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
+            syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
+            engine: engine
+        )
+        let storedJobID = try XCTUnwrap(store.jobs.first?.id)
+
+        store.runNow(storedJobID)
+        XCTAssertTrue(store.isJobBusy(storedJobID))
+        store.removeJob(storedJobID)
+
+        XCTAssertTrue(store.jobs.contains(where: { $0.id == storedJobID }))
+        XCTAssertTrue(store.alertMessage?.contains("current operation") == true)
+        await session.release()
+        while store.isJobBusy(storedJobID) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(store.jobs.contains(where: { $0.id == storedJobID }))
+    }
+
+    @MainActor
+    func testRemoveJobRefusesWhileScheduledSyncTaskIsActive() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("busy-scheduled-removal-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        var job = SyncJob(name: "Scheduled busy")
+        job.left = Endpoint(kind: .local, localPath: "/mock-left", bookmark: Data("left".utf8))
+        job.right = Endpoint(kind: .local, localPath: "/mock-right", bookmark: Data("right".utf8))
+        job.direction = .leftToRight
+        job.isEnabled = true
+        job.startsOnAppLaunch = true
+        try repository.save([job])
+        let session = BlockingEndpointSession()
+        let engine = SyncEngine(sessionFactory: { _, _, _ in session })
+        let store = AppStore(
+            repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(fileURL: root.appendingPathComponent("photographers.json")),
+            metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
+            syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
+            engine: engine
+        )
+        let storedJobID = try XCTUnwrap(store.jobs.first?.id)
+
+        XCTAssertTrue(store.isJobBusy(storedJobID))
+        store.removeJob(storedJobID)
+        XCTAssertTrue(store.jobs.contains(where: { $0.id == storedJobID }))
+
+        await session.release()
+        while store.isJobBusy(storedJobID) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        store.setEnabled(false, for: storedJobID)
+        XCTAssertTrue(store.jobs.contains(where: { $0.id == storedJobID }))
+    }
+
     func testRoundTripsMultipleJobs() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("jobs-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -114,6 +191,29 @@ final class JobRepositoryTests: XCTestCase {
         XCTAssertTrue(result.recoveredFromBackup)
         XCTAssertEqual(result.jobs, [recoverableJob])
     }
+}
+
+private actor BlockingEndpointSession: EndpointSession {
+    private var isReleased = false
+
+    func release() { isReleased = true }
+
+    func listFiles() async throws -> [String: SyncFile] {
+        while !isReleased {
+            try Task.checkCancellation()
+            await Task.yield()
+        }
+        return [:]
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {}
+
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {}
 }
 
 final class JobTransferTotalsTests: XCTestCase {

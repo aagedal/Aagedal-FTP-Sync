@@ -3,6 +3,17 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class PathSafetyTests: XCTestCase {
+    func testSFTPUploadRejectsChildSymlinkResolvingOutsideRoot() {
+        XCTAssertThrowsError(try SFTPPathContainment.validateExistingParent(
+            path: "/uploads/escape",
+            permissions: 0o120777,
+            canonicalPath: "/outside",
+            root: "/uploads"
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("symbolic link or special file"))
+        }
+    }
+
     func testAcceptsNestedRelativePaths() {
         XCTAssertTrue(PathSafety.isSafeRelativePath("assignment/selects/NEWS 001.CR3"))
     }

@@ -4,9 +4,19 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     private let access: BookmarkAccess
     private let rootURL: URL
     private let fileManager = FileManager.default
+    private let holdingURLFactory: @Sendable (URL) -> URL
 
-    init(endpoint: Endpoint, managedFolder: ManagedOutputFolder? = nil) throws {
+    init(
+        endpoint: Endpoint,
+        managedFolder: ManagedOutputFolder? = nil,
+        holdingURLFactory: @escaping @Sendable (URL) -> URL = { source in
+            source.deletingLastPathComponent().appendingPathComponent(
+                ".aagedal-sync-\(UUID().uuidString).hold"
+            )
+        }
+    ) throws {
         access = try BookmarkAccess(endpoint: endpoint)
+        self.holdingURLFactory = holdingURLFactory
         if let managedFolder {
             rootURL = try managedFolder.url(inside: access.url, createIfNeeded: true)
         } else {
@@ -142,6 +152,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         let staging = directory.appendingPathComponent(".aagedal-sync-\(UUID().uuidString).part")
         do {
             try fileManager.copyItem(at: localURL, to: staging)
+            let localArrivalTime = Date()
             if verifySize {
                 let attributes = try fileManager.attributesOfItem(atPath: staging.path)
                 let copiedSize = (attributes[.size] as? NSNumber)?.int64Value ?? -1
@@ -151,9 +162,10 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                     )
                 }
             }
-            if preserveDate {
-                try fileManager.setAttributes([.modificationDate: file.modifiedAt], ofItemAtPath: staging.path)
-            }
+            try fileManager.setAttributes(
+                [.modificationDate: preserveDate ? file.modifiedAt : localArrivalTime],
+                ofItemAtPath: staging.path
+            )
             if replaceExisting, fileManager.fileExists(atPath: destination.path) {
                 _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
             } else {
@@ -193,6 +205,27 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             throw AppError.transferFailed("Only regular source files can be moved to the processed folder.")
         }
         try fileManager.removeItem(at: source)
+    }
+
+    func removeFilesTransactionally(_ files: [SyncFile]) async throws {
+        let sources = try files.map { file -> URL in
+            let source = try safeURL(for: file.relativePath)
+            let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true else {
+                throw AppError.transferFailed("Only regular source files can be moved to the processed folder.")
+            }
+            return source
+        }
+        let staged = sources.map(holdingURLFactory)
+        try await TransactionalRemoval.stageAndDelete(
+            sources: sources,
+            holdings: staged,
+            labels: files.map(\.relativePath),
+            move: { source, destination in
+                try fileManager.moveItem(at: source, to: destination)
+            },
+            delete: { holding in try fileManager.removeItem(at: holding) }
+        )
     }
 
     private func safeURL(for relativePath: String) throws -> URL {

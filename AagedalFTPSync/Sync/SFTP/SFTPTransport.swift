@@ -3,11 +3,34 @@ import Foundation
 import NIOCore
 import NIOSSH
 
+enum SFTPPathContainment {
+    static func validateExistingParent(
+        path: String,
+        permissions: UInt32?,
+        canonicalPath: String,
+        root: String
+    ) throws {
+        let kind = (permissions ?? 0) & 0o170000
+        guard kind == 0o040000 else {
+            throw AppError.transferFailed(
+                "The SFTP upload parent is a symbolic link or special file and was rejected: \(path)"
+            )
+        }
+        guard canonicalPath == root
+                || canonicalPath.hasPrefix(root == "/" ? "/" : root + "/") else {
+            throw AppError.transferFailed(
+                "The SFTP upload parent resolved outside its configured root: \(path)"
+            )
+        }
+    }
+}
+
 actor SFTPTransport {
     private let endpoint: Endpoint
     private let password: String
     private var sshClient: SSHClientBox?
     private var sftpClient: SFTPClient?
+    private var canonicalRoot: String?
 
     init(endpoint: Endpoint, password: String) {
         self.endpoint = endpoint
@@ -16,13 +39,15 @@ actor SFTPTransport {
 
     func testConnection() async throws {
         let sftp = try await connect()
-        _ = try await sftp.listDirectory(atPath: normalizedRoot)
+        _ = try await sftp.listDirectory(atPath: try await resolvedRoot(using: sftp))
     }
 
     func listFiles() async throws -> [String: SyncFile] {
         let sftp = try await connect()
         var result: [String: SyncFile] = [:]
-        var directories: [(remote: String, relative: String)] = [(normalizedRoot, "")]
+        var directories: [(remote: String, relative: String)] = [
+            (try await resolvedRoot(using: sftp), ""),
+        ]
         while !directories.isEmpty {
             try Task.checkCancellation()
             let directory = directories.removeFirst()
@@ -36,7 +61,7 @@ actor SFTPTransport {
                 let kind = mode & 0o170000
                 if kind == 0o040000 {
                     directories.append((remote, relative))
-                } else if kind != 0o120000 {
+                } else if kind == 0o100000 {
                     if let existing = result[relative],
                        !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
                         throw AppError.transferFailed(
@@ -63,7 +88,7 @@ actor SFTPTransport {
         var eligibleCount = 0
         var scannedDirectoryCount = 0
         var directories: [(remote: String, relative: String, modifiedAt: Date)] = [
-            (normalizedRoot, "", .distantFuture),
+            (try await resolvedRoot(using: sftp), "", .distantFuture),
         ]
         while !directories.isEmpty,
               eligibleCount < max(minimumCount, 1) || scannedDirectoryCount < 2 {
@@ -83,7 +108,7 @@ actor SFTPTransport {
                 let modifiedAt = entry.attributes.accessModificationTime?.modificationTime ?? .distantPast
                 if kind == 0o040000 {
                     directories.append((remote, relative, modifiedAt))
-                } else if kind != 0o120000 {
+                } else if kind == 0o100000 {
                     if let existing = result[relative],
                        !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
                         throw AppError.transferFailed(
@@ -111,7 +136,8 @@ actor SFTPTransport {
         _ = FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: temporaryURL)
         defer { try? output.close() }
-        try await sftp.withFile(filePath: remotePath(for: file.relativePath), flags: .read) { remoteFile in
+        let sourcePath = try await remotePath(for: file.relativePath, sftp: sftp)
+        try await sftp.withFile(filePath: sourcePath, flags: .read) { remoteFile in
             var offset: UInt64 = 0
             while true {
                 try Task.checkCancellation()
@@ -126,8 +152,11 @@ actor SFTPTransport {
 
     func upload(localURL: URL, file: SyncFile, preserveDate: Bool, verifySize: Bool) async throws {
         let sftp = try await connect()
-        let remotePath = remotePath(for: file.relativePath)
-        try await ensureDirectory((remotePath as NSString).deletingLastPathComponent, sftp: sftp)
+        let remotePath = try await remotePath(for: file.relativePath, sftp: sftp)
+        try await ensureSafeUploadParent(
+            (remotePath as NSString).deletingLastPathComponent,
+            sftp: sftp
+        )
         let temporaryPath = stagingPath(nextTo: remotePath, suffix: "part")
         let input = try FileHandle(forReadingFrom: localURL)
         defer { try? input.close() }
@@ -169,7 +198,25 @@ actor SFTPTransport {
 
     func remove(file: SyncFile) async throws {
         let sftp = try await connect()
-        try await sftp.remove(at: remotePath(for: file.relativePath))
+        try await sftp.remove(at: try await remotePath(for: file.relativePath, sftp: sftp))
+    }
+
+    func removeTransactionally(files: [SyncFile]) async throws {
+        let sftp = try await connect()
+        var sources: [String] = []
+        for file in files {
+            sources.append(try await remotePath(for: file.relativePath, sftp: sftp))
+        }
+        let staged = sources.map { stagingPath(nextTo: $0, suffix: "hold") }
+        try await TransactionalRemoval.stageAndDelete(
+            sources: sources,
+            holdings: staged,
+            labels: files.map(\.relativePath),
+            move: { source, destination in
+                try await sftp.rename(at: source, to: destination)
+            },
+            delete: { holding in try await sftp.remove(at: holding) }
+        )
     }
 
     func close() async {
@@ -177,6 +224,7 @@ actor SFTPTransport {
         if let sshClient { await sshClient.close() }
         sftpClient = nil
         sshClient = nil
+        canonicalRoot = nil
     }
 
     private func connect() async throws -> SFTPClient {
@@ -201,13 +249,35 @@ actor SFTPTransport {
         return sftp
     }
 
-    private func ensureDirectory(_ path: String, sftp: SFTPClient) async throws {
-        guard path != "/", !path.isEmpty else { return }
-        var current = ""
-        for component in path.split(separator: "/") {
-            current += "/\(component)"
-            if (try? await sftp.getAttributes(at: current)) == nil {
+    private func ensureSafeUploadParent(_ path: String, sftp: SFTPClient) async throws {
+        let root = try await resolvedRoot(using: sftp)
+        guard isContained(path, beneath: root) else {
+            throw AppError.transferFailed("An SFTP upload path attempted to leave its configured root.")
+        }
+        guard path != root else { return }
+
+        var current = root
+        let suffix = String(path.dropFirst(root.count)).split(separator: "/")
+        for component in suffix {
+            current = join(current, String(component))
+            if let attributes = try await sftp.getLinkAttributes(at: current) {
+                let canonical = try await sftp.getRealPath(atPath: current)
+                try SFTPPathContainment.validateExistingParent(
+                    path: current,
+                    permissions: attributes.permissions,
+                    canonicalPath: canonical,
+                    root: root
+                )
+            } else {
                 try await sftp.createDirectory(atPath: current)
+                guard let attributes = try await sftp.getLinkAttributes(at: current),
+                      (attributes.permissions ?? 0) & 0o170000 == 0o040000 else {
+                    throw AppError.transferFailed("The SFTP server did not create a real directory at \(current).")
+                }
+            }
+            let canonical = try await sftp.getRealPath(atPath: current)
+            guard isContained(canonical, beneath: root) else {
+                throw AppError.transferFailed("The SFTP upload parent resolved outside its configured root: \(current)")
             }
         }
     }
@@ -251,7 +321,33 @@ actor SFTPTransport {
         return root.hasPrefix("/") ? root : "/" + root
     }
 
-    private func remotePath(for relative: String) -> String { join(normalizedRoot, relative) }
+    private func resolvedRoot(using sftp: SFTPClient) async throws -> String {
+        if let canonicalRoot { return canonicalRoot }
+        let resolved = try await sftp.getRealPath(atPath: normalizedRoot)
+        guard resolved.hasPrefix("/") else {
+            throw AppError.transferFailed("The SFTP server returned a non-absolute configured root.")
+        }
+        canonicalRoot = resolved.count > 1 && resolved.hasSuffix("/")
+            ? String(resolved.dropLast())
+            : resolved
+        guard let attributes = try await sftp.getLinkAttributes(at: canonicalRoot!),
+              (attributes.permissions ?? 0) & 0o170000 == 0o040000 else {
+            canonicalRoot = nil
+            throw AppError.transferFailed("The configured SFTP root is not a real directory.")
+        }
+        return canonicalRoot!
+    }
+
+    private func remotePath(for relative: String, sftp: SFTPClient) async throws -> String {
+        guard PathSafety.isSafeRelativePath(relative) else {
+            throw AppError.transferFailed("An SFTP file contained an unsafe relative path.")
+        }
+        return join(try await resolvedRoot(using: sftp), relative)
+    }
+
+    private func isContained(_ path: String, beneath root: String) -> Bool {
+        path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
+    }
 
     private func join(_ root: String, _ child: String) -> String {
         root.hasSuffix("/") ? root + child : root + "/" + child
