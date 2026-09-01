@@ -30,6 +30,7 @@ Version 2.6 adds a managed download and processed-file structure to the automati
 - Original source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
 - Successfully tagged files can use a custom processed folder or a managed main folder containing sibling `Synced Files` and `Processed Files` folders
 - Processed pictures can optionally be sorted into sanitized per-photographer sub-folders while preserving their source-relative paths
+- Sync jobs and metadata programming can be exported separately or together in password-protected `.aftpsync` packages
 
 ## Requirements
 
@@ -96,6 +97,8 @@ The sync engine works against a small endpoint-session protocol, keeping schedul
 Dependency security and release verification are documented in [`SECURITY.md`](SECURITY.md).
 
 Jobs are stored as readable JSON under the app’s Application Support container. Secrets are referenced by random credential IDs and live only in Keychain.
+
+Portable `.aftpsync` packages use PBKDF2-HMAC-SHA256 and AES-256-GCM authenticated encryption. They never contain Keychain passwords or security-scoped folder bookmarks. Imported jobs are disabled and receive fresh identifiers, so folder permissions and server passwords must be configured again before syncing.
 
 ## License
 

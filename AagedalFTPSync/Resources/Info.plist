@@ -4,8 +4,8 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
-    <key>CFBundleDisplayName</key>
-    <string>Aagedal FTP Sync</string>
+	<key>CFBundleDisplayName</key>
+	<string>Aagedal FTP Sync</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -26,7 +26,27 @@
     <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
     <key>LSUIElement</key>
     <true/>
-    <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026 Truls Aagedal. GPL-3.0-or-later.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Truls Aagedal. GPL-3.0-or-later.</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Aagedal FTP Sync Encrypted Configuration</string>
+			<key>UTTypeIdentifier</key>
+			<string>no.aagedal.aftpsync.configuration</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>aftpsync</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add separate encrypted exports for sync jobs and metadata programming, plus a combined `.aftpsync` configuration package.
+- Protect configuration packages with password-derived AES-256-GCM authenticated encryption while excluding Keychain passwords and machine-bound folder bookmarks.
+- Import jobs as disabled copies with fresh IDs and require folder access and server passwords to be configured again.
+
 ## 2.6.0 — 2026-08-30
 
 - Add Custom Folder and Processed sub-folder modes for processed-file handoff.

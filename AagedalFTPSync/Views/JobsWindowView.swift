@@ -1,8 +1,15 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct JobsWindowView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
+    @State private var showConfigurationImporter = false
+    @State private var showConfigurationExporter = false
+    @State private var exportDocument = ConfigurationTransferFile()
+    @State private var exportFilename = "Aagedal FTP Sync Package"
+    @State private var pendingTransfer: PendingConfigurationTransfer?
+    @State private var importSummary: String?
 
     var body: some View {
         NavigationSplitView {
@@ -50,6 +57,25 @@ struct JobsWindowView: View {
                         .buttonStyle(.borderless)
                         .keyboardShortcut("n", modifiers: .command)
                         Spacer()
+                        Menu {
+                            Button("Import Encrypted Package…", systemImage: "square.and.arrow.down") {
+                                showConfigurationImporter = true
+                            }
+
+                            Divider()
+
+                            ForEach(ConfigurationTransferScope.allCases) { scope in
+                                Button("Export \(scope.title)…", systemImage: "square.and.arrow.up") {
+                                    pendingTransfer = PendingConfigurationTransfer(operation: .export(scope))
+                                }
+                                .disabled(scope != .metadata && store.jobs.isEmpty)
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Import or export encrypted configuration packages")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -82,6 +108,29 @@ struct JobsWindowView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { store.refreshLaunchAtLoginStatus() }
         }
+        .fileImporter(
+            isPresented: $showConfigurationImporter,
+            allowedContentTypes: [.aagedalFTPSyncConfiguration],
+            allowsMultipleSelection: false,
+            onCompletion: loadConfigurationPackage
+        )
+        .fileExporter(
+            isPresented: $showConfigurationExporter,
+            document: exportDocument,
+            contentType: .aagedalFTPSyncConfiguration,
+            defaultFilename: exportFilename
+        ) { result in
+            if case .failure(let error) = result {
+                store.alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
+            }
+        }
+        .sheet(item: $pendingTransfer) { transfer in
+            ConfigurationTransferPasswordView(
+                operation: transfer.operation,
+                onExport: prepareConfigurationExport,
+                onImport: importConfiguration
+            )
+        }
         .alert("Aagedal FTP Sync", isPresented: Binding(
             get: { store.alertMessage != nil },
             set: { if !$0 { store.alertMessage = nil } }
@@ -89,6 +138,14 @@ struct JobsWindowView: View {
             Button("OK") { store.alertMessage = nil }
         } message: {
             Text(store.alertMessage ?? "")
+        }
+        .alert("Configuration Imported", isPresented: Binding(
+            get: { importSummary != nil },
+            set: { if !$0 { importSummary = nil } }
+        )) {
+            Button("OK") { importSummary = nil }
+        } message: {
+            Text(importSummary ?? "")
         }
     }
 
@@ -107,6 +164,39 @@ struct JobsWindowView: View {
 
     private func addJob() {
         _ = store.addJob()
+    }
+
+    private func loadConfigurationPackage(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let hasAccess = url.startAccessingSecurityScopedResource()
+            defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
+            let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard fileSize <= EncryptedConfigurationTransferCodec.maximumFileSize else {
+                throw ConfigurationTransferError.fileTooLarge
+            }
+            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+            pendingTransfer = PendingConfigurationTransfer(operation: .importPackage(data))
+        } catch {
+            store.alertMessage = "The configuration could not be opened: \(error.localizedDescription)"
+        }
+    }
+
+    private func prepareConfigurationExport(
+        _ scope: ConfigurationTransferScope,
+        _ password: String
+    ) -> Bool {
+        guard let data = store.configurationExportData(scope: scope, password: password) else { return false }
+        exportDocument = ConfigurationTransferFile(data: data)
+        exportFilename = scope.defaultFilename
+        DispatchQueue.main.async { showConfigurationExporter = true }
+        return true
+    }
+
+    private func importConfiguration(_ data: Data, _ password: String) -> Bool {
+        guard let result = store.importConfiguration(from: data, password: password) else { return false }
+        importSummary = result.summary
+        return true
     }
 }
 

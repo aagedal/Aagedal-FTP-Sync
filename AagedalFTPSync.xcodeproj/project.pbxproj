@@ -23,7 +23,9 @@
 		272053804C39268361FC3A77 /* SyncJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B454FB4A4C0AB0EA736CC08 /* SyncJob.swift */; };
 		321D42AE4C4597EED466F6E5 /* Endpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 192610C9A61A25AF00E657B7 /* Endpoint.swift */; };
 		3710B1ACB6F8926631BD9AEF /* MetadataWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03995AA00C6B22A30666B72E /* MetadataWriter.swift */; };
+		38ED8E421FDC7B420C63D96D /* ConfigurationTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58A30ACCD49652A57537F70F /* ConfigurationTransfer.swift */; };
 		3F722F00953E530954D11527 /* BookmarkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9A3505CD91E1A224FE60777 /* BookmarkAccess.swift */; };
+		4980FD85B29C37C25B81D518 /* ConfigurationTransferView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB7F4BDFAD79EBFE76AAD0CC /* ConfigurationTransferView.swift */; };
 		4A8ED69FC5E89F620E4C7B8B /* MetadataPresetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6C27623376060CBE9454422 /* MetadataPresetRepository.swift */; };
 		53A288A039BF1709C1AE3329 /* SourceSignatureRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */; };
 		6287983979D1DB58DCCC3BB4 /* MetadataPreviewAndRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94DF32BB9FEF45202CA10C58 /* MetadataPreviewAndRecoveryTests.swift */; };
@@ -49,6 +51,7 @@
 		C27CE06BC60109AE34788F93 /* JobRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */; };
 		D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */; };
 		DB23A9DE82ED66DAF6941E4F /* FTPConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA3A713A82044F0A77CFC2AD /* FTPConnection.swift */; };
+		DCA4E81BE09F33D799223744 /* ConfigurationTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDA4D33A7502B694919E9907 /* ConfigurationTransferTests.swift */; };
 		E1DAEC0A6654788FBE787C04 /* AppError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17C264842979B409D1442940 /* AppError.swift */; };
 		E53F0414C64324DD591A8565 /* FTPEndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 094342E4F906A49665E62424 /* FTPEndpointSession.swift */; };
 		E9F5C8F408685FF6E937756D /* SyncJobValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98C086F6C3B781DCF036C21D /* SyncJobValidationTests.swift */; };
@@ -92,6 +95,7 @@
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
 		539DC8F63EE64022D624CE17 /* AagedalFTPSync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AagedalFTPSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		58A30ACCD49652A57537F70F /* ConfigurationTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransfer.swift; sourceTree = "<group>"; };
 		5B454FB4A4C0AB0EA736CC08 /* SyncJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncJob.swift; sourceTree = "<group>"; };
 		651C6A9CE4B166DED9277960 /* FTPListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPListingTests.swift; sourceTree = "<group>"; };
 		6C2652989B9E3A1DBC458591 /* AagedalFTPSync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AagedalFTPSync.entitlements; sourceTree = "<group>"; };
@@ -110,6 +114,7 @@
 		B6B136282CDABA5C399CD2CC /* AagedalFTPSyncTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AagedalFTPSyncTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B6C27623376060CBE9454422 /* MetadataPresetRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPresetRepository.swift; sourceTree = "<group>"; };
 		BA0E07A802A7A2D80FA386CB /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
+		BB7F4BDFAD79EBFE76AAD0CC /* ConfigurationTransferView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferView.swift; sourceTree = "<group>"; };
 		BCF65723538BA23F95385AED /* EndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointSession.swift; sourceTree = "<group>"; };
 		C984C555D147B80CC7FDE729 /* MetadataAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAuditTests.swift; sourceTree = "<group>"; };
 		CA3A713A82044F0A77CFC2AD /* FTPConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPConnection.swift; sourceTree = "<group>"; };
@@ -123,6 +128,7 @@
 		F36DFB49077346301C4F656C /* PathSafety.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathSafety.swift; sourceTree = "<group>"; };
 		F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomation.swift; sourceTree = "<group>"; };
 		F9D7909C9A07D0EEB099B031 /* Citadel */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Citadel; path = Vendor/Citadel; sourceTree = SOURCE_ROOT; };
+		FDA4D33A7502B694919E9907 /* ConfigurationTransferTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferTests.swift; sourceTree = "<group>"; };
 		FE273065A756601A22D84D27 /* JobsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobsWindowView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -160,6 +166,7 @@
 			isa = PBXGroup;
 			children = (
 				D9A3505CD91E1A224FE60777 /* BookmarkAccess.swift */,
+				58A30ACCD49652A57537F70F /* ConfigurationTransfer.swift */,
 				E20AD42026ACD307821FF756 /* FolderBookmark.swift */,
 				4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */,
 				BA0E07A802A7A2D80FA386CB /* KeychainStore.swift */,
@@ -215,6 +222,7 @@
 		67736033A2B7B2BAC0FB255C /* AagedalFTPSyncTests */ = {
 			isa = PBXGroup;
 			children = (
+				FDA4D33A7502B694919E9907 /* ConfigurationTransferTests.swift */,
 				97DCF709A14A3B3FAC7D6E5E /* FileFilterTests.swift */,
 				651C6A9CE4B166DED9277960 /* FTPListingTests.swift */,
 				3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */,
@@ -245,6 +253,7 @@
 			isa = PBXGroup;
 			children = (
 				02EC1F74EDD6F1B832D4756B /* AboutView.swift */,
+				BB7F4BDFAD79EBFE76AAD0CC /* ConfigurationTransferView.swift */,
 				B1F77C1BCC8CDA6038939531 /* JobDetailEditor.swift */,
 				FE273065A756601A22D84D27 /* JobsWindowView.swift */,
 				113A0B3ADC59BFE97A673EA5 /* MenuBarView.swift */,
@@ -426,6 +435,8 @@
 				E1DAEC0A6654788FBE787C04 /* AppError.swift in Sources */,
 				B3C47DA88D887D6C938B59BE /* AppStore.swift in Sources */,
 				3F722F00953E530954D11527 /* BookmarkAccess.swift in Sources */,
+				38ED8E421FDC7B420C63D96D /* ConfigurationTransfer.swift in Sources */,
+				4980FD85B29C37C25B81D518 /* ConfigurationTransferView.swift in Sources */,
 				321D42AE4C4597EED466F6E5 /* Endpoint.swift in Sources */,
 				744593AB9031434E395773DE /* EndpointSession.swift in Sources */,
 				DB23A9DE82ED66DAF6941E4F /* FTPConnection.swift in Sources */,
@@ -462,6 +473,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DCA4E81BE09F33D799223744 /* ConfigurationTransferTests.swift in Sources */,
 				1DEE0F42F4F0FFDDD5513574 /* FTPListingTests.swift in Sources */,
 				A912C00FDB4E91CA2C98B4C3 /* FileFilterTests.swift in Sources */,
 				C27CE06BC60109AE34788F93 /* JobRepositoryTests.swift in Sources */,

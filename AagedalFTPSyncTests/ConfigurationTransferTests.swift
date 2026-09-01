@@ -1,0 +1,227 @@
+import Foundation
+import XCTest
+@testable import AagedalFTPSync
+
+final class ConfigurationTransferTests: XCTestCase {
+    private let password = "correct horse battery staple"
+
+    func testPackageRoundTripsThroughAuthenticatedEncryption() throws {
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .package,
+            jobs: [fixture.job],
+            metadataPresets: [fixture.preset],
+            photographers: [fixture.photographer],
+            exportedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+
+        let encrypted = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+        let decoded = try EncryptedConfigurationTransferCodec.decode(encrypted, password: password)
+
+        XCTAssertEqual(decoded.scope, .package)
+        XCTAssertEqual(decoded.jobs.count, 1)
+        XCTAssertEqual(decoded.jobs[0].name, fixture.job.name)
+        XCTAssertNil(decoded.jobs[0].metadataAutomation)
+        XCTAssertNil(decoded.jobs[0].left.bookmark)
+        XCTAssertNil(decoded.jobs[0].right.bookmark)
+        XCTAssertNotEqual(decoded.jobs[0].left.credentialID, fixture.job.left.credentialID)
+        XCTAssertEqual(decoded.metadataProgramming.count, 1)
+        XCTAssertEqual(decoded.metadataProgramming[0].automation, fixture.job.metadataAutomation)
+        XCTAssertEqual(decoded.metadataPresets, [fixture.preset])
+        XCTAssertEqual(decoded.photographers, [fixture.photographer])
+    }
+
+    func testSeparateScopesContainOnlyRequestedContent() throws {
+        let fixture = makeFixture()
+        let jobs = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [fixture.job],
+            metadataPresets: [fixture.preset],
+            photographers: [fixture.photographer]
+        )
+        XCTAssertEqual(jobs.jobs.count, 1)
+        XCTAssertTrue(jobs.metadataProgramming.isEmpty)
+        XCTAssertTrue(jobs.metadataPresets.isEmpty)
+        XCTAssertTrue(jobs.photographers.isEmpty)
+
+        let metadata = ConfigurationTransfer(
+            scope: .metadata,
+            jobs: [fixture.job],
+            metadataPresets: [fixture.preset],
+            photographers: [fixture.photographer]
+        )
+        XCTAssertTrue(metadata.jobs.isEmpty)
+        XCTAssertEqual(metadata.metadataProgramming.count, 1)
+        XCTAssertEqual(metadata.metadataPresets, [fixture.preset])
+        XCTAssertEqual(metadata.photographers, [fixture.photographer])
+    }
+
+    func testWrongPasswordAndTamperingAreRejected() throws {
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .package,
+            jobs: [fixture.job],
+            metadataPresets: [],
+            photographers: []
+        )
+        let encrypted = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+
+        XCTAssertThrowsError(
+            try EncryptedConfigurationTransferCodec.decode(encrypted, password: "this is the wrong password")
+        ) { error in
+            XCTAssertEqual(error as? ConfigurationTransferError, .wrongPasswordOrDamagedFile)
+        }
+
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encrypted) as? [String: Any])
+        var sealed = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(object["sealedPayload"] as? String)))
+        sealed[sealed.startIndex] ^= 0x01
+        object["sealedPayload"] = sealed.base64EncodedString()
+        let tampered = try JSONSerialization.data(withJSONObject: object)
+
+        XCTAssertThrowsError(
+            try EncryptedConfigurationTransferCodec.decode(tampered, password: password)
+        ) { error in
+            XCTAssertEqual(error as? ConfigurationTransferError, .wrongPasswordOrDamagedFile)
+        }
+    }
+
+    func testEncryptedFileDoesNotExposeConfigurationStrings() throws {
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .package,
+            jobs: [fixture.job],
+            metadataPresets: [fixture.preset],
+            photographers: [fixture.photographer]
+        )
+        let encrypted = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+        let outerText = String(decoding: encrypted, as: UTF8.self)
+
+        XCTAssertFalse(outerText.contains(fixture.job.name))
+        XCTAssertFalse(outerText.contains(fixture.job.left.host))
+        XCTAssertFalse(outerText.contains(fixture.preset.name))
+        XCTAssertFalse(outerText.contains(fixture.photographer.photographerName))
+    }
+
+    func testExportRequiresTwelveCharacterPassword() {
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [fixture.job],
+            metadataPresets: [],
+            photographers: []
+        )
+
+        XCTAssertThrowsError(
+            try EncryptedConfigurationTransferCodec.encode(transfer, password: "too short")
+        ) { error in
+            XCTAssertEqual(error as? ConfigurationTransferError, .passwordTooShort)
+        }
+    }
+
+    func testPreparedImportedJobIsSafeAndDisabled() {
+        let fixture = makeFixture()
+        let imported = fixture.job.preparedForImport()
+
+        XCTAssertNotEqual(imported.id, fixture.job.id)
+        XCTAssertFalse(imported.isEnabled)
+        XCTAssertFalse(imported.startsOnAppLaunch)
+        XCTAssertNil(imported.left.bookmark)
+        XCTAssertNil(imported.right.bookmark)
+        XCTAssertNotEqual(imported.left.credentialID, fixture.job.left.credentialID)
+        XCTAssertNotEqual(imported.right.credentialID, fixture.job.right.credentialID)
+    }
+
+    @MainActor
+    func testAppStoreImportsPackageAsSafeCopyAndPersistsLibraries() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("configuration-import-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let presetRepository = MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        let auditRepository = MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json"))
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .package,
+            jobs: [fixture.job],
+            metadataPresets: [fixture.preset],
+            photographers: [fixture.photographer]
+        )
+        let data = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+        let store = AppStore(
+            repository: jobRepository,
+            metadataPresetRepository: presetRepository,
+            photographerProfileRepository: photographerRepository,
+            metadataAuditRepository: auditRepository
+        )
+
+        let result = try XCTUnwrap(store.importConfiguration(from: data, password: password))
+
+        XCTAssertEqual(result.importedJobs, 1)
+        XCTAssertEqual(result.importedMetadataProgramming, 1)
+        let importedJob = try XCTUnwrap(store.jobs.first)
+        XCTAssertNotEqual(importedJob.id, fixture.job.id)
+        XCTAssertFalse(importedJob.isEnabled)
+        XCTAssertFalse(importedJob.startsOnAppLaunch)
+        XCTAssertNil(importedJob.left.bookmark)
+        XCTAssertNil(importedJob.right.bookmark)
+        XCTAssertEqual(importedJob.metadataAutomation, fixture.job.metadataAutomation)
+        XCTAssertEqual(store.metadataPresets, [fixture.preset])
+        XCTAssertEqual(store.photographerLibrary, [fixture.photographer])
+        XCTAssertEqual(try jobRepository.load(), store.jobs)
+        XCTAssertEqual(try presetRepository.load(), store.metadataPresets)
+        XCTAssertEqual(try photographerRepository.load(), store.photographerLibrary)
+    }
+
+    private func makeFixture() -> (
+        job: SyncJob,
+        photographer: PhotographerProfile,
+        preset: MetadataPreset
+    ) {
+        let photographer = PhotographerProfile(
+            name: "Ada Photographer",
+            filenamePrefix: "ADA",
+            creator: "Ada Photographer",
+            copyrightNotice: "Copyright Ada"
+        )
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Morning assignment",
+            startsAt: start,
+            endsAt: start.addingTimeInterval(3_600),
+            fields: ScheduledMetadataFields(
+                headline: "City hall",
+                description: "Press conference",
+                keywords: ["news", "city"]
+            )
+        )
+        let automation = MetadataAutomation(
+            isEnabled: true,
+            photographers: [photographer],
+            clips: [clip]
+        )
+        var job = SyncJob(
+            name: "Secret Newsroom Job",
+            left: Endpoint(
+                kind: .sftp,
+                bookmark: Data("left bookmark".utf8),
+                host: "secret.example.test",
+                username: "newsroom",
+                credentialID: "left-keychain-reference",
+                hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ),
+            right: Endpoint(
+                kind: .local,
+                localPath: "/Volumes/Newsroom",
+                bookmark: Data("right bookmark".utf8),
+                credentialID: "right-keychain-reference"
+            )
+        )
+        job.metadataAutomation = automation
+        let preset = MetadataPreset(name: "Breaking news", fields: clip.fields)
+        return (job, photographer, preset)
+    }
+}

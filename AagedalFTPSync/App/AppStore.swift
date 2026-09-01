@@ -52,6 +52,43 @@ struct PhotographerLibraryImportResult: Equatable, Sendable {
     let unchangedCount: Int
 }
 
+struct ConfigurationImportResult: Equatable, Sendable {
+    let scope: ConfigurationTransferScope
+    let importedJobs: Int
+    let importedMetadataProgramming: Int
+    let skippedMetadataProgramming: Int
+    let importedPresets: Int
+    let importedPhotographers: Int
+
+    var summary: String {
+        var parts: [String] = []
+        if importedJobs > 0 {
+            parts.append(importedJobs == 1 ? "1 sync job" : "\(importedJobs) sync jobs")
+        }
+        if importedMetadataProgramming > 0 {
+            parts.append(
+                importedMetadataProgramming == 1
+                    ? "metadata programming for 1 job"
+                    : "metadata programming for \(importedMetadataProgramming) jobs"
+            )
+        }
+        if importedPresets > 0 {
+            parts.append(importedPresets == 1 ? "1 metadata preset" : "\(importedPresets) metadata presets")
+        }
+        if importedPhotographers > 0 {
+            parts.append(importedPhotographers == 1 ? "1 photographer" : "\(importedPhotographers) photographers")
+        }
+        if skippedMetadataProgramming > 0 {
+            parts.append(
+                skippedMetadataProgramming == 1
+                    ? "1 unmatched programming skipped"
+                    : "\(skippedMetadataProgramming) unmatched programmings skipped"
+            )
+        }
+        return parts.isEmpty ? "The package contained no changes." : "Imported " + parts.joined(separator: ", ") + "."
+    }
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
@@ -297,6 +334,35 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func configurationExportData(
+        scope: ConfigurationTransferScope,
+        password: String
+    ) -> Data? {
+        do {
+            let transfer = ConfigurationTransfer(
+                scope: scope,
+                jobs: jobs,
+                metadataPresets: metadataPresets,
+                photographers: photographerLibrary
+            )
+            return try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+        } catch {
+            alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func importConfiguration(from data: Data, password: String) -> ConfigurationImportResult? {
+        do {
+            let transfer = try EncryptedConfigurationTransferCodec.decode(data, password: password)
+            return try applyImportedConfiguration(transfer)
+        } catch {
+            alertMessage = "The configuration could not be imported: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     @discardableResult
     func savePhotographerProfile(_ profile: PhotographerProfile) -> Bool {
         let normalizedProfile = profile.usingCreatorAsPhotographerName()
@@ -445,6 +511,184 @@ final class AppStore: ObservableObject {
             updatedCount: updatedCount,
             unchangedCount: normalizedProfiles.count - addedCount - updatedCount
         )
+    }
+
+    private func applyImportedConfiguration(
+        _ transfer: ConfigurationTransfer
+    ) throws -> ConfigurationImportResult {
+        let sourceJobIDs = transfer.jobs.map(\.id)
+        guard Set(sourceJobIDs).count == sourceJobIDs.count else {
+            throw AppError.invalidConfiguration("The package contains the same sync job more than once.")
+        }
+        let programmingJobIDs = transfer.metadataProgramming.map(\.jobID)
+        guard Set(programmingJobIDs).count == programmingJobIDs.count else {
+            throw AppError.invalidConfiguration("The package contains metadata programming for the same job more than once.")
+        }
+        let presetIDs = transfer.metadataPresets.map(\.id)
+        guard Set(presetIDs).count == presetIDs.count else {
+            throw AppError.invalidConfiguration("The package contains the same metadata preset more than once.")
+        }
+
+        var updatedJobs = jobs
+        var importedJobIDs: [UUID: UUID] = [:]
+        var usedNames = Set(updatedJobs.map { $0.name.folding(options: [.caseInsensitive], locale: .current) })
+
+        for sourceJob in transfer.jobs {
+            let trimmedName = sourceJob.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty else {
+                throw AppError.invalidConfiguration("An imported sync job does not have a name.")
+            }
+            let name = uniqueImportedJobName(trimmedName, usedNames: &usedNames)
+            let importedID = UUID()
+            importedJobIDs[sourceJob.id] = importedID
+            updatedJobs.append(sourceJob.preparedForImport(id: importedID, name: name))
+        }
+
+        var appliedProgramming = 0
+        var skippedProgramming = 0
+        var targetedJobIDs = Set<UUID>()
+        for programming in transfer.metadataProgramming {
+            let targetID: UUID?
+            if transfer.scope == .package, let importedID = importedJobIDs[programming.jobID] {
+                targetID = importedID
+            } else if updatedJobs.contains(where: { $0.id == programming.jobID }) {
+                targetID = programming.jobID
+            } else {
+                let matches = updatedJobs.filter {
+                    $0.name.compare(
+                        programming.jobName,
+                        options: [.caseInsensitive, .diacriticInsensitive]
+                    ) == .orderedSame
+                }
+                targetID = matches.count == 1 ? matches[0].id : nil
+            }
+
+            guard let targetID,
+                  targetedJobIDs.insert(targetID).inserted,
+                  let index = updatedJobs.firstIndex(where: { $0.id == targetID }) else {
+                skippedProgramming += 1
+                continue
+            }
+            if let message = programming.automation.validationMessage {
+                throw AppError.invalidConfiguration("\(programming.jobName): \(message)")
+            }
+            updatedJobs[index].metadataAutomation = programming.automation
+            appliedProgramming += 1
+        }
+
+        let importedAutomationPhotographers = transfer.metadataProgramming
+            .flatMap { $0.automation.photographers }
+        var importedPhotographersByID: [UUID: PhotographerProfile] = [:]
+        for photographer in transfer.photographers {
+            guard importedPhotographersByID.updateValue(photographer, forKey: photographer.id) == nil else {
+                throw AppError.invalidConfiguration(
+                    "The package contains the same photographer more than once."
+                )
+            }
+        }
+        for photographer in importedAutomationPhotographers {
+            importedPhotographersByID[photographer.id] = photographer
+        }
+        let normalizedImportedPhotographers = try importedPhotographersByID.values.map { profile in
+            var normalized = profile.usingCreatorAsPhotographerName()
+            let trimmedName = normalized.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty else {
+                throw AppError.invalidConfiguration("An imported photographer does not have a name.")
+            }
+            guard !normalized.normalizedPrefixes.isEmpty else {
+                throw AppError.invalidConfiguration("Give \(trimmedName) filename initials before importing.")
+            }
+            normalized.name = trimmedName
+            normalized.creator = trimmedName
+            normalized.filenamePrefix = normalized.formattedFilenamePrefixes
+            return normalized
+        }
+        let updatedPhotographers = mergedPhotographerLibrary(
+            photographerLibrary,
+            with: normalizedImportedPhotographers
+        )
+        if let duplicate = duplicateFilenameInitials(in: updatedPhotographers) {
+            throw AppError.invalidConfiguration(
+                "The filename initials \(duplicate) conflict with an existing photographer."
+            )
+        }
+        let normalizedPhotographersByID = Dictionary(
+            uniqueKeysWithValues: normalizedImportedPhotographers.map { ($0.id, $0) }
+        )
+        for jobIndex in updatedJobs.indices {
+            guard var automation = updatedJobs[jobIndex].metadataAutomation else { continue }
+            var changed = false
+            for photographerIndex in automation.photographers.indices {
+                let photographerID = automation.photographers[photographerIndex].id
+                guard let imported = normalizedPhotographersByID[photographerID] else { continue }
+                automation.photographers[photographerIndex] = imported
+                changed = true
+            }
+            guard changed else { continue }
+            if let message = automation.validationMessage {
+                throw AppError.invalidConfiguration("\(updatedJobs[jobIndex].name): \(message)")
+            }
+            updatedJobs[jobIndex].metadataAutomation = automation
+        }
+
+        var presetsByID = Dictionary(uniqueKeysWithValues: metadataPresets.map { ($0.id, $0) })
+        for preset in transfer.metadataPresets {
+            let normalized = preset.normalized()
+            if let message = normalized.validationMessage {
+                throw AppError.invalidConfiguration(message)
+            }
+            presetsByID[normalized.id] = normalized
+        }
+        let updatedPresets = presetsByID.values.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+
+        // Save all related stores before publishing any of the new in-memory state.
+        // If a later write fails, make a best-effort rollback to the three
+        // previously published collections so a failed import is not half-applied.
+        do {
+            try photographerProfileRepository.save(updatedPhotographers)
+            try metadataPresetRepository.save(updatedPresets)
+            try repository.save(updatedJobs)
+        } catch {
+            try? photographerProfileRepository.save(photographerLibrary)
+            try? metadataPresetRepository.save(metadataPresets)
+            try? repository.save(jobs)
+            throw error
+        }
+        photographerLibrary = updatedPhotographers
+        metadataPresets = updatedPresets
+        jobs = updatedJobs
+
+        for importedID in importedJobIDs.values {
+            phases[importedID] = .stopped
+        }
+        if let sourceID = sourceJobIDs.last, let lastImportedID = importedJobIDs[sourceID] {
+            selectedJobID = lastImportedID
+        }
+
+        return ConfigurationImportResult(
+            scope: transfer.scope,
+            importedJobs: transfer.jobs.count,
+            importedMetadataProgramming: appliedProgramming,
+            skippedMetadataProgramming: skippedProgramming,
+            importedPresets: transfer.metadataPresets.count,
+            importedPhotographers: normalizedImportedPhotographers.count
+        )
+    }
+
+    private func uniqueImportedJobName(_ base: String, usedNames: inout Set<String>) -> String {
+        var candidate = base
+        if usedNames.contains(candidate.folding(options: [.caseInsensitive], locale: .current)) {
+            candidate = "\(base) (Imported)"
+        }
+        var suffix = 2
+        while usedNames.contains(candidate.folding(options: [.caseInsensitive], locale: .current)) {
+            candidate = "\(base) (Imported \(suffix))"
+            suffix += 1
+        }
+        usedNames.insert(candidate.folding(options: [.caseInsensitive], locale: .current))
+        return candidate
     }
 
     private func mergedPhotographerLibrary(
