@@ -41,7 +41,7 @@ Version 2.6 adds a managed download and processed-file structure to the automati
 
 ## Build
 
-Open `AagedalFTPSync.xcodeproj`, select the `AagedalFTPSync` scheme, choose your development team, and run.
+Open `Aagedal FTP Sync.xcodeproj`, select the `AagedalFTPSync` scheme, choose your development team, and run.
 
 The committed Xcode project is generated from [`project.yml`](project.yml) with [XcodeGen](https://github.com/yonaskolb/XcodeGen). Regenerate it after changing project structure:
 
@@ -53,7 +53,7 @@ Run the test suite:
 
 ```sh
 xcodebuild test \
-  -project AagedalFTPSync.xcodeproj \
+  -project 'Aagedal FTP Sync.xcodeproj' \
   -scheme AagedalFTPSync \
   -destination 'platform=macOS' \
   CODE_SIGNING_ALLOWED=NO

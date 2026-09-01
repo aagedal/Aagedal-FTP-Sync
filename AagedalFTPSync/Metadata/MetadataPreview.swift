@@ -45,6 +45,19 @@ struct MetadataPreviewResult: Equatable, Sendable {
 /// Builds the same photographer and schedule assignments used during sync without
 /// writing metadata or otherwise modifying the selected folder.
 enum MetadataPreviewService {
+    static func localFolderURL(
+        selectedRoot: URL,
+        usesManagedFolderStructure: Bool,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        guard usesManagedFolderStructure else { return selectedRoot }
+        return try ManagedOutputFolder.syncedFiles.url(
+            inside: selectedRoot,
+            createIfNeeded: false,
+            fileManager: fileManager
+        )
+    }
+
     static func previewLocalFolder(
         at folderURL: URL,
         automation: MetadataAutomation,

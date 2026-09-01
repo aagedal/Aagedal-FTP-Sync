@@ -3,7 +3,7 @@ set -eu
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(dirname -- "$script_dir")
-resolved="$repository_root/AagedalFTPSync.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+resolved="$repository_root/Aagedal FTP Sync.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
 signature_source="$repository_root/Vendor/swift-nio-ssh/Sources/NIOSSH/Keys And Signatures/NIOSSHSignature.swift"
 
 crypto_version=$(awk '

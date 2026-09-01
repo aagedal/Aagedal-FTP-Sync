@@ -30,7 +30,7 @@ swift test \
   --filter NIOSSHSignatureTests
 
 xcodebuild test \
-  -project AagedalFTPSync.xcodeproj \
+  -project 'Aagedal FTP Sync.xcodeproj' \
   -scheme AagedalFTPSync \
   -destination 'platform=macOS' \
   CODE_SIGNING_ALLOWED=NO

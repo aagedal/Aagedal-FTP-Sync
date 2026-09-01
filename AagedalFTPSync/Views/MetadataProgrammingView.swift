@@ -656,15 +656,10 @@ struct MetadataProgrammingView: View {
         Task {
             do {
                 let folderAccess = try BookmarkAccess(endpoint: metadataLocalEndpoint)
-                let folderURL: URL
-                if selectedJob.usesManagedFolderStructure {
-                    folderURL = try ManagedOutputFolder.syncedFiles.url(
-                        inside: folderAccess.url,
-                        createIfNeeded: true
-                    )
-                } else {
-                    folderURL = folderAccess.url
-                }
+                let folderURL = try MetadataPreviewService.localFolderURL(
+                    selectedRoot: folderAccess.url,
+                    usesManagedFolderStructure: selectedJob.usesManagedFolderStructure
+                )
                 let result = try await Task.detached(priority: .userInitiated) {
                     _ = folderAccess
                     return try MetadataPreviewService.previewLocalFolder(

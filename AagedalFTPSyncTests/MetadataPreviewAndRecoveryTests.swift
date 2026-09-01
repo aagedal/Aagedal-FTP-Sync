@@ -5,6 +5,23 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class MetadataPreviewAndRecoveryTests: XCTestCase {
+    func testManagedPreviewDoesNotCreateMissingSyncedFilesFolder() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let managedFolder = root.appendingPathComponent(
+            ManagedOutputFolder.syncedFiles.directoryName,
+            isDirectory: true
+        )
+
+        XCTAssertThrowsError(try MetadataPreviewService.localFolderURL(
+            selectedRoot: root,
+            usesManagedFolderStructure: true
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("has not been created yet"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: managedFolder.path))
+    }
+
     func testDisabledAutomationCanPreviewFolderWithoutMutatingFiles() throws {
         let folder = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
