@@ -36,16 +36,6 @@ enum MetadataReprocessPhase: Equatable, Sendable {
     case failed(String)
 }
 
-enum SyncRetryPolicy {
-    static func delay(baseInterval: Double, consecutiveFailures: Int) -> Double {
-        var delay = min(max(baseInterval, 2), 300)
-        for _ in 1..<max(consecutiveFailures, 1) {
-            delay = min(delay * 2, 300)
-        }
-        return delay
-    }
-}
-
 struct SyncConcurrencyPolicy: Equatable, Sendable {
     static let appDefault = SyncConcurrencyPolicy(globalLimit: 2, perHostLimit: 1)
 
@@ -166,43 +156,6 @@ struct PhotographerLibraryImportResult: Equatable, Sendable {
     let unchangedCount: Int
 }
 
-struct ConfigurationImportResult: Equatable, Sendable {
-    let scope: ConfigurationTransferScope
-    let importedJobs: Int
-    let importedMetadataProgramming: Int
-    let skippedMetadataProgramming: Int
-    let importedPresets: Int
-    let importedPhotographers: Int
-
-    var summary: String {
-        var parts: [String] = []
-        if importedJobs > 0 {
-            parts.append(importedJobs == 1 ? "1 sync job" : "\(importedJobs) sync jobs")
-        }
-        if importedMetadataProgramming > 0 {
-            parts.append(
-                importedMetadataProgramming == 1
-                    ? "metadata programming for 1 job"
-                    : "metadata programming for \(importedMetadataProgramming) jobs"
-            )
-        }
-        if importedPresets > 0 {
-            parts.append(importedPresets == 1 ? "1 metadata preset" : "\(importedPresets) metadata presets")
-        }
-        if importedPhotographers > 0 {
-            parts.append(importedPhotographers == 1 ? "1 photographer" : "\(importedPhotographers) photographers")
-        }
-        if skippedMetadataProgramming > 0 {
-            parts.append(
-                skippedMetadataProgramming == 1
-                    ? "1 unmatched programming skipped"
-                    : "\(skippedMetadataProgramming) unmatched programmings skipped"
-            )
-        }
-        return parts.isEmpty ? "The package contained no changes." : "Imported " + parts.joined(separator: ", ") + "."
-    }
-}
-
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
@@ -217,26 +170,16 @@ final class AppStore: ObservableObject {
     @Published var selectedJobID: UUID?
     @Published var alertMessage: String?
 
-    private let repository: JobRepository
-    private let metadataPresetRepository: MetadataPresetRepository
-    private let photographerProfileRepository: PhotographerProfileRepository
-    private let metadataAuditRepository: MetadataAuditRepository
-    private let syncFailureRepository: SyncFailureRepository
+    private let persistenceCoordinator: AppPersistenceCoordinator
+    private let configurationTransferCoordinator = ConfigurationTransferCoordinator()
     private let sourceSignatureRepository: SourceSignatureRepository
     private let jobResetService: JobResetService
-    private let keychain: KeychainStore
     private let engine: SyncEngine
     private let syncConcurrencyController: SyncConcurrencyController
-    private var scheduleTasks: [UUID: Task<Void, Never>] = [:]
-    private var manualSyncTasks: [UUID: Task<Void, Never>] = [:]
-    private var scheduledSyncTasks: [UUID: Task<SyncAttempt, Never>] = [:]
-    private var pendingScheduledSyncJobs: Set<UUID> = []
+    private let scheduler: SyncScheduler
     private var metadataReprocessTasks: [UUID: Task<Void, Never>] = [:]
     private var resetTasks: [UUID: Task<Void, Never>] = [:]
-    private var runningJobs: Set<UUID> = []
     private var transferTotals = JobTransferTotals()
-    private var cachedPasswords: [String: String] = [:]
-    private var loadedCredentialIDs = Set<String>()
 
     init(
         repository: JobRepository = JobRepository(),
@@ -250,101 +193,43 @@ final class AppStore: ObservableObject {
         engine: SyncEngine? = nil,
         syncConcurrencyController: SyncConcurrencyController = SyncConcurrencyController()
     ) {
-        self.repository = repository
-        self.metadataPresetRepository = metadataPresetRepository
-        self.photographerProfileRepository = photographerProfileRepository
-        self.metadataAuditRepository = metadataAuditRepository
-        self.syncFailureRepository = syncFailureRepository
+        let persistenceCoordinator = AppPersistenceCoordinator(
+            jobRepository: repository,
+            metadataPresetRepository: metadataPresetRepository,
+            photographerProfileRepository: photographerProfileRepository,
+            metadataAuditRepository: metadataAuditRepository,
+            syncFailureRepository: syncFailureRepository,
+            keychain: keychain
+        )
+        self.persistenceCoordinator = persistenceCoordinator
         self.sourceSignatureRepository = sourceSignatureRepository
         self.jobResetService = jobResetService
         self.engine = engine ?? SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
         self.syncConcurrencyController = syncConcurrencyController
-        self.keychain = keychain
-        do {
-            let loadResult = try metadataPresetRepository.loadResult()
-            metadataPresets = loadResult.presets
-            if loadResult.recoveredFromBackup {
-                alertMessage = "The metadata preset library was damaged, so its most recent backup was restored."
-            }
-        } catch {
-            metadataPresets = []
-            alertMessage = "Saved metadata presets could not be loaded: \(error.localizedDescription)"
-        }
-        var photographerLoadAlert: String?
-        do {
-            let loadResult = try photographerProfileRepository.loadResult()
-            photographerLibrary = loadResult.photographers
-            if loadResult.recoveredFromBackup {
-                photographerLoadAlert = "The photographer library was damaged, so its most recent backup was restored."
-            }
-        } catch {
-            photographerLibrary = []
-            photographerLoadAlert = "Saved photographers could not be loaded: \(error.localizedDescription)"
-        }
-        let recoveredFromBackup: Bool
-        do {
-            let loadResult = try repository.loadResult()
-            jobs = loadResult.jobs
-            recoveredFromBackup = loadResult.recoveredFromBackup
-            if loadResult.recoveredFromBackup {
-                appendAlert("The jobs file was damaged, so the most recent backup was restored. Review your jobs before starting them.")
-            }
-        } catch {
-            jobs = []
-            recoveredFromBackup = false
-            appendAlert("Saved jobs could not be loaded: \(error.localizedDescription)")
-        }
-        if let photographerLoadAlert {
-            appendAlert(photographerLoadAlert)
-        }
-        let migratedPhotographers = mergedPhotographerLibrary(
-            photographerLibrary,
-            with: jobs.flatMap { $0.metadataAutomation?.photographers ?? [] }
-        )
-        if migratedPhotographers != photographerLibrary {
-            do {
-                try photographerProfileRepository.save(migratedPhotographers)
-                photographerLibrary = migratedPhotographers
-            } catch {
-                appendAlert("Photographers from existing jobs could not be added to the shared library: \(error.localizedDescription)")
-            }
-        }
-        do {
-            let loadResult = try metadataAuditRepository.loadResult()
-            metadataAuditEntries = Dictionary(grouping: loadResult.entries, by: \.jobID)
-            if loadResult.recoveredFromBackup {
-                appendAlert("The metadata audit trail was damaged, so its most recent backup was restored.")
-            }
-        } catch {
-            metadataAuditEntries = [:]
-            appendAlert("The metadata audit trail could not be loaded: \(error.localizedDescription)")
-        }
-        do {
-            let loadResult = try syncFailureRepository.loadResult()
-            syncFailureEntries = Dictionary(grouping: loadResult.entries, by: \.jobID)
-            if loadResult.recoveredFromBackup {
-                appendAlert("The sync error log was damaged, so its most recent backup was restored.")
-            }
-        } catch {
-            syncFailureEntries = [:]
-            appendAlert("The sync error log could not be loaded: \(error.localizedDescription)")
+        scheduler = SyncScheduler()
+        let persistenceLoad = persistenceCoordinator.load()
+        jobs = persistenceLoad.state.jobs
+        metadataPresets = persistenceLoad.state.metadataPresets
+        photographerLibrary = persistenceLoad.state.photographerLibrary
+        metadataAuditEntries = persistenceLoad.state.metadataAuditEntries
+        syncFailureEntries = persistenceLoad.state.syncFailureEntries
+        for warning in persistenceLoad.warnings {
+            appendAlert(warning)
         }
         refreshLaunchAtLoginStatus()
         selectedJobID = jobs.last?.id
         for index in jobs.indices {
             let configuredToStart = jobs[index].startsOnAppLaunch
-            let shouldStart = !recoveredFromBackup && configuredToStart
+            let shouldStart = !persistenceLoad.jobsRecoveredFromBackup && configuredToStart
             jobs[index].startOnAppLaunch = configuredToStart
             jobs[index].isEnabled = shouldStart
             phases[jobs[index].id] = .stopped
         }
-        restartSchedules()
+        scheduler.delegate = self
+        scheduler.restart(with: jobs)
     }
 
     deinit {
-        for task in scheduleTasks.values { task.cancel() }
-        for task in manualSyncTasks.values { task.cancel() }
-        for task in scheduledSyncTasks.values { task.cancel() }
         for task in metadataReprocessTasks.values { task.cancel() }
         for task in resetTasks.values { task.cancel() }
     }
@@ -369,23 +254,25 @@ final class AppStore: ObservableObject {
         let previousJob = jobs.first(where: { $0.id == job.id })
         let wasEnabled = previousJob?.isEnabled ?? false
         do {
-            if job.left.kind.isRemote, !leftPassword.isEmpty {
-                try savePasswordIfNeeded(leftPassword, for: job.left.credentialID)
-            }
-            if job.right.kind.isRemote, !rightPassword.isEmpty {
-                try savePasswordIfNeeded(rightPassword, for: job.right.credentialID)
-            }
+            try persistenceCoordinator.savePasswords(
+                leftPassword: leftPassword,
+                rightPassword: rightPassword,
+                for: job
+            )
             var updatedJobs = jobs
             if let index = updatedJobs.firstIndex(where: { $0.id == job.id }) { updatedJobs[index] = job }
             else { updatedJobs.append(job) }
-            try repository.save(updatedJobs)
+            try persistenceCoordinator.saveJobs(updatedJobs)
             jobs = updatedJobs
 
             if let previousJob {
-                removeCredentialsNoLongerUsed(previousJob: previousJob, updatedJob: job)
+                persistenceCoordinator.removeCredentialsNoLongerUsed(
+                    previousJob: previousJob,
+                    updatedJob: job
+                )
             }
             if job.isEnabled, !wasEnabled { transferTotals.reset(jobID: job.id) }
-            reschedule(job.id)
+            scheduler.reschedule(job.id, job: job)
             return true
         } catch {
             alertMessage = error.localizedDescription
@@ -405,7 +292,7 @@ final class AppStore: ObservableObject {
         var updatedJobs = jobs
         updatedJobs[index].intervalSeconds = min(max(seconds, 2), 300)
         guard persistAndPublishJobs(updatedJobs) else { return }
-        reschedule(jobID)
+        scheduler.reschedule(jobID, job: jobs.first(where: { $0.id == jobID }))
     }
 
     func updateFileAge(jobID: UUID, recentHours: Int?) {
@@ -447,8 +334,12 @@ final class AppStore: ObservableObject {
             return false
         }
         do {
-            try photographerProfileRepository.save(updatedPhotographerLibrary)
-            try repository.save(updatedJobs)
+            try persistenceCoordinator.saveJobsAndPhotographers(
+                previousJobs: jobs,
+                previousPhotographers: photographerLibrary,
+                updatedJobs: updatedJobs,
+                updatedPhotographers: updatedPhotographerLibrary
+            )
             photographerLibrary = updatedPhotographerLibrary
             jobs = updatedJobs
             return true
@@ -491,13 +382,11 @@ final class AppStore: ObservableObject {
         password: String?
     ) -> Data? {
         do {
-            let transfer = ConfigurationTransfer(
+            return try configurationTransferCoordinator.exportData(
                 scope: scope,
-                jobs: jobs,
-                metadataPresets: metadataPresets,
-                photographers: photographerLibrary
+                password: password,
+                state: currentConfigurationTransferState
             )
-            return try ConfigurationTransferCodec.encode(transfer, password: password)
         } catch {
             alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
             return nil
@@ -507,8 +396,31 @@ final class AppStore: ObservableObject {
     @discardableResult
     func importConfiguration(from data: Data, password: String?) -> ConfigurationImportResult? {
         do {
-            let transfer = try ConfigurationTransferCodec.decode(data, password: password)
-            return try applyImportedConfiguration(transfer)
+            let prepared = try configurationTransferCoordinator.prepareImport(
+                from: data,
+                password: password,
+                currentState: currentConfigurationTransferState
+            )
+            try persistenceCoordinator.saveConfiguration(
+                previous: currentPersistentState,
+                updated: AppPersistentState(
+                    jobs: prepared.state.jobs,
+                    metadataPresets: prepared.state.metadataPresets,
+                    photographerLibrary: prepared.state.photographers,
+                    metadataAuditEntries: metadataAuditEntries,
+                    syncFailureEntries: syncFailureEntries
+                )
+            )
+            jobs = prepared.state.jobs
+            metadataPresets = prepared.state.metadataPresets
+            photographerLibrary = prepared.state.photographers
+            for importedID in prepared.importedJobIDs.values {
+                phases[importedID] = .stopped
+            }
+            if let selectedJobID = prepared.selectedJobID {
+                self.selectedJobID = selectedJobID
+            }
+            return prepared.result
         } catch {
             alertMessage = "The configuration could not be imported: \(error.localizedDescription)"
             return nil
@@ -562,8 +474,12 @@ final class AppStore: ObservableObject {
         }
 
         do {
-            try photographerProfileRepository.save(updatedLibrary)
-            try repository.save(updatedJobs)
+            try persistenceCoordinator.saveJobsAndPhotographers(
+                previousJobs: jobs,
+                previousPhotographers: photographerLibrary,
+                updatedJobs: updatedJobs,
+                updatedPhotographers: updatedLibrary
+            )
             photographerLibrary = updatedLibrary
             jobs = updatedJobs
             return true
@@ -584,7 +500,7 @@ final class AppStore: ObservableObject {
         let updatedLibrary = photographerLibrary.filter { $0.id != photographerID }
         guard updatedLibrary.count != photographerLibrary.count else { return true }
         do {
-            try photographerProfileRepository.save(updatedLibrary)
+            try persistenceCoordinator.savePhotographers(updatedLibrary)
             photographerLibrary = updatedLibrary
             return true
         } catch {
@@ -648,8 +564,12 @@ final class AppStore: ObservableObject {
             updatedJobs[jobIndex].metadataAutomation = automation
         }
 
-        try photographerProfileRepository.save(updatedLibrary)
-        try repository.save(updatedJobs)
+        try persistenceCoordinator.saveJobsAndPhotographers(
+            previousJobs: jobs,
+            previousPhotographers: photographerLibrary,
+            updatedJobs: updatedJobs,
+            updatedPhotographers: updatedLibrary
+        )
         photographerLibrary = updatedLibrary
         jobs = updatedJobs
 
@@ -663,184 +583,6 @@ final class AppStore: ObservableObject {
             updatedCount: updatedCount,
             unchangedCount: normalizedProfiles.count - addedCount - updatedCount
         )
-    }
-
-    private func applyImportedConfiguration(
-        _ transfer: ConfigurationTransfer
-    ) throws -> ConfigurationImportResult {
-        let sourceJobIDs = transfer.jobs.map(\.id)
-        guard Set(sourceJobIDs).count == sourceJobIDs.count else {
-            throw AppError.invalidConfiguration("The package contains the same sync job more than once.")
-        }
-        let programmingJobIDs = transfer.metadataProgramming.map(\.jobID)
-        guard Set(programmingJobIDs).count == programmingJobIDs.count else {
-            throw AppError.invalidConfiguration("The package contains metadata programming for the same job more than once.")
-        }
-        let presetIDs = transfer.metadataPresets.map(\.id)
-        guard Set(presetIDs).count == presetIDs.count else {
-            throw AppError.invalidConfiguration("The package contains the same metadata preset more than once.")
-        }
-
-        var updatedJobs = jobs
-        var importedJobIDs: [UUID: UUID] = [:]
-        var usedNames = Set(updatedJobs.map { $0.name.folding(options: [.caseInsensitive], locale: .current) })
-
-        for sourceJob in transfer.jobs {
-            let trimmedName = sourceJob.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedName.isEmpty else {
-                throw AppError.invalidConfiguration("An imported sync job does not have a name.")
-            }
-            let name = uniqueImportedJobName(trimmedName, usedNames: &usedNames)
-            let importedID = UUID()
-            importedJobIDs[sourceJob.id] = importedID
-            updatedJobs.append(sourceJob.preparedForImport(id: importedID, name: name))
-        }
-
-        var appliedProgramming = 0
-        var skippedProgramming = 0
-        var targetedJobIDs = Set<UUID>()
-        for programming in transfer.metadataProgramming {
-            let targetID: UUID?
-            if transfer.scope == .package, let importedID = importedJobIDs[programming.jobID] {
-                targetID = importedID
-            } else if updatedJobs.contains(where: { $0.id == programming.jobID }) {
-                targetID = programming.jobID
-            } else {
-                let matches = updatedJobs.filter {
-                    $0.name.compare(
-                        programming.jobName,
-                        options: [.caseInsensitive, .diacriticInsensitive]
-                    ) == .orderedSame
-                }
-                targetID = matches.count == 1 ? matches[0].id : nil
-            }
-
-            guard let targetID,
-                  targetedJobIDs.insert(targetID).inserted,
-                  let index = updatedJobs.firstIndex(where: { $0.id == targetID }) else {
-                skippedProgramming += 1
-                continue
-            }
-            if let message = programming.automation.validationMessage {
-                throw AppError.invalidConfiguration("\(programming.jobName): \(message)")
-            }
-            updatedJobs[index].metadataAutomation = programming.automation
-            appliedProgramming += 1
-        }
-
-        let importedAutomationPhotographers = transfer.metadataProgramming
-            .flatMap { $0.automation.photographers }
-        var importedPhotographersByID: [UUID: PhotographerProfile] = [:]
-        for photographer in transfer.photographers {
-            guard importedPhotographersByID.updateValue(photographer, forKey: photographer.id) == nil else {
-                throw AppError.invalidConfiguration(
-                    "The package contains the same photographer more than once."
-                )
-            }
-        }
-        for photographer in importedAutomationPhotographers {
-            importedPhotographersByID[photographer.id] = photographer
-        }
-        let normalizedImportedPhotographers = try importedPhotographersByID.values.map { profile in
-            var normalized = profile.usingCreatorAsPhotographerName()
-            let trimmedName = normalized.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedName.isEmpty else {
-                throw AppError.invalidConfiguration("An imported photographer does not have a name.")
-            }
-            guard !normalized.normalizedPrefixes.isEmpty else {
-                throw AppError.invalidConfiguration("Give \(trimmedName) filename initials before importing.")
-            }
-            normalized.name = trimmedName
-            normalized.creator = trimmedName
-            normalized.filenamePrefix = normalized.formattedFilenamePrefixes
-            return normalized
-        }
-        let updatedPhotographers = mergedPhotographerLibrary(
-            photographerLibrary,
-            with: normalizedImportedPhotographers
-        )
-        if let duplicate = duplicateFilenameInitials(in: updatedPhotographers) {
-            throw AppError.invalidConfiguration(
-                "The filename initials \(duplicate) conflict with an existing photographer."
-            )
-        }
-        let normalizedPhotographersByID = Dictionary(
-            uniqueKeysWithValues: normalizedImportedPhotographers.map { ($0.id, $0) }
-        )
-        for jobIndex in updatedJobs.indices {
-            guard var automation = updatedJobs[jobIndex].metadataAutomation else { continue }
-            var changed = false
-            for photographerIndex in automation.photographers.indices {
-                let photographerID = automation.photographers[photographerIndex].id
-                guard let imported = normalizedPhotographersByID[photographerID] else { continue }
-                automation.photographers[photographerIndex] = imported
-                changed = true
-            }
-            guard changed else { continue }
-            if let message = automation.validationMessage {
-                throw AppError.invalidConfiguration("\(updatedJobs[jobIndex].name): \(message)")
-            }
-            updatedJobs[jobIndex].metadataAutomation = automation
-        }
-
-        var presetsByID = Dictionary(uniqueKeysWithValues: metadataPresets.map { ($0.id, $0) })
-        for preset in transfer.metadataPresets {
-            let normalized = preset.normalized()
-            if let message = normalized.validationMessage {
-                throw AppError.invalidConfiguration(message)
-            }
-            presetsByID[normalized.id] = normalized
-        }
-        let updatedPresets = presetsByID.values.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
-
-        // Save all related stores before publishing any of the new in-memory state.
-        // If a later write fails, make a best-effort rollback to the three
-        // previously published collections so a failed import is not half-applied.
-        do {
-            try photographerProfileRepository.save(updatedPhotographers)
-            try metadataPresetRepository.save(updatedPresets)
-            try repository.save(updatedJobs)
-        } catch {
-            try? photographerProfileRepository.save(photographerLibrary)
-            try? metadataPresetRepository.save(metadataPresets)
-            try? repository.save(jobs)
-            throw error
-        }
-        photographerLibrary = updatedPhotographers
-        metadataPresets = updatedPresets
-        jobs = updatedJobs
-
-        for importedID in importedJobIDs.values {
-            phases[importedID] = .stopped
-        }
-        if let sourceID = sourceJobIDs.last, let lastImportedID = importedJobIDs[sourceID] {
-            selectedJobID = lastImportedID
-        }
-
-        return ConfigurationImportResult(
-            scope: transfer.scope,
-            importedJobs: transfer.jobs.count,
-            importedMetadataProgramming: appliedProgramming,
-            skippedMetadataProgramming: skippedProgramming,
-            importedPresets: transfer.metadataPresets.count,
-            importedPhotographers: normalizedImportedPhotographers.count
-        )
-    }
-
-    private func uniqueImportedJobName(_ base: String, usedNames: inout Set<String>) -> String {
-        var candidate = base
-        if usedNames.contains(candidate.folding(options: [.caseInsensitive], locale: .current)) {
-            candidate = "\(base) (Imported)"
-        }
-        var suffix = 2
-        while usedNames.contains(candidate.folding(options: [.caseInsensitive], locale: .current)) {
-            candidate = "\(base) (Imported \(suffix))"
-            suffix += 1
-        }
-        usedNames.insert(candidate.folding(options: [.caseInsensitive], locale: .current))
-        return candidate
     }
 
     private func mergedPhotographerLibrary(
@@ -893,7 +635,7 @@ final class AppStore: ObservableObject {
         }
 
         do {
-            try metadataPresetRepository.save(updatedPresets)
+            try persistenceCoordinator.saveMetadataPresets(updatedPresets)
             metadataPresets = updatedPresets
             return true
         } catch {
@@ -907,7 +649,7 @@ final class AppStore: ObservableObject {
         let updatedPresets = metadataPresets.filter { $0.id != presetID }
         guard updatedPresets.count != metadataPresets.count else { return true }
         do {
-            try metadataPresetRepository.save(updatedPresets)
+            try persistenceCoordinator.saveMetadataPresets(updatedPresets)
             metadataPresets = updatedPresets
             return true
         } catch {
@@ -923,7 +665,7 @@ final class AppStore: ObservableObject {
         updatedJobs[index].isEnabled = enabled
         guard persistAndPublishJobs(updatedJobs) else { return }
         if enabled, !wasEnabled { transferTotals.reset(jobID: jobID) }
-        reschedule(jobID)
+        scheduler.reschedule(jobID, job: jobs.first(where: { $0.id == jobID }))
     }
 
     func removeJob(_ jobID: UUID) {
@@ -935,25 +677,21 @@ final class AppStore: ObservableObject {
         let updatedJobs = jobs.filter { $0.id != jobID }
         guard persistAndPublishJobs(updatedJobs, errorPrefix: "The job could not be deleted") else { return }
 
-        scheduleTasks[jobID]?.cancel()
-        scheduleTasks[jobID] = nil
-        keychain.removePassword(for: job.left.credentialID)
-        keychain.removePassword(for: job.right.credentialID)
-        removeCachedPassword(for: job.left.credentialID)
-        removeCachedPassword(for: job.right.credentialID)
+        scheduler.cancel(jobID)
+        persistenceCoordinator.removeCredentials(for: job)
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }
         phases[jobID] = nil
         metadataReprocessPhases[jobID] = nil
         syncFailureEntries[jobID] = nil
         transferTotals.remove(jobID: jobID)
         do {
-            let retained = try metadataAuditRepository.remove(jobID: jobID)
+            let retained = try persistenceCoordinator.removeMetadataAudit(jobID: jobID)
             metadataAuditEntries = Dictionary(grouping: retained, by: \.jobID)
         } catch {
             appendAlert("The metadata audit trail for this job could not be removed: \(error.localizedDescription)")
         }
         do {
-            let retained = try syncFailureRepository.remove(jobID: jobID)
+            let retained = try persistenceCoordinator.removeSyncFailures(jobID: jobID)
             syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
         } catch {
             appendAlert("The sync error log for this job could not be removed: \(error.localizedDescription)")
@@ -963,18 +701,7 @@ final class AppStore: ObservableObject {
     func runNow(_ jobID: UUID) {
         guard !isJobBusy(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return }
-        if job.isEnabled {
-            scheduleTasks[jobID]?.cancel()
-            scheduleTasks[jobID] = nil
-            schedule(jobID)
-        } else {
-            let task = Task { [weak self] in
-                guard let self else { return }
-                _ = await self.performSync(jobID)
-                self.manualSyncTasks[jobID] = nil
-            }
-            manualSyncTasks[jobID] = task
-        }
+        scheduler.runNow(job)
     }
 
     func reprocessExistingLocalFiles(
@@ -991,11 +718,8 @@ final class AppStore: ObservableObject {
     }
 
     func isJobBusy(_ jobID: UUID) -> Bool {
-        runningJobs.contains(jobID)
+        scheduler.isBusy(jobID)
             || resettingJobs.contains(jobID)
-            || manualSyncTasks[jobID] != nil
-            || scheduledSyncTasks[jobID] != nil
-            || pendingScheduledSyncJobs.contains(jobID)
             || metadataReprocessTasks[jobID] != nil
             || resetTasks[jobID] != nil
     }
@@ -1016,8 +740,7 @@ final class AppStore: ObservableObject {
             return
         }
 
-        scheduleTasks[jobID]?.cancel()
-        scheduleTasks[jobID] = nil
+        scheduler.cancel(jobID)
         phases[jobID] = .stopped
         resettingJobs.insert(jobID)
 
@@ -1027,8 +750,8 @@ final class AppStore: ObservableObject {
             do {
                 let result = try await jobResetService.resetDownloads(for: job)
                 try await sourceSignatureRepository.removeSignatures(jobID: jobID)
-                let retainedAuditEntries = try metadataAuditRepository.remove(jobID: jobID)
-                let retainedFailures = try syncFailureRepository.remove(jobID: jobID)
+                let retainedAuditEntries = try persistenceCoordinator.removeMetadataAudit(jobID: jobID)
+                let retainedFailures = try persistenceCoordinator.removeSyncFailures(jobID: jobID)
 
                 metadataAuditEntries = Dictionary(grouping: retainedAuditEntries, by: \.jobID)
                 syncFailureEntries = Dictionary(grouping: retainedFailures, by: \.jobID)
@@ -1098,19 +821,18 @@ final class AppStore: ObservableObject {
         }
         guard persistAndPublishJobs(updatedJobs) else { return }
         for jobID in newlyEnabledJobIDs { transferTotals.reset(jobID: jobID) }
-        restartSchedules()
+        scheduler.restart(with: jobs)
     }
 
     func stopAll() {
         var updatedJobs = jobs
         for index in updatedJobs.indices { updatedJobs[index].isEnabled = false }
         guard persistAndPublishJobs(updatedJobs) else { return }
-        restartSchedules()
+        scheduler.restart(with: jobs)
     }
 
     func password(for endpoint: Endpoint) -> String {
-        guard endpoint.kind.isRemote else { return "" }
-        return (try? cachedPassword(for: endpoint.credentialID)) ?? ""
+        (try? persistenceCoordinator.password(for: endpoint)) ?? ""
     }
 
     var activeCount: Int { jobs.filter(\.isEnabled).count }
@@ -1146,7 +868,7 @@ final class AppStore: ObservableObject {
 
     func clearSyncFailureHistory(for jobID: UUID) {
         do {
-            let retained = try syncFailureRepository.remove(jobID: jobID)
+            let retained = try persistenceCoordinator.removeSyncFailures(jobID: jobID)
             syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
         } catch {
             alertMessage = "The sync error log could not be cleared: \(error.localizedDescription)"
@@ -1159,102 +881,15 @@ final class AppStore: ObservableObject {
         let scopedReport = MetadataRunReport(entries: report.entries.filter { $0.jobID == jobID })
         guard scopedReport.hasActivity else { return }
         do {
-            let retained = try metadataAuditRepository.append(scopedReport)
+            let retained = try persistenceCoordinator.appendMetadataAudit(scopedReport)
             metadataAuditEntries = Dictionary(grouping: retained, by: \.jobID)
         } catch {
             appendAlert("The metadata audit trail could not be saved: \(error.localizedDescription)")
         }
     }
 
-    private func restartSchedules() {
-        for task in scheduleTasks.values { task.cancel() }
-        scheduleTasks.removeAll()
-        pendingScheduledSyncJobs.removeAll()
-        for job in jobs where job.isEnabled { schedule(job.id) }
-    }
-
-    private func reschedule(_ jobID: UUID) {
-        scheduleTasks[jobID]?.cancel()
-        scheduleTasks[jobID] = nil
-        pendingScheduledSyncJobs.remove(jobID)
-        if jobs.first(where: { $0.id == jobID })?.isEnabled == true { schedule(jobID) }
-        else if !runningJobs.contains(jobID) { phases[jobID] = .stopped }
-    }
-
-    private func schedule(_ jobID: UUID) {
-        pendingScheduledSyncJobs.insert(jobID)
-        scheduleTasks[jobID] = Task { [weak self] in
-            guard let self else { return }
-            var consecutiveFailures = 0
-            while !Task.isCancelled {
-                let operation = Task { await self.performSync(jobID) }
-                self.scheduledSyncTasks[jobID] = operation
-                self.pendingScheduledSyncJobs.remove(jobID)
-                let attempt = await withTaskCancellationHandler {
-                    await operation.value
-                } onCancel: {
-                    operation.cancel()
-                }
-                self.scheduledSyncTasks[jobID] = nil
-                guard !Task.isCancelled,
-                      let job = self.jobs.first(where: { $0.id == jobID }),
-                      job.isEnabled else { break }
-
-                let delay: Double
-                switch attempt {
-                case .succeeded:
-                    consecutiveFailures = 0
-                    delay = job.intervalSeconds
-                case .failed:
-                    consecutiveFailures += 1
-                    delay = SyncRetryPolicy.delay(
-                        baseInterval: job.intervalSeconds,
-                        consecutiveFailures: consecutiveFailures
-                    )
-                case .skipped:
-                    delay = job.intervalSeconds
-                case .cancelled:
-                    return
-                }
-
-                let next = Date().addingTimeInterval(delay)
-                switch attempt {
-                case .succeeded:
-                    if case .succeeded(
-                        let date,
-                        let transferred,
-                        let deleted,
-                        let processed,
-                        let conflicts,
-                        let metadataReport,
-                        _
-                    ) = self.phases[jobID] {
-                        self.phases[jobID] = .succeeded(
-                            date,
-                            transferred: transferred,
-                            deleted: deleted,
-                            processed: processed,
-                            conflicts: conflicts,
-                            metadataReport: metadataReport,
-                            nextRun: next
-                        )
-                    }
-                case .failed(let message):
-                    self.phases[jobID] = .failed(message, retryAt: next)
-                case .skipped:
-                    break
-                case .cancelled:
-                    return
-                }
-                do {
-                    try await Task.sleep(for: .seconds(delay))
-                } catch { break }
-            }
-        }
-    }
-
     private func performSync(_ jobID: UUID) async -> SyncAttempt {
-        guard !runningJobs.contains(jobID),
+        guard !scheduler.isRunning(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return .skipped }
         let leaseID: UUID
         do {
@@ -1275,13 +910,16 @@ final class AppStore: ObservableObject {
             phases[jobID] = .stopped
             return .cancelled
         }
+        guard scheduler.beginRunning(jobID) else {
+            await syncConcurrencyController.release(leaseID)
+            return .skipped
+        }
 
-        runningJobs.insert(jobID)
         phases[jobID] = .syncing
         let attempt: SyncAttempt
         do {
-            let leftPassword = job.left.kind.isRemote ? try cachedPassword(for: job.left.credentialID) : nil
-            let rightPassword = job.right.kind.isRemote ? try cachedPassword(for: job.right.credentialID) : nil
+            let leftPassword = try persistenceCoordinator.password(for: job.left)
+            let rightPassword = try persistenceCoordinator.password(for: job.right)
             let result = try await engine.run(job: job, leftPassword: leftPassword, rightPassword: rightPassword)
             let completedAt = Date()
             transferTotals.record(jobID: jobID, fileCount: result.transferred)
@@ -1305,7 +943,7 @@ final class AppStore: ObservableObject {
             phases[jobID] = .failed(message, retryAt: nil)
             attempt = .failed(message)
         }
-        runningJobs.remove(jobID)
+        scheduler.endRunning(jobID)
         await syncConcurrencyController.release(leaseID)
         return attempt
     }
@@ -1314,7 +952,7 @@ final class AppStore: ObservableObject {
         _ jobID: UUID,
         scope: MetadataReprocessScope
     ) async {
-        guard !runningJobs.contains(jobID),
+        guard !scheduler.isRunning(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return }
         let leaseID: UUID
         do {
@@ -1335,13 +973,16 @@ final class AppStore: ObservableObject {
             metadataReprocessPhases[jobID] = .idle
             return
         }
+        guard scheduler.beginRunning(jobID) else {
+            await syncConcurrencyController.release(leaseID)
+            return
+        }
 
-        runningJobs.insert(jobID)
         metadataReprocessPhases[jobID] = .running
 
         do {
-            let leftPassword = job.left.kind.isRemote ? try cachedPassword(for: job.left.credentialID) : nil
-            let rightPassword = job.right.kind.isRemote ? try cachedPassword(for: job.right.credentialID) : nil
+            let leftPassword = try persistenceCoordinator.password(for: job.left)
+            let rightPassword = try persistenceCoordinator.password(for: job.right)
             let result = try await engine.reprocessExistingLocalFiles(
                 job: job,
                 scope: scope,
@@ -1357,8 +998,26 @@ final class AppStore: ObservableObject {
             metadataReprocessPhases[jobID] = .failed(message)
             alertMessage = message
         }
-        runningJobs.remove(jobID)
+        scheduler.endRunning(jobID)
         await syncConcurrencyController.release(leaseID)
+    }
+
+    private var currentPersistentState: AppPersistentState {
+        AppPersistentState(
+            jobs: jobs,
+            metadataPresets: metadataPresets,
+            photographerLibrary: photographerLibrary,
+            metadataAuditEntries: metadataAuditEntries,
+            syncFailureEntries: syncFailureEntries
+        )
+    }
+
+    private var currentConfigurationTransferState: ConfigurationTransferState {
+        ConfigurationTransferState(
+            jobs: jobs,
+            metadataPresets: metadataPresets,
+            photographers: photographerLibrary
+        )
     }
 
     @discardableResult
@@ -1367,7 +1026,7 @@ final class AppStore: ObservableObject {
         errorPrefix: String = "Changes could not be saved"
     ) -> Bool {
         do {
-            try repository.save(updatedJobs)
+            try persistenceCoordinator.saveJobs(updatedJobs)
             jobs = updatedJobs
             return true
         } catch {
@@ -1388,52 +1047,10 @@ final class AppStore: ObservableObject {
         let entry = SyncFailureRecord(jobID: jobID, message: message)
         syncFailureEntries[jobID, default: []].append(entry)
         do {
-            let retained = try syncFailureRepository.append(entry)
+            let retained = try persistenceCoordinator.appendSyncFailure(entry)
             syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
         } catch {
             appendAlert("The sync error could not be added to the error log: \(error.localizedDescription)")
-        }
-    }
-
-    private func cachedPassword(for credentialID: String) throws -> String? {
-        if loadedCredentialIDs.contains(credentialID) {
-            return cachedPasswords[credentialID]
-        }
-
-        let password = try keychain.password(for: credentialID)
-        loadedCredentialIDs.insert(credentialID)
-        if let password { cachedPasswords[credentialID] = password }
-        return password
-    }
-
-    private func cache(password: String, for credentialID: String) {
-        cachedPasswords[credentialID] = password
-        loadedCredentialIDs.insert(credentialID)
-    }
-
-    private func savePasswordIfNeeded(_ password: String, for credentialID: String) throws {
-        if loadedCredentialIDs.contains(credentialID), cachedPasswords[credentialID] == password {
-            return
-        }
-        try keychain.setPassword(password, for: credentialID)
-        cache(password: password, for: credentialID)
-    }
-
-    private func removeCachedPassword(for credentialID: String) {
-        cachedPasswords[credentialID] = nil
-        loadedCredentialIDs.remove(credentialID)
-    }
-
-    private func removeCredentialsNoLongerUsed(previousJob: SyncJob, updatedJob: SyncJob) {
-        let previousIDs = Set([previousJob.left, previousJob.right]
-            .filter(\.kind.isRemote)
-            .map(\.credentialID))
-        let updatedIDs = Set([updatedJob.left, updatedJob.right]
-            .filter(\.kind.isRemote)
-            .map(\.credentialID))
-        for credentialID in previousIDs.subtracting(updatedIDs) {
-            keychain.removePassword(for: credentialID)
-            removeCachedPassword(for: credentialID)
         }
     }
 
@@ -1450,9 +1067,49 @@ final class AppStore: ObservableObject {
     }
 }
 
-private enum SyncAttempt {
-    case succeeded
-    case failed(String)
-    case cancelled
-    case skipped
+extension AppStore: SyncSchedulerDelegate {
+    func syncSchedulerJob(_ jobID: UUID) -> SyncJob? {
+        jobs.first(where: { $0.id == jobID })
+    }
+
+    func syncSchedulerPerformSync(_ jobID: UUID) async -> SyncAttempt {
+        await performSync(jobID)
+    }
+
+    func syncSchedulerDidStop(_ jobID: UUID) {
+        phases[jobID] = .stopped
+    }
+
+    func syncScheduler(
+        _ jobID: UUID,
+        scheduledNextRunAt date: Date,
+        after attempt: SyncAttempt
+    ) {
+        switch attempt {
+        case .succeeded:
+            if case .succeeded(
+                let completedAt,
+                let transferred,
+                let deleted,
+                let processed,
+                let conflicts,
+                let metadataReport,
+                _
+            ) = phases[jobID] {
+                phases[jobID] = .succeeded(
+                    completedAt,
+                    transferred: transferred,
+                    deleted: deleted,
+                    processed: processed,
+                    conflicts: conflicts,
+                    metadataReport: metadataReport,
+                    nextRun: date
+                )
+            }
+        case .failed(let message):
+            phases[jobID] = .failed(message, retryAt: date)
+        case .cancelled, .skipped:
+            break
+        }
+    }
 }

@@ -39,6 +39,13 @@
 		9A8B2CACA5C0E649C2E29F01 /* SSHHostKeyFingerprintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A279E40E0C0EE63158560C37 /* SSHHostKeyFingerprintTests.swift */; };
 		9B4B56D05E2335FDC558DC7D /* MetadataAutomationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */; };
 		C0DEC0010000000000000004 /* MetadataProgrammingCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0010000000000000003 /* MetadataProgrammingCoordinatorTests.swift */; };
+		C0DEC0020000000000000002 /* AppPersistenceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0020000000000000001 /* AppPersistenceCoordinator.swift */; };
+		C0DEC0020000000000000004 /* ConfigurationTransferCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0020000000000000003 /* ConfigurationTransferCoordinator.swift */; };
+		C0DEC0020000000000000006 /* SyncScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0020000000000000005 /* SyncScheduler.swift */; };
+		C0DEC0020000000000000008 /* AppPersistenceCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0020000000000000007 /* AppPersistenceCoordinatorTests.swift */; };
+		C0DEC002000000000000000A /* ConfigurationTransferCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0020000000000000009 /* ConfigurationTransferCoordinatorTests.swift */; };
+		C0DEC002000000000000000C /* SyncSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC002000000000000000B /* SyncSchedulerTests.swift */; };
+		C0DEC0030000000000000002 /* DeliveryLatencyBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0030000000000000001 /* DeliveryLatencyBenchmarkTests.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
@@ -97,6 +104,13 @@
 		3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepositoryTests.swift; sourceTree = "<group>"; };
 		419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomationTests.swift; sourceTree = "<group>"; };
 		C0DEC0010000000000000003 /* MetadataProgrammingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinatorTests.swift; sourceTree = "<group>"; };
+		C0DEC0020000000000000001 /* AppPersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistenceCoordinator.swift; sourceTree = "<group>"; };
+		C0DEC0020000000000000003 /* ConfigurationTransferCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferCoordinator.swift; sourceTree = "<group>"; };
+		C0DEC0020000000000000005 /* SyncScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncScheduler.swift; sourceTree = "<group>"; };
+		C0DEC0020000000000000007 /* AppPersistenceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistenceCoordinatorTests.swift; sourceTree = "<group>"; };
+		C0DEC0020000000000000009 /* ConfigurationTransferCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferCoordinatorTests.swift; sourceTree = "<group>"; };
+		C0DEC002000000000000000B /* SyncSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSchedulerTests.swift; sourceTree = "<group>"; };
+		C0DEC0030000000000000001 /* DeliveryLatencyBenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliveryLatencyBenchmarkTests.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
@@ -171,8 +185,10 @@
 		1F2C0711282D8A41CBDE3AC3 /* Persistence */ = {
 			isa = PBXGroup;
 			children = (
+				C0DEC0020000000000000001 /* AppPersistenceCoordinator.swift */,
 				D9A3505CD91E1A224FE60777 /* BookmarkAccess.swift */,
 				58A30ACCD49652A57537F70F /* ConfigurationTransfer.swift */,
+				C0DEC0020000000000000003 /* ConfigurationTransferCoordinator.swift */,
 				E20AD42026ACD307821FF756 /* FolderBookmark.swift */,
 				4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */,
 				BA0E07A802A7A2D80FA386CB /* KeychainStore.swift */,
@@ -229,7 +245,10 @@
 		67736033A2B7B2BAC0FB255C /* AagedalFTPSyncTests */ = {
 			isa = PBXGroup;
 			children = (
+				C0DEC0020000000000000007 /* AppPersistenceCoordinatorTests.swift */,
+				C0DEC0020000000000000009 /* ConfigurationTransferCoordinatorTests.swift */,
 				FDA4D33A7502B694919E9907 /* ConfigurationTransferTests.swift */,
+				C0DEC0030000000000000001 /* DeliveryLatencyBenchmarkTests.swift */,
 				97DCF709A14A3B3FAC7D6E5E /* FileFilterTests.swift */,
 				651C6A9CE4B166DED9277960 /* FTPListingTests.swift */,
 				3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */,
@@ -244,6 +263,7 @@
 				019FF4B35E61EB52439E87F7 /* SourceSignatureRepositoryTests.swift */,
 				A279E40E0C0EE63158560C37 /* SSHHostKeyFingerprintTests.swift */,
 				98C086F6C3B781DCF036C21D /* SyncJobValidationTests.swift */,
+				C0DEC002000000000000000B /* SyncSchedulerTests.swift */,
 			);
 			path = AagedalFTPSyncTests;
 			sourceTree = "<group>";
@@ -311,6 +331,7 @@
 			children = (
 				0F52E20A9F7F6EA39DCDD0BD /* AagedalFTPSyncApp.swift */,
 				F26F9F2F58732670EB2AFEA1 /* AppStore.swift */,
+				C0DEC0020000000000000005 /* SyncScheduler.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -441,10 +462,12 @@
 			files = (
 				F9632D0D1A961BC1135A5CA3 /* AagedalFTPSyncApp.swift in Sources */,
 				73D8B50CCE319161F4DE3BCC /* AboutView.swift in Sources */,
+				C0DEC0020000000000000002 /* AppPersistenceCoordinator.swift in Sources */,
 				E1DAEC0A6654788FBE787C04 /* AppError.swift in Sources */,
 				B3C47DA88D887D6C938B59BE /* AppStore.swift in Sources */,
 				3F722F00953E530954D11527 /* BookmarkAccess.swift in Sources */,
 				38ED8E421FDC7B420C63D96D /* ConfigurationTransfer.swift in Sources */,
+				C0DEC0020000000000000004 /* ConfigurationTransferCoordinator.swift in Sources */,
 				4980FD85B29C37C25B81D518 /* ConfigurationTransferView.swift in Sources */,
 				321D42AE4C4597EED466F6E5 /* Endpoint.swift in Sources */,
 				744593AB9031434E395773DE /* EndpointSession.swift in Sources */,
@@ -477,6 +500,7 @@
 				1A4D7E9F2B3C405162738495 /* SyncFailureRepository.swift in Sources */,
 				9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */,
 				272053804C39268361FC3A77 /* SyncJob.swift in Sources */,
+				C0DEC0020000000000000006 /* SyncScheduler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -484,7 +508,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C0DEC0020000000000000008 /* AppPersistenceCoordinatorTests.swift in Sources */,
+				C0DEC002000000000000000A /* ConfigurationTransferCoordinatorTests.swift in Sources */,
 				DCA4E81BE09F33D799223744 /* ConfigurationTransferTests.swift in Sources */,
+				C0DEC0030000000000000002 /* DeliveryLatencyBenchmarkTests.swift in Sources */,
 				1DEE0F42F4F0FFDDD5513574 /* FTPListingTests.swift in Sources */,
 				A912C00FDB4E91CA2C98B4C3 /* FileFilterTests.swift in Sources */,
 				C27CE06BC60109AE34788F93 /* JobRepositoryTests.swift in Sources */,
@@ -499,6 +526,7 @@
 				9A8B2CACA5C0E649C2E29F01 /* SSHHostKeyFingerprintTests.swift in Sources */,
 				1DD55244C13A4F93BAB1F59A /* SourceSignatureRepositoryTests.swift in Sources */,
 				E9F5C8F408685FF6E937756D /* SyncJobValidationTests.swift in Sources */,
+				C0DEC002000000000000000C /* SyncSchedulerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

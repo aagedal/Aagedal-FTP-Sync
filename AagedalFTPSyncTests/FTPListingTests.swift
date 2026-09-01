@@ -194,25 +194,13 @@ private actor FastStartTimeline {
     }
 }
 
-private actor FastStartSource: FastStartSourceSession {
+private actor FastStartSource: EndpointSession {
     let files: [String: SyncFile]
     let timeline: FastStartTimeline
 
     init(files: [String: SyncFile], timeline: FastStartTimeline) {
         self.files = files
         self.timeline = timeline
-    }
-
-    func listFilesForFastStart(
-        filter: FileFilter,
-        minimumCount: Int
-    ) async throws -> [String: SyncFile] {
-        await timeline.append("source-fast-list")
-        return files
-    }
-
-    func refreshMetadataForFastStart(_ files: [SyncFile]) async throws -> [SyncFile] {
-        files
     }
 
     func listFiles() async throws -> [String: SyncFile] {

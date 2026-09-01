@@ -2,7 +2,7 @@ import Foundation
 
 // Implemented with Citadel in SFTPEndpointSession+Citadel.swift. Keeping the
 // endpoint wrapper separate makes the sync engine independent of SSH details.
-struct SFTPEndpointSession: EndpointSession, FastStartSourceSession, Sendable {
+struct SFTPEndpointSession: EndpointSession, Sendable {
     private let transport: SFTPTransport
 
     init(endpoint: Endpoint, password: String) {
@@ -15,17 +15,6 @@ struct SFTPEndpointSession: EndpointSession, FastStartSourceSession, Sendable {
 
     func listFiles() async throws -> [String: SyncFile] {
         try await transport.listFiles()
-    }
-
-    func listFilesForFastStart(
-        filter: FileFilter,
-        minimumCount: Int
-    ) async throws -> [String: SyncFile] {
-        try await transport.listFilesForFastStart(filter: filter, minimumCount: minimumCount)
-    }
-
-    func refreshMetadataForFastStart(_ files: [SyncFile]) async throws -> [SyncFile] {
-        files
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {

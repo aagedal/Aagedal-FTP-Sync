@@ -88,13 +88,6 @@ protocol EndpointSession: Sendable {
     func close() async
 }
 
-/// Optional capabilities used to publish a small remote batch before the
-/// authoritative recursive listing has completed.
-protocol FastStartSourceSession: EndpointSession {
-    func listFilesForFastStart(filter: FileFilter, minimumCount: Int) async throws -> [String: SyncFile]
-    func refreshMetadataForFastStart(_ files: [SyncFile]) async throws -> [SyncFile]
-}
-
 protocol EndpointFileLookupSession: EndpointSession {
     func fileInfo(relativePath: String) async throws -> SyncFile?
 }

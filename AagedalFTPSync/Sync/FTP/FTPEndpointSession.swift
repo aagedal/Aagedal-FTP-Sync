@@ -1,6 +1,6 @@
 import Foundation
 
-struct FTPEndpointSession: EndpointSession, FastStartSourceSession, Sendable {
+struct FTPEndpointSession: EndpointSession, Sendable {
     private let endpoint: Endpoint
     private let connection: FTPConnection
 
@@ -44,70 +44,6 @@ struct FTPEndpointSession: EndpointSession, FastStartSourceSession, Sendable {
             }
         }
         return result
-    }
-
-    func listFilesForFastStart(
-        filter: FileFilter,
-        minimumCount: Int
-    ) async throws -> [String: SyncFile] {
-        var result: [String: SyncFile] = [:]
-        var eligibleCount = 0
-        var scannedDirectoryCount = 0
-        var directories: [(remote: String, relative: String, modifiedAt: Date)] = [
-            (normalizedRoot, "", .distantFuture),
-        ]
-        while !directories.isEmpty,
-              eligibleCount < max(minimumCount, 1) || scannedDirectoryCount < 2 {
-            try Task.checkCancellation()
-            let directory = directories.removeFirst()
-            scannedDirectoryCount += 1
-            let listing = try await connection.list(path: directory.remote)
-            for entry in Self.parseMLSD(listing) {
-                guard !PathSafety.isInternalStagingPath(entry.name) else { continue }
-                let relative = directory.relative.isEmpty ? entry.name : "\(directory.relative)/\(entry.name)"
-                let remote = directory.remote.hasSuffix("/")
-                    ? directory.remote + entry.name
-                    : directory.remote + "/" + entry.name
-                if entry.isDirectory {
-                    directories.append((remote, relative, entry.modifiedAt))
-                    continue
-                }
-                if let existing = result[relative],
-                   !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
-                    throw AppError.transferFailed(
-                        "Two server paths differ only by Unicode representation: \(existing.relativePath) and \(relative)."
-                    )
-                }
-                result[relative] = SyncFile(
-                    relativePath: relative,
-                    size: entry.size,
-                    modifiedAt: entry.modifiedAt
-                )
-                if filter.includesFileType(path: relative) { eligibleCount += 1 }
-            }
-            directories.sort {
-                if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
-                return $0.relative < $1.relative
-            }
-        }
-        return result
-    }
-
-    func refreshMetadataForFastStart(_ files: [SyncFile]) async throws -> [SyncFile] {
-        var refreshed: [SyncFile] = []
-        refreshed.reserveCapacity(files.count)
-        for file in files {
-            try Task.checkCancellation()
-            let modifiedAt = (try? await connection.modificationDate(
-                path: remotePath(for: file.relativePath)
-            )) ?? file.modifiedAt
-            refreshed.append(SyncFile(
-                relativePath: file.relativePath,
-                size: file.size,
-                modifiedAt: modifiedAt
-            ))
-        }
-        return refreshed
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
