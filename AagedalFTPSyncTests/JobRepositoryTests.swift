@@ -602,7 +602,8 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertNotNil(store.alertMessage)
     }
 
-    func testFailedDeleteKeepsTheJobPublished() throws {
+    @MainActor
+    func testFailedDeleteKeepsTheJobAndSourceSignaturesPublished() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("failed-delete-\(UUID().uuidString)", isDirectory: true)
         let persistenceDirectory = root.appendingPathComponent("store", isDirectory: true)
@@ -613,7 +614,18 @@ final class AppStorePersistenceTests: XCTestCase {
         job.isEnabled = false
         job.startsOnAppLaunch = false
         try repository.save([job])
-        let store = makeStore(repository: repository, root: root)
+        let signatureRepository = SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json"))
+        let sourceFile = SyncFile(
+            relativePath: "photo.jpg",
+            size: 100,
+            modifiedAt: Date(timeIntervalSince1970: 100)
+        )
+        try await signatureRepository.record(sourceFile, jobID: job.id, sourceEndpoint: job.left)
+        let store = makeStore(
+            repository: repository,
+            root: root,
+            sourceSignatureRepository: signatureRepository
+        )
         let jobID = try XCTUnwrap(store.jobs.first?.id)
         try FileManager.default.removeItem(at: persistenceDirectory)
         try Data("blocks directory recreation".utf8).write(to: persistenceDirectory)
@@ -623,6 +635,111 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertEqual(store.jobs.map(\.id), [jobID])
         XCTAssertEqual(store.selectedJobID, jobID)
         XCTAssertTrue(store.alertMessage?.contains("could not be deleted") == true)
+        let retainedSignature = try await signatureRepository.signature(
+            jobID: jobID,
+            sourceEndpoint: job.left,
+            relativePath: sourceFile.relativePath
+        )
+        XCTAssertNotNil(retainedSignature)
+    }
+
+    @MainActor
+    func testSuccessfulDeleteRemovesSourceSignaturesAfterJobsCommit() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("successful-delete-signatures-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        var job = SyncJob(name: "Delete signatures")
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        try repository.save([job])
+        let signatureRepository = SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json"))
+        let sourceFile = SyncFile(
+            relativePath: "photo.jpg",
+            size: 100,
+            modifiedAt: Date(timeIntervalSince1970: 100)
+        )
+        try await signatureRepository.record(sourceFile, jobID: job.id, sourceEndpoint: job.left)
+        let store = makeStore(
+            repository: repository,
+            root: root,
+            sourceSignatureRepository: signatureRepository
+        )
+
+        store.removeJob(job.id)
+
+        for _ in 0..<100 {
+            let signature = try await signatureRepository.signature(
+                jobID: job.id,
+                sourceEndpoint: job.left,
+                relativePath: sourceFile.relativePath
+            )
+            if signature == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(try repository.load().isEmpty)
+        let removedSignature = try await signatureRepository.signature(
+            jobID: job.id,
+            sourceEndpoint: job.left,
+            relativePath: sourceFile.relativePath
+        )
+        XCTAssertNil(removedSignature)
+    }
+
+    @MainActor
+    func testSavingChangedSourcePrunesSupersededEndpointSignatures() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("changed-source-signatures-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let oldSource = Endpoint(kind: .local, localPath: "/old-source", bookmark: Data("old".utf8))
+        let newSource = Endpoint(kind: .local, localPath: "/new-source", bookmark: Data("new".utf8))
+        var job = SyncJob(name: "Changed source")
+        job.left = oldSource
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data("destination".utf8))
+        job.direction = .leftToRight
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        try repository.save([job])
+        let signatureRepository = SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json"))
+        let sourceFile = SyncFile(
+            relativePath: "photo.jpg",
+            size: 100,
+            modifiedAt: Date(timeIntervalSince1970: 100)
+        )
+        try await signatureRepository.record(sourceFile, jobID: job.id, sourceEndpoint: oldSource)
+        try await signatureRepository.record(sourceFile, jobID: job.id, sourceEndpoint: newSource)
+        let store = makeStore(
+            repository: repository,
+            root: root,
+            sourceSignatureRepository: signatureRepository
+        )
+        var draft = job
+        draft.left = newSource
+
+        XCTAssertTrue(store.saveJob(draft, leftPassword: "", rightPassword: ""))
+
+        for _ in 0..<100 {
+            let signature = try await signatureRepository.signature(
+                jobID: job.id,
+                sourceEndpoint: oldSource,
+                relativePath: sourceFile.relativePath
+            )
+            if signature == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let oldSignature = try await signatureRepository.signature(
+            jobID: job.id,
+            sourceEndpoint: oldSource,
+            relativePath: sourceFile.relativePath
+        )
+        let newSignature = try await signatureRepository.signature(
+            jobID: job.id,
+            sourceEndpoint: newSource,
+            relativePath: sourceFile.relativePath
+        )
+        XCTAssertNil(oldSignature)
+        XCTAssertNotNil(newSignature)
     }
 
     func testRecoveredJobsRemainPausedForReview() throws {
@@ -691,7 +808,8 @@ final class AppStorePersistenceTests: XCTestCase {
     private func makeStore(
         repository: JobRepository,
         root: URL,
-        keychain: KeychainStore = KeychainStore()
+        keychain: KeychainStore = KeychainStore(),
+        sourceSignatureRepository: SourceSignatureRepository? = nil
     ) -> AppStore {
         AppStore(
             repository: repository,
@@ -707,7 +825,7 @@ final class AppStorePersistenceTests: XCTestCase {
             syncFailureRepository: SyncFailureRepository(
                 fileURL: root.appendingPathComponent("failures.json")
             ),
-            sourceSignatureRepository: SourceSignatureRepository(
+            sourceSignatureRepository: sourceSignatureRepository ?? SourceSignatureRepository(
                 fileURL: root.appendingPathComponent("signatures.json")
             ),
             keychain: keychain

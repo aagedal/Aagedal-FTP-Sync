@@ -119,6 +119,67 @@ final class SourceSignatureRepositoryTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(signature).matches(file))
     }
 
+    func testMetadataRunPersistsMultipleSourceSignaturesInOneBatch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("source-signature-batch-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceFolder = root.appendingPathComponent("source", isDirectory: true)
+        let destinationFolder = root.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        for filename in ["JAD_0001.jpg", "JAD_0002.jpg"] {
+            let url = sourceFolder.appendingPathComponent(filename)
+            try makeJPEG(width: 2, height: 2).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: url.path)
+        }
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = SyncJob(
+            name: "Signature batch test",
+            left: try localEndpoint(for: sourceFolder),
+            right: try localEndpoint(for: destinationFolder),
+            direction: .leftToRight,
+            filter: FileFilter(preset: .photos),
+            intervalSeconds: 5,
+            isEnabled: false
+        )
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .overwrite,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Batch test")
+            )]
+        )
+        let signatureURL = root.appendingPathComponent("state/signatures.json")
+        let repository = SourceSignatureRepository(fileURL: signatureURL)
+
+        let result = try await SyncEngine(sourceSignatureRepository: repository).run(
+            job: job,
+            leftPassword: nil,
+            rightPassword: nil
+        )
+
+        XCTAssertEqual(result.transferred, 2)
+        let savedSignatures = try await repository.signatures(jobID: job.id, sourceEndpoint: job.left)
+        XCTAssertEqual(savedSignatures.count, 2)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: signatureURL.appendingPathExtension("backup").path),
+            "A single batched persistence should not create an intermediate backup."
+        )
+    }
+
     func testKeepsSignaturesSeparateByJobEndpointAndPath() async throws {
         let fixture = makeFixture()
         defer { fixture.cleanUp() }
@@ -195,6 +256,41 @@ final class SourceSignatureRepositoryTests: XCTestCase {
 
         XCTAssertNil(removed)
         XCTAssertNotNil(retained)
+    }
+
+    func testPrunesOnlySupersededSourceEndpointIdentities() async throws {
+        let fixture = makeFixture()
+        defer { fixture.cleanUp() }
+        let repository = SourceSignatureRepository(fileURL: fixture.fileURL)
+        let jobID = UUID()
+        let otherJobID = UUID()
+        let oldEndpoint = Endpoint(kind: .ftp, host: "old.example.com", username: "desk")
+        let retainedEndpoint = Endpoint(kind: .ftp, host: "new.example.com", username: "desk")
+        let file = SyncFile(relativePath: "photo.jpg", size: 100, modifiedAt: Date(timeIntervalSince1970: 100))
+
+        try await repository.record(file, jobID: jobID, sourceEndpoint: oldEndpoint)
+        try await repository.record(file, jobID: jobID, sourceEndpoint: retainedEndpoint)
+        try await repository.record(file, jobID: otherJobID, sourceEndpoint: oldEndpoint)
+        try await repository.pruneSignatures(jobID: jobID, retainingSourceEndpoints: [retainedEndpoint])
+
+        let removed = try await repository.signature(
+            jobID: jobID,
+            sourceEndpoint: oldEndpoint,
+            relativePath: file.relativePath
+        )
+        let retained = try await repository.signature(
+            jobID: jobID,
+            sourceEndpoint: retainedEndpoint,
+            relativePath: file.relativePath
+        )
+        let otherJob = try await repository.signature(
+            jobID: otherJobID,
+            sourceEndpoint: oldEndpoint,
+            relativePath: file.relativePath
+        )
+        XCTAssertNil(removed)
+        XCTAssertNotNil(retained)
+        XCTAssertNotNil(otherJob)
     }
 
     func testRecoversSignaturesFromBackupWhenPrimaryFileIsCorrupt() async throws {

@@ -115,15 +115,34 @@ actor SourceSignatureRepository {
     }
 
     func record(_ file: SyncFile, jobID: UUID, sourceEndpoint: Endpoint) throws {
+        try record([file], jobID: jobID, sourceEndpoint: sourceEndpoint)
+    }
+
+    func record(_ files: [SyncFile], jobID: UUID, sourceEndpoint: Endpoint) throws {
+        guard !files.isEmpty else { return }
         var signatures = try loadIfNeeded()
-        let key = Key(
-            jobID: jobID,
-            source: SourceIdentity(endpoint: sourceEndpoint),
-            relativePath: file.relativePath
-        )
-        let newSignature = SourceFileSignature(file: file)
-        guard signatures[key] != newSignature else { return }
-        signatures[key] = newSignature
+        let source = SourceIdentity(endpoint: sourceEndpoint)
+        var changed = false
+        for file in files {
+            let key = Key(jobID: jobID, source: source, relativePath: file.relativePath)
+            let newSignature = SourceFileSignature(file: file)
+            guard signatures[key] != newSignature else { continue }
+            signatures[key] = newSignature
+            changed = true
+        }
+        guard changed else { return }
+        try persist(signatures)
+        cachedSignatures = signatures
+    }
+
+    func pruneSignatures(jobID: UUID, retainingSourceEndpoints sourceEndpoints: [Endpoint]) throws {
+        var signatures = try loadIfNeeded()
+        let retainedSources = Set(sourceEndpoints.map(SourceIdentity.init(endpoint:)))
+        let originalCount = signatures.count
+        signatures = signatures.filter { key, _ in
+            key.jobID != jobID || retainedSources.contains(key.source)
+        }
+        guard signatures.count != originalCount else { return }
         try persist(signatures)
         cachedSignatures = signatures
     }
@@ -161,7 +180,11 @@ actor SourceSignatureRepository {
 
     private func decodeRecords(at url: URL) throws -> [Record] {
         let data = try Data(contentsOf: url)
-        return try Self.decoder.decode([Record].self, from: data)
+        return try decodeRecords(data)
+    }
+
+    private func decodeRecords(_ data: Data) throws -> [Record] {
+        try Self.decoder.decode([Record].self, from: data)
     }
 
     private func persist(_ signatures: [Key: SourceFileSignature]) throws {
@@ -182,11 +205,9 @@ actor SourceSignatureRepository {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try Self.encoder.encode(records)
         if FileManager.default.fileExists(atPath: fileURL.path),
-           (try? decodeRecords(at: fileURL)) != nil {
-            if FileManager.default.fileExists(atPath: backupURL.path) {
-                try FileManager.default.removeItem(at: backupURL)
-            }
-            try FileManager.default.copyItem(at: fileURL, to: backupURL)
+           let existingData = try? Data(contentsOf: fileURL),
+           (try? decodeRecords(existingData)) != nil {
+            try existingData.write(to: backupURL, options: .atomic)
         }
         try data.write(to: fileURL, options: .atomic)
     }

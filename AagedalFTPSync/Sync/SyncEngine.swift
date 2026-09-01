@@ -678,9 +678,19 @@ struct SyncEngine: Sendable {
         var processed = 0
         var occupiedProcessedPaths = Set(processedFiles.keys)
         var metadataReport = MetadataRunReport.empty
+        var pendingSourceSignatures: [SyncFile] = []
         let runID = UUID()
         for file in candidates {
-            try Task.checkCancellation()
+            do {
+                try Task.checkCancellation()
+            } catch is CancellationError {
+                try? await sourceSignatureRepository.record(
+                    pendingSourceSignatures,
+                    jobID: job.id,
+                    sourceEndpoint: sourceEndpoint
+                )
+                throw CancellationError()
+            }
             let outcome: TransferMetadataOutcome
             var deferredFailureDescription: String?
             do {
@@ -703,13 +713,37 @@ struct SyncEngine: Sendable {
                     runID: runID
                 )
             } catch is CancellationError {
+                try? await sourceSignatureRepository.record(
+                    pendingSourceSignatures,
+                    jobID: job.id,
+                    sourceEndpoint: sourceEndpoint
+                )
                 throw CancellationError()
             } catch let failure as TransferStepFailure {
                 outcome = failure.outcome
                 deferredFailureDescription = failure.failureDescription
             } catch {
+                let transferError = error
+                do {
+                    try await sourceSignatureRepository.record(
+                        pendingSourceSignatures,
+                        jobID: job.id,
+                        sourceEndpoint: sourceEndpoint
+                    )
+                } catch {
+                    throw SyncRunFailure(
+                        failureDescription: transferError.localizedDescription
+                            + " Source signature persistence also failed: \(error.localizedDescription)",
+                        partialResult: SyncResult(
+                            transferred: transferred,
+                            deleted: 0,
+                            processed: processed,
+                            metadataReport: metadataReport
+                        )
+                    )
+                }
                 throw SyncRunFailure(
-                    error,
+                    transferError,
                     partialResult: SyncResult(
                         transferred: transferred,
                         deleted: 0,
@@ -725,27 +759,19 @@ struct SyncEngine: Sendable {
             occupiedProcessedPaths.formUnion(outcome.publishedProcessedPaths)
             transferred += 1
             if outcome.embeddedMetadataApplied {
+                pendingSourceSignatures.append(file)
+            }
+            if let deferredFailureDescription {
                 do {
                     try await sourceSignatureRepository.record(
-                        file,
+                        pendingSourceSignatures,
                         jobID: job.id,
                         sourceEndpoint: sourceEndpoint
                     )
                 } catch {
-                    if let deferredFailureDescription {
-                        throw SyncRunFailure(
-                            failureDescription: deferredFailureDescription
-                                + " Source signature persistence also failed: \(error.localizedDescription)",
-                            partialResult: SyncResult(
-                                transferred: transferred,
-                                deleted: 0,
-                                processed: processed,
-                                metadataReport: metadataReport
-                            )
-                        )
-                    }
                     throw SyncRunFailure(
-                        error,
+                        failureDescription: deferredFailureDescription
+                            + " Source signature persistence also failed: \(error.localizedDescription)",
                         partialResult: SyncResult(
                             transferred: transferred,
                             deleted: 0,
@@ -754,8 +780,6 @@ struct SyncEngine: Sendable {
                         )
                     )
                 }
-            }
-            if let deferredFailureDescription {
                 throw SyncRunFailure(
                     failureDescription: deferredFailureDescription,
                     partialResult: SyncResult(
@@ -766,6 +790,23 @@ struct SyncEngine: Sendable {
                     )
                 )
             }
+        }
+        do {
+            try await sourceSignatureRepository.record(
+                pendingSourceSignatures,
+                jobID: job.id,
+                sourceEndpoint: sourceEndpoint
+            )
+        } catch {
+            throw SyncRunFailure(
+                error,
+                partialResult: SyncResult(
+                    transferred: transferred,
+                    deleted: 0,
+                    processed: processed,
+                    metadataReport: metadataReport
+                )
+            )
         }
         return (transferred, processed, metadataReport)
     }

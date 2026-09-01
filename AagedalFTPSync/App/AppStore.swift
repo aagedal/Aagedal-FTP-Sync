@@ -179,6 +179,7 @@ final class AppStore: ObservableObject {
     private let scheduler: SyncScheduler
     private var metadataReprocessTasks: [UUID: Task<Void, Never>] = [:]
     private var resetTasks: [UUID: Task<Void, Never>] = [:]
+    private var sourceSignatureMaintenanceTasks: [UUID: Task<Void, Never>] = [:]
     private var transferTotals = JobTransferTotals()
 
     init(
@@ -232,6 +233,7 @@ final class AppStore: ObservableObject {
     deinit {
         for task in metadataReprocessTasks.values { task.cancel() }
         for task in resetTasks.values { task.cancel() }
+        for task in sourceSignatureMaintenanceTasks.values { task.cancel() }
     }
 
     func addJob() -> SyncJob {
@@ -261,6 +263,7 @@ final class AppStore: ObservableObject {
                 rightPassword: rightPassword
             )
             jobs = result.jobs
+            scheduleSourceSignatureMaintenance(jobID: result.savedJob.id)
             for warning in result.cleanupWarnings {
                 appendAlert("An obsolete saved password could not be removed: \(warning)")
             }
@@ -671,6 +674,7 @@ final class AppStore: ObservableObject {
         guard persistAndPublishJobs(updatedJobs, errorPrefix: "The job could not be deleted") else { return }
 
         scheduler.cancel(jobID)
+        scheduleSourceSignatureMaintenance(jobID: jobID)
         for warning in persistenceCoordinator.removeCredentials(for: job, retainedJobs: updatedJobs) {
             appendAlert("A saved password for the deleted job could not be removed: \(warning)")
         }
@@ -773,6 +777,36 @@ final class AppStore: ObservableObject {
             }
         } catch {
             alertMessage = error.localizedDescription
+        }
+    }
+
+    private func scheduleSourceSignatureMaintenance(jobID: UUID) {
+        sourceSignatureMaintenanceTasks[jobID]?.cancel()
+        sourceSignatureMaintenanceTasks[jobID] = Task { [weak self] in
+            guard let self else { return }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            do {
+                if let job = jobs.first(where: { $0.id == jobID }) {
+                    try await sourceSignatureRepository.pruneSignatures(
+                        jobID: jobID,
+                        retainingSourceEndpoints: Self.sourceEndpoints(for: job)
+                    )
+                } else {
+                    try await sourceSignatureRepository.removeSignatures(jobID: jobID)
+                }
+            } catch {
+                appendAlert("Saved source signatures could not be cleaned up: \(error.localizedDescription)")
+            }
+            sourceSignatureMaintenanceTasks[jobID] = nil
+        }
+    }
+
+    private static func sourceEndpoints(for job: SyncJob) -> [Endpoint] {
+        switch job.direction {
+        case .leftToRight: [job.left]
+        case .rightToLeft: [job.right]
+        case .bidirectional: [job.left, job.right]
         }
     }
 
