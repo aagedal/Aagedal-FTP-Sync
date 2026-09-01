@@ -51,9 +51,9 @@
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
 		A912C00FDB4E91CA2C98B4C3 /* FileFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97DCF709A14A3B3FAC7D6E5E /* FileFilterTests.swift */; };
 		AA1076CD38765D19227AF21F /* PhotographerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFD7C0B7D522D2DE507BA375 /* PhotographerSettingsView.swift */; };
-		AD887595221D0BD0F0AFB9AC /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 5385F0C5DDB4BAB61B200D2C /* SwiftExif */; };
+		AD887595221D0BD0F0AFB9AC /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 5385F0C5DDB4BAB61B200D2C /* SwiftMediaMetadata */; };
 		B01A7C900948FDDA2383CC94 /* MetadataPreset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 350292561BFD12A24A59A67B /* MetadataPreset.swift */; };
-		B15170809BD2FCE731273087 /* SwiftExif in Frameworks */ = {isa = PBXBuildFile; productRef = 0640F96321C1AC680371564A /* SwiftExif */; };
+		B15170809BD2FCE731273087 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 0640F96321C1AC680371564A /* SwiftMediaMetadata */; };
 		B3C47DA88D887D6C938B59BE /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F26F9F2F58732670EB2AFEA1 /* AppStore.swift */; };
 		B6D05E27795ADA53187E0B2A /* JobsWindowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE273065A756601A22D84D27 /* JobsWindowView.swift */; };
 		B769B40159B643B46C24C555 /* MetadataAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C984C555D147B80CC7FDE729 /* MetadataAuditTests.swift */; };
@@ -158,7 +158,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				EEA61FB84B702BB8F0D078A3 /* Citadel in Frameworks */,
-				B15170809BD2FCE731273087 /* SwiftExif in Frameworks */,
+				B15170809BD2FCE731273087 /* SwiftMediaMetadata in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -166,7 +166,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				AD887595221D0BD0F0AFB9AC /* SwiftExif in Frameworks */,
+				AD887595221D0BD0F0AFB9AC /* SwiftMediaMetadata in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -374,7 +374,7 @@
 			);
 			name = AagedalFTPSyncTests;
 			packageProductDependencies = (
-				5385F0C5DDB4BAB61B200D2C /* SwiftExif */,
+				5385F0C5DDB4BAB61B200D2C /* SwiftMediaMetadata */,
 			);
 			productName = AagedalFTPSyncTests;
 			productReference = B6B136282CDABA5C399CD2CC /* AagedalFTPSyncTests.xctest */;
@@ -395,7 +395,7 @@
 			name = AagedalFTPSync;
 			packageProductDependencies = (
 				DAB105AF735664B0A8861E6D /* Citadel */,
-				0640F96321C1AC680371564A /* SwiftExif */,
+				0640F96321C1AC680371564A /* SwiftMediaMetadata */,
 			);
 			productName = AagedalFTPSync;
 			productReference = 539DC8F63EE64022D624CE17 /* AagedalFTPSync.app */;
@@ -430,7 +430,7 @@
 			mainGroup = 343EEF955C1EE44983BD39C2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */,
+				B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */,
 				3A3D4F6CFE91FA23E1B66B68 /* XCLocalSwiftPackageReference "Vendor/Citadel" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -804,26 +804,26 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */ = {
+		B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/aagedal/SwiftExif.git";
+			repositoryURL = "https://github.com/aagedal/SwiftMediaMetadata.git";
 			requirement = {
 				kind = exactVersion;
-				version = 1.9.10;
+				version = 2.0.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		0640F96321C1AC680371564A /* SwiftExif */ = {
+		0640F96321C1AC680371564A /* SwiftMediaMetadata */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */;
-			productName = SwiftExif;
+			package = B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */;
+			productName = SwiftMediaMetadata;
 		};
-		5385F0C5DDB4BAB61B200D2C /* SwiftExif */ = {
+		5385F0C5DDB4BAB61B200D2C /* SwiftMediaMetadata */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftExif" */;
-			productName = SwiftExif;
+			package = B7D834C2D3CAE0DADD029257 /* XCRemoteSwiftPackageReference "SwiftMediaMetadata" */;
+			productName = SwiftMediaMetadata;
 		};
 		DAB105AF735664B0A8861E6D /* Citadel */ = {
 			isa = XCSwiftPackageProductDependency;

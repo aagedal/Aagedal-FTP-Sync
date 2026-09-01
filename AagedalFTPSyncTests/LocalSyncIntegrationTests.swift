@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 import XCTest
 @testable import AagedalFTPSync
 

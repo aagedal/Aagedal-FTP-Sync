@@ -94,7 +94,7 @@ Local files are copied to a hidden staging file in the destination directory and
 
 ## Architecture
 
-The sync engine works against a small endpoint-session protocol, keeping scheduling and conflict rules independent of transport details. FTP/FTPS is implemented with Apple’s Network framework. SFTP uses a security-patched local baseline of [Citadel 0.12.1](https://github.com/orlandos-nl/Citadel); its provenance and local changes are documented in [`Vendor/README.md`](Vendor/README.md). Editorial metadata is read and written with [SwiftExif](https://github.com/aagedal/SwiftExif).
+The sync engine works against a small endpoint-session protocol, keeping scheduling and conflict rules independent of transport details. FTP/FTPS is implemented with Apple’s Network framework. SFTP uses a security-patched local baseline of [Citadel 0.12.1](https://github.com/orlandos-nl/Citadel); its provenance and local changes are documented in [`Vendor/README.md`](Vendor/README.md). Editorial metadata is read and written with [SwiftMediaMetadata](https://github.com/aagedal/SwiftMediaMetadata).
 
 Dependency security and release verification are documented in [`SECURITY.md`](SECURITY.md).
 

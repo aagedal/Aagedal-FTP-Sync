@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 import XCTest
 @testable import AagedalFTPSync
 
@@ -137,7 +137,7 @@ final class MetadataAuditTests: XCTestCase {
         XCTAssertEqual(secondStore.metadataAuditTrail(for: fixture.jobID), [entry])
     }
 
-    func testMetadataWriterSurfacesSwiftExifWriteWarnings() throws {
+    func testMetadataWriterSurfacesSwiftMediaMetadataWriteWarnings() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("metadata-warning-\(UUID().uuidString).jpg")
         defer { try? FileManager.default.removeItem(at: url) }

@@ -1,5 +1,5 @@
 import Foundation
-import SwiftExif
+import SwiftMediaMetadata
 
 enum MetadataWriter {
     enum ApplicationAssessment: Equatable, Sendable {

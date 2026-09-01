@@ -19,9 +19,9 @@ settings:
 packages:
   Citadel:
     path: Vendor/Citadel
-  SwiftExif:
-    url: https://github.com/aagedal/SwiftExif.git
-    exactVersion: 1.9.10
+  SwiftMediaMetadata:
+    url: https://github.com/aagedal/SwiftMediaMetadata.git
+    exactVersion: 2.0.0
 targets:
   AagedalFTPSync:
     type: application
@@ -30,7 +30,7 @@ targets:
       - path: AagedalFTPSync
     dependencies:
       - package: Citadel
-      - package: SwiftExif
+      - package: SwiftMediaMetadata
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSync
@@ -52,7 +52,7 @@ targets:
       - path: AagedalFTPSyncTests
     dependencies:
       - target: AagedalFTPSync
-      - package: SwiftExif
+      - package: SwiftMediaMetadata
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSyncTests
