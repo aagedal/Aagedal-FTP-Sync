@@ -4,6 +4,71 @@ import XCTest
 
 final class JobRepositoryTests: XCTestCase {
     @MainActor
+    func testScheduledJobsUseTheSharedGlobalConcurrencyLimit() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scheduled-concurrency-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let jobs = ["first", "second"].map { label in
+            var job = SyncJob(name: label)
+            job.left = Endpoint(
+                kind: .local,
+                localPath: "/\(label)/left",
+                bookmark: Data("left".utf8)
+            )
+            job.right = Endpoint(
+                kind: .local,
+                localPath: "/\(label)/right",
+                bookmark: Data("right".utf8)
+            )
+            job.direction = .leftToRight
+            job.intervalSeconds = 300
+            job.isEnabled = true
+            job.startsOnAppLaunch = true
+            return job
+        }
+        try repository.save(jobs)
+
+        let probe = ScheduledConcurrencyProbe()
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ in
+            ProbeEndpointSession(
+                jobLabel: endpoint.localPath.split(separator: "/").first.map(String.init) ?? "unknown",
+                probe: probe
+            )
+        })
+        let controller = SyncConcurrencyController(
+            policy: SyncConcurrencyPolicy(globalLimit: 1, perHostLimit: nil)
+        )
+        let store = AppStore(
+            repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(fileURL: root.appendingPathComponent("photographers.json")),
+            metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
+            syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
+            engine: engine,
+            syncConcurrencyController: controller
+        )
+
+        let firstStarted = try await probe.waitForStartedJobCount(1)
+        XCTAssertEqual(firstStarted.count, 1)
+        try await Task.sleep(for: .milliseconds(30))
+        let stillOnlyFirstStarted = await probe.startedJobs()
+        XCTAssertEqual(stillOnlyFirstStarted, firstStarted)
+
+        await probe.release(job: try XCTUnwrap(firstStarted.first))
+        let bothStarted = try await probe.waitForStartedJobCount(2)
+        XCTAssertEqual(bothStarted, Set(["first", "second"]))
+
+        store.stopAll()
+        await probe.releaseAll()
+        for _ in 0..<100 where store.jobs.contains(where: { store.isJobBusy($0.id) }) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(store.jobs.contains(where: { store.isJobBusy($0.id) }))
+    }
+
+    @MainActor
     func testRemoveJobRefusesWhileManualSyncTaskIsActive() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("busy-job-removal-\(UUID().uuidString)", isDirectory: true)
@@ -216,6 +281,56 @@ private actor BlockingEndpointSession: EndpointSession {
     ) async throws {}
 }
 
+private actor ScheduledConcurrencyProbe {
+    private var started: Set<String> = []
+    private var released: Set<String> = []
+
+    func begin(job: String) async throws {
+        started.insert(job)
+        while !released.contains(job) {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func startedJobs() -> Set<String> { started }
+
+    func release(job: String) {
+        released.insert(job)
+    }
+
+    func releaseAll() {
+        released.formUnion(started)
+    }
+
+    func waitForStartedJobCount(_ expectedCount: Int) async throws -> Set<String> {
+        for _ in 0..<100 {
+            if started.count == expectedCount { return started }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw AppError.transferFailed("Timed out waiting for \(expectedCount) scheduled jobs to start.")
+    }
+}
+
+private struct ProbeEndpointSession: EndpointSession {
+    let jobLabel: String
+    let probe: ScheduledConcurrencyProbe
+
+    func listFiles() async throws -> [String: SyncFile] {
+        try await probe.begin(job: jobLabel)
+        return [:]
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {}
+
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {}
+}
+
 final class JobTransferTotalsTests: XCTestCase {
     func testCountsTransfersPerJobAndAcrossJobs() {
         let firstJob = UUID()
@@ -262,6 +377,114 @@ final class SyncRetryPolicyTests: XCTestCase {
         XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 2, consecutiveFailures: 3), 8)
         XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 60, consecutiveFailures: 5), 300)
         XCTAssertEqual(SyncRetryPolicy.delay(baseInterval: 300, consecutiveFailures: 10), 300)
+    }
+}
+
+final class SyncConcurrencyControllerTests: XCTestCase {
+    func testGlobalLimitQueuesUntilAnActiveLeaseIsReleased() async throws {
+        let controller = SyncConcurrencyController(
+            policy: SyncConcurrencyPolicy(globalLimit: 1, perHostLimit: nil)
+        )
+        let firstLease = try await controller.acquire(hosts: [])
+        let waitingTask = Task { try await controller.acquire(hosts: []) }
+
+        try await waitForSnapshot(
+            SyncConcurrencySnapshot(activeCount: 1, pendingCount: 1),
+            from: controller
+        )
+        await controller.release(firstLease)
+        let secondLease = try await waitingTask.value
+        let admittedSnapshot = await controller.snapshot()
+        XCTAssertEqual(admittedSnapshot, SyncConcurrencySnapshot(activeCount: 1, pendingCount: 0))
+        await controller.release(secondLease)
+    }
+
+    func testPerHostLimitDoesNotBlockAnotherHost() async throws {
+        let controller = SyncConcurrencyController(
+            policy: SyncConcurrencyPolicy(globalLimit: 2, perHostLimit: 1)
+        )
+        let oslo = try XCTUnwrap(SyncRemoteHost(endpoint: Endpoint(
+            kind: .sftp,
+            host: " Photos.Example.com ",
+            port: 22
+        )))
+        let normalizedOslo = try XCTUnwrap(SyncRemoteHost(endpoint: Endpoint(
+            kind: .sftp,
+            host: "photos.example.com",
+            port: 22
+        )))
+        let bergen = try XCTUnwrap(SyncRemoteHost(endpoint: Endpoint(
+            kind: .sftp,
+            host: "bergen.example.com",
+            port: 22
+        )))
+        XCTAssertEqual(oslo, normalizedOslo)
+
+        let firstLease = try await controller.acquire(hosts: [oslo])
+        let sameHostTask = Task { try await controller.acquire(hosts: [normalizedOslo]) }
+        try await waitForSnapshot(
+            SyncConcurrencySnapshot(activeCount: 1, pendingCount: 1),
+            from: controller
+        )
+
+        let otherHostLease = try await controller.acquire(hosts: [bergen])
+        let otherHostSnapshot = await controller.snapshot()
+        XCTAssertEqual(otherHostSnapshot, SyncConcurrencySnapshot(activeCount: 2, pendingCount: 1))
+
+        await controller.release(firstLease)
+        let sameHostLease = try await sameHostTask.value
+        await controller.release(otherHostLease)
+        await controller.release(sameHostLease)
+    }
+
+    func testDisabledPerHostLimitAllowsParallelRunsForTheSameHost() async throws {
+        let controller = SyncConcurrencyController(
+            policy: SyncConcurrencyPolicy(globalLimit: 2, perHostLimit: nil)
+        )
+        let host = try XCTUnwrap(SyncRemoteHost(endpoint: Endpoint(
+            kind: .ftp,
+            host: "photos.example.com",
+            port: 21
+        )))
+
+        let firstLease = try await controller.acquire(hosts: [host])
+        let secondLease = try await controller.acquire(hosts: [host])
+        let parallelSnapshot = await controller.snapshot()
+        XCTAssertEqual(parallelSnapshot, SyncConcurrencySnapshot(activeCount: 2, pendingCount: 0))
+        await controller.release(firstLease)
+        await controller.release(secondLease)
+    }
+
+    func testCancellingAWaiterRemovesItFromTheQueue() async throws {
+        let controller = SyncConcurrencyController(
+            policy: SyncConcurrencyPolicy(globalLimit: 1, perHostLimit: nil)
+        )
+        let lease = try await controller.acquire(hosts: [])
+        let waitingTask = Task { try await controller.acquire(hosts: []) }
+        try await waitForSnapshot(
+            SyncConcurrencySnapshot(activeCount: 1, pendingCount: 1),
+            from: controller
+        )
+
+        waitingTask.cancel()
+        do {
+            _ = try await waitingTask.value
+            XCTFail("A cancelled concurrency waiter should not receive a lease.")
+        } catch is CancellationError {}
+        let cancelledSnapshot = await controller.snapshot()
+        XCTAssertEqual(cancelledSnapshot, SyncConcurrencySnapshot(activeCount: 1, pendingCount: 0))
+        await controller.release(lease)
+    }
+
+    private func waitForSnapshot(
+        _ expected: SyncConcurrencySnapshot,
+        from controller: SyncConcurrencyController
+    ) async throws {
+        for _ in 0..<100 {
+            if await controller.snapshot() == expected { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Timed out waiting for concurrency state \(expected).")
     }
 }
 

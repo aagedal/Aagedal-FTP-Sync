@@ -75,6 +75,8 @@ The menu-bar panel provides start/stop controls, status, one-click sync, and a p
 
 One-way jobs copy files that are missing or newer at the destination. Two-way jobs copy unique files in both directions and use the newer modification date when both sides contain a path. If timestamps are effectively equal but sizes differ, the app reports a conflict and refuses to overwrite either file because the correct version is ambiguous.
 
+The app runs at most two sync or metadata-reprocessing operations at once and admits only one operation at a time for the same normalized remote host and port. Jobs waiting for capacity remain cancellable, and each admitted job still lists its own endpoints concurrently.
+
 Version 2.0 intentionally does not mirror source deletions. A temporary network outage, empty server listing, or accidental source-folder change therefore cannot erase newsroom files.
 
 For one-way jobs with automatic metadata, processed-file handoff can be enabled explicitly. Custom Folder mode keeps the existing independently selected local processed folder. Processed sub-folder mode treats the selected local destination as a managed main folder and creates sibling `Synced Files` and `Processed Files` roots, ensuring processed copies are never enumerated as ordinary downloads. Processed pictures can optionally receive a photographer-name folder above their preserved source-relative path. The app removes the original from the source only after the synced copy, metadata-written processed copy, and any RAW XMP sidecar are verified. Metadata skips, failures, and processed-file collisions leave the source untouched.
