@@ -5,6 +5,157 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    @MainActor
+    func testResetJobClearsPersistedDownloadHistory() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let downloadedFile = fixture.right.appendingPathComponent("incoming/JAD_HISTORY.jpg")
+        try FileManager.default.createDirectory(
+            at: downloadedFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("downloaded".utf8).write(to: downloadedFile)
+
+        let persistenceRoot = fixture.root.appendingPathComponent("persistence", isDirectory: true)
+        let jobRepository = JobRepository(fileURL: persistenceRoot.appendingPathComponent("jobs.json"))
+        let auditRepository = MetadataAuditRepository(fileURL: persistenceRoot.appendingPathComponent("audit.json"))
+        let failureRepository = SyncFailureRepository(fileURL: persistenceRoot.appendingPathComponent("failures.json"))
+        let signatureRepository = SourceSignatureRepository(
+            fileURL: persistenceRoot.appendingPathComponent("signatures.json")
+        )
+        let job = try fixture.job(direction: .leftToRight)
+        try jobRepository.save([job])
+
+        let auditEntry = MetadataAuditEntry(
+            runID: UUID(),
+            jobID: job.id,
+            operation: .transfer,
+            relativePath: "incoming/JAD_HISTORY.jpg",
+            status: .applied,
+            timestampPolicy: .sourceModification,
+            scheduledAt: Date()
+        )
+        try auditRepository.append(MetadataRunReport(entries: [auditEntry]))
+        try failureRepository.append(SyncFailureRecord(jobID: job.id, message: "Previous failure"))
+        try await signatureRepository.record(
+            SyncFile(
+                relativePath: "incoming/JAD_HISTORY.jpg",
+                size: 10,
+                modifiedAt: Date()
+            ),
+            jobID: job.id,
+            sourceEndpoint: job.left
+        )
+
+        let store = AppStore(
+            repository: jobRepository,
+            metadataPresetRepository: MetadataPresetRepository(
+                fileURL: persistenceRoot.appendingPathComponent("presets.json")
+            ),
+            photographerProfileRepository: PhotographerProfileRepository(
+                fileURL: persistenceRoot.appendingPathComponent("photographers.json")
+            ),
+            metadataAuditRepository: auditRepository,
+            syncFailureRepository: failureRepository,
+            sourceSignatureRepository: signatureRepository
+        )
+        XCTAssertEqual(store.metadataAuditTrail(for: job.id).map(\.relativePath), [auditEntry.relativePath])
+        XCTAssertEqual(store.syncFailureHistory(for: job.id).count, 1)
+
+        store.resetJob(job.id)
+        while store.resettingJobs.contains(job.id) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: downloadedFile.path))
+        XCTAssertEqual(store.metadataAuditTrail(for: job.id), [])
+        XCTAssertEqual(store.syncFailureHistory(for: job.id), [])
+        let remainingSignatures = try await signatureRepository.signatures(
+            jobID: job.id,
+            sourceEndpoint: job.left
+        )
+        XCTAssertEqual(remainingSignatures, [:])
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).startsOnAppLaunch)
+        XCTAssertEqual(store.phases[job.id], .stopped)
+        XCTAssertTrue(store.alertMessage?.contains("was reset") == true)
+    }
+
+    func testResetJobClearsOnlyManagedSyncedFiles() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let syncedRoot = fixture.right.appendingPathComponent("Synced Files", isDirectory: true)
+        let processedRoot = fixture.right.appendingPathComponent("Processed Files", isDirectory: true)
+        let syncedFiles = [
+            syncedRoot.appendingPathComponent("incoming/JAD_0001.jpg"),
+            syncedRoot.appendingPathComponent("incoming/JAD_0002.xmp"),
+        ]
+        let processedFile = processedRoot.appendingPathComponent("Jane/incoming/JAD_0001.jpg")
+        let sourceFile = fixture.left.appendingPathComponent("incoming/JAD_0001.jpg")
+        for url in syncedFiles + [processedFile, sourceFile] {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(url.lastPathComponent.utf8).write(to: url)
+        }
+
+        var job = try fixture.job(direction: .leftToRight)
+        job.processedFilesLocation = .processedSubfolder
+        let result = try await JobResetService().resetDownloads(for: job)
+
+        XCTAssertEqual(result.deletedFiles, 2)
+        XCTAssertEqual(result.downloadFolderPath, syncedRoot.path)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: syncedRoot.path),
+            []
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: processedFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceFile.path))
+    }
+
+    func testResetJobClearsEntireOrdinaryDestinationButKeepsFolder() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let downloadedFile = fixture.right.appendingPathComponent("incoming/JAD_0001.jpg")
+        let unrelatedFile = fixture.right.appendingPathComponent("notes.txt")
+        for url in [downloadedFile, unrelatedFile] {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(url.lastPathComponent.utf8).write(to: url)
+        }
+
+        let job = try fixture.job(direction: .leftToRight)
+        let result = try await JobResetService().resetDownloads(for: job)
+
+        XCTAssertEqual(result.deletedFiles, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.right.path))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: fixture.right.path),
+            []
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.left.path))
+    }
+
+    func testResetJobRejectsOverlappingLocalSourceAndDestination() throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let nestedDestination = fixture.left.appendingPathComponent("downloads", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedDestination, withIntermediateDirectories: true)
+        let retainedFile = nestedDestination.appendingPathComponent("keep.jpg")
+        try Data("keep".utf8).write(to: retainedFile)
+        var job = try fixture.job(direction: .leftToRight)
+        job.right = try fixture.endpoint(for: nestedDestination)
+
+        XCTAssertEqual(
+            JobResetService.validationMessage(for: job),
+            "Reset Job is unavailable because the local source and download folders overlap."
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retainedFile.path))
+    }
+
     func testManagedStructureCreatesSiblingRootsAndSortsProcessedRawByPhotographer() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

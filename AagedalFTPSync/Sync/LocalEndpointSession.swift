@@ -181,3 +181,147 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
         return candidate
     }
 }
+
+struct JobResetResult: Equatable, Sendable {
+    let deletedFiles: Int
+    let downloadFolderPath: String
+}
+
+actor JobResetService {
+    static func validationMessage(for job: SyncJob) -> String? {
+        guard job.direction != .bidirectional else {
+            return "Reset Job is unavailable for two-way jobs because there is no single download folder."
+        }
+        guard let destination = job.destinationEndpoint, destination.kind == .local else {
+            return "Reset Job requires a local download destination."
+        }
+
+        let destinationURL = URL(fileURLWithPath: destination.localPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let downloadURL = job.usesManagedFolderStructure
+            ? destinationURL.appendingPathComponent(ManagedOutputFolder.syncedFiles.directoryName, isDirectory: true)
+            : destinationURL
+        guard isAcceptableResetRoot(downloadURL) else {
+            return "Reset Job refuses to clear a filesystem root or the current user's home folder. Choose a dedicated download folder instead."
+        }
+
+        if let source = job.sourceEndpoint, source.kind == .local {
+            let sourceURL = URL(fileURLWithPath: source.localPath)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            if foldersOverlap(sourceURL, downloadURL) {
+                return "Reset Job is unavailable because the local source and download folders overlap."
+            }
+        }
+        return nil
+    }
+
+    func resetDownloads(for job: SyncJob) throws -> JobResetResult {
+        if let message = Self.validationMessage(for: job) {
+            throw AppError.invalidConfiguration(message)
+        }
+        guard let destination = job.destinationEndpoint else {
+            throw AppError.invalidConfiguration("Reset Job requires a one-way job.")
+        }
+
+        let access = try BookmarkAccess(endpoint: destination)
+        let rootURL: URL
+        if job.usesManagedFolderStructure {
+            rootURL = try ManagedOutputFolder.syncedFiles.url(inside: access.url, createIfNeeded: true)
+        } else {
+            rootURL = access.url.standardizedFileURL.resolvingSymlinksInPath()
+        }
+        guard Self.isAcceptableResetRoot(rootURL) else {
+            throw AppError.invalidConfiguration(
+                "Reset Job refuses to clear a filesystem root or the current user's home folder."
+            )
+        }
+
+        let fileManager = FileManager.default
+        let children = try fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: []
+        )
+        guard !children.isEmpty else {
+            return JobResetResult(deletedFiles: 0, downloadFolderPath: rootURL.path)
+        }
+
+        let deletedFiles = children.reduce(into: 0) { count, child in
+            count += Self.fileCount(at: child, fileManager: fileManager)
+        }
+        let holdingURL = rootURL.appendingPathComponent(
+            ".aagedal-sync-reset-\(UUID().uuidString).trash",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: holdingURL, withIntermediateDirectories: false)
+        var movedItems: [(original: URL, held: URL)] = []
+        do {
+            for child in children {
+                let held = holdingURL.appendingPathComponent(child.lastPathComponent)
+                try fileManager.moveItem(at: child, to: held)
+                movedItems.append((child, held))
+            }
+        } catch {
+            var rollbackFailures: [String] = []
+            for item in movedItems.reversed() {
+                do {
+                    try fileManager.moveItem(at: item.held, to: item.original)
+                } catch {
+                    rollbackFailures.append(item.original.lastPathComponent)
+                }
+            }
+            try? fileManager.removeItem(at: holdingURL)
+            if !rollbackFailures.isEmpty {
+                throw AppError.transferFailed(
+                    "The download-folder reset failed, and rollback could not restore: \(rollbackFailures.joined(separator: ", "))."
+                )
+            }
+            throw error
+        }
+
+        do {
+            try fileManager.removeItem(at: holdingURL)
+        } catch {
+            throw AppError.transferFailed(
+                "The downloads were isolated but could not be fully deleted. A hidden reset folder remains inside \(rootURL.path). \(error.localizedDescription)"
+            )
+        }
+        return JobResetResult(deletedFiles: deletedFiles, downloadFolderPath: rootURL.path)
+    }
+
+    private static func isAcceptableResetRoot(_ url: URL) -> Bool {
+        let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        return resolved.path != "/" && resolved != home
+    }
+
+    private static func foldersOverlap(_ first: URL, _ second: URL) -> Bool {
+        first == second
+            || first.path.hasPrefix(second.path + "/")
+            || second.path.hasPrefix(first.path + "/")
+    }
+
+    private static func fileCount(at url: URL, fileManager: FileManager) -> Int {
+        if let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+           values.isRegularFile == true || values.isSymbolicLink == true {
+            return 1
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsPackageDescendants]
+        ) else { return 0 }
+        var count = 0
+        while let child = enumerator.nextObject() as? URL {
+            guard let values = try? child.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]) else {
+                continue
+            }
+            if values.isRegularFile == true || values.isSymbolicLink == true { count += 1 }
+        }
+        return count
+    }
+}

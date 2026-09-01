@@ -393,7 +393,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 29B1D3492BA4040099289230 /* Build configuration list for PBXProject "AagedalFTPSync" */;
+			buildConfigurationList = 29B1D3492BA4040099289230 /* Build configuration list for PBXProject "Aagedal FTP Sync" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -727,7 +727,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		29B1D3492BA4040099289230 /* Build configuration list for PBXProject "AagedalFTPSync" */ = {
+		29B1D3492BA4040099289230 /* Build configuration list for PBXProject "Aagedal FTP Sync" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1F8E896E26C735B3633C07F6 /* Debug */,

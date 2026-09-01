@@ -17,7 +17,7 @@
                BlueprintIdentifier = "DA22D5815B19C66F2019C139"
                BuildableName = "AagedalFTPSync.app"
                BlueprintName = "AagedalFTPSync"
-               ReferencedContainer = "container:AagedalFTPSync.xcodeproj">
+               ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
          <BuildActionEntry
@@ -31,7 +31,7 @@
                BlueprintIdentifier = "7E3AC5B0A41B68200E1D998B"
                BuildableName = "AagedalFTPSyncTests.xctest"
                BlueprintName = "AagedalFTPSyncTests"
-               ReferencedContainer = "container:AagedalFTPSync.xcodeproj">
+               ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -47,7 +47,7 @@
             BlueprintIdentifier = "DA22D5815B19C66F2019C139"
             BuildableName = "AagedalFTPSync.app"
             BlueprintName = "AagedalFTPSync"
-            ReferencedContainer = "container:AagedalFTPSync.xcodeproj">
+            ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
@@ -59,7 +59,7 @@
                BlueprintIdentifier = "7E3AC5B0A41B68200E1D998B"
                BuildableName = "AagedalFTPSyncTests.xctest"
                BlueprintName = "AagedalFTPSyncTests"
-               ReferencedContainer = "container:AagedalFTPSync.xcodeproj">
+               ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -81,7 +81,7 @@
             BlueprintIdentifier = "DA22D5815B19C66F2019C139"
             BuildableName = "AagedalFTPSync.app"
             BlueprintName = "AagedalFTPSync"
-            ReferencedContainer = "container:AagedalFTPSync.xcodeproj">
+            ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -98,7 +98,7 @@
             BlueprintIdentifier = "DA22D5815B19C66F2019C139"
             BuildableName = "AagedalFTPSync.app"
             BlueprintName = "AagedalFTPSync"
-            ReferencedContainer = "container:AagedalFTPSync.xcodeproj">
+            ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

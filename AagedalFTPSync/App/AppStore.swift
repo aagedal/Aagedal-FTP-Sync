@@ -98,6 +98,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var syncFailureEntries: [UUID: [SyncFailureRecord]] = [:]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
     @Published private(set) var metadataReprocessPhases: [UUID: MetadataReprocessPhase] = [:]
+    @Published private(set) var resettingJobs: Set<UUID> = []
     @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
     @Published var selectedJobID: UUID?
     @Published var alertMessage: String?
@@ -107,8 +108,10 @@ final class AppStore: ObservableObject {
     private let photographerProfileRepository: PhotographerProfileRepository
     private let metadataAuditRepository: MetadataAuditRepository
     private let syncFailureRepository: SyncFailureRepository
+    private let sourceSignatureRepository: SourceSignatureRepository
+    private let jobResetService: JobResetService
     private let keychain: KeychainStore
-    private let engine = SyncEngine()
+    private let engine: SyncEngine
     private var scheduleTasks: [UUID: Task<Void, Never>] = [:]
     private var runningJobs: Set<UUID> = []
     private var transferTotals = JobTransferTotals()
@@ -121,6 +124,8 @@ final class AppStore: ObservableObject {
         photographerProfileRepository: PhotographerProfileRepository = PhotographerProfileRepository(),
         metadataAuditRepository: MetadataAuditRepository = MetadataAuditRepository(),
         syncFailureRepository: SyncFailureRepository = SyncFailureRepository(),
+        sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
+        jobResetService: JobResetService = JobResetService(),
         keychain: KeychainStore = KeychainStore()
     ) {
         self.repository = repository
@@ -128,6 +133,9 @@ final class AppStore: ObservableObject {
         self.photographerProfileRepository = photographerProfileRepository
         self.metadataAuditRepository = metadataAuditRepository
         self.syncFailureRepository = syncFailureRepository
+        self.sourceSignatureRepository = sourceSignatureRepository
+        self.jobResetService = jobResetService
+        engine = SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
         self.keychain = keychain
         do {
             let loadResult = try metadataPresetRepository.loadResult()
@@ -816,7 +824,7 @@ final class AppStore: ObservableObject {
     }
 
     func runNow(_ jobID: UUID) {
-        guard !runningJobs.contains(jobID),
+        guard !runningJobs.contains(jobID), !resettingJobs.contains(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return }
         if job.isEnabled {
             scheduleTasks[jobID]?.cancel()
@@ -835,7 +843,47 @@ final class AppStore: ObservableObject {
     }
 
     func isJobBusy(_ jobID: UUID) -> Bool {
-        runningJobs.contains(jobID)
+        runningJobs.contains(jobID) || resettingJobs.contains(jobID)
+    }
+
+    func resetJob(_ jobID: UUID) {
+        guard !runningJobs.contains(jobID), !resettingJobs.contains(jobID),
+              let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        let job = jobs[index]
+        if let message = JobResetService.validationMessage(for: job) {
+            alertMessage = message
+            return
+        }
+
+        scheduleTasks[jobID]?.cancel()
+        scheduleTasks[jobID] = nil
+        jobs[index].isEnabled = false
+        jobs[index].startsOnAppLaunch = false
+        phases[jobID] = .stopped
+        resettingJobs.insert(jobID)
+        persist()
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { resettingJobs.remove(jobID) }
+            do {
+                let result = try await jobResetService.resetDownloads(for: job)
+                try await sourceSignatureRepository.removeSignatures(jobID: jobID)
+                let retainedAuditEntries = try metadataAuditRepository.remove(jobID: jobID)
+                let retainedFailures = try syncFailureRepository.remove(jobID: jobID)
+
+                metadataAuditEntries = Dictionary(grouping: retainedAuditEntries, by: \.jobID)
+                syncFailureEntries = Dictionary(grouping: retainedFailures, by: \.jobID)
+                metadataReprocessPhases[jobID] = nil
+                transferTotals.reset(jobID: jobID)
+                let fileDescription = result.deletedFiles == 1
+                    ? "1 downloaded file"
+                    : "\(result.deletedFiles) downloaded files"
+                alertMessage = "“\(job.name)” was reset. Deleted \(fileDescription) from \(result.downloadFolderPath) and cleared its download history. The source and processed files were not changed."
+            } catch {
+                appendAlert("“\(job.name)” could not be fully reset: \(error.localizedDescription)")
+            }
+        }
     }
 
     func openLocalFolder(_ endpoint: Endpoint) {
