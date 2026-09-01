@@ -558,14 +558,20 @@ struct SyncEngine: Sendable {
         }
 
         let cutoff = Date().addingTimeInterval(-Double(cleanup.olderThanHours) * 3_600)
-        let candidates = targetFiles.values
-            .filter { job.filter.includesFileType(path: $0.relativePath) && $0.modifiedAt < cutoff }
-            .sorted { $0.modifiedAt < $1.modifiedAt }
+        let groups = cleanupOutputGroups(
+            targetFiles: targetFiles,
+            filter: job.filter,
+            cutoff: cutoff
+        )
         var deleted = 0
-        for file in candidates {
+        for group in groups {
             try Task.checkCancellation()
             do {
-                if try await target.deleteFile(file, ifOlderThan: cutoff) { deleted += 1 }
+                deleted += try await target.deleteFilesTransactionally(
+                    group,
+                    ifOlderThan: cutoff,
+                    matching: job.filter
+                )
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -576,6 +582,51 @@ struct SyncEngine: Sendable {
             }
         }
         return deleted
+    }
+
+    private func cleanupOutputGroups(
+        targetFiles: [String: SyncFile],
+        filter: FileFilter,
+        cutoff: Date
+    ) -> [[SyncFile]] {
+        let eligiblePrimaries = targetFiles.values.filter {
+            filter.includesFileType(path: $0.relativePath)
+        }
+        let rawPrimariesBySidecar = Dictionary(grouping: eligiblePrimaries.filter {
+            MetadataWriter.usesXMPSidecar(for: $0.relativePath)
+        }) {
+            MetadataWriter.sidecarRelativePath(for: $0.relativePath)
+        }
+        let unambiguousCompanionPaths = Set(rawPrimariesBySidecar.compactMap { path, primaries in
+            primaries.count == 1 && targetFiles[path] != nil ? path : nil
+        })
+        let ambiguousRawPaths = Set(rawPrimariesBySidecar.values.compactMap { primaries -> [String]? in
+            guard primaries.count > 1,
+                  targetFiles[MetadataWriter.sidecarRelativePath(for: primaries[0].relativePath)] != nil else {
+                return nil
+            }
+            return primaries.map(\.relativePath)
+        }.flatMap { $0 })
+
+        return eligiblePrimaries
+            .filter { !unambiguousCompanionPaths.contains($0.relativePath) }
+            .filter { !ambiguousRawPaths.contains($0.relativePath) }
+            .compactMap { primary -> [SyncFile]? in
+                var group = [primary]
+                if MetadataWriter.usesXMPSidecar(for: primary.relativePath) {
+                    let sidecarPath = MetadataWriter.sidecarRelativePath(for: primary.relativePath)
+                    if unambiguousCompanionPaths.contains(sidecarPath),
+                       let sidecar = targetFiles[sidecarPath] {
+                        group.append(sidecar)
+                    }
+                }
+                return group.allSatisfy { $0.modifiedAt < cutoff } ? group : nil
+            }
+            .sorted { first, second in
+                let firstDate = first.map(\.modifiedAt).max() ?? .distantFuture
+                let secondDate = second.map(\.modifiedAt).max() ?? .distantFuture
+                return firstDate < secondDate
+            }
     }
 
     private func transferNewer(

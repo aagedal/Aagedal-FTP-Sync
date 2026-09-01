@@ -7,6 +7,7 @@
 - Offer password-derived AES-256-GCM authenticated encryption by default, with an explicit unencrypted option, while always excluding Keychain passwords and machine-bound folder bookmarks.
 - Import jobs as disabled copies with fresh IDs and require folder access and server passwords to be configured again.
 - Reprocess existing metadata for all matching files, one photographer, or one timeline clip from contextual timeline actions.
+- Treat camera RAW files and their generated or existing XMP sidecars as one recoverable cleanup group.
 
 ## 2.6.0 — 2026-08-30
 

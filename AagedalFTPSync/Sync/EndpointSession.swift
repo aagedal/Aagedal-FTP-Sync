@@ -94,6 +94,11 @@ protocol EndpointSession: Sendable {
         verifySize: Bool
     ) async throws
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool
+    func deleteFilesTransactionally(
+        _ files: [SyncFile],
+        ifOlderThan cutoff: Date,
+        matching filter: FileFilter
+    ) async throws -> Int
     func removeFile(_ file: SyncFile) async throws
     func removeFilesTransactionally(_ files: [SyncFile]) async throws
     func close() async
@@ -110,6 +115,19 @@ extension EndpointSession {
 
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
         throw AppError.invalidConfiguration("Cleanup was attempted on an unsupported target.")
+    }
+
+    func deleteFilesTransactionally(
+        _ files: [SyncFile],
+        ifOlderThan cutoff: Date,
+        matching filter: FileFilter
+    ) async throws -> Int {
+        guard files.count == 1, let file = files.first else {
+            throw AppError.invalidConfiguration(
+                "Transactional companion cleanup is not supported by this target."
+            )
+        }
+        return try await deleteFile(file, ifOlderThan: cutoff) ? 1 : 0
     }
 
     func importFilesTransactionally(

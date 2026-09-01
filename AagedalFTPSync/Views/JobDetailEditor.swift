@@ -177,7 +177,7 @@ struct JobDetailEditor: View {
                                 Text(targetCleanupLabel).monospacedDigit()
                             }
                         }
-                        Text("Cleanup removes only matching file types from the local target and never touches the source. The deletion age must be greater than the source file-age window.")
+                        Text("Cleanup removes only matching file types from the local target and never touches the source. RAW files and their XMP sidecars are removed together. The deletion age must be greater than the source file-age window.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if !hasLocalOneWayTarget {
                         Text("Automatic cleanup is available for one-way jobs whose target is a local folder.")

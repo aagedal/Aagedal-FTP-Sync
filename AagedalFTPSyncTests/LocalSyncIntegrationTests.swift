@@ -1626,6 +1626,164 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: recentTarget.path))
     }
 
+    func testRawCleanupDeletesOldPrimaryAndXMPCompanionAsOneGroup() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let oldDate = Date().addingTimeInterval(-3 * 3_600)
+        let raw = fixture.right.appendingPathComponent("NEWS.CR3")
+        let sidecar = fixture.right.appendingPathComponent("NEWS.xmp")
+        let jpeg = fixture.right.appendingPathComponent("KEEP.JPG")
+
+        for url in [raw, sidecar, jpeg] {
+            try Data(url.lastPathComponent.utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: url.path)
+        }
+
+        var job = try fixture.job(direction: .leftToRight)
+        job.filter = FileFilter(preset: .raw, recentHours: 1)
+        job.targetCleanup = TargetCleanup(olderThanHours: 2)
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result, SyncResult(transferred: 0, deleted: 2))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: raw.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: jpeg.path))
+    }
+
+    func testAllPhotosCleanupDiscoversXMPCompanionsWithoutTreatingXMPAsAStandalonePhoto() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let oldDate = Date().addingTimeInterval(-3 * 3_600)
+        let raw = fixture.right.appendingPathComponent("ARCHIVE.DNG")
+        let sidecar = fixture.right.appendingPathComponent("ARCHIVE.xmp")
+        let jpeg = fixture.right.appendingPathComponent("ARCHIVE.JPG")
+        let text = fixture.right.appendingPathComponent("KEEP.txt")
+
+        for url in [raw, sidecar, jpeg, text] {
+            try Data(url.lastPathComponent.utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: url.path)
+        }
+
+        var job = try fixture.job(direction: .leftToRight)
+        job.filter = FileFilter(preset: .photos, recentHours: 1)
+        job.targetCleanup = TargetCleanup(olderThanHours: 2)
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result, SyncResult(transferred: 0, deleted: 3))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: raw.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: jpeg.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: text.path))
+    }
+
+    func testCleanupRechecksEveryCompanionAgeImmediatelyBeforeDeletion() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let cutoff = Date().addingTimeInterval(-2 * 3_600)
+        let oldDate = cutoff.addingTimeInterval(-3_600)
+        let recentDate = Date().addingTimeInterval(-60)
+        let raw = fixture.right.appendingPathComponent("HOLD.CR3")
+        let sidecar = fixture.right.appendingPathComponent("HOLD.xmp")
+        try Data("raw".utf8).write(to: raw)
+        try Data("xmp".utf8).write(to: sidecar)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: raw.path)
+        try FileManager.default.setAttributes([.modificationDate: recentDate], ofItemAtPath: sidecar.path)
+        let session = try LocalEndpointSession(endpoint: fixture.endpoint(for: fixture.right))
+
+        let deleted = try await session.deleteFilesTransactionally(
+            [
+                SyncFile(relativePath: "HOLD.CR3", size: 3, modifiedAt: oldDate),
+                SyncFile(relativePath: "HOLD.xmp", size: 3, modifiedAt: oldDate),
+            ],
+            ifOlderThan: cutoff,
+            matching: FileFilter(preset: .raw)
+        )
+
+        XCTAssertEqual(deleted, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: raw.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
+    }
+
+    func testCleanupRestoresRawGroupWhenCompanionStagingFails() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let oldDate = Date().addingTimeInterval(-3 * 3_600)
+        let raw = fixture.right.appendingPathComponent("RESTORE.CR3")
+        let sidecar = fixture.right.appendingPathComponent("RESTORE.xmp")
+        try Data("raw".utf8).write(to: raw)
+        try Data("xmp".utf8).write(to: sidecar)
+        for url in [raw, sidecar] {
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: url.path)
+        }
+        let sharedHolding = fixture.right.appendingPathComponent(".aagedal-sync-cleanup.hold")
+        let session = try LocalEndpointSession(
+            endpoint: fixture.endpoint(for: fixture.right),
+            holdingURLFactory: { _ in sharedHolding }
+        )
+
+        do {
+            _ = try await session.deleteFilesTransactionally(
+                [
+                    SyncFile(relativePath: "RESTORE.CR3", size: 3, modifiedAt: oldDate),
+                    SyncFile(relativePath: "RESTORE.xmp", size: 3, modifiedAt: oldDate),
+                ],
+                ifOlderThan: Date().addingTimeInterval(-2 * 3_600),
+                matching: FileFilter(preset: .raw)
+            )
+            XCTFail("The second staging move should fail")
+        } catch {}
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: raw.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sharedHolding.path))
+    }
+
+    func testCleanupRestoresXMPWhenPrimaryDeletionFails() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let oldDate = Date().addingTimeInterval(-3 * 3_600)
+        let raw = fixture.right.appendingPathComponent("DELETE.CR3")
+        let sidecar = fixture.right.appendingPathComponent("DELETE.xmp")
+        let primaryHolding = fixture.right.appendingPathComponent(".primary.hold")
+        let companionHolding = fixture.right.appendingPathComponent(".companion.hold")
+        try Data("raw".utf8).write(to: raw)
+        try Data("xmp".utf8).write(to: sidecar)
+        for url in [raw, sidecar] {
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: url.path)
+        }
+        let session = try LocalEndpointSession(
+            endpoint: fixture.endpoint(for: fixture.right),
+            holdingURLFactory: { source in
+                source.pathExtension.lowercased() == "cr3" ? primaryHolding : companionHolding
+            },
+            holdingRemoval: { holding in
+                if holding == primaryHolding {
+                    throw AppError.transferFailed("Injected primary deletion failure")
+                }
+                try FileManager.default.removeItem(at: holding)
+            }
+        )
+
+        do {
+            _ = try await session.deleteFilesTransactionally(
+                [
+                    SyncFile(relativePath: "DELETE.CR3", size: 3, modifiedAt: oldDate),
+                    SyncFile(relativePath: "DELETE.xmp", size: 3, modifiedAt: oldDate),
+                ],
+                ifOlderThan: Date().addingTimeInterval(-2 * 3_600),
+                matching: FileFilter(preset: .raw)
+            )
+            XCTFail("The primary deletion should fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("complete output group was restored"))
+        }
+
+        XCTAssertEqual(try Data(contentsOf: raw), Data("raw".utf8))
+        XCTAssertEqual(try Data(contentsOf: sidecar), Data("xmp".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: primaryHolding.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: companionHolding.path))
+    }
+
     func testSyncRejectsSymlinkedDestinationDirectory() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

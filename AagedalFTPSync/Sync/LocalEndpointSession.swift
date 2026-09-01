@@ -5,6 +5,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     private let rootURL: URL
     private let fileManager = FileManager.default
     private let holdingURLFactory: @Sendable (URL) -> URL
+    private let holdingRemoval: @Sendable (URL) throws -> Void
 
     init(
         endpoint: Endpoint,
@@ -13,10 +14,14 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             source.deletingLastPathComponent().appendingPathComponent(
                 ".aagedal-sync-\(UUID().uuidString).hold"
             )
+        },
+        holdingRemoval: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
         }
     ) throws {
         access = try BookmarkAccess(endpoint: endpoint)
         self.holdingURLFactory = holdingURLFactory
+        self.holdingRemoval = holdingRemoval
         if let managedFolder {
             rootURL = try managedFolder.url(inside: access.url, createIfNeeded: true)
         } else {
@@ -181,20 +186,143 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
-        let target = try safeURL(for: file.relativePath)
-        guard fileManager.fileExists(atPath: target.path) else { return false }
-        let root = rootURL
-        let resolvedTarget = target.resolvingSymlinksInPath()
-        guard resolvedTarget.path.hasPrefix(root.path + "/") else {
-            throw AppError.transferFailed("A target path attempted to leave its selected folder.")
+        try await deleteFilesTransactionally(
+            [file],
+            ifOlderThan: cutoff,
+            matching: FileFilter(preset: .all, includeHiddenFiles: true)
+        ) == 1
+    }
+
+    func deleteFilesTransactionally(
+        _ files: [SyncFile],
+        ifOlderThan cutoff: Date,
+        matching filter: FileFilter
+    ) async throws -> Int {
+        guard let primary = files.first else { return 0 }
+        guard filter.includesFileType(path: primary.relativePath) else { return 0 }
+        if files.count > 1 {
+            guard files.count == 2,
+                  MetadataWriter.usesXMPSidecar(for: primary.relativePath),
+                  files[1].relativePath == MetadataWriter.sidecarRelativePath(for: primary.relativePath) else {
+                throw AppError.transferFailed("A cleanup output group contained an invalid companion path.")
+            }
         }
-        let values = try target.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey])
-        guard values.isRegularFile == true,
-              values.isSymbolicLink != true,
-              let modifiedAt = values.contentModificationDate,
-              modifiedAt < cutoff else { return false }
-        try fileManager.removeItem(at: target)
-        return true
+
+        var targets: [URL] = []
+        for file in files {
+            let target = try safeURL(for: file.relativePath)
+            guard fileManager.fileExists(atPath: target.path) else { return 0 }
+            let resolvedTarget = target.resolvingSymlinksInPath()
+            guard resolvedTarget.path.hasPrefix(rootURL.path + "/") else {
+                throw AppError.transferFailed("A target path attempted to leave its selected folder.")
+            }
+            let values = try target.resourceValues(
+                forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
+            )
+            guard values.isRegularFile == true,
+                  values.isSymbolicLink != true,
+                  let modifiedAt = values.contentModificationDate,
+                  modifiedAt < cutoff else { return 0 }
+            targets.append(target)
+        }
+
+        try deleteCleanupGroup(
+            sources: targets,
+            holdings: targets.map(holdingURLFactory),
+            labels: files.map(\.relativePath)
+        )
+        return files.count
+    }
+
+    private func deleteCleanupGroup(
+        sources: [URL],
+        holdings: [URL],
+        labels: [String]
+    ) throws {
+        var stagedCount = 0
+        do {
+            for index in sources.indices {
+                try fileManager.moveItem(at: sources[index], to: holdings[index])
+                stagedCount += 1
+            }
+        } catch {
+            var restoreFailures: [String] = []
+            for index in (0..<stagedCount).reversed() {
+                do { try fileManager.moveItem(at: holdings[index], to: sources[index]) }
+                catch { restoreFailures.append(labels[index]) }
+            }
+            if !restoreFailures.isEmpty {
+                throw AppError.transferFailed(
+                    "Cleanup staging failed, and rollback could not restore: \(restoreFailures.joined(separator: ", "))."
+                )
+            }
+            throw error
+        }
+
+        guard sources.count == 2 else {
+            do {
+                try holdingRemoval(holdings[0])
+            } catch {
+                do { try fileManager.moveItem(at: holdings[0], to: sources[0]) }
+                catch {
+                    throw AppError.transferFailed(
+                        "Cleanup deletion failed, and \(labels[0]) could not be restored. Deletion error: \(error.localizedDescription)"
+                    )
+                }
+                throw error
+            }
+            return
+        }
+
+        // Remove the small companion first and retain a temporary copy until
+        // the primary has also been removed. This lets a later primary failure
+        // restore the complete group without duplicating a potentially large RAW.
+        let companionBackup = fileManager.temporaryDirectory.appendingPathComponent(
+            ".aagedal-sync-\(UUID().uuidString).rollback"
+        )
+        defer { try? fileManager.removeItem(at: companionBackup) }
+        do {
+            try fileManager.copyItem(at: holdings[1], to: companionBackup)
+        } catch {
+            var restoreFailures: [String] = []
+            for index in holdings.indices.reversed() {
+                do { try fileManager.moveItem(at: holdings[index], to: sources[index]) }
+                catch { restoreFailures.append(labels[index]) }
+            }
+            if !restoreFailures.isEmpty {
+                throw AppError.transferFailed(
+                    "Cleanup preparation failed, and rollback could not restore: \(restoreFailures.joined(separator: ", "))."
+                )
+            }
+            throw error
+        }
+
+        do {
+            try holdingRemoval(holdings[1])
+            try holdingRemoval(holdings[0])
+        } catch {
+            let deletionError = error
+            var restoreFailures: [String] = []
+            if fileManager.fileExists(atPath: holdings[0].path) {
+                do { try fileManager.moveItem(at: holdings[0], to: sources[0]) }
+                catch { restoreFailures.append(labels[0]) }
+            }
+            if fileManager.fileExists(atPath: holdings[1].path) {
+                do { try fileManager.moveItem(at: holdings[1], to: sources[1]) }
+                catch { restoreFailures.append(labels[1]) }
+            } else {
+                do { try fileManager.copyItem(at: companionBackup, to: sources[1]) }
+                catch { restoreFailures.append(labels[1]) }
+            }
+            if !restoreFailures.isEmpty {
+                throw AppError.transferFailed(
+                    "Cleanup deletion failed, and rollback could not restore: \(restoreFailures.joined(separator: ", ")). Deletion error: \(deletionError.localizedDescription)"
+                )
+            }
+            throw AppError.transferFailed(
+                "Cleanup deletion failed, so the complete output group was restored. Deletion error: \(deletionError.localizedDescription)"
+            )
+        }
     }
 
     func removeFile(_ file: SyncFile) async throws {
