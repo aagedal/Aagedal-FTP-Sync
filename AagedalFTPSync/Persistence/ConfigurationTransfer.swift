@@ -87,6 +87,7 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
 
 enum ConfigurationTransferError: LocalizedError, Equatable {
     case passwordTooShort
+    case passwordRequired
     case fileTooLarge
     case invalidFormat
     case unsupportedVersion(Int)
@@ -99,6 +100,8 @@ enum ConfigurationTransferError: LocalizedError, Equatable {
         switch self {
         case .passwordTooShort:
             "Use a password with at least 12 characters."
+        case .passwordRequired:
+            "This package is encrypted. Enter its password to continue."
         case .fileTooLarge:
             "This configuration package is larger than the supported 50 MB limit."
         case .invalidFormat:
@@ -117,7 +120,12 @@ enum ConfigurationTransferError: LocalizedError, Equatable {
     }
 }
 
-enum EncryptedConfigurationTransferCodec {
+enum ConfigurationTransferProtection: Equatable, Sendable {
+    case encrypted
+    case unencrypted
+}
+
+enum ConfigurationTransferCodec {
     static let minimumPasswordLength = 12
     static let maximumFileSize = 50 * 1_024 * 1_024
 
@@ -127,7 +135,11 @@ enum EncryptedConfigurationTransferCodec {
     private static let saltLength = 16
     private static let keyLength = 32
 
-    static func encode(_ transfer: ConfigurationTransfer, password: String) throws -> Data {
+    static func encode(_ transfer: ConfigurationTransfer, password: String?) throws -> Data {
+        try validate(transfer)
+        guard let password else {
+            return try configuredEncoder.encode(transfer)
+        }
         guard password.count >= minimumPasswordLength else {
             throw ConfigurationTransferError.passwordTooShort
         }
@@ -152,8 +164,51 @@ enum EncryptedConfigurationTransferCodec {
         )
     }
 
-    static func decode(_ data: Data, password: String) throws -> ConfigurationTransfer {
+    static func protection(of data: Data) throws -> ConfigurationTransferProtection {
         guard data.count <= maximumFileSize else { throw ConfigurationTransferError.fileTooLarge }
+        let probe: FormatProbe
+        do {
+            probe = try configuredDecoder.decode(FormatProbe.self, from: data)
+        } catch {
+            throw ConfigurationTransferError.invalidFormat
+        }
+        switch probe.format {
+        case envelopeFormat:
+            guard probe.version == envelopeVersion else {
+                throw ConfigurationTransferError.unsupportedVersion(probe.version)
+            }
+            return .encrypted
+        case ConfigurationTransfer.formatIdentifier:
+            guard probe.version == ConfigurationTransfer.currentVersion else {
+                throw ConfigurationTransferError.unsupportedVersion(probe.version)
+            }
+            return .unencrypted
+        default:
+            throw ConfigurationTransferError.invalidFormat
+        }
+    }
+
+    static func decode(_ data: Data, password: String?) throws -> ConfigurationTransfer {
+        switch try protection(of: data) {
+        case .unencrypted:
+            do {
+                let transfer = try configuredDecoder.decode(ConfigurationTransfer.self, from: data)
+                try validate(transfer)
+                return transfer
+            } catch let error as ConfigurationTransferError {
+                throw error
+            } catch {
+                throw ConfigurationTransferError.invalidFormat
+            }
+        case .encrypted:
+            guard let password, !password.isEmpty else {
+                throw ConfigurationTransferError.passwordRequired
+            }
+            return try decodeEncrypted(data, password: password)
+        }
+    }
+
+    private static func decodeEncrypted(_ data: Data, password: String) throws -> ConfigurationTransfer {
         let envelope: EncryptedEnvelope
         do {
             envelope = try configuredDecoder.decode(EncryptedEnvelope.self, from: data)
@@ -283,6 +338,11 @@ private struct EncryptedEnvelope: Codable {
     let iterations: Int
     let salt: Data
     let sealedPayload: Data
+}
+
+private struct FormatProbe: Decodable {
+    let format: String
+    let version: Int
 }
 
 extension Endpoint {

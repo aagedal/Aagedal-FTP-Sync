@@ -336,7 +336,7 @@ final class AppStore: ObservableObject {
 
     func configurationExportData(
         scope: ConfigurationTransferScope,
-        password: String
+        password: String?
     ) -> Data? {
         do {
             let transfer = ConfigurationTransfer(
@@ -345,7 +345,7 @@ final class AppStore: ObservableObject {
                 metadataPresets: metadataPresets,
                 photographers: photographerLibrary
             )
-            return try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+            return try ConfigurationTransferCodec.encode(transfer, password: password)
         } catch {
             alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
             return nil
@@ -353,9 +353,9 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
-    func importConfiguration(from data: Data, password: String) -> ConfigurationImportResult? {
+    func importConfiguration(from data: Data, password: String?) -> ConfigurationImportResult? {
         do {
-            let transfer = try EncryptedConfigurationTransferCodec.decode(data, password: password)
+            let transfer = try ConfigurationTransferCodec.decode(data, password: password)
             return try applyImportedConfiguration(transfer)
         } catch {
             alertMessage = "The configuration could not be imported: \(error.localizedDescription)"

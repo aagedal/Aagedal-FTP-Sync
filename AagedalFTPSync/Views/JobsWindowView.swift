@@ -58,7 +58,7 @@ struct JobsWindowView: View {
                         .keyboardShortcut("n", modifiers: .command)
                         Spacer()
                         Menu {
-                            Button("Import Encrypted Package…", systemImage: "square.and.arrow.down") {
+                            Button("Import Configuration Package…", systemImage: "square.and.arrow.down") {
                                 showConfigurationImporter = true
                             }
 
@@ -75,7 +75,7 @@ struct JobsWindowView: View {
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .help("Import or export encrypted configuration packages")
+                        .help("Import or export configuration packages")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -125,7 +125,7 @@ struct JobsWindowView: View {
             }
         }
         .sheet(item: $pendingTransfer) { transfer in
-            ConfigurationTransferPasswordView(
+            ConfigurationTransferOptionsView(
                 operation: transfer.operation,
                 onExport: prepareConfigurationExport,
                 onImport: importConfiguration
@@ -172,11 +172,12 @@ struct JobsWindowView: View {
             let hasAccess = url.startAccessingSecurityScopedResource()
             defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
             let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard fileSize <= EncryptedConfigurationTransferCodec.maximumFileSize else {
+            guard fileSize <= ConfigurationTransferCodec.maximumFileSize else {
                 throw ConfigurationTransferError.fileTooLarge
             }
             let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-            pendingTransfer = PendingConfigurationTransfer(operation: .importPackage(data))
+            let protection = try ConfigurationTransferCodec.protection(of: data)
+            pendingTransfer = PendingConfigurationTransfer(operation: .importPackage(data, protection))
         } catch {
             store.alertMessage = "The configuration could not be opened: \(error.localizedDescription)"
         }
@@ -184,7 +185,7 @@ struct JobsWindowView: View {
 
     private func prepareConfigurationExport(
         _ scope: ConfigurationTransferScope,
-        _ password: String
+        _ password: String?
     ) -> Bool {
         guard let data = store.configurationExportData(scope: scope, password: password) else { return false }
         exportDocument = ConfigurationTransferFile(data: data)
@@ -193,7 +194,7 @@ struct JobsWindowView: View {
         return true
     }
 
-    private func importConfiguration(_ data: Data, _ password: String) -> Bool {
+    private func importConfiguration(_ data: Data, _ password: String?) -> Bool {
         guard let result = store.importConfiguration(from: data, password: password) else { return false }
         importSummary = result.summary
         return true

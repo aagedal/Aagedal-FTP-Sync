@@ -31,7 +31,7 @@ struct ConfigurationTransferFile: FileDocument {
 
 enum ConfigurationTransferOperation {
     case export(ConfigurationTransferScope)
-    case importPackage(Data)
+    case importPackage(Data, ConfigurationTransferProtection)
 }
 
 struct PendingConfigurationTransfer: Identifiable {
@@ -39,32 +39,50 @@ struct PendingConfigurationTransfer: Identifiable {
     let operation: ConfigurationTransferOperation
 }
 
-struct ConfigurationTransferPasswordView: View {
+struct ConfigurationTransferOptionsView: View {
     @Environment(\.dismiss) private var dismiss
 
     let operation: ConfigurationTransferOperation
-    let onExport: (ConfigurationTransferScope, String) -> Bool
-    let onImport: (Data, String) -> Bool
+    let onExport: (ConfigurationTransferScope, String?) -> Bool
+    let onImport: (Data, String?) -> Bool
 
+    @State private var encryptPackage = true
     @State private var password = ""
     @State private var confirmation = ""
     @State private var validationMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Label(title, systemImage: isExport ? "lock.doc" : "lock.open")
+            Label(title, systemImage: titleSymbol)
                 .font(.title2.weight(.semibold))
 
             Text(explanation)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            SecureField("Package password", text: $password)
-                .textContentType(.password)
-
             if isExport {
+                Toggle("Encrypt package with a password", isOn: $encryptPackage)
+                    .toggleStyle(.switch)
+            }
+
+            if requiresPassword {
+                SecureField("Package password", text: $password)
+                    .textContentType(.password)
+            }
+
+            if isExport && encryptPackage {
                 SecureField("Confirm password", text: $confirmation)
                     .textContentType(.newPassword)
+            }
+
+            if !requiresPassword {
+                Label(
+                    "This package is not encrypted. Anyone who can open it can read its server addresses, usernames, paths, and metadata programming.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             if let validationMessage {
@@ -82,7 +100,7 @@ struct ConfigurationTransferPasswordView: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button(actionTitle, action: submit)
                     .buttonStyle(.borderedProminent)
-                    .disabled(password.isEmpty)
+                    .disabled(requiresPassword && password.isEmpty)
             }
         }
         .padding(24)
@@ -97,7 +115,24 @@ struct ConfigurationTransferPasswordView: View {
     private var title: String {
         switch operation {
         case .export(let scope): "Export \(scope.title)"
-        case .importPackage: "Import Encrypted Package"
+        case .importPackage(_, .encrypted): "Import Encrypted Package"
+        case .importPackage(_, .unencrypted): "Import Unencrypted Package"
+        }
+    }
+
+    private var titleSymbol: String {
+        switch operation {
+        case .export: encryptPackage ? "lock.doc" : "doc"
+        case .importPackage(_, .encrypted): "lock.open"
+        case .importPackage(_, .unencrypted): "doc"
+        }
+    }
+
+    private var requiresPassword: Bool {
+        switch operation {
+        case .export: encryptPackage
+        case .importPackage(_, .encrypted): true
+        case .importPackage(_, .unencrypted): false
         }
     }
 
@@ -105,8 +140,10 @@ struct ConfigurationTransferPasswordView: View {
 
     private var explanation: String {
         switch operation {
+        case .export where encryptPackage:
+            "Encryption is recommended. Choose a password that will be required when this package is imported."
         case .export:
-            "Choose a password for this encrypted package. The same password is required when it is imported."
+            "You can export without encryption because passwords and folder-access bookmarks are excluded."
         case .importPackage:
             "Imported jobs are added as disabled copies. A metadata-only package replaces programming on jobs matched by ID or a unique job name."
         }
@@ -120,17 +157,19 @@ struct ConfigurationTransferPasswordView: View {
         validationMessage = nil
         switch operation {
         case .export(let scope):
-            guard password.count >= EncryptedConfigurationTransferCodec.minimumPasswordLength else {
-                validationMessage = "Use at least \(EncryptedConfigurationTransferCodec.minimumPasswordLength) characters."
-                return
+            if encryptPackage {
+                guard password.count >= ConfigurationTransferCodec.minimumPasswordLength else {
+                    validationMessage = "Use at least \(ConfigurationTransferCodec.minimumPasswordLength) characters."
+                    return
+                }
+                guard password == confirmation else {
+                    validationMessage = "The passwords do not match."
+                    return
+                }
             }
-            guard password == confirmation else {
-                validationMessage = "The passwords do not match."
-                return
-            }
-            if onExport(scope, password) { dismiss() }
-        case .importPackage(let data):
-            if onImport(data, password) { dismiss() }
+            if onExport(scope, encryptPackage ? password : nil) { dismiss() }
+        case .importPackage(let data, let protection):
+            if onImport(data, protection == .encrypted ? password : nil) { dismiss() }
         }
     }
 }

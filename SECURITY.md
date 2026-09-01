@@ -40,6 +40,6 @@ The Citadel and SwiftNIO SSH baselines require manual comparison with their upst
 
 ## Configuration package security
 
-The `.aftpsync` extension identifies an Aagedal FTP Sync configuration package; the extension itself is not a security boundary. Package contents are encrypted and authenticated with AES-256-GCM. A 256-bit key is derived from a user password of at least 12 characters using PBKDF2-HMAC-SHA256 with a random 128-bit salt and 600,000 iterations.
+The `.aftpsync` extension identifies an Aagedal FTP Sync configuration package; the extension itself is not a security boundary. Encryption is enabled by default but can be explicitly turned off. Encrypted package contents use AES-256-GCM authenticated encryption. A 256-bit key is derived from a user password of at least 12 characters using PBKDF2-HMAC-SHA256 with a random 128-bit salt and 600,000 iterations. Unencrypted packages can expose server addresses, usernames, paths, and editorial metadata, and the export UI warns about this before saving.
 
 Exports deliberately omit passwords stored in Keychain and machine-bound security-scoped folder bookmarks. Imports create disabled jobs with fresh job and credential identifiers, and users must grant folder access and enter server passwords again. The importer rejects oversized files, unsupported or excessive key-derivation parameters, inconsistent package scopes, authentication failures, and malformed contents.

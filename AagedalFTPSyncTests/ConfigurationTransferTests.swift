@@ -15,8 +15,8 @@ final class ConfigurationTransferTests: XCTestCase {
             exportedAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
 
-        let encrypted = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
-        let decoded = try EncryptedConfigurationTransferCodec.decode(encrypted, password: password)
+        let encrypted = try ConfigurationTransferCodec.encode(transfer, password: password)
+        let decoded = try ConfigurationTransferCodec.decode(encrypted, password: password)
 
         XCTAssertEqual(decoded.scope, .package)
         XCTAssertEqual(decoded.jobs.count, 1)
@@ -29,6 +29,44 @@ final class ConfigurationTransferTests: XCTestCase {
         XCTAssertEqual(decoded.metadataProgramming[0].automation, fixture.job.metadataAutomation)
         XCTAssertEqual(decoded.metadataPresets, [fixture.preset])
         XCTAssertEqual(decoded.photographers, [fixture.photographer])
+    }
+
+    func testPackageCanRoundTripWithoutEncryption() throws {
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .package,
+            jobs: [fixture.job],
+            metadataPresets: [fixture.preset],
+            photographers: [fixture.photographer]
+        )
+
+        let unencrypted = try ConfigurationTransferCodec.encode(transfer, password: nil)
+        let decoded = try ConfigurationTransferCodec.decode(unencrypted, password: nil)
+
+        XCTAssertEqual(try ConfigurationTransferCodec.protection(of: unencrypted), .unencrypted)
+        XCTAssertEqual(decoded.scope, .package)
+        XCTAssertEqual(decoded.jobs.map(\.name), [fixture.job.name])
+        XCTAssertNil(decoded.jobs[0].left.bookmark)
+        XCTAssertEqual(decoded.metadataProgramming[0].automation, fixture.job.metadataAutomation)
+        let text = String(decoding: unencrypted, as: UTF8.self)
+        XCTAssertTrue(text.contains(fixture.job.name))
+        XCTAssertTrue(text.contains(fixture.job.left.host))
+    }
+
+    func testEncryptedPackageReportsThatPasswordIsRequired() throws {
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [fixture.job],
+            metadataPresets: [],
+            photographers: []
+        )
+        let encrypted = try ConfigurationTransferCodec.encode(transfer, password: password)
+
+        XCTAssertEqual(try ConfigurationTransferCodec.protection(of: encrypted), .encrypted)
+        XCTAssertThrowsError(try ConfigurationTransferCodec.decode(encrypted, password: nil)) { error in
+            XCTAssertEqual(error as? ConfigurationTransferError, .passwordRequired)
+        }
     }
 
     func testSeparateScopesContainOnlyRequestedContent() throws {
@@ -64,10 +102,10 @@ final class ConfigurationTransferTests: XCTestCase {
             metadataPresets: [],
             photographers: []
         )
-        let encrypted = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+        let encrypted = try ConfigurationTransferCodec.encode(transfer, password: password)
 
         XCTAssertThrowsError(
-            try EncryptedConfigurationTransferCodec.decode(encrypted, password: "this is the wrong password")
+            try ConfigurationTransferCodec.decode(encrypted, password: "this is the wrong password")
         ) { error in
             XCTAssertEqual(error as? ConfigurationTransferError, .wrongPasswordOrDamagedFile)
         }
@@ -79,7 +117,7 @@ final class ConfigurationTransferTests: XCTestCase {
         let tampered = try JSONSerialization.data(withJSONObject: object)
 
         XCTAssertThrowsError(
-            try EncryptedConfigurationTransferCodec.decode(tampered, password: password)
+            try ConfigurationTransferCodec.decode(tampered, password: password)
         ) { error in
             XCTAssertEqual(error as? ConfigurationTransferError, .wrongPasswordOrDamagedFile)
         }
@@ -93,7 +131,7 @@ final class ConfigurationTransferTests: XCTestCase {
             metadataPresets: [fixture.preset],
             photographers: [fixture.photographer]
         )
-        let encrypted = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+        let encrypted = try ConfigurationTransferCodec.encode(transfer, password: password)
         let outerText = String(decoding: encrypted, as: UTF8.self)
 
         XCTAssertFalse(outerText.contains(fixture.job.name))
@@ -112,7 +150,7 @@ final class ConfigurationTransferTests: XCTestCase {
         )
 
         XCTAssertThrowsError(
-            try EncryptedConfigurationTransferCodec.encode(transfer, password: "too short")
+            try ConfigurationTransferCodec.encode(transfer, password: "too short")
         ) { error in
             XCTAssertEqual(error as? ConfigurationTransferError, .passwordTooShort)
         }
@@ -149,7 +187,7 @@ final class ConfigurationTransferTests: XCTestCase {
             metadataPresets: [fixture.preset],
             photographers: [fixture.photographer]
         )
-        let data = try EncryptedConfigurationTransferCodec.encode(transfer, password: password)
+        let data = try ConfigurationTransferCodec.encode(transfer, password: password)
         let store = AppStore(
             repository: jobRepository,
             metadataPresetRepository: presetRepository,
