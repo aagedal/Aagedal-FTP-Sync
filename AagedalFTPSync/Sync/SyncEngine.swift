@@ -637,6 +637,7 @@ struct SyncEngine: Sendable {
                     file,
                     from: source,
                     to: destination,
+                    existingDestinationFiles: destinationFiles,
                     processedDestination: processedDestination,
                     occupiedProcessedPaths: occupiedProcessedPaths,
                     existingProcessedFiles: processedFiles,
@@ -760,6 +761,7 @@ struct SyncEngine: Sendable {
                     file,
                     from: source,
                     to: destination,
+                    existingDestinationFiles: [:],
                     processedDestination: nil,
                     occupiedProcessedPaths: [],
                     existingProcessedFiles: [:],
@@ -814,6 +816,7 @@ struct SyncEngine: Sendable {
         _ file: SyncFile,
         from source: any EndpointSession,
         to destination: any EndpointSession,
+        existingDestinationFiles: [String: SyncFile],
         processedDestination: (any EndpointSession)?,
         occupiedProcessedPaths: Set<String>,
         existingProcessedFiles: [String: SyncFile],
@@ -953,20 +956,18 @@ struct SyncEngine: Sendable {
             }
         }
 
-        try await destination.importFile(
-            from: importedURL,
-            as: importedFile,
+        var destinationImports = [EndpointFileImport(localURL: importedURL, file: importedFile)]
+        if let sidecarImport {
+            destinationImports.append(
+                EndpointFileImport(localURL: sidecarImport.url, file: sidecarImport.file)
+            )
+        }
+        try await destination.importFilesTransactionally(
+            destinationImports,
+            replacing: existingDestinationFiles,
             preserveDate: preserveDate,
             verifySize: verifySize
         )
-        if let sidecarImport {
-            try await destination.importFile(
-                from: sidecarImport.url,
-                as: sidecarImport.file,
-                preserveDate: preserveDate,
-                verifySize: verifySize
-            )
-        }
         var movedToProcessed = false
         var publishedProcessedPaths = Set<String>()
         if auditEntry?.status == .applied,

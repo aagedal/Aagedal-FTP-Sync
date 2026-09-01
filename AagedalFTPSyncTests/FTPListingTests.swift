@@ -3,6 +3,128 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FTPListingTests: XCTestCase {
+    func testCompanionFailureRemovesNewPrimaryFile() async throws {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let primary = SyncFile(relativePath: "NEWS.CR3", size: 5, modifiedAt: baseDate)
+        let sidecar = SyncFile(relativePath: "NEWS.xmp", size: 6, modifiedAt: baseDate)
+        let timeline = FastStartTimeline()
+        let source = FastStartSource(
+            files: [primary.relativePath: primary, sidecar.relativePath: sidecar],
+            timeline: timeline
+        )
+        let destination = PartialFailureDestination(failedImportPath: sidecar.relativePath)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        do {
+            _ = try await engine.run(
+                job: partialFailureJob(),
+                leftPassword: "secret",
+                rightPassword: nil
+            )
+            XCTFail("The companion import should fail")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.failureDescription, "Injected import failure for NEWS.xmp")
+            XCTAssertEqual(failure.partialResult, SyncResult(transferred: 0, deleted: 0))
+        }
+
+        let storedPaths = await destination.storedPaths
+        XCTAssertEqual(storedPaths, [])
+    }
+
+    func testCompanionFailureRestoresExistingPrimaryAndSidecar() async throws {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let existingPrimary = SyncFile(relativePath: "NEWS.CR3", size: 3, modifiedAt: baseDate)
+        let existingSidecar = SyncFile(relativePath: "NEWS.xmp", size: 4, modifiedAt: baseDate)
+        let incomingPrimary = SyncFile(
+            relativePath: existingPrimary.relativePath,
+            size: 7,
+            modifiedAt: baseDate.addingTimeInterval(10)
+        )
+        let incomingSidecar = SyncFile(
+            relativePath: existingSidecar.relativePath,
+            size: 8,
+            modifiedAt: baseDate.addingTimeInterval(10)
+        )
+        let timeline = FastStartTimeline()
+        let source = FastStartSource(
+            files: [
+                incomingPrimary.relativePath: incomingPrimary,
+                incomingSidecar.relativePath: incomingSidecar,
+            ],
+            timeline: timeline
+        )
+        let originalFiles = [
+            existingPrimary.relativePath: existingPrimary,
+            existingSidecar.relativePath: existingSidecar,
+        ]
+        let destination = PartialFailureDestination(
+            files: originalFiles,
+            failedImportPath: incomingSidecar.relativePath
+        )
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        do {
+            _ = try await engine.run(
+                job: partialFailureJob(),
+                leftPassword: "secret",
+                rightPassword: nil
+            )
+            XCTFail("The companion import should fail")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.partialResult, SyncResult(transferred: 0, deleted: 0))
+        }
+
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(storedFiles, originalFiles)
+    }
+
+    func testCancellationDuringCompanionPublicationRollsBackAndRemainsCancellation() async throws {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let primary = SyncFile(relativePath: "NEWS.CR3", size: 5, modifiedAt: baseDate)
+        let sidecar = SyncFile(relativePath: "NEWS.xmp", size: 6, modifiedAt: baseDate)
+        let timeline = FastStartTimeline()
+        let source = FastStartSource(
+            files: [primary.relativePath: primary, sidecar.relativePath: sidecar],
+            timeline: timeline
+        )
+        let destination = PartialFailureDestination(blockedImportPath: sidecar.relativePath)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+        let job = partialFailureJob()
+        let runTask = Task {
+            try await engine.run(
+                job: job,
+                leftPassword: "secret",
+                rightPassword: nil
+            )
+        }
+
+        var publishedPrimary = false
+        for _ in 0..<200 {
+            if await destination.storedPaths.contains(primary.relativePath) {
+                publishedPrimary = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(publishedPrimary)
+        runTask.cancel()
+
+        do {
+            _ = try await runTask.value
+            XCTFail("The run should remain cancelled")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let storedPaths = await destination.storedPaths
+        XCTAssertEqual(storedPaths, [])
+    }
+
     func testLaterTransferFailureReportsEarlierCompletedFiles() async throws {
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
         let completed = SyncFile(
@@ -419,18 +541,22 @@ private actor PartialFailureDestination: EndpointSession {
     private var files: [String: SyncFile]
     private let failedImportPath: String?
     private let failedDeletePath: String?
+    private let blockedImportPath: String?
 
     init(
         files: [String: SyncFile] = [:],
         failedImportPath: String? = nil,
-        failedDeletePath: String? = nil
+        failedDeletePath: String? = nil,
+        blockedImportPath: String? = nil
     ) {
         self.files = files
         self.failedImportPath = failedImportPath
         self.failedDeletePath = failedDeletePath
+        self.blockedImportPath = blockedImportPath
     }
 
     var storedPaths: Set<String> { Set(files.keys) }
+    var storedFiles: [String: SyncFile] { files }
 
     func listFiles() async throws -> [String: SyncFile] { files }
 
@@ -447,6 +573,9 @@ private actor PartialFailureDestination: EndpointSession {
         if file.relativePath == failedImportPath {
             throw AppError.transferFailed("Injected import failure for \(file.relativePath)")
         }
+        if file.relativePath == blockedImportPath {
+            try await Task.sleep(for: .seconds(10))
+        }
         files[file.relativePath] = file
     }
 
@@ -457,5 +586,9 @@ private actor PartialFailureDestination: EndpointSession {
         guard let current = files[file.relativePath], current.modifiedAt < cutoff else { return false }
         files[file.relativePath] = nil
         return true
+    }
+
+    func removeFile(_ file: SyncFile) async throws {
+        files[file.relativePath] = nil
     }
 }

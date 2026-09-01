@@ -1,5 +1,10 @@
 import Foundation
 
+struct EndpointFileImport: Sendable {
+    let localURL: URL
+    let file: SyncFile
+}
+
 enum TransactionalRemoval {
     static func stageAndDelete<Item>(
         sources: [Item],
@@ -76,6 +81,12 @@ protocol EndpointSession: Sendable {
         preserveDate: Bool,
         verifySize: Bool
     ) async throws
+    func importFilesTransactionally(
+        _ imports: [EndpointFileImport],
+        replacing existingFiles: [String: SyncFile],
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws
     func importFileIfAbsent(
         from localURL: URL,
         as file: SyncFile,
@@ -99,6 +110,97 @@ extension EndpointSession {
 
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
         throw AppError.invalidConfiguration("Cleanup was attempted on an unsupported target.")
+    }
+
+    func importFilesTransactionally(
+        _ imports: [EndpointFileImport],
+        replacing existingFiles: [String: SyncFile],
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        guard imports.count > 1 else {
+            if let item = imports.first {
+                try await importFile(
+                    from: item.localURL,
+                    as: item.file,
+                    preserveDate: preserveDate,
+                    verifySize: verifySize
+                )
+            }
+            return
+        }
+
+        guard Set(imports.map(\.file.relativePath)).count == imports.count else {
+            throw AppError.transferFailed("A destination output group contained duplicate paths.")
+        }
+
+        let fileManager = FileManager.default
+        var backups: [String: (url: URL, file: SyncFile)] = [:]
+        var backupURLs: [URL] = []
+        defer {
+            for backupURL in backupURLs {
+                try? fileManager.removeItem(at: backupURL)
+            }
+        }
+
+        // Capture every previous output before publishing any member of the
+        // group. Individual endpoint imports are atomic, so these snapshots
+        // are sufficient to restore the complete pre-publication state.
+        for item in imports {
+            guard let existing = existingFiles[item.file.relativePath] else { continue }
+            let backupURL = fileManager.temporaryDirectory.appendingPathComponent(
+                ".aagedal-sync-\(UUID().uuidString).rollback"
+            )
+            backupURLs.append(backupURL)
+            try await exportFile(existing, to: backupURL)
+            backups[item.file.relativePath] = (backupURL, existing)
+        }
+
+        var published: [EndpointFileImport] = []
+        do {
+            for item in imports {
+                try await importFile(
+                    from: item.localURL,
+                    as: item.file,
+                    preserveDate: preserveDate,
+                    verifySize: verifySize
+                )
+                published.append(item)
+            }
+        } catch {
+            let publicationError = error
+            // A cancelled parent task must not cancel the repair itself. Run
+            // rollback in a fresh task, then preserve cancellation if repair
+            // restored the complete pre-publication state.
+            let rollbackFailures = await Task.detached { [published, backups] in
+                var failures: [String] = []
+                for item in published.reversed() {
+                    do {
+                        if let backup = backups[item.file.relativePath] {
+                            try await importFile(
+                                from: backup.url,
+                                as: backup.file,
+                                preserveDate: true,
+                                verifySize: true
+                            )
+                        } else {
+                            try await removeFile(item.file)
+                        }
+                    } catch {
+                        failures.append(item.file.relativePath)
+                    }
+                }
+                return failures
+            }.value
+
+            if !rollbackFailures.isEmpty {
+                throw AppError.transferFailed(
+                    "The primary file and its companion could not be published, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The destination may contain an incomplete output group. Publication error: \(publicationError.localizedDescription)"
+                )
+            }
+            if publicationError is CancellationError { throw CancellationError() }
+            throw publicationError
+        }
     }
 
     func importFileIfAbsent(
