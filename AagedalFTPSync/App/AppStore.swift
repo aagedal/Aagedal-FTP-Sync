@@ -254,25 +254,18 @@ final class AppStore: ObservableObject {
         let previousJob = jobs.first(where: { $0.id == job.id })
         let wasEnabled = previousJob?.isEnabled ?? false
         do {
-            try persistenceCoordinator.savePasswords(
+            let result = try persistenceCoordinator.saveJob(
+                previousJobs: jobs,
+                draftJob: job,
                 leftPassword: leftPassword,
-                rightPassword: rightPassword,
-                for: job
+                rightPassword: rightPassword
             )
-            var updatedJobs = jobs
-            if let index = updatedJobs.firstIndex(where: { $0.id == job.id }) { updatedJobs[index] = job }
-            else { updatedJobs.append(job) }
-            try persistenceCoordinator.saveJobs(updatedJobs)
-            jobs = updatedJobs
-
-            if let previousJob {
-                persistenceCoordinator.removeCredentialsNoLongerUsed(
-                    previousJob: previousJob,
-                    updatedJob: job
-                )
+            jobs = result.jobs
+            for warning in result.cleanupWarnings {
+                appendAlert("An obsolete saved password could not be removed: \(warning)")
             }
-            if job.isEnabled, !wasEnabled { transferTotals.reset(jobID: job.id) }
-            scheduler.reschedule(job.id, job: job)
+            if result.savedJob.isEnabled, !wasEnabled { transferTotals.reset(jobID: result.savedJob.id) }
+            scheduler.reschedule(result.savedJob.id, job: result.savedJob)
             return true
         } catch {
             alertMessage = error.localizedDescription
@@ -678,7 +671,9 @@ final class AppStore: ObservableObject {
         guard persistAndPublishJobs(updatedJobs, errorPrefix: "The job could not be deleted") else { return }
 
         scheduler.cancel(jobID)
-        persistenceCoordinator.removeCredentials(for: job)
+        for warning in persistenceCoordinator.removeCredentials(for: job, retainedJobs: updatedJobs) {
+            appendAlert("A saved password for the deleted job could not be removed: \(warning)")
+        }
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }
         phases[jobID] = nil
         metadataReprocessPhases[jobID] = nil
@@ -831,8 +826,8 @@ final class AppStore: ObservableObject {
         scheduler.restart(with: jobs)
     }
 
-    func password(for endpoint: Endpoint) -> String {
-        (try? persistenceCoordinator.password(for: endpoint)) ?? ""
+    func password(for endpoint: Endpoint) throws -> String {
+        try persistenceCoordinator.password(for: endpoint) ?? ""
     }
 
     var activeCount: Int { jobs.filter(\.isEnabled).count }

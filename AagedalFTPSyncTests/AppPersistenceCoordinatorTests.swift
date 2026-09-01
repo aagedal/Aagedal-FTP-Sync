@@ -107,6 +107,153 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertEqual(try fixture.photographerProfileRepository.load(), [previousPhotographer])
         XCTAssertEqual(try fixture.jobRepository.load(), [previousJob])
     }
+
+    func testPasswordChangeUsesFreshCredentialAndCommitsBeforeRemovingOldPassword() throws {
+        let leftCredentialID = "left-old"
+        let rightCredentialID = "right-old"
+        let keychain = TestKeychain(values: [
+            leftCredentialID: "left-password",
+            rightCredentialID: "right-password"
+        ])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "credential-change", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let job = remoteJob(leftCredentialID: leftCredentialID, rightCredentialID: rightCredentialID)
+        try fixture.jobRepository.save([job])
+
+        var draft = job
+        draft.name = "Updated"
+        let result = try fixture.coordinator.saveJob(
+            previousJobs: [job],
+            draftJob: draft,
+            leftPassword: "new-left-password",
+            rightPassword: "right-password"
+        )
+
+        XCTAssertNotEqual(result.savedJob.left.credentialID, leftCredentialID)
+        XCTAssertEqual(result.savedJob.right.credentialID, rightCredentialID)
+        XCTAssertEqual(keychain.value(for: result.savedJob.left.credentialID), "new-left-password")
+        XCTAssertNil(keychain.value(for: leftCredentialID))
+        XCTAssertEqual(keychain.value(for: rightCredentialID), "right-password")
+        XCTAssertEqual(try fixture.jobRepository.load(), result.jobs)
+        XCTAssertTrue(result.cleanupWarnings.isEmpty)
+    }
+
+    func testFailedJobCommitRemovesStagedPasswordAndPreservesPreviousCredential() throws {
+        let credentialID = "durable-password"
+        let keychain = TestKeychain(values: [credentialID: "previous-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "credential-commit-failure", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        var job = remoteJob(leftCredentialID: credentialID)
+        job.right = .local
+        try fixture.jobRepository.save([job])
+        var unencodableDraft = job
+        unencodableDraft.intervalSeconds = .nan
+
+        XCTAssertThrowsError(try fixture.coordinator.saveJob(
+            previousJobs: [job],
+            draftJob: unencodableDraft,
+            leftPassword: "replacement-password",
+            rightPassword: ""
+        ))
+
+        XCTAssertEqual(keychain.valuesSnapshot(), [credentialID: "previous-password"])
+        XCTAssertEqual(try fixture.jobRepository.load(), [job])
+        XCTAssertEqual(keychain.writeCount, 1)
+        XCTAssertEqual(keychain.removedCredentialIDs.count, 1)
+        XCTAssertNotEqual(keychain.removedCredentialIDs.first, credentialID)
+    }
+
+    func testSecondEndpointPasswordFailureRollsBackFirstStagedPassword() throws {
+        let leftCredentialID = "left-existing"
+        let rightCredentialID = "right-existing"
+        let keychain = TestKeychain(
+            values: [leftCredentialID: "left-old", rightCredentialID: "right-old"],
+            failWriteNumber: 2
+        )
+        let fixture = try PersistenceCoordinatorFixture(prefix: "second-password-failure", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let job = remoteJob(leftCredentialID: leftCredentialID, rightCredentialID: rightCredentialID)
+        try fixture.jobRepository.save([job])
+
+        XCTAssertThrowsError(try fixture.coordinator.saveJob(
+            previousJobs: [job],
+            draftJob: job,
+            leftPassword: "left-new",
+            rightPassword: "right-new"
+        ))
+
+        XCTAssertEqual(keychain.valuesSnapshot(), [leftCredentialID: "left-old", rightCredentialID: "right-old"])
+        XCTAssertEqual(try fixture.jobRepository.load(), [job])
+        XCTAssertEqual(keychain.writeCount, 2)
+        XCTAssertEqual(keychain.removedCredentialIDs.count, 1)
+    }
+
+    func testEmptyPasswordExplicitlyRemovesPreviouslySavedPassword() throws {
+        let credentialID = "remove-me"
+        let keychain = TestKeychain(values: [credentialID: "saved-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "credential-removal", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        var job = remoteJob(leftCredentialID: credentialID)
+        job.right = .local
+        try fixture.jobRepository.save([job])
+
+        let result = try fixture.coordinator.saveJob(
+            previousJobs: [job],
+            draftJob: job,
+            leftPassword: "",
+            rightPassword: ""
+        )
+
+        XCTAssertNotEqual(result.savedJob.left.credentialID, credentialID)
+        XCTAssertNil(keychain.value(for: credentialID))
+        XCTAssertNil(keychain.value(for: result.savedJob.left.credentialID))
+        XCTAssertEqual(keychain.writeCount, 0)
+        XCTAssertEqual(keychain.removedCredentialIDs, [credentialID])
+    }
+
+    func testPasswordReadFailurePreventsAnyCredentialOrJobMutation() throws {
+        let credentialID = "unreadable"
+        let keychain = TestKeychain(values: [credentialID: "still-saved"], failingReadIDs: [credentialID])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "credential-read-failure", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        var job = remoteJob(leftCredentialID: credentialID)
+        job.right = .local
+        try fixture.jobRepository.save([job])
+
+        XCTAssertThrowsError(try fixture.coordinator.saveJob(
+            previousJobs: [job],
+            draftJob: job,
+            leftPassword: "replacement",
+            rightPassword: ""
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("test Keychain read failure"))
+        }
+
+        XCTAssertEqual(keychain.valuesSnapshot(), [credentialID: "still-saved"])
+        XCTAssertEqual(keychain.writeCount, 0)
+        XCTAssertEqual(try fixture.jobRepository.load(), [job])
+    }
+
+    private func remoteJob(leftCredentialID: String, rightCredentialID: String = "unused-right") -> SyncJob {
+        SyncJob(
+            name: "Remote job",
+            left: Endpoint(
+                kind: .sftp,
+                host: "source.example.com",
+                username: "source",
+                credentialID: leftCredentialID,
+                hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            ),
+            right: Endpoint(
+                kind: .ftps,
+                host: "target.example.com",
+                username: "target",
+                credentialID: rightCredentialID
+            ),
+            direction: .leftToRight,
+            isEnabled: false
+        )
+    }
 }
 
 private struct PersistenceCoordinatorFixture {
@@ -125,7 +272,7 @@ private struct PersistenceCoordinatorFixture {
     let coordinator: AppPersistenceCoordinator
 
     @MainActor
-    init(prefix: String) throws {
+    init(prefix: String, keychain: KeychainStore = KeychainStore()) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -147,7 +294,7 @@ private struct PersistenceCoordinatorFixture {
             photographerProfileRepository: photographerProfileRepository,
             metadataAuditRepository: metadataAuditRepository,
             syncFailureRepository: syncFailureRepository,
-            keychain: KeychainStore()
+            keychain: keychain
         )
     }
 
@@ -159,5 +306,61 @@ private struct PersistenceCoordinatorFixture {
 
     func removeTemporaryFiles() {
         try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private enum TestKeychainFailure: LocalizedError {
+    case read
+    case write
+
+    var errorDescription: String? {
+        switch self {
+        case .read: "A test Keychain read failure occurred."
+        case .write: "A test Keychain write failure occurred."
+        }
+    }
+}
+
+private final class TestKeychain: @unchecked Sendable {
+    private var values: [String: String]
+    private let failingReadIDs: Set<String>
+    private let failWriteNumber: Int?
+    private(set) var writeCount = 0
+    private(set) var removedCredentialIDs: [String] = []
+
+    init(
+        values: [String: String] = [:],
+        failingReadIDs: Set<String> = [],
+        failWriteNumber: Int? = nil
+    ) {
+        self.values = values
+        self.failingReadIDs = failingReadIDs
+        self.failWriteNumber = failWriteNumber
+    }
+
+    var store: KeychainStore {
+        KeychainStore(
+            passwordReader: { [self] credentialID in
+                if failingReadIDs.contains(credentialID) { throw TestKeychainFailure.read }
+                return values[credentialID]
+            },
+            passwordWriter: { [self] password, credentialID in
+                writeCount += 1
+                if writeCount == failWriteNumber { throw TestKeychainFailure.write }
+                values[credentialID] = password
+            },
+            passwordRemover: { [self] credentialID in
+                removedCredentialIDs.append(credentialID)
+                values[credentialID] = nil
+            }
+        )
+    }
+
+    func value(for credentialID: String) -> String? {
+        values[credentialID]
+    }
+
+    func valuesSnapshot() -> [String: String] {
+        values
     }
 }

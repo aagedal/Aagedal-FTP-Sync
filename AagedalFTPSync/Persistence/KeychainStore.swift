@@ -2,9 +2,40 @@ import Foundation
 import Security
 
 struct KeychainStore: Sendable {
-    private let service = "no.aagedal.AagedalFTPSync.credentials"
+    private static let service = "no.aagedal.AagedalFTPSync.credentials"
+    private let passwordReader: @Sendable (String) throws -> String?
+    private let passwordWriter: @Sendable (String, String) throws -> Void
+    private let passwordRemover: @Sendable (String) throws -> Void
+
+    init() {
+        passwordReader = KeychainStore.readPassword
+        passwordWriter = KeychainStore.writePassword
+        passwordRemover = KeychainStore.deletePassword
+    }
+
+    init(
+        passwordReader: @escaping @Sendable (String) throws -> String?,
+        passwordWriter: @escaping @Sendable (String, String) throws -> Void,
+        passwordRemover: @escaping @Sendable (String) throws -> Void
+    ) {
+        self.passwordReader = passwordReader
+        self.passwordWriter = passwordWriter
+        self.passwordRemover = passwordRemover
+    }
 
     func password(for credentialID: String) throws -> String? {
+        try passwordReader(credentialID)
+    }
+
+    func setPassword(_ password: String, for credentialID: String) throws {
+        try passwordWriter(password, credentialID)
+    }
+
+    func removePassword(for credentialID: String) throws {
+        try passwordRemover(credentialID)
+    }
+
+    private static func readPassword(for credentialID: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -23,7 +54,7 @@ struct KeychainStore: Sendable {
         return password
     }
 
-    func setPassword(_ password: String, for credentialID: String) throws {
+    private static func writePassword(_ password: String, for credentialID: String) throws {
         let key: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -42,12 +73,15 @@ struct KeychainStore: Sendable {
         }
     }
 
-    func removePassword(for credentialID: String) {
+    private static func deletePassword(for credentialID: String) throws {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: credentialID
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw AppError.transferFailed("Could not remove the password from Keychain (\(status)).")
+        }
     }
 }

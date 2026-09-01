@@ -14,6 +14,12 @@ struct AppPersistenceLoadResult: Sendable {
     let warnings: [String]
 }
 
+struct CredentialedJobSaveResult: Sendable {
+    let jobs: [SyncJob]
+    let savedJob: SyncJob
+    let cleanupWarnings: [String]
+}
+
 private struct AppPersistenceTransactionError: LocalizedError {
     let operation: Error
     let rollback: Error
@@ -234,31 +240,65 @@ final class AppPersistenceCoordinator {
         return password
     }
 
-    func savePasswords(leftPassword: String, rightPassword: String, for job: SyncJob) throws {
-        if job.left.kind.isRemote, !leftPassword.isEmpty {
-            try savePasswordIfNeeded(leftPassword, for: job.left.credentialID)
+    func saveJob(
+        previousJobs: [SyncJob],
+        draftJob: SyncJob,
+        leftPassword: String,
+        rightPassword: String
+    ) throws -> CredentialedJobSaveResult {
+        let previousJob = previousJobs.first(where: { $0.id == draftJob.id })
+        let leftUpdate = try prepareCredentialUpdate(
+            endpoint: draftJob.left,
+            previousEndpoint: previousJob?.left,
+            password: leftPassword
+        )
+        let rightUpdate = try prepareCredentialUpdate(
+            endpoint: draftJob.right,
+            previousEndpoint: previousJob?.right,
+            password: rightPassword
+        )
+
+        var stagedCredentialIDs: [String] = []
+        do {
+            for update in [leftUpdate, rightUpdate] {
+                guard let stagedPassword = update.stagedPassword else { continue }
+                try keychain.setPassword(stagedPassword, for: update.endpoint.credentialID)
+                cachedPasswords[update.endpoint.credentialID] = stagedPassword
+                loadedCredentialIDs.insert(update.endpoint.credentialID)
+                stagedCredentialIDs.append(update.endpoint.credentialID)
+            }
+        } catch {
+            throw rollbackStagedCredentials(stagedCredentialIDs, after: error)
         }
-        if job.right.kind.isRemote, !rightPassword.isEmpty {
-            try savePasswordIfNeeded(rightPassword, for: job.right.credentialID)
+
+        var savedJob = draftJob
+        savedJob.left = leftUpdate.endpoint
+        savedJob.right = rightUpdate.endpoint
+        var updatedJobs = previousJobs
+        if let index = updatedJobs.firstIndex(where: { $0.id == savedJob.id }) {
+            updatedJobs[index] = savedJob
+        } else {
+            updatedJobs.append(savedJob)
         }
+
+        do {
+            try jobRepository.save(updatedJobs)
+        } catch {
+            throw rollbackStagedCredentials(stagedCredentialIDs, after: error)
+        }
+
+        let previousCredentialIDs = credentialIDs(in: previousJob.map { [$0] } ?? [])
+        let retainedCredentialIDs = credentialIDs(in: updatedJobs)
+        let cleanupWarnings = removeCredentials(previousCredentialIDs.subtracting(retainedCredentialIDs))
+        return CredentialedJobSaveResult(
+            jobs: updatedJobs,
+            savedJob: savedJob,
+            cleanupWarnings: cleanupWarnings
+        )
     }
 
-    func removeCredentialsNoLongerUsed(previousJob: SyncJob, updatedJob: SyncJob) {
-        let previousIDs = Set([previousJob.left, previousJob.right]
-            .filter(\.kind.isRemote)
-            .map(\.credentialID))
-        let updatedIDs = Set([updatedJob.left, updatedJob.right]
-            .filter(\.kind.isRemote)
-            .map(\.credentialID))
-        for credentialID in previousIDs.subtracting(updatedIDs) {
-            removeCredential(credentialID)
-        }
-    }
-
-    func removeCredentials(for job: SyncJob) {
-        for credentialID in Set([job.left.credentialID, job.right.credentialID]) {
-            removeCredential(credentialID)
-        }
+    func removeCredentials(for job: SyncJob, retainedJobs: [SyncJob]) -> [String] {
+        removeCredentials(credentialIDs(in: [job]).subtracting(credentialIDs(in: retainedJobs)))
     }
 
     private func attemptRollback(_ operations: [() throws -> Void]) -> Error? {
@@ -273,19 +313,84 @@ final class AppPersistenceCoordinator {
         return failures.isEmpty ? nil : AppPersistenceRollbackError(failures: failures)
     }
 
-    private func savePasswordIfNeeded(_ password: String, for credentialID: String) throws {
-        if loadedCredentialIDs.contains(credentialID), cachedPasswords[credentialID] == password {
-            return
-        }
-        try keychain.setPassword(password, for: credentialID)
-        cachedPasswords[credentialID] = password
-        loadedCredentialIDs.insert(credentialID)
+    private struct CredentialUpdate {
+        let endpoint: Endpoint
+        let stagedPassword: String?
     }
 
-    private func removeCredential(_ credentialID: String) {
-        keychain.removePassword(for: credentialID)
-        cachedPasswords[credentialID] = nil
-        loadedCredentialIDs.remove(credentialID)
+    private func prepareCredentialUpdate(
+        endpoint: Endpoint,
+        previousEndpoint: Endpoint?,
+        password suppliedPassword: String
+    ) throws -> CredentialUpdate {
+        guard endpoint.kind.isRemote else {
+            return CredentialUpdate(endpoint: endpoint, stagedPassword: nil)
+        }
+
+        if let previousEndpoint, previousEndpoint.kind.isRemote {
+            let savedPassword = try password(forCredentialID: previousEndpoint.credentialID)
+            let requestedPassword = suppliedPassword.isEmpty ? nil : suppliedPassword
+            if savedPassword == requestedPassword {
+                var unchangedEndpoint = endpoint
+                unchangedEndpoint.credentialID = previousEndpoint.credentialID
+                return CredentialUpdate(endpoint: unchangedEndpoint, stagedPassword: nil)
+            }
+        }
+
+        var stagedEndpoint = endpoint
+        stagedEndpoint.credentialID = UUID().uuidString
+        return CredentialUpdate(
+            endpoint: stagedEndpoint,
+            stagedPassword: suppliedPassword.isEmpty ? nil : suppliedPassword
+        )
+    }
+
+    private func password(forCredentialID credentialID: String) throws -> String? {
+        if loadedCredentialIDs.contains(credentialID) {
+            return cachedPasswords[credentialID]
+        }
+        let password = try keychain.password(for: credentialID)
+        loadedCredentialIDs.insert(credentialID)
+        if let password { cachedPasswords[credentialID] = password }
+        return password
+    }
+
+    private func rollbackStagedCredentials(_ credentialIDs: [String], after operationError: Error) -> Error {
+        var rollbackFailures: [Error] = []
+        for credentialID in credentialIDs {
+            do {
+                try keychain.removePassword(for: credentialID)
+            } catch {
+                rollbackFailures.append(error)
+            }
+            cachedPasswords[credentialID] = nil
+            loadedCredentialIDs.remove(credentialID)
+        }
+        guard !rollbackFailures.isEmpty else { return operationError }
+        return AppPersistenceTransactionError(
+            operation: operationError,
+            rollback: AppPersistenceRollbackError(failures: rollbackFailures)
+        )
+    }
+
+    private func credentialIDs(in jobs: [SyncJob]) -> Set<String> {
+        Set(jobs.flatMap { job in
+            [job.left, job.right].filter(\.kind.isRemote).map(\.credentialID)
+        })
+    }
+
+    private func removeCredentials(_ credentialIDs: Set<String>) -> [String] {
+        var warnings: [String] = []
+        for credentialID in credentialIDs {
+            do {
+                try keychain.removePassword(for: credentialID)
+                cachedPasswords[credentialID] = nil
+                loadedCredentialIDs.remove(credentialID)
+            } catch {
+                warnings.append(error.localizedDescription)
+            }
+        }
+        return warnings
     }
 
     private static func mergedPhotographerLibrary(

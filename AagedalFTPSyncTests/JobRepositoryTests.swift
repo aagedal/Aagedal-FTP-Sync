@@ -561,6 +561,24 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertNotNil(store.alertMessage)
     }
 
+    func testPasswordReadFailureIsReturnedToTheEditor() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("password-read-error-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let endpoint = Endpoint(kind: .ftps, host: "photos.example.com", username: "desk")
+        let keychain = KeychainStore(
+            passwordReader: { _ in throw AppError.transferFailed("Injected Keychain read failure.") },
+            passwordWriter: { _, _ in },
+            passwordRemover: { _ in }
+        )
+        let store = makeStore(repository: repository, root: root, keychain: keychain)
+
+        XCTAssertThrowsError(try store.password(for: endpoint)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Injected Keychain read failure"))
+        }
+    }
+
     func testFailedEnableDoesNotPublishOrScheduleTheChange() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("failed-enable-\(UUID().uuidString)", isDirectory: true)
@@ -670,7 +688,11 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertNotNil(store.alertMessage)
     }
 
-    private func makeStore(repository: JobRepository, root: URL) -> AppStore {
+    private func makeStore(
+        repository: JobRepository,
+        root: URL,
+        keychain: KeychainStore = KeychainStore()
+    ) -> AppStore {
         AppStore(
             repository: repository,
             metadataPresetRepository: MetadataPresetRepository(
@@ -687,7 +709,8 @@ final class AppStorePersistenceTests: XCTestCase {
             ),
             sourceSignatureRepository: SourceSignatureRepository(
                 fileURL: root.appendingPathComponent("signatures.json")
-            )
+            ),
+            keychain: keychain
         )
     }
 }

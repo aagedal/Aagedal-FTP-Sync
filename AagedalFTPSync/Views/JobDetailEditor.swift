@@ -14,6 +14,8 @@ struct JobDetailEditor: View {
     @State private var showSyncFailureHistory = false
     @State private var showProcessedFolderPicker = false
     @State private var processedFolderError: String?
+    @State private var credentialLoadError: String?
+    @State private var showCredentialLoadError = false
 
     init(job: SyncJob) {
         _draft = State(initialValue: job)
@@ -210,18 +212,24 @@ struct JobDetailEditor: View {
                 Button("Sync Now") {
                     if save() { store.runNow(draft.id) }
                 }
-                .disabled(draft.validationMessage != nil || store.isJobBusy(draft.id))
+                .disabled(draft.validationMessage != nil || credentialLoadError != nil || store.isJobBusy(draft.id))
                 Button("Save") { save() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut("s", modifiers: .command)
-                    .disabled(draft.validationMessage != nil)
+                    .disabled(draft.validationMessage != nil || credentialLoadError != nil)
             }
             .padding(14)
         }
         .navigationTitle(draft.name)
         .onAppear {
-            leftPassword = store.password(for: draft.left)
-            rightPassword = store.password(for: draft.right)
+            do {
+                leftPassword = try store.password(for: draft.left)
+                rightPassword = try store.password(for: draft.right)
+                credentialLoadError = nil
+            } catch {
+                credentialLoadError = "Saved passwords could not be loaded from Keychain. No password changes will be saved until this is resolved. \(error.localizedDescription)"
+                showCredentialLoadError = true
+            }
         }
         .fileImporter(
             isPresented: $showProcessedFolderPicker,
@@ -253,6 +261,11 @@ struct JobDetailEditor: View {
             Button("OK") { processedFolderError = nil }
         } message: {
             Text(processedFolderError ?? "")
+        }
+        .alert("Saved Passwords", isPresented: $showCredentialLoadError) {
+            Button("OK") {}
+        } message: {
+            Text(credentialLoadError ?? "")
         }
         .confirmationDialog("Delete “\(draft.name)”?", isPresented: $showDeleteConfirmation) {
             Button("Delete Job", role: .destructive) { store.removeJob(draft.id) }
@@ -833,8 +846,16 @@ private struct EndpointEditor: View {
                     .frame(maxWidth: 180)
                 TextField("Username", text: $endpoint.username)
                     .textContentType(.username)
-                SecureField("Password", text: $password)
-                    .textContentType(.password)
+                HStack {
+                    SecureField("Password", text: $password)
+                        .textContentType(.password)
+                    if !password.isEmpty {
+                        Button("Remove Saved Password", role: .destructive) {
+                            password = ""
+                        }
+                        .help("The password is removed from Keychain when the job is saved.")
+                    }
+                }
                 TextField("Remote folder", text: $endpoint.remotePath, prompt: Text("/incoming"))
                 connectionTestControls
                 if endpoint.kind == .ftp {
