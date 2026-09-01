@@ -386,4 +386,66 @@ struct SyncResult: Equatable, Sendable {
         self.conflicts = conflicts
         self.metadataReport = metadataReport
     }
+
+    var hasActivity: Bool {
+        transferred > 0
+            || deleted > 0
+            || processed > 0
+            || !conflicts.isEmpty
+            || metadataReport.hasActivity
+    }
+
+    var summary: String? {
+        guard hasActivity else { return nil }
+        var parts: [String] = []
+        if transferred > 0 {
+            parts.append(transferred == 1 ? "1 file transferred" : "\(transferred) files transferred")
+        }
+        if deleted > 0 {
+            parts.append(deleted == 1 ? "1 target file deleted" : "\(deleted) target files deleted")
+        }
+        if processed > 0 {
+            parts.append(processed == 1 ? "1 source moved to processed" : "\(processed) sources moved to processed")
+        }
+        if conflicts.count == 1 {
+            parts.append("1 conflict skipped")
+        } else if conflicts.count > 1 {
+            parts.append("\(conflicts.count) conflicts skipped")
+        }
+        if metadataReport.hasActivity, transferred == 0 {
+            parts.append(metadataReport.entries.count == 1
+                ? "1 metadata decision recorded"
+                : "\(metadataReport.entries.count) metadata decisions recorded")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    func adding(_ other: SyncResult) -> SyncResult {
+        var combinedMetadataReport = metadataReport
+        combinedMetadataReport.append(contentsOf: other.metadataReport)
+        return SyncResult(
+            transferred: transferred + other.transferred,
+            deleted: deleted + other.deleted,
+            processed: processed + other.processed,
+            conflicts: Array(Set(conflicts).union(other.conflicts)).sorted(),
+            metadataReport: combinedMetadataReport
+        )
+    }
+}
+
+struct SyncRunFailure: LocalizedError, Sendable {
+    let failureDescription: String
+    let partialResult: SyncResult
+
+    init(_ error: any Error, partialResult: SyncResult) {
+        failureDescription = error.localizedDescription
+        self.partialResult = partialResult
+    }
+
+    init(failureDescription: String, partialResult: SyncResult) {
+        self.failureDescription = failureDescription
+        self.partialResult = partialResult
+    }
+
+    var errorDescription: String? { failureDescription }
 }

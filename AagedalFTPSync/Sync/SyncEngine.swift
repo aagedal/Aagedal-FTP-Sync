@@ -51,6 +51,18 @@ private struct TransferMetadataOutcome: Sendable {
     let publishedProcessedPaths: Set<String>
 }
 
+private struct TransferStepFailure: LocalizedError, Sendable {
+    let failureDescription: String
+    let outcome: TransferMetadataOutcome
+
+    init(_ error: any Error, outcome: TransferMetadataOutcome) {
+        failureDescription = error.localizedDescription
+        self.outcome = outcome
+    }
+
+    var errorDescription: String? { failureDescription }
+}
+
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
     private let sourceSignatureRepository: SourceSignatureRepository
@@ -162,24 +174,32 @@ struct SyncEngine: Sendable {
                 transferResult = (result.transferred, 0, .empty)
                 conflicts = result.conflicts
             }
-            let metadataReport = transferResult.metadataReport
-            let deleted = try await cleanupTargetIfNeeded(
-                job: job,
-                left: left,
-                leftFiles: leftFiles,
-                right: right,
-                rightFiles: rightFiles
+            let completedTransfers = SyncResult(
+                transferred: transferResult.transferred,
+                deleted: 0,
+                processed: transferResult.processed,
+                conflicts: conflicts,
+                metadataReport: transferResult.metadataReport
             )
+            let deleted: Int
+            do {
+                deleted = try await cleanupTargetIfNeeded(
+                    job: job,
+                    left: left,
+                    leftFiles: leftFiles,
+                    right: right,
+                    rightFiles: rightFiles
+                )
+            } catch let failure as SyncRunFailure {
+                throw SyncRunFailure(
+                    failureDescription: failure.failureDescription,
+                    partialResult: completedTransfers.adding(failure.partialResult)
+                )
+            }
             await left.close()
             await right.close()
             await processedDestination?.close()
-            return SyncResult(
-                transferred: transferResult.transferred,
-                deleted: deleted,
-                processed: transferResult.processed,
-                conflicts: conflicts,
-                metadataReport: metadataReport
-            )
+            return completedTransfers.adding(SyncResult(transferred: 0, deleted: deleted))
         } catch {
             await left.close()
             await right.close()
@@ -544,7 +564,16 @@ struct SyncEngine: Sendable {
         var deleted = 0
         for file in candidates {
             try Task.checkCancellation()
-            if try await target.deleteFile(file, ifOlderThan: cutoff) { deleted += 1 }
+            do {
+                if try await target.deleteFile(file, ifOlderThan: cutoff) { deleted += 1 }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw SyncRunFailure(
+                    error,
+                    partialResult: SyncResult(transferred: 0, deleted: deleted)
+                )
+            }
         }
         return deleted
     }
@@ -601,36 +630,90 @@ struct SyncEngine: Sendable {
         let runID = UUID()
         for file in candidates {
             try Task.checkCancellation()
-            let outcome = try await transfer(
-                file,
-                from: source,
-                to: destination,
-                processedDestination: processedDestination,
-                occupiedProcessedPaths: occupiedProcessedPaths,
-                existingProcessedFiles: processedFiles,
-                preserveDate: job.preserveModificationDates,
-                verifySize: job.verifyFileSizes,
-                metadataAutomation: job.metadataAutomation,
-                sortProcessedFilesByPhotographer: job.sortsProcessedFilesByPhotographer,
-                sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
-                    ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
-                    : nil,
-                jobID: job.id,
-                runID: runID
-            )
+            let outcome: TransferMetadataOutcome
+            var deferredFailureDescription: String?
+            do {
+                outcome = try await transfer(
+                    file,
+                    from: source,
+                    to: destination,
+                    processedDestination: processedDestination,
+                    occupiedProcessedPaths: occupiedProcessedPaths,
+                    existingProcessedFiles: processedFiles,
+                    preserveDate: job.preserveModificationDates,
+                    verifySize: job.verifyFileSizes,
+                    metadataAutomation: job.metadataAutomation,
+                    sortProcessedFilesByPhotographer: job.sortsProcessedFilesByPhotographer,
+                    sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                        ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
+                        : nil,
+                    jobID: job.id,
+                    runID: runID
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let failure as TransferStepFailure {
+                outcome = failure.outcome
+                deferredFailureDescription = failure.failureDescription
+            } catch {
+                throw SyncRunFailure(
+                    error,
+                    partialResult: SyncResult(
+                        transferred: transferred,
+                        deleted: 0,
+                        processed: processed,
+                        metadataReport: metadataReport
+                    )
+                )
+            }
             if let auditEntry = outcome.auditEntry {
                 metadataReport.append(auditEntry)
-            }
-            if outcome.embeddedMetadataApplied {
-                try await sourceSignatureRepository.record(
-                    file,
-                    jobID: job.id,
-                    sourceEndpoint: sourceEndpoint
-                )
             }
             if outcome.movedToProcessed { processed += 1 }
             occupiedProcessedPaths.formUnion(outcome.publishedProcessedPaths)
             transferred += 1
+            if outcome.embeddedMetadataApplied {
+                do {
+                    try await sourceSignatureRepository.record(
+                        file,
+                        jobID: job.id,
+                        sourceEndpoint: sourceEndpoint
+                    )
+                } catch {
+                    if let deferredFailureDescription {
+                        throw SyncRunFailure(
+                            failureDescription: deferredFailureDescription
+                                + " Source signature persistence also failed: \(error.localizedDescription)",
+                            partialResult: SyncResult(
+                                transferred: transferred,
+                                deleted: 0,
+                                processed: processed,
+                                metadataReport: metadataReport
+                            )
+                        )
+                    }
+                    throw SyncRunFailure(
+                        error,
+                        partialResult: SyncResult(
+                            transferred: transferred,
+                            deleted: 0,
+                            processed: processed,
+                            metadataReport: metadataReport
+                        )
+                    )
+                }
+            }
+            if let deferredFailureDescription {
+                throw SyncRunFailure(
+                    failureDescription: deferredFailureDescription,
+                    partialResult: SyncResult(
+                        transferred: transferred,
+                        deleted: 0,
+                        processed: processed,
+                        metadataReport: metadataReport
+                    )
+                )
+            }
         }
         return (transferred, processed, metadataReport)
     }
@@ -669,25 +752,40 @@ struct SyncEngine: Sendable {
             }
         }
         actions.sort { $0.0.modifiedAt > $1.0.modifiedAt }
+        var transferred = 0
         for (file, source, destination) in actions {
             try Task.checkCancellation()
-            _ = try await transfer(
-                file,
-                from: source,
-                to: destination,
-                processedDestination: nil,
-                occupiedProcessedPaths: [],
-                existingProcessedFiles: [:],
-                preserveDate: job.preserveModificationDates,
-                verifySize: job.verifyFileSizes,
-                metadataAutomation: nil,
-                sortProcessedFilesByPhotographer: false,
-                sourceSidecar: nil,
-                jobID: job.id,
-                runID: UUID()
-            )
+            do {
+                _ = try await transfer(
+                    file,
+                    from: source,
+                    to: destination,
+                    processedDestination: nil,
+                    occupiedProcessedPaths: [],
+                    existingProcessedFiles: [:],
+                    preserveDate: job.preserveModificationDates,
+                    verifySize: job.verifyFileSizes,
+                    metadataAutomation: nil,
+                    sortProcessedFilesByPhotographer: false,
+                    sourceSidecar: nil,
+                    jobID: job.id,
+                    runID: UUID()
+                )
+                transferred += 1
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw SyncRunFailure(
+                    error,
+                    partialResult: SyncResult(
+                        transferred: transferred,
+                        deleted: 0,
+                        conflicts: conflicts.sorted()
+                    )
+                )
+            }
         }
-        return (actions.count, conflicts.sorted())
+        return (transferred, conflicts.sorted())
     }
 
     private func needsTransfer(
@@ -874,69 +972,83 @@ struct SyncEngine: Sendable {
         if auditEntry?.status == .applied,
            let metadataAssignment,
            let processedDestination {
-            let processedFile = processedCopy(
-                of: importedFile,
-                assignment: metadataAssignment,
-                automation: activeAutomation,
-                sortedByPhotographer: sortProcessedFilesByPhotographer
-            )
-            var processedOutputs = [(localURL: importedURL, file: processedFile)]
-            if let sidecarImport {
-                let processedSidecar = processedCopy(
-                    of: sidecarImport.file,
+            do {
+                let processedFile = processedCopy(
+                    of: importedFile,
                     assignment: metadataAssignment,
                     automation: activeAutomation,
                     sortedByPhotographer: sortProcessedFilesByPhotographer
                 )
-                processedOutputs.append((sidecarImport.url, processedSidecar))
-            }
-            let outputPaths = processedOutputs.map { $0.file.relativePath }
-            let exactCollisions = outputPaths.filter(occupiedProcessedPaths.contains)
-            var outputsWereAlreadyPublished = false
-            if exactCollisions.count == outputPaths.count, !outputPaths.isEmpty {
-                outputsWereAlreadyPublished = try await processedOutputsMatch(
-                    processedOutputs,
-                    existingFiles: existingProcessedFiles,
-                    in: processedDestination
-                )
-            }
-
-            if !outputsWereAlreadyPublished {
-                try validateProcessedOutputPaths(
-                    outputPaths,
-                    occupiedPaths: occupiedProcessedPaths
-                )
-
-                var importedProcessedFiles: [SyncFile] = []
-                do {
-                    for output in processedOutputs {
-                        try await importProcessedFile(
-                            from: output.localURL,
-                            as: output.file,
-                            to: processedDestination
-                        )
-                        importedProcessedFiles.append(output.file)
-                    }
-                } catch {
-                    var rollbackFailures: [String] = []
-                    for importedFile in importedProcessedFiles.reversed() {
-                        do {
-                            try await processedDestination.removeFile(importedFile)
-                        } catch {
-                            rollbackFailures.append(importedFile.relativePath)
-                        }
-                    }
-                    if !rollbackFailures.isEmpty {
-                        throw AppError.transferFailed(
-                            "The processed RAW/XMP pair could not be completed, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The source was left untouched."
-                        )
-                    }
-                    throw error
+                var processedOutputs = [(localURL: importedURL, file: processedFile)]
+                if let sidecarImport {
+                    let processedSidecar = processedCopy(
+                        of: sidecarImport.file,
+                        assignment: metadataAssignment,
+                        automation: activeAutomation,
+                        sortedByPhotographer: sortProcessedFilesByPhotographer
+                    )
+                    processedOutputs.append((sidecarImport.url, processedSidecar))
                 }
+                let outputPaths = processedOutputs.map { $0.file.relativePath }
+                let exactCollisions = outputPaths.filter(occupiedProcessedPaths.contains)
+                var outputsWereAlreadyPublished = false
+                if exactCollisions.count == outputPaths.count, !outputPaths.isEmpty {
+                    outputsWereAlreadyPublished = try await processedOutputsMatch(
+                        processedOutputs,
+                        existingFiles: existingProcessedFiles,
+                        in: processedDestination
+                    )
+                }
+
+                if !outputsWereAlreadyPublished {
+                    try validateProcessedOutputPaths(
+                        outputPaths,
+                        occupiedPaths: occupiedProcessedPaths
+                    )
+
+                    var importedProcessedFiles: [SyncFile] = []
+                    do {
+                        for output in processedOutputs {
+                            try await importProcessedFile(
+                                from: output.localURL,
+                                as: output.file,
+                                to: processedDestination
+                            )
+                            importedProcessedFiles.append(output.file)
+                        }
+                    } catch {
+                        var rollbackFailures: [String] = []
+                        for importedFile in importedProcessedFiles.reversed() {
+                            do {
+                                try await processedDestination.removeFile(importedFile)
+                            } catch {
+                                rollbackFailures.append(importedFile.relativePath)
+                            }
+                        }
+                        if !rollbackFailures.isEmpty {
+                            throw AppError.transferFailed(
+                                "The processed RAW/XMP pair could not be completed, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The source was left untouched."
+                            )
+                        }
+                        throw error
+                    }
+                }
+                publishedProcessedPaths = Set(outputPaths)
+                try await source.removeFilesTransactionally([file] + (sourceSidecar.map { [$0] } ?? []))
+                movedToProcessed = true
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw TransferStepFailure(
+                    error,
+                    outcome: TransferMetadataOutcome(
+                        auditEntry: auditEntry,
+                        embeddedMetadataApplied: embeddedMetadataApplied,
+                        movedToProcessed: movedToProcessed,
+                        publishedProcessedPaths: publishedProcessedPaths
+                    )
+                )
             }
-            publishedProcessedPaths = Set(outputPaths)
-            try await source.removeFilesTransactionally([file] + (sourceSidecar.map { [$0] } ?? []))
-            movedToProcessed = true
         }
         return TransferMetadataOutcome(
             auditEntry: auditEntry,

@@ -706,8 +706,13 @@ final class LocalSyncIntegrationTests: XCTestCase {
         do {
             _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
             XCTFail("A processed sidecar collision should fail safely")
+        } catch let failure as SyncRunFailure {
+            XCTAssertTrue(failure.localizedDescription.contains("already contains a file"))
+            XCTAssertEqual(failure.partialResult.transferred, 1)
+            XCTAssertEqual(failure.partialResult.processed, 0)
+            XCTAssertEqual(failure.partialResult.metadataReport.applied, 1)
         } catch {
-            XCTAssertTrue(error.localizedDescription.contains("already contains a file"))
+            XCTFail("Expected a partial sync failure, got \(error)")
         }
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
@@ -831,8 +836,13 @@ final class LocalSyncIntegrationTests: XCTestCase {
         do {
             _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
             XCTFail("A processed-folder filename collision should fail safely")
+        } catch let failure as SyncRunFailure {
+            XCTAssertTrue(failure.localizedDescription.contains("already contains a file"))
+            XCTAssertEqual(failure.partialResult.transferred, 1)
+            XCTAssertEqual(failure.partialResult.processed, 0)
+            XCTAssertEqual(failure.partialResult.metadataReport.applied, 1)
         } catch {
-            XCTAssertTrue(error.localizedDescription.contains("already contains a file"))
+            XCTFail("Expected a partial sync failure, got \(error)")
         }
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))

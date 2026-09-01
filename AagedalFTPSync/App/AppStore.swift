@@ -937,6 +937,19 @@ final class AppStore: ObservableObject {
         } catch is CancellationError {
             phases[jobID] = .stopped
             attempt = .cancelled
+        } catch let failure as SyncRunFailure {
+            let partialResult = failure.partialResult
+            transferTotals.record(jobID: jobID, fileCount: partialResult.transferred)
+            recordMetadataAudit(partialResult.metadataReport, jobID: jobID)
+            let message: String
+            if let summary = partialResult.summary {
+                message = "Sync stopped after \(summary). \(failure.failureDescription)"
+            } else {
+                message = failure.failureDescription
+            }
+            recordSyncFailure(message, jobID: jobID)
+            phases[jobID] = .failed(message, retryAt: nil)
+            attempt = .failed(message)
         } catch {
             let message = error.localizedDescription
             recordSyncFailure(message, jobID: jobID)

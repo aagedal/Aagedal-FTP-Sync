@@ -3,6 +3,144 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FTPListingTests: XCTestCase {
+    func testLaterTransferFailureReportsEarlierCompletedFiles() async throws {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let completed = SyncFile(
+            relativePath: "FIRST.JPG",
+            size: 5,
+            modifiedAt: baseDate.addingTimeInterval(2)
+        )
+        let failed = SyncFile(
+            relativePath: "SECOND.JPG",
+            size: 6,
+            modifiedAt: baseDate.addingTimeInterval(1)
+        )
+        let timeline = FastStartTimeline()
+        let source = FastStartSource(
+            files: [completed.relativePath: completed, failed.relativePath: failed],
+            timeline: timeline
+        )
+        let destination = PartialFailureDestination(failedImportPath: failed.relativePath)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            if endpoint.kind.isRemote {
+                return source
+            }
+            return destination
+        })
+        let job = partialFailureJob()
+
+        do {
+            _ = try await engine.run(job: job, leftPassword: "secret", rightPassword: nil)
+            XCTFail("The second import should fail")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.failureDescription, "Injected import failure for SECOND.JPG")
+            XCTAssertEqual(failure.partialResult, SyncResult(transferred: 1, deleted: 0))
+        }
+
+        let storedPaths = await destination.storedPaths
+        XCTAssertEqual(storedPaths, [completed.relativePath])
+    }
+
+    func testCleanupFailureCombinesTransfersAndEarlierDeletions() async throws {
+        let now = Date()
+        let sourceFile = SyncFile(relativePath: "NEW.JPG", size: 3, modifiedAt: now)
+        let firstOldFile = SyncFile(
+            relativePath: "FIRST-OLD.JPG",
+            size: 1,
+            modifiedAt: now.addingTimeInterval(-4 * 3_600)
+        )
+        let failedOldFile = SyncFile(
+            relativePath: "SECOND-OLD.JPG",
+            size: 2,
+            modifiedAt: now.addingTimeInterval(-3 * 3_600)
+        )
+        let timeline = FastStartTimeline()
+        let source = FastStartSource(files: [sourceFile.relativePath: sourceFile], timeline: timeline)
+        let destination = PartialFailureDestination(
+            files: [
+                firstOldFile.relativePath: firstOldFile,
+                failedOldFile.relativePath: failedOldFile,
+            ],
+            failedDeletePath: failedOldFile.relativePath
+        )
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            if endpoint.kind.isRemote {
+                return source
+            }
+            return destination
+        })
+        var job = partialFailureJob()
+        job.filter.recentHours = 1
+        job.targetCleanup = TargetCleanup(olderThanHours: 2)
+
+        do {
+            _ = try await engine.run(job: job, leftPassword: "secret", rightPassword: nil)
+            XCTFail("The second cleanup deletion should fail")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.failureDescription, "Injected cleanup failure for SECOND-OLD.JPG")
+            XCTAssertEqual(failure.partialResult, SyncResult(transferred: 1, deleted: 1))
+        }
+
+        let storedPaths = await destination.storedPaths
+        XCTAssertEqual(storedPaths, Set([sourceFile.relativePath, failedOldFile.relativePath]))
+    }
+
+    @MainActor
+    func testAppStorePersistsAndDisplaysPartialTransferFailure() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("partial-result-store-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let completed = SyncFile(
+            relativePath: "FIRST.JPG",
+            size: 5,
+            modifiedAt: baseDate.addingTimeInterval(2)
+        )
+        let failed = SyncFile(
+            relativePath: "SECOND.JPG",
+            size: 6,
+            modifiedAt: baseDate.addingTimeInterval(1)
+        )
+        let timeline = FastStartTimeline()
+        let source = FastStartSource(
+            files: [completed.relativePath: completed, failed.relativePath: failed],
+            timeline: timeline
+        )
+        let destination = PartialFailureDestination(failedImportPath: failed.relativePath)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            if endpoint.kind.isRemote {
+                return source
+            }
+            return destination
+        })
+        let job = partialFailureJob()
+        try repository.save([job])
+        let store = AppStore(
+            repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(fileURL: root.appendingPathComponent("photographers.json")),
+            metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
+            syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
+            engine: engine
+        )
+
+        store.runNow(job.id)
+        for _ in 0..<200 where store.isJobBusy(job.id) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(store.isJobBusy(job.id))
+        XCTAssertEqual(store.transferredFileCount(for: job.id), 1)
+        guard case .failed(let message, _) = store.phases[job.id] else {
+            return XCTFail("Expected a failed phase")
+        }
+        XCTAssertTrue(message.contains("Sync stopped after 1 file transferred"))
+        XCTAssertEqual(store.syncFailureHistory(for: job.id).first?.message, message)
+    }
+
     func testRemoteSyncPublishesOnlyAfterFullListingValidation() async throws {
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
         let files = Dictionary(uniqueKeysWithValues: (0..<8).map { index in
@@ -184,6 +322,26 @@ final class FTPListingTests: XCTestCase {
         XCTAssertEqual(try buffer.nextLine(maximumBytes: 64), "221 bye")
         XCTAssertNil(try buffer.nextLine(maximumBytes: 64))
     }
+
+    private func partialFailureJob() -> SyncJob {
+        var job = SyncJob()
+        job.left = Endpoint(
+            kind: .ftp,
+            host: "photos.example.com",
+            username: "reporter",
+            remotePath: "/incoming"
+        )
+        job.right = Endpoint(
+            kind: .local,
+            localPath: "/mock-downloads",
+            bookmark: Data("mock".utf8)
+        )
+        job.direction = .leftToRight
+        job.filter = FileFilter(preset: .photos)
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        return job
+    }
 }
 
 private actor FastStartTimeline {
@@ -254,5 +412,50 @@ private actor FastStartDestination: EndpointFileLookupSession {
         files[file.relativePath] = file
         importCount += 1
         await timeline.append("import:\(file.relativePath)")
+    }
+}
+
+private actor PartialFailureDestination: EndpointSession {
+    private var files: [String: SyncFile]
+    private let failedImportPath: String?
+    private let failedDeletePath: String?
+
+    init(
+        files: [String: SyncFile] = [:],
+        failedImportPath: String? = nil,
+        failedDeletePath: String? = nil
+    ) {
+        self.files = files
+        self.failedImportPath = failedImportPath
+        self.failedDeletePath = failedDeletePath
+    }
+
+    var storedPaths: Set<String> { Set(files.keys) }
+
+    func listFiles() async throws -> [String: SyncFile] { files }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
+        try Data(repeating: UInt8(file.size), count: Int(file.size)).write(to: temporaryURL)
+    }
+
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        if file.relativePath == failedImportPath {
+            throw AppError.transferFailed("Injected import failure for \(file.relativePath)")
+        }
+        files[file.relativePath] = file
+    }
+
+    func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {
+        if file.relativePath == failedDeletePath {
+            throw AppError.transferFailed("Injected cleanup failure for \(file.relativePath)")
+        }
+        guard let current = files[file.relativePath], current.modifiedAt < cutoff else { return false }
+        files[file.relativePath] = nil
+        return true
     }
 }
