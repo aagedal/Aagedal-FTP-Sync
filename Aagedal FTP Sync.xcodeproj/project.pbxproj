@@ -38,6 +38,7 @@
 		744593AB9031434E395773DE /* EndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCF65723538BA23F95385AED /* EndpointSession.swift */; };
 		9A8B2CACA5C0E649C2E29F01 /* SSHHostKeyFingerprintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A279E40E0C0EE63158560C37 /* SSHHostKeyFingerprintTests.swift */; };
 		9B4B56D05E2335FDC558DC7D /* MetadataAutomationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */; };
+		C0DEC0010000000000000004 /* MetadataProgrammingCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0010000000000000003 /* MetadataProgrammingCoordinatorTests.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
@@ -51,6 +52,7 @@
 		B769B40159B643B46C24C555 /* MetadataAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C984C555D147B80CC7FDE729 /* MetadataAuditTests.swift */; };
 		C27CE06BC60109AE34788F93 /* JobRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */; };
 		D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */; };
+		C0DEC0010000000000000002 /* MetadataProgrammingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0010000000000000001 /* MetadataProgrammingCoordinator.swift */; };
 		DB23A9DE82ED66DAF6941E4F /* FTPConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA3A713A82044F0A77CFC2AD /* FTPConnection.swift */; };
 		DCA4E81BE09F33D799223744 /* ConfigurationTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDA4D33A7502B694919E9907 /* ConfigurationTransferTests.swift */; };
 		E1DAEC0A6654788FBE787C04 /* AppError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17C264842979B409D1442940 /* AppError.swift */; };
@@ -91,8 +93,10 @@
 		350292561BFD12A24A59A67B /* MetadataPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreset.swift; sourceTree = "<group>"; };
 		36494EE9F91F82FF44716BBC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingView.swift; sourceTree = "<group>"; };
+		C0DEC0010000000000000001 /* MetadataProgrammingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinator.swift; sourceTree = "<group>"; };
 		3FB267C62B3B399A8D1A35AF /* JobRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepositoryTests.swift; sourceTree = "<group>"; };
 		419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomationTests.swift; sourceTree = "<group>"; };
+		C0DEC0010000000000000003 /* MetadataProgrammingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinatorTests.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
@@ -232,6 +236,7 @@
 				9F9AD62BA318A3F76F8EB0B2 /* LocalSyncIntegrationTests.swift */,
 				C984C555D147B80CC7FDE729 /* MetadataAuditTests.swift */,
 				419CA2085DF9B80B864879B8 /* MetadataAutomationTests.swift */,
+				C0DEC0010000000000000003 /* MetadataProgrammingCoordinatorTests.swift */,
 				8CBF0EBB11508AA7FFAD1608 /* MetadataPresetTests.swift */,
 				94DF32BB9FEF45202CA10C58 /* MetadataPreviewAndRecoveryTests.swift */,
 				886036FB1249F217586D7284 /* PathSafetyTests.swift */,
@@ -261,6 +266,7 @@
 				FE273065A756601A22D84D27 /* JobsWindowView.swift */,
 				113A0B3ADC59BFE97A673EA5 /* MenuBarView.swift */,
 				D5AF6BCFE2CFB96A935039B7 /* MetadataAuditTrailView.swift */,
+				C0DEC0010000000000000001 /* MetadataProgrammingCoordinator.swift */,
 				3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */,
 				DFD7C0B7D522D2DE507BA375 /* PhotographerSettingsView.swift */,
 			);
@@ -458,6 +464,7 @@
 				B01A7C900948FDDA2383CC94 /* MetadataPreset.swift in Sources */,
 				4A8ED69FC5E89F620E4C7B8B /* MetadataPresetRepository.swift in Sources */,
 				A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */,
+				C0DEC0010000000000000002 /* MetadataProgrammingCoordinator.swift in Sources */,
 				D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */,
 				3710B1ACB6F8926631BD9AEF /* MetadataWriter.swift in Sources */,
 				F1FE64BEF3B4B67CC678E60E /* PathSafety.swift in Sources */,
@@ -484,6 +491,7 @@
 				09099C318974ED372F9ADE95 /* LocalSyncIntegrationTests.swift in Sources */,
 				B769B40159B643B46C24C555 /* MetadataAuditTests.swift in Sources */,
 				9B4B56D05E2335FDC558DC7D /* MetadataAutomationTests.swift in Sources */,
+				C0DEC0010000000000000004 /* MetadataProgrammingCoordinatorTests.swift in Sources */,
 				2420E526A5A7FCDE328C993F /* MetadataPresetTests.swift in Sources */,
 				6287983979D1DB58DCCC3BB4 /* MetadataPreviewAndRecoveryTests.swift in Sources */,
 				EED6ECBBCC58617795A3D8EB /* PathSafetyTests.swift in Sources */,

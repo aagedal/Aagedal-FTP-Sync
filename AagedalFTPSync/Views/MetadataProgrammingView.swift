@@ -5,30 +5,68 @@ import UniformTypeIdentifiers
 struct MetadataProgrammingView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
-    @State private var selectedDate = Date()
-    @State private var draft = MetadataAutomation()
-    @State private var loadedJobID: UUID?
-    @State private var selectedPhotographerID: UUID?
-    @State private var editingPhotographerID: UUID?
-    @State private var draggedPhotographerID: UUID?
-    @State private var editingClipID: UUID?
-    @State private var photographerPendingDeletion: PhotographerProfile?
-    @State private var saveConfirmation = false
-    @State private var lastSavedDraft: MetadataAutomation?
-    @State private var autosaveTask: Task<Void, Never>?
-    @State private var selectedClipIDs: Set<UUID> = []
-    @State private var copiedClips: [MetadataScheduleClip] = []
-    @State private var playhead: TimelinePlayhead?
-    @State private var snapMinutes = 15
-    @State private var pendingClipChange: PendingClipChange?
-    @State private var pendingReprocessScope: MetadataReprocessScope?
-    @State private var metadataPreview: MetadataPreviewResult?
-    @State private var metadataPreviewFolderName = ""
-    @State private var metadataPreviewError: String?
-    @State private var isPreviewingMetadata = false
+    @StateObject private var coordinator = MetadataProgrammingCoordinator()
     @FocusState private var timelineFocused: Bool
 
-    private let calendar = Calendar.current
+    private var calendar: Calendar { coordinator.calendar }
+    private var selectedDate: Date {
+        get { coordinator.selectedDate }
+        nonmutating set { coordinator.selectedDate = newValue }
+    }
+    private var draft: MetadataAutomation {
+        get { coordinator.draft }
+        nonmutating set { coordinator.draft = newValue }
+    }
+    private var selectedPhotographerID: UUID? {
+        get { coordinator.selectedPhotographerID }
+        nonmutating set { coordinator.selectedPhotographerID = newValue }
+    }
+    private var editingPhotographerID: UUID? {
+        get { coordinator.editingPhotographerID }
+        nonmutating set { coordinator.editingPhotographerID = newValue }
+    }
+    private var draggedPhotographerID: UUID? {
+        get { coordinator.draggedPhotographerID }
+        nonmutating set { coordinator.draggedPhotographerID = newValue }
+    }
+    private var editingClipID: UUID? {
+        get { coordinator.editingClipID }
+        nonmutating set { coordinator.editingClipID = newValue }
+    }
+    private var photographerPendingDeletion: PhotographerProfile? {
+        get { coordinator.photographerPendingDeletion }
+        nonmutating set { coordinator.photographerPendingDeletion = newValue }
+    }
+    private var saveConfirmation: Bool { coordinator.saveConfirmation }
+    private var lastSavedDraft: MetadataAutomation? { coordinator.lastSavedDraft }
+    private var selectedClipIDs: Set<UUID> {
+        get { coordinator.selectedClipIDs }
+        nonmutating set { coordinator.selectedClipIDs = newValue }
+    }
+    private var copiedClips: [MetadataScheduleClip] { coordinator.copiedClips }
+    private var playhead: TimelinePlayhead? {
+        get { coordinator.playhead }
+        nonmutating set { coordinator.playhead = newValue }
+    }
+    private var snapMinutes: Int { coordinator.snapMinutes }
+    private var pendingClipChange: PendingClipChange? {
+        get { coordinator.pendingClipChange }
+        nonmutating set { coordinator.pendingClipChange = newValue }
+    }
+    private var pendingReprocessScope: MetadataReprocessScope? {
+        get { coordinator.pendingReprocessScope }
+        nonmutating set { coordinator.pendingReprocessScope = newValue }
+    }
+    private var metadataPreview: MetadataPreviewResult? {
+        get { coordinator.metadataPreview }
+        nonmutating set { coordinator.metadataPreview = newValue }
+    }
+    private var metadataPreviewFolderName: String { coordinator.metadataPreviewFolderName }
+    private var metadataPreviewError: String? {
+        get { coordinator.metadataPreviewError }
+        nonmutating set { coordinator.metadataPreviewError = newValue }
+    }
+    private var isPreviewingMetadata: Bool { coordinator.isPreviewingMetadata }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,10 +114,8 @@ struct MetadataProgrammingView: View {
         .onChange(of: store.photographerLibrary) { _, _ in
             refreshDraftPhotographersFromLibrary()
         }
-        .onChange(of: selectedDate) { _, newDate in
-            if let playhead, !calendar.isDate(playhead.date, inSameDayAs: newDate) {
-                self.playhead = nil
-            }
+        .onChange(of: selectedDate) { _, _ in
+            coordinator.clearPlayheadIfOutsideSelectedDay()
         }
         .sheet(isPresented: Binding(
             get: { editingClipID != nil },
@@ -158,10 +194,7 @@ struct MetadataProgrammingView: View {
             titleVisibility: .visible
         ) {
             Button(reprocessActionTitle) {
-                guard let scope = pendingReprocessScope,
-                      save(),
-                      let loadedJobID else { return }
-                store.reprocessExistingLocalFiles(loadedJobID, scope: scope)
+                coordinator.confirmReprocessing(in: store)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -193,7 +226,7 @@ struct MetadataProgrammingView: View {
             }
             .frame(minWidth: 240, idealWidth: 270, maxWidth: 270)
 
-            Picker("Schedule time", selection: $draft.timestampPolicy) {
+            Picker("Schedule time", selection: $coordinator.draft.timestampPolicy) {
                 ForEach(MetadataTimestampPolicy.allCases) { policy in
                     Text(policy.title).tag(policy)
                 }
@@ -202,7 +235,7 @@ struct MetadataProgrammingView: View {
             .layoutPriority(1)
             .help(draft.timestampPolicy.explanation)
 
-            Picker("Existing fields", selection: $draft.existingFieldPolicy) {
+            Picker("Existing fields", selection: $coordinator.draft.existingFieldPolicy) {
                 ForEach(MetadataExistingFieldPolicy.allCases) { policy in
                     Text(policy.title).tag(policy)
                 }
@@ -213,7 +246,7 @@ struct MetadataProgrammingView: View {
 
             Spacer(minLength: 0)
 
-            Toggle("Automatic metadata", isOn: $draft.isEnabled)
+            Toggle("Automatic metadata", isOn: $coordinator.draft.isEnabled)
                 .toggleStyle(.switch)
                 .disabled(!canEnableMetadata)
                 .help(canEnableMetadata
@@ -226,7 +259,7 @@ struct MetadataProgrammingView: View {
     private var librarySidebar: some View {
         VStack(spacing: 0) {
             ProgrammingMonthCalendar(
-                selection: $selectedDate,
+                selection: $coordinator.selectedDate,
                 programmedDays: programmedDays,
                 calendar: calendar
             )
@@ -270,7 +303,7 @@ struct MetadataProgrammingView: View {
 
                 Spacer()
 
-                Picker("Snap", selection: $snapMinutes) {
+                Picker("Snap", selection: $coordinator.snapMinutes) {
                     Text("5 min").tag(5)
                     Text("15 min").tag(15)
                     Text("30 min").tag(30)
@@ -383,8 +416,8 @@ struct MetadataProgrammingView: View {
                                 of: [UTType.text],
                                 delegate: PhotographerTrackDropDelegate(
                                     destinationID: photographer.id,
-                                    photographers: $draft.photographers,
-                                    draggedPhotographerID: $draggedPhotographerID
+                                    photographers: $coordinator.draft.photographers,
+                                    draggedPhotographerID: $coordinator.draggedPhotographerID
                                 )
                             )
                             Divider()
@@ -521,222 +554,79 @@ struct MetadataProgrammingView: View {
     }
 
     private var selectedJob: SyncJob? {
-        guard let selectedJobID = store.selectedJobID else { return nil }
-        return store.jobs.first(where: { $0.id == selectedJobID })
+        coordinator.selectedJob(in: store)
     }
 
     private var canEnableMetadata: Bool {
-        guard let selectedJob, selectedJob.direction != .bidirectional else { return false }
-        let target = selectedJob.direction == .leftToRight ? selectedJob.right : selectedJob.left
-        return target.kind == .local
-    }
-
-    private var metadataLocalEndpoint: Endpoint? {
-        guard let selectedJob, selectedJob.direction != .bidirectional else { return nil }
-        let target = selectedJob.direction == .leftToRight ? selectedJob.right : selectedJob.left
-        return target.kind == .local ? target : nil
+        coordinator.canEnableMetadata(for: selectedJob)
     }
 
     private var canAutosaveDraft: Bool {
-        guard let loadedJobID else { return false }
-        return canPersistDraft(draft, for: loadedJobID)
-    }
-
-    private func canPersistDraft(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
-        guard automation.validationMessage == nil,
-              let job = store.jobs.first(where: { $0.id == jobID }) else {
-            return false
-        }
-        guard automation.isEnabled else { return true }
-        guard job.direction != .bidirectional else { return false }
-        let target = job.direction == .leftToRight ? job.right : job.left
-        return target.kind == .local
+        coordinator.canAutosaveDraft(in: store)
     }
 
     private var canReprocessMetadata: Bool {
-        guard let loadedJobID else { return false }
-        return draft.isEnabled
-            && draft.validationMessage == nil
-            && canEnableMetadata
-            && draft.timestampPolicy != .localArrival
-            && !store.isJobBusy(loadedJobID)
-    }
-
-    private var previewValidationMessage: String? {
-        var enabledDraft = draft
-        enabledDraft.isEnabled = true
-        return enabledDraft.validationMessage
+        coordinator.canReprocessMetadata(in: store)
     }
 
     private var canPreviewMetadata: Bool {
-        loadedJobID != nil
-            && metadataLocalEndpoint?.bookmark != nil
-            && previewValidationMessage == nil
-            && !isPreviewingMetadata
+        coordinator.canPreviewMetadata(for: selectedJob)
     }
 
     private var previewHelp: String {
-        if let previewValidationMessage {
-            return previewValidationMessage
-        }
-        guard let metadataLocalEndpoint else {
-            return "Automatic metadata requires a one-way job with a local destination."
-        }
-        return "Preview the unsaved programming draft against \(selectedJob?.localDestinationDisplayPath ?? metadataLocalEndpoint.localPath). No files are changed."
+        coordinator.previewHelp(for: selectedJob)
     }
 
     private var isReprocessing: Bool {
-        guard let loadedJobID else { return false }
-        return store.metadataReprocessPhases[loadedJobID] == .running
+        coordinator.isReprocessing(in: store)
     }
 
     private var reprocessStatusText: String? {
-        guard let loadedJobID,
-              let phase = store.metadataReprocessPhases[loadedJobID] else { return nil }
-        switch phase {
-        case .idle:
-            return nil
-        case .running:
-            return "Scanning the local destination…"
-        case .succeeded(_, let result):
-            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed."
-        case .failed(let message):
-            return "Reprocessing failed: \(message)"
-        }
+        coordinator.reprocessStatusText(in: store)
     }
 
     private var reprocessHelp: String {
-        if draft.timestampPolicy == .localArrival {
-            return "Arrival timestamps were not recorded for existing files. Choose source modification or camera capture time."
-        }
-        if !draft.isEnabled {
-            return "Enable automatic metadata before reprocessing existing files."
-        }
-        return "Apply the saved schedule to matching files already in the local destination."
+        coordinator.reprocessHelp
     }
 
     private var reprocessConfirmationMessage: String {
-        let target = selectedJob?.localDestinationDisplayPath ?? "the local destination"
-        let policyNote = draft.existingFieldPolicy == .fillEmpty
-            ? "Existing non-empty fields will be preserved."
-            : "Non-empty programmed values will overwrite existing fields."
-        let scopeDescription: String
-        switch pendingReprocessScope {
-        case .photographer(let photographerID):
-            let name = draft.photographers.first(where: { $0.id == photographerID })?.photographerName
-                ?? "the selected photographer"
-            scopeDescription = "Only files assigned to \(name)"
-        case .clip(let clipID):
-            let name = draft.clips.first(where: { $0.id == clipID })?.name
-                ?? "the selected metadata clip"
-            scopeDescription = "Only files assigned to the “\(name)” clip"
-        case .all, nil:
-            scopeDescription = "Matching files"
-        }
-        return "\(scopeDescription) in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
+        coordinator.reprocessConfirmationMessage(for: selectedJob)
     }
 
     private var reprocessActionTitle: String {
-        switch pendingReprocessScope {
-        case .photographer:
-            "Reprocess Photographer’s Files"
-        case .clip:
-            "Reprocess Clip’s Files"
-        case .all, nil:
-            "Reprocess Files"
-        }
+        coordinator.reprocessActionTitle
     }
 
     private func previewConfiguredLocalFolder() {
-        guard let selectedJob, let metadataLocalEndpoint else { return }
-        let previewDraft = draft
-        let filter = selectedJob.filter
-        isPreviewingMetadata = true
-        metadataPreviewError = nil
-        Task {
-            do {
-                let folderAccess = try BookmarkAccess(endpoint: metadataLocalEndpoint)
-                let folderURL = try MetadataPreviewService.localFolderURL(
-                    selectedRoot: folderAccess.url,
-                    usesManagedFolderStructure: selectedJob.usesManagedFolderStructure
-                )
-                let result = try await Task.detached(priority: .userInitiated) {
-                    _ = folderAccess
-                    return try MetadataPreviewService.previewLocalFolder(
-                        at: folderURL,
-                        automation: previewDraft,
-                        filter: filter
-                    )
-                }.value
-                metadataPreviewFolderName = folderURL.lastPathComponent
-                metadataPreview = result
-            } catch {
-                metadataPreviewError = error.localizedDescription
-            }
-            isPreviewingMetadata = false
-        }
+        coordinator.previewConfiguredLocalFolder(for: selectedJob)
     }
 
     private var selectedPhotographer: PhotographerProfile? {
-        guard let selectedPhotographerID else { return nil }
-        return draft.photographers.first(where: { $0.id == selectedPhotographerID })
-    }
-
-    private var playheadSummary: String? {
-        guard let playhead,
-              let photographer = draft.photographers.first(where: { $0.id == playhead.photographerID }) else {
-            return nil
-        }
-        return "\(photographer.photographerName) · \(playhead.date.formatted(date: .omitted, time: .shortened))"
+        coordinator.selectedPhotographer
     }
 
     private var pasteHelp: String {
-        if let playheadSummary {
-            return "Paste at \(playheadSummary) (Command-V)"
-        }
-        return "Click a track to place the playhead, then paste (Command-V)"
+        coordinator.pasteHelp
     }
 
     private var timelinePhotographers: [PhotographerProfile] {
-        draft.photographers
+        coordinator.timelinePhotographers
     }
 
     private var programmedDays: Set<Date> {
-        draft.clips.reduce(into: Set<Date>()) { days, clip in
-            var day = calendar.startOfDay(for: clip.startsAt)
-            while clip.endsAt > day {
-                if clip.overlaps(dayContaining: day, calendar: calendar) {
-                    days.insert(day)
-                }
-                guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day),
-                      nextDay > day else {
-                    break
-                }
-                day = nextDay
-            }
-        }
+        coordinator.programmedDays
     }
 
     private var knownPhotographers: [PhotographerProfile] {
-        let assignedIDs = Set(draft.photographers.map(\.id))
-        return store.photographerLibrary.filter { !assignedIDs.contains($0.id) }
+        coordinator.knownPhotographers(in: store)
     }
 
     private func clips(for photographer: PhotographerProfile) -> [MetadataScheduleClip] {
-        draft.clips
-            .filter {
-                $0.photographerID == photographer.id
-                    && $0.overlaps(dayContaining: selectedDate, calendar: calendar)
-            }
-            .sorted { $0.startsAt < $1.startsAt }
+        coordinator.clips(for: photographer)
     }
 
     private func processedFileCount(for photographer: PhotographerProfile) -> Int {
-        guard let loadedJobID else { return 0 }
-        let processedPaths = store.metadataAuditTrail(for: loadedJobID).lazy
-            .filter { $0.status == .applied && $0.photographerID == photographer.id }
-            .map(\.relativePath)
-        return Set(processedPaths).count
+        coordinator.processedFileCount(for: photographer, in: store)
     }
 
     private func photographerBinding(for id: UUID) -> Binding<PhotographerProfile>? {
@@ -748,148 +638,55 @@ struct MetadataProgrammingView: View {
     }
 
     private func loadSelectedJob() {
-        autosaveTask?.cancel()
-        autosaveTask = nil
-        saveConfirmation = false
-        guard let job = selectedJob else {
-            loadedJobID = nil
-            draft = MetadataAutomation()
-            lastSavedDraft = nil
-            selectedPhotographerID = nil
-            editingPhotographerID = nil
-            selectedClipIDs = []
-            copiedClips = []
-            playhead = nil
-            return
-        }
-        loadedJobID = job.id
-        draft = job.metadataAutomation ?? MetadataAutomation()
-        lastSavedDraft = draft
-        selectedPhotographerID = draft.photographers.first?.id
-        editingPhotographerID = nil
-        selectedClipIDs = []
-        copiedClips = []
-        playhead = nil
+        coordinator.loadSelectedJob(from: store)
     }
 
     private func scheduleAutosave() {
-        autosaveTask?.cancel()
-        saveConfirmation = false
-        guard draft != lastSavedDraft, canAutosaveDraft else { return }
-
-        autosaveTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            _ = save()
-            autosaveTask = nil
-        }
+        coordinator.scheduleAutosave(in: store)
     }
 
     private func flushAutosave() {
-        autosaveTask?.cancel()
-        autosaveTask = nil
-        guard draft != lastSavedDraft else { return }
-        _ = save()
+        coordinator.flushAutosave(in: store)
     }
 
     private func refreshDraftPhotographersFromLibrary() {
-        let libraryByID = Dictionary(uniqueKeysWithValues: store.photographerLibrary.map { ($0.id, $0) })
-        for index in draft.photographers.indices {
-            if let updatedProfile = libraryByID[draft.photographers[index].id] {
-                draft.photographers[index] = updatedProfile
-            }
-        }
+        coordinator.refreshDraftPhotographers(from: store)
     }
 
     private func addPhotographer() {
-        let photographer = PhotographerProfile(
-            name: "Photographer",
-            filenamePrefix: uniquePrefix(),
-            creator: "Photographer",
-            copyrightNotice: ""
-        )
-        draft.photographers.append(photographer)
-        selectedPhotographerID = photographer.id
+        coordinator.addPhotographer()
     }
 
     private func addKnownPhotographer(_ photographer: PhotographerProfile) {
-        guard !draft.photographers.contains(where: { $0.id == photographer.id }) else {
-            selectedPhotographerID = photographer.id
-            return
-        }
-        draft.photographers.append(photographer)
-        selectedPhotographerID = photographer.id
-    }
-
-    private func uniquePrefix() -> String {
-        let used = Set(draft.photographers.flatMap(\.normalizedPrefixes))
-        for prefix in ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG"] where !used.contains(prefix) {
-            return prefix
-        }
-        var number = draft.photographers.count + 1
-        while used.contains("P\(number)") { number += 1 }
-        return "P\(number)"
+        coordinator.addKnownPhotographer(photographer)
     }
 
     private func removePhotographer(_ photographer: PhotographerProfile) {
-        draft.photographers.removeAll { $0.id == photographer.id }
-        draft.clips.removeAll { $0.photographerID == photographer.id }
-        selectedClipIDs = selectedClipIDs.filter { id in draft.clips.contains(where: { $0.id == id }) }
-        selectedPhotographerID = draft.photographers.first?.id
-        if playhead?.photographerID == photographer.id { playhead = nil }
-        photographerPendingDeletion = nil
+        coordinator.removePhotographer(photographer)
     }
 
     private func addClip() {
-        guard let photographer = selectedPhotographer else { return }
-        let dayStart = calendar.startOfDay(for: selectedDate)
-        let defaultStartHour = calendar.isDateInToday(selectedDate)
-            ? min(max(calendar.component(.hour, from: Date()), 0), 22)
-            : 9
-        let defaultStart = calendar.date(byAdding: .hour, value: defaultStartHour, to: dayStart) ?? dayStart
-        let start = playhead?.photographerID == photographer.id ? playhead?.date ?? defaultStart : defaultStart
-        let end = calendar.date(byAdding: .hour, value: 1, to: start) ?? start.addingTimeInterval(3_600)
-        let clip = MetadataScheduleClip(
-            photographerID: photographer.id,
-            name: "Metadata clip",
-            startsAt: start,
-            endsAt: end,
-            fields: ScheduledMetadataFields(headline: "Metadata clip")
-        )
-        draft.clips.append(clip)
-        selectedClipIDs = [clip.id]
-        editingClipID = clip.id
+        coordinator.addClip()
     }
 
     private func updateClip(_ clip: MetadataScheduleClip) {
-        guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
-        draft.clips[index] = clip
-        editingClipID = nil
+        coordinator.updateClip(clip)
     }
 
     private func selectClip(_ clip: MetadataScheduleClip) {
-        if NSEvent.modifierFlags.contains(.command) {
-            if selectedClipIDs.contains(clip.id) {
-                selectedClipIDs.remove(clip.id)
-            } else {
-                selectedClipIDs.insert(clip.id)
-            }
-        } else {
-            selectedClipIDs = [clip.id]
-        }
-        selectedPhotographerID = clip.photographerID
+        coordinator.selectClip(
+            clip,
+            extendingSelection: NSEvent.modifierFlags.contains(.command)
+        )
         timelineFocused = true
     }
 
     private func editSelectedClip() {
-        guard selectedClipIDs.count == 1, let id = selectedClipIDs.first else { return }
-        editingClipID = id
+        coordinator.editSelectedClip()
     }
 
     private func editClip(_ clip: MetadataScheduleClip) {
-        selectedClipIDs = [clip.id]
-        selectedPhotographerID = clip.photographerID
-        editingClipID = clip.id
+        coordinator.editClip(clip)
     }
 
     private func createClip(
@@ -897,89 +694,39 @@ struct MetadataProgrammingView: View {
         from start: Date,
         to end: Date
     ) {
-        let clip = MetadataScheduleClip(
-            photographerID: photographer.id,
-            name: "Metadata clip",
-            startsAt: start,
-            endsAt: end,
-            fields: ScheduledMetadataFields(headline: "Metadata clip")
-        )
-        draft.clips.append(clip)
-        selectedClipIDs = [clip.id]
-        selectedPhotographerID = photographer.id
-        playhead = TimelinePlayhead(photographerID: photographer.id, date: start)
+        coordinator.createClip(for: photographer, from: start, to: end)
         timelineFocused = true
     }
 
     private func copySelectedClips() {
-        copiedClips = draft.clips
-            .filter { selectedClipIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                if lhs.startsAt != rhs.startsAt { return lhs.startsAt < rhs.startsAt }
-                return lhs.photographerID.uuidString < rhs.photographerID.uuidString
-            }
+        coordinator.copySelectedClips()
     }
 
     private func pasteClips() {
-        guard let playhead else { return }
-        pasteClips(to: playhead.date, on: playhead.photographerID)
+        coordinator.pasteClips()
+        timelineFocused = true
     }
 
     private func pasteClips(to date: Date, on photographerID: UUID) {
-        guard !copiedClips.isEmpty else { return }
-        let pasted = MetadataTimelineEditing.copies(
-            of: copiedClips,
-            anchoredAt: date,
-            on: photographerID
-        )
-        finishPasting(pasted, playhead: TimelinePlayhead(photographerID: photographerID, date: date))
-    }
-
-    private func finishPasting(_ pasted: [MetadataScheduleClip], playhead newPlayhead: TimelinePlayhead? = nil) {
-        guard !pasted.isEmpty else { return }
-        draft.clips.append(contentsOf: pasted)
-        selectedClipIDs = Set(pasted.map(\.id))
-        if let newPlayhead {
-            playhead = newPlayhead
-            selectedPhotographerID = newPlayhead.photographerID
-        }
+        coordinator.pasteClips(to: date, on: photographerID)
         timelineFocused = true
     }
 
     private func deleteSelectedClips() {
-        guard !selectedClipIDs.isEmpty else { return }
-        draft.clips.removeAll { selectedClipIDs.contains($0.id) }
-        selectedClipIDs = []
+        coordinator.deleteSelectedClips()
     }
 
     private func selectAllClipsForDay() {
-        selectedClipIDs = Set(draft.clips.filter {
-            $0.overlaps(dayContaining: selectedDate, calendar: calendar)
-        }.map(\.id))
+        coordinator.selectAllClipsForDay()
         timelineFocused = true
     }
 
     private func moveClip(_ clip: MetadataScheduleClip, by interval: TimeInterval, duplicating: Bool) {
-        var changed = MetadataTimelineEditing.moving(
-            clip,
-            by: interval,
-            snapMinutes: snapMinutes,
-            calendar: calendar
-        )
-        if duplicating {
-            changed.id = UUID()
-            draft.clips.append(changed)
-            selectedClipIDs = [changed.id]
-            selectedPhotographerID = changed.photographerID
-        } else {
-            applyClipChange(changed)
-        }
+        coordinator.moveClip(clip, by: interval, duplicating: duplicating)
     }
 
     private func placePlayhead(on photographerID: UUID, at date: Date) {
-        playhead = TimelinePlayhead(photographerID: photographerID, date: date)
-        selectedPhotographerID = photographerID
-        selectedClipIDs = []
+        coordinator.placePlayhead(on: photographerID, at: date)
         timelineFocused = true
     }
 
@@ -988,74 +735,24 @@ struct MetadataProgrammingView: View {
         edge: MetadataClipResizeEdge,
         by interval: TimeInterval
     ) {
-        let changed = MetadataTimelineEditing.resizing(
-            clip,
-            edge: edge,
-            by: interval,
-            snapMinutes: snapMinutes,
-            calendar: calendar
-        )
-        let originallyCrossedMidnight = !calendar.isDate(clip.startsAt, inSameDayAs: clip.endsAt)
-        let nowCrossesMidnight = !calendar.isDate(changed.startsAt, inSameDayAs: changed.endsAt)
-        if nowCrossesMidnight && !originallyCrossedMidnight {
-            pendingClipChange = PendingClipChange(clip: changed)
-        } else {
-            applyClipChange(changed)
-        }
+        coordinator.resizeClip(clip, edge: edge, by: interval)
     }
 
     private func applyClipChange(_ clip: MetadataScheduleClip) {
-        guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
-        draft.clips[index] = clip
-        selectedClipIDs = [clip.id]
-        selectedPhotographerID = clip.photographerID
+        coordinator.applyClipChange(clip)
     }
 
     private func selectAdjacentClip(horizontalOffset: Int) {
-        let visible = draft.clips
-            .filter { $0.overlaps(dayContaining: selectedDate, calendar: calendar) }
-            .sorted { $0.startsAt < $1.startsAt }
-        guard !visible.isEmpty else { return }
-        guard selectedClipIDs.count == 1,
-              let selectedID = selectedClipIDs.first,
-              let selected = visible.first(where: { $0.id == selectedID }) else {
-            selectClip(visible[horizontalOffset < 0 ? visible.count - 1 : 0])
-            return
-        }
-        let sameTrack = visible.filter { $0.photographerID == selected.photographerID }
-        guard let index = sameTrack.firstIndex(where: { $0.id == selected.id }) else { return }
-        let target = min(max(index + horizontalOffset, 0), sameTrack.count - 1)
-        selectClip(sameTrack[target])
+        coordinator.selectAdjacentClip(horizontalOffset: horizontalOffset)
+        timelineFocused = true
     }
 
     private func selectAdjacentTrack(offset: Int) {
-        guard !timelinePhotographers.isEmpty else { return }
-        let selected = selectedClipIDs.count == 1
-            ? draft.clips.first(where: { $0.id == selectedClipIDs.first })
-            : nil
-        let currentPhotographerID = selected?.photographerID ?? selectedPhotographerID
-        let currentIndex = timelinePhotographers.firstIndex(where: { $0.id == currentPhotographerID }) ?? 0
-        let targetIndex = min(max(currentIndex + offset, 0), timelinePhotographers.count - 1)
-        let targetPhotographer = timelinePhotographers[targetIndex]
-        let trackClips = clips(for: targetPhotographer)
-        selectedPhotographerID = targetPhotographer.id
-        guard !trackClips.isEmpty else {
-            selectedClipIDs = []
-            return
-        }
-        let referenceDate = selected?.startsAt ?? calendar.startOfDay(for: selectedDate)
-        let nearest = trackClips.min {
-            abs($0.startsAt.timeIntervalSince(referenceDate)) < abs($1.startsAt.timeIntervalSince(referenceDate))
-        }
-        if let nearest { selectedClipIDs = [nearest.id] }
+        coordinator.selectAdjacentTrack(offset: offset)
     }
 
     private func moveDay(by value: Int) {
-        selectedDate = calendar.date(byAdding: .day, value: value, to: selectedDate) ?? selectedDate
-        playhead = nil
-        selectedClipIDs = selectedClipIDs.filter { id in
-            draft.clips.first(where: { $0.id == id })?.overlaps(dayContaining: selectedDate, calendar: calendar) == true
-        }
+        coordinator.moveDay(by: value)
     }
 
     private func color(for photographer: PhotographerProfile) -> Color {
@@ -1066,15 +763,7 @@ struct MetadataProgrammingView: View {
 
     @discardableResult
     private func save() -> Bool {
-        guard canAutosaveDraft,
-              let loadedJobID,
-              store.saveMetadataAutomation(draft, for: loadedJobID) else {
-            saveConfirmation = false
-            return false
-        }
-        lastSavedDraft = draft
-        saveConfirmation = true
-        return true
+        coordinator.save(in: store)
     }
 }
 
@@ -1705,16 +1394,6 @@ private struct PhotographerDayWorkHoursEditor: View {
     private func formatted(minutes: Int) -> String {
         String(format: "%02d:%02d", minutes / 60, minutes % 60)
     }
-}
-
-private struct PendingClipChange: Identifiable {
-    let id = UUID()
-    let clip: MetadataScheduleClip
-}
-
-private struct TimelinePlayhead: Equatable {
-    let photographerID: UUID
-    let date: Date
 }
 
 private struct TimelinePhotographerEditor: View {
