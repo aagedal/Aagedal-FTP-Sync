@@ -10,6 +10,7 @@ struct JobDetailEditor: View {
     @State private var showDeleteConfirmation = false
     @State private var saveConfirmation = false
     @State private var showMetadataAudit = false
+    @State private var showSyncFailureHistory = false
     @State private var showProcessedFolderPicker = false
     @State private var processedFolderError: String?
 
@@ -34,6 +35,10 @@ struct JobDetailEditor: View {
                             Text(intervalLabel).monospacedDigit().frame(width: 72, alignment: .trailing)
                         }
                     }
+                }
+
+                if shouldShowSyncStatus {
+                    syncStatusSection
                 }
 
                 Section("Locations") {
@@ -199,7 +204,7 @@ struct JobDetailEditor: View {
                 Button("Sync Now") {
                     if save() { store.runNow(draft.id) }
                 }
-                .disabled(draft.validationMessage != nil)
+                .disabled(draft.validationMessage != nil || store.isJobBusy(draft.id))
                 Button("Save") { save() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut("s", modifiers: .command)
@@ -248,6 +253,126 @@ struct JobDetailEditor: View {
         } message: {
             Text("Files are not deleted, but this job and its saved credentials will be removed.")
         }
+    }
+
+    @ViewBuilder
+    private var syncStatusSection: some View {
+        Section("Sync status") {
+            if case .failed(let message, let retryAt) = currentPhase {
+                Label("Sync failed", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                Text(message)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let retryAt {
+                    Label(
+                        "Automatic retry \(retryAt.formatted(date: .omitted, time: .shortened))",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                if let suggestion = recoverySuggestion(for: message) {
+                    Text(suggestion)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Retry Now", systemImage: "arrow.clockwise") {
+                        if save() { store.runNow(draft.id) }
+                    }
+                    .disabled(store.isJobBusy(draft.id))
+                    Button("Copy Error", systemImage: "doc.on.doc") {
+                        copyToPasteboard(message)
+                    }
+                }
+            } else if case .syncing = currentPhase {
+                Label("Syncing…", systemImage: "arrow.triangle.2.circlepath")
+            } else if !syncFailureHistory.isEmpty {
+                if case .succeeded = currentPhase {
+                    Label("The latest sync completed.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    Label("Previous sync errors are available below.", systemImage: "clock.arrow.circlepath")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !syncFailureHistory.isEmpty {
+                DisclosureGroup(
+                    "Recent error log (\(syncFailureHistory.count))",
+                    isExpanded: $showSyncFailureHistory
+                ) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 10) {
+                            ForEach(syncFailureHistory) { failure in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(failure.occurredAt.formatted(date: .abbreviated, time: .standard))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text(failure.message)
+                                        .font(.caption)
+                                        .textSelection(.enabled)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                if failure.id != syncFailureHistory.last?.id { Divider() }
+                            }
+                        }
+                    }
+                    .frame(minHeight: 90, idealHeight: 180, maxHeight: 240)
+
+                    HStack {
+                        Button("Copy Latest Error") {
+                            if let message = syncFailureHistory.first?.message {
+                                copyToPasteboard(message)
+                            }
+                        }
+                        Spacer()
+                        Button("Clear Error Log", role: .destructive) {
+                            store.clearSyncFailureHistory(for: draft.id)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var currentPhase: JobPhase {
+        store.phases[draft.id] ?? .stopped
+    }
+
+    private var syncFailureHistory: [SyncFailureRecord] {
+        store.syncFailureHistory(for: draft.id)
+    }
+
+    private var shouldShowSyncStatus: Bool {
+        if case .failed = currentPhase { return true }
+        if case .syncing = currentPhase { return true }
+        return !syncFailureHistory.isEmpty
+    }
+
+    private func recoverySuggestion(for message: String) -> String? {
+        let lowercased = message.lowercased()
+        if lowercased.contains("timed out connecting") {
+            return "Check this Mac’s network or VPN and whether the server is reachable. No download or sub-folder sorting had started when this connection failed."
+        }
+        if lowercased.contains("processed folder already contains") {
+            return "A different file is already using the intended processed path. The app will automatically finish recovery when an existing processed copy is byte-for-byte identical; otherwise it leaves both files untouched for review."
+        }
+        if lowercased.contains("password") || lowercased.contains("authentication") || lowercased.contains("login") {
+            return "Check the saved username and password, then retry the job."
+        }
+        if lowercased.contains("permission") || lowercased.contains("access") {
+            return "Review the source and destination permissions, then retry the job."
+        }
+        return nil
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     private var intervalLabel: String {

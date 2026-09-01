@@ -1,5 +1,27 @@
 import Foundation
 
+enum MetadataReprocessScope: Equatable, Sendable {
+    case all
+    case photographer(UUID)
+    case clip(UUID)
+
+    var isClip: Bool {
+        if case .clip = self { return true }
+        return false
+    }
+
+    func includes(_ assignment: MetadataAssignment) -> Bool {
+        switch self {
+        case .all:
+            true
+        case .photographer(let photographerID):
+            assignment.photographer.id == photographerID
+        case .clip(let clipID):
+            assignment.clip.id == clipID
+        }
+    }
+}
+
 struct MetadataReprocessResult: Equatable, Sendable {
     let scanned: Int
     let applied: Int
@@ -89,8 +111,8 @@ struct SyncEngine: Sendable {
                     files: leftFiles,
                     to: right,
                     files: rightFiles,
-                    processedDestination: processedDestination,
-                    processedFiles: processedFiles,
+                processedDestination: processedDestination,
+                processedFiles: processedFiles,
                     job: job
                 )
                 conflicts = []
@@ -144,6 +166,7 @@ struct SyncEngine: Sendable {
 
     func reprocessExistingLocalFiles(
         job: SyncJob,
+        scope: MetadataReprocessScope = .all,
         leftPassword: String? = nil,
         rightPassword: String? = nil
     ) async throws -> MetadataReprocessResult {
@@ -152,6 +175,21 @@ struct SyncEngine: Sendable {
         }
         if let message = automation.validationMessage {
             throw AppError.invalidConfiguration(message)
+        }
+        let scopedPhotographerID: UUID?
+        switch scope {
+        case .all:
+            scopedPhotographerID = nil
+        case .photographer(let photographerID):
+            guard automation.photographers.contains(where: { $0.id == photographerID }) else {
+                throw AppError.invalidConfiguration("The selected photographer is no longer part of this metadata program.")
+            }
+            scopedPhotographerID = photographerID
+        case .clip(let clipID):
+            guard let clip = automation.clips.first(where: { $0.id == clipID }) else {
+                throw AppError.invalidConfiguration("The selected metadata clip is no longer part of this metadata program.")
+            }
+            scopedPhotographerID = clip.photographerID
         }
         guard automation.timestampPolicy != .localArrival else {
             throw AppError.invalidConfiguration(
@@ -185,7 +223,12 @@ struct SyncEngine: Sendable {
         )
         let files = destinationFiles.values
             .filter { job.filter.includesFileType(path: $0.relativePath) }
+            .filter { file in
+                guard let scopedPhotographerID else { return true }
+                return automation.matchingPhotographer(for: file.relativePath)?.id == scopedPhotographerID
+            }
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        var scanned = scope.isClip ? 0 : files.count
         var applied = 0
         var skipped = 0
         var failed = 0
@@ -212,6 +255,7 @@ struct SyncEngine: Sendable {
                 localArrivalAt: file.modifiedAt,
                 fileURL: temporaryURL
             ) else {
+                if scope.isClip { continue }
                 skipped += 1
                 metadataReport.append(MetadataAuditEntry(
                     runID: runID,
@@ -229,6 +273,7 @@ struct SyncEngine: Sendable {
                 for: file.relativePath,
                 scheduledAt: scheduledAt
             ) else {
+                if scope.isClip { continue }
                 skipped += 1
                 metadataReport.append(MetadataAuditEntry(
                     runID: runID,
@@ -246,6 +291,8 @@ struct SyncEngine: Sendable {
                 ))
                 continue
             }
+            guard scope.includes(assignment) else { continue }
+            if scope.isClip { scanned += 1 }
 
             if let assessment = try? MetadataWriter.assess(
                 assignment,
@@ -332,7 +379,7 @@ struct SyncEngine: Sendable {
         }
 
         return MetadataReprocessResult(
-            scanned: files.count,
+            scanned: scanned,
             applied: applied,
             skipped: skipped,
             failed: failed,
@@ -488,6 +535,7 @@ struct SyncEngine: Sendable {
                 to: destination,
                 processedDestination: processedDestination,
                 occupiedProcessedPaths: occupiedProcessedPaths,
+                existingProcessedFiles: processedFiles,
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: job.metadataAutomation,
@@ -557,6 +605,7 @@ struct SyncEngine: Sendable {
                 to: destination,
                 processedDestination: nil,
                 occupiedProcessedPaths: [],
+                existingProcessedFiles: [:],
                 preserveDate: job.preserveModificationDates,
                 verifySize: job.verifyFileSizes,
                 metadataAutomation: nil,
@@ -597,6 +646,7 @@ struct SyncEngine: Sendable {
         to destination: any EndpointSession,
         processedDestination: (any EndpointSession)?,
         occupiedProcessedPaths: Set<String>,
+        existingProcessedFiles: [String: SyncFile],
         preserveDate: Bool,
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
@@ -768,38 +818,51 @@ struct SyncEngine: Sendable {
                 )
                 processedOutputs.append((sidecarImport.url, processedSidecar))
             }
-            try validateProcessedOutputPaths(
-                processedOutputs.map { $0.file.relativePath },
-                occupiedPaths: occupiedProcessedPaths
-            )
-
-            var importedProcessedFiles: [SyncFile] = []
-            do {
-                for output in processedOutputs {
-                    try await importProcessedFile(
-                        from: output.localURL,
-                        as: output.file,
-                        to: processedDestination
-                    )
-                    importedProcessedFiles.append(output.file)
-                }
-            } catch {
-                var rollbackFailures: [String] = []
-                for importedFile in importedProcessedFiles.reversed() {
-                    do {
-                        try await processedDestination.removeFile(importedFile)
-                    } catch {
-                        rollbackFailures.append(importedFile.relativePath)
-                    }
-                }
-                if !rollbackFailures.isEmpty {
-                    throw AppError.transferFailed(
-                        "The processed RAW/XMP pair could not be completed, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The source was left untouched."
-                    )
-                }
-                throw error
+            let outputPaths = processedOutputs.map { $0.file.relativePath }
+            let exactCollisions = outputPaths.filter(occupiedProcessedPaths.contains)
+            var outputsWereAlreadyPublished = false
+            if exactCollisions.count == outputPaths.count, !outputPaths.isEmpty {
+                outputsWereAlreadyPublished = try await processedOutputsMatch(
+                    processedOutputs,
+                    existingFiles: existingProcessedFiles,
+                    in: processedDestination
+                )
             }
-            publishedProcessedPaths = Set(processedOutputs.map { $0.file.relativePath })
+
+            if !outputsWereAlreadyPublished {
+                try validateProcessedOutputPaths(
+                    outputPaths,
+                    occupiedPaths: occupiedProcessedPaths
+                )
+
+                var importedProcessedFiles: [SyncFile] = []
+                do {
+                    for output in processedOutputs {
+                        try await importProcessedFile(
+                            from: output.localURL,
+                            as: output.file,
+                            to: processedDestination
+                        )
+                        importedProcessedFiles.append(output.file)
+                    }
+                } catch {
+                    var rollbackFailures: [String] = []
+                    for importedFile in importedProcessedFiles.reversed() {
+                        do {
+                            try await processedDestination.removeFile(importedFile)
+                        } catch {
+                            rollbackFailures.append(importedFile.relativePath)
+                        }
+                    }
+                    if !rollbackFailures.isEmpty {
+                        throw AppError.transferFailed(
+                            "The processed RAW/XMP pair could not be completed, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The source was left untouched."
+                        )
+                    }
+                    throw error
+                }
+            }
+            publishedProcessedPaths = Set(outputPaths)
             if let sourceSidecar {
                 try await source.removeFile(sourceSidecar)
             }
@@ -905,6 +968,25 @@ struct SyncEngine: Sendable {
             preserveDate: true,
             verifySize: true
         )
+    }
+
+    private func processedOutputsMatch(
+        _ outputs: [(localURL: URL, file: SyncFile)],
+        existingFiles: [String: SyncFile],
+        in processedDestination: any EndpointSession
+    ) async throws -> Bool {
+        for output in outputs {
+            guard let existing = existingFiles[output.file.relativePath],
+                  existing.size == output.file.size else { return false }
+            let comparisonURL = try makeTemporaryURL(for: existing)
+            defer { try? FileManager.default.removeItem(at: comparisonURL) }
+            try await processedDestination.exportFile(existing, to: comparisonURL)
+            guard FileManager.default.contentsEqual(
+                atPath: output.localURL.path,
+                andPath: comparisonURL.path
+            ) else { return false }
+        }
+        return true
     }
 
     private func validateProcessedOutputPaths(

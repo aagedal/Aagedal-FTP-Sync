@@ -72,6 +72,68 @@ final class LocalSyncIntegrationTests: XCTestCase {
         )
     }
 
+    func testIdenticalProcessedCopiesLetRetryFinishRemovingSource() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "incoming/JAD_RETRY.CR3"
+        let source = fixture.left.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let rawData = Data("retry-after-source-delete-failure".utf8)
+        try rawData.write(to: source)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Retry assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Retry safely")
+            )]
+        )
+        job.processedFilesLocation = .processedSubfolder
+        job.sortsProcessedFilesByPhotographer = true
+
+        let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(firstResult.processed, 1)
+
+        let processedRoot = fixture.right
+            .appendingPathComponent("Processed Files")
+            .appendingPathComponent("Jane Doe")
+        let processedRaw = processedRoot.appendingPathComponent(relativePath)
+        let processedSidecar = processedRoot.appendingPathComponent(
+            MetadataWriter.sidecarRelativePath(for: relativePath)
+        )
+        let archivedRawData = try Data(contentsOf: processedRaw)
+        let archivedSidecarData = try Data(contentsOf: processedSidecar)
+
+        // Simulate an interrupted final cleanup: the processed outputs were
+        // published, but the source file is still present for the next pass.
+        try rawData.write(to: source)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+
+        let retryResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(retryResult.processed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try Data(contentsOf: processedRaw), archivedRawData)
+        XCTAssertEqual(try Data(contentsOf: processedSidecar), archivedSidecarData)
+    }
+
     func testManagedStructureReprocessingScansOnlySyncedFiles() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
@@ -1053,6 +1115,93 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(xmp.headline, "RAW headline")
         XCTAssertEqual(xmp.description, "Existing description")
         XCTAssertEqual(xmp.creator, ["Jane Doe"])
+    }
+
+    func testReprocessCanTargetOnePhotographerOrOneClip() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let firstTimestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let secondTimestamp = firstTimestamp.addingTimeInterval(3_600)
+        let files: [(name: String, timestamp: Date)] = [
+            ("JAD_FIRST.CR3", firstTimestamp),
+            ("JAD_SECOND.CR3", secondTimestamp),
+            ("SAM_FIRST.CR3", firstTimestamp)
+        ]
+        for file in files {
+            let url = fixture.right.appendingPathComponent(file.name)
+            try Data("camera-data-\(file.name)".utf8).write(to: url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: file.timestamp],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let jane = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        let sam = PhotographerProfile(
+            name: "Sam Example",
+            filenamePrefix: "SAM",
+            creator: "Sam Example",
+            copyrightNotice: ""
+        )
+        let janeFirstClip = MetadataScheduleClip(
+            photographerID: jane.id,
+            name: "Jane first assignment",
+            startsAt: firstTimestamp.addingTimeInterval(-60),
+            endsAt: firstTimestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(headline: "Jane first")
+        )
+        let janeSecondClip = MetadataScheduleClip(
+            photographerID: jane.id,
+            name: "Jane second assignment",
+            startsAt: secondTimestamp.addingTimeInterval(-60),
+            endsAt: secondTimestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(headline: "Jane second")
+        )
+        let samClip = MetadataScheduleClip(
+            photographerID: sam.id,
+            name: "Sam assignment",
+            startsAt: firstTimestamp.addingTimeInterval(-60),
+            endsAt: firstTimestamp.addingTimeInterval(60),
+            fields: ScheduledMetadataFields(headline: "Sam first")
+        )
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [jane, sam],
+            clips: [janeFirstClip, janeSecondClip, samClip]
+        )
+
+        let photographerResult = try await SyncEngine().reprocessExistingLocalFiles(
+            job: job,
+            scope: .photographer(sam.id)
+        )
+
+        XCTAssertEqual(photographerResult.scanned, 1)
+        XCTAssertEqual(photographerResult.applied, 1)
+        XCTAssertEqual(
+            try XMPSidecar.read(from: fixture.right.appendingPathComponent("SAM_FIRST.xmp")).headline,
+            "Sam first"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.right.appendingPathComponent("JAD_FIRST.xmp").path))
+
+        let clipResult = try await SyncEngine().reprocessExistingLocalFiles(
+            job: job,
+            scope: .clip(janeFirstClip.id)
+        )
+
+        XCTAssertEqual(clipResult.scanned, 1)
+        XCTAssertEqual(clipResult.applied, 1)
+        XCTAssertEqual(
+            try XMPSidecar.read(from: fixture.right.appendingPathComponent("JAD_FIRST.xmp")).headline,
+            "Jane first"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.right.appendingPathComponent("JAD_SECOND.xmp").path))
     }
 
     func testReprocessRejectsLocalArrivalPolicy() async throws {

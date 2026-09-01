@@ -158,10 +158,17 @@ private struct MenuJobRow: View {
                     .foregroundStyle(statusColor)
                     .lineLimit(1)
                     .help(phase.label)
-                Text(activityLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
+                if case .failed = phase {
+                    Button("View error details…", action: openJobSettings)
+                        .buttonStyle(.plain)
+                        .font(.caption2)
+                        .foregroundStyle(.tint)
+                } else {
+                    Text(activityLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
             }
             Spacer()
             Button { showQuickControls.toggle() } label: {
@@ -188,10 +195,7 @@ private struct MenuJobRow: View {
             .help(job.isEnabled ? "Stop Automatic Sync" : "Start Automatic Sync")
             localFolderControl
             Button {
-                store.selectedJobID = job.id
-                RegularWindowController.shared.prepareForOpening()
-                openWindow(id: "jobs")
-                NSApplication.shared.activate(ignoringOtherApps: true)
+                openJobSettings()
             } label: {
                 Image(systemName: "gearshape")
             }
@@ -210,6 +214,13 @@ private struct MenuJobRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
+    }
+
+    private func openJobSettings() {
+        store.selectedJobID = job.id
+        RegularWindowController.shared.prepareForOpening()
+        openWindow(id: "jobs")
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private var statusColor: Color {

@@ -21,7 +21,7 @@ struct MetadataProgrammingView: View {
     @State private var playhead: TimelinePlayhead?
     @State private var snapMinutes = 15
     @State private var pendingClipChange: PendingClipChange?
-    @State private var showReprocessConfirmation = false
+    @State private var pendingReprocessScope: MetadataReprocessScope?
     @State private var metadataPreview: MetadataPreviewResult?
     @State private var metadataPreviewFolderName = ""
     @State private var metadataPreviewError: String?
@@ -151,12 +151,17 @@ struct MetadataProgrammingView: View {
         }
         .confirmationDialog(
             "Reprocess existing local files?",
-            isPresented: $showReprocessConfirmation,
+            isPresented: Binding(
+                get: { pendingReprocessScope != nil },
+                set: { if !$0 { pendingReprocessScope = nil } }
+            ),
             titleVisibility: .visible
         ) {
-            Button("Reprocess Files") {
-                guard save(), let loadedJobID else { return }
-                store.reprocessExistingLocalFiles(loadedJobID)
+            Button(reprocessActionTitle) {
+                guard let scope = pendingReprocessScope,
+                      save(),
+                      let loadedJobID else { return }
+                store.reprocessExistingLocalFiles(loadedJobID, scope: scope)
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -343,6 +348,7 @@ struct MetadataProgrammingView: View {
                                 canPaste: !copiedClips.isEmpty && playhead != nil,
                                 isSelected: selectedPhotographerID == photographer.id,
                                 processedFileCount: processedFileCount(for: photographer),
+                                canReprocess: canReprocessMetadata,
                                 onSelectPhotographer: {
                                     selectedPhotographerID = photographer.id
                                     selectedClipIDs = []
@@ -356,6 +362,9 @@ struct MetadataProgrammingView: View {
                                     selectedPhotographerID = photographer.id
                                     photographerPendingDeletion = photographer
                                 },
+                                onReprocessPhotographer: {
+                                    pendingReprocessScope = .photographer(photographer.id)
+                                },
                                 onBeginReordering: {
                                     draggedPhotographerID = photographer.id
                                 },
@@ -364,6 +373,9 @@ struct MetadataProgrammingView: View {
                                 onCreate: createClip,
                                 onMove: moveClip,
                                 onResize: resizeClip,
+                                onReprocessClip: { clip in
+                                    pendingReprocessScope = .clip(clip.id)
+                                },
                                 onPlacePlayhead: placePlayhead,
                                 onPasteAtPlayhead: pasteClips
                             )
@@ -485,7 +497,7 @@ struct MetadataProgrammingView: View {
             .disabled(!canPreviewMetadata)
             .help(previewHelp)
             Button {
-                showReprocessConfirmation = true
+                pendingReprocessScope = .all
             } label: {
                 if isReprocessing {
                     ProgressView()
@@ -608,7 +620,31 @@ struct MetadataProgrammingView: View {
         let policyNote = draft.existingFieldPolicy == .fillEmpty
             ? "Existing non-empty fields will be preserved."
             : "Non-empty programmed values will overwrite existing fields."
-        return "Matching files in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
+        let scopeDescription: String
+        switch pendingReprocessScope {
+        case .photographer(let photographerID):
+            let name = draft.photographers.first(where: { $0.id == photographerID })?.photographerName
+                ?? "the selected photographer"
+            scopeDescription = "Only files assigned to \(name)"
+        case .clip(let clipID):
+            let name = draft.clips.first(where: { $0.id == clipID })?.name
+                ?? "the selected metadata clip"
+            scopeDescription = "Only files assigned to the “\(name)” clip"
+        case .all, nil:
+            scopeDescription = "Matching files"
+        }
+        return "\(scopeDescription) in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
+    }
+
+    private var reprocessActionTitle: String {
+        switch pendingReprocessScope {
+        case .photographer:
+            "Reprocess Photographer’s Files"
+        case .clip:
+            "Reprocess Clip’s Files"
+        case .all, nil:
+            "Reprocess Files"
+        }
     }
 
     private func previewConfiguredLocalFolder() {
@@ -1867,15 +1903,18 @@ private struct TimelineTrack: View {
     let canPaste: Bool
     let isSelected: Bool
     let processedFileCount: Int
+    let canReprocess: Bool
     let onSelectPhotographer: () -> Void
     let onEditPhotographer: () -> Void
     let onRequestRemove: () -> Void
+    let onReprocessPhotographer: () -> Void
     let onBeginReordering: () -> Void
     let onSelect: (MetadataScheduleClip) -> Void
     let onEdit: (MetadataScheduleClip) -> Void
     let onCreate: (PhotographerProfile, Date, Date) -> Void
     let onMove: (MetadataScheduleClip, TimeInterval, Bool) -> Void
     let onResize: (MetadataScheduleClip, MetadataClipResizeEdge, TimeInterval) -> Void
+    let onReprocessClip: (MetadataScheduleClip) -> Void
     let onPlacePlayhead: (UUID, Date) -> Void
     let onPasteAtPlayhead: (Date, UUID) -> Void
 
@@ -1949,8 +1988,10 @@ private struct TimelineTrack: View {
                             continuesIntoNextDay: clip.endsAt > nextDay,
                             timeLabel: timeLabel(for: clip),
                             secondsPerPoint: dayDuration / max(proxy.size.width, 1),
+                            canReprocess: canReprocess,
                             onSelect: { onSelect(clip) },
                             onEdit: { onEdit(clip) },
+                            onReprocess: { onReprocessClip(clip) },
                             onMove: { interval, duplicating in onMove(clip, interval, duplicating) },
                             onResize: { edge, interval in onResize(clip, edge, interval) }
                         )
@@ -1979,6 +2020,10 @@ private struct TimelineTrack: View {
             Button(action: onEditPhotographer) {
                 Label("Edit Photographer…", systemImage: "slider.horizontal.3")
             }
+            Button(action: onReprocessPhotographer) {
+                Label("Reprocess This Photographer’s Files…", systemImage: "arrow.clockwise")
+            }
+            .disabled(!canReprocess)
             Button(role: .destructive, action: onRequestRemove) {
                 Label("Remove Track", systemImage: "minus.circle")
             }
@@ -2192,8 +2237,10 @@ private struct TimelineClipView: View {
     let continuesIntoNextDay: Bool
     let timeLabel: String
     let secondsPerPoint: TimeInterval
+    let canReprocess: Bool
     let onSelect: () -> Void
     let onEdit: () -> Void
+    let onReprocess: () -> Void
     let onMove: (TimeInterval, Bool) -> Void
     let onResize: (MetadataClipResizeEdge, TimeInterval) -> Void
 
@@ -2237,6 +2284,15 @@ private struct TimelineClipView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .offset(x: moveTranslation)
         .gesture(interactionGesture)
+        .contextMenu {
+            Button(action: onEdit) {
+                Label("Edit Clip…", systemImage: "slider.horizontal.3")
+            }
+            Button(action: onReprocess) {
+                Label("Reprocess This Clip’s Files…", systemImage: "arrow.clockwise")
+            }
+            .disabled(!canReprocess)
+        }
         .help("Click to select, double-click to edit, drag to move, Option-drag to duplicate, or drag an edge to resize.")
     }
 

@@ -95,6 +95,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var metadataPresets: [MetadataPreset]
     @Published private(set) var photographerLibrary: [PhotographerProfile]
     @Published private(set) var metadataAuditEntries: [UUID: [MetadataAuditEntry]] = [:]
+    @Published private(set) var syncFailureEntries: [UUID: [SyncFailureRecord]] = [:]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
     @Published private(set) var metadataReprocessPhases: [UUID: MetadataReprocessPhase] = [:]
     @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
@@ -105,6 +106,7 @@ final class AppStore: ObservableObject {
     private let metadataPresetRepository: MetadataPresetRepository
     private let photographerProfileRepository: PhotographerProfileRepository
     private let metadataAuditRepository: MetadataAuditRepository
+    private let syncFailureRepository: SyncFailureRepository
     private let keychain: KeychainStore
     private let engine = SyncEngine()
     private var scheduleTasks: [UUID: Task<Void, Never>] = [:]
@@ -118,12 +120,14 @@ final class AppStore: ObservableObject {
         metadataPresetRepository: MetadataPresetRepository = MetadataPresetRepository(),
         photographerProfileRepository: PhotographerProfileRepository = PhotographerProfileRepository(),
         metadataAuditRepository: MetadataAuditRepository = MetadataAuditRepository(),
+        syncFailureRepository: SyncFailureRepository = SyncFailureRepository(),
         keychain: KeychainStore = KeychainStore()
     ) {
         self.repository = repository
         self.metadataPresetRepository = metadataPresetRepository
         self.photographerProfileRepository = photographerProfileRepository
         self.metadataAuditRepository = metadataAuditRepository
+        self.syncFailureRepository = syncFailureRepository
         self.keychain = keychain
         do {
             let loadResult = try metadataPresetRepository.loadResult()
@@ -183,6 +187,16 @@ final class AppStore: ObservableObject {
         } catch {
             metadataAuditEntries = [:]
             appendAlert("The metadata audit trail could not be loaded: \(error.localizedDescription)")
+        }
+        do {
+            let loadResult = try syncFailureRepository.loadResult()
+            syncFailureEntries = Dictionary(grouping: loadResult.entries, by: \.jobID)
+            if loadResult.recoveredFromBackup {
+                appendAlert("The sync error log was damaged, so its most recent backup was restored.")
+            }
+        } catch {
+            syncFailureEntries = [:]
+            appendAlert("The sync error log could not be loaded: \(error.localizedDescription)")
         }
         refreshLaunchAtLoginStatus()
         selectedJobID = jobs.last?.id
@@ -784,6 +798,7 @@ final class AppStore: ObservableObject {
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }
         phases[jobID] = nil
         metadataReprocessPhases[jobID] = nil
+        syncFailureEntries[jobID] = nil
         transferTotals.remove(jobID: jobID)
         do {
             let retained = try metadataAuditRepository.remove(jobID: jobID)
@@ -791,15 +806,32 @@ final class AppStore: ObservableObject {
         } catch {
             appendAlert("The metadata audit trail for this job could not be removed: \(error.localizedDescription)")
         }
+        do {
+            let retained = try syncFailureRepository.remove(jobID: jobID)
+            syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
+        } catch {
+            appendAlert("The sync error log for this job could not be removed: \(error.localizedDescription)")
+        }
         persist()
     }
 
     func runNow(_ jobID: UUID) {
-        Task { _ = await performSync(jobID) }
+        guard !runningJobs.contains(jobID),
+              let job = jobs.first(where: { $0.id == jobID }) else { return }
+        if job.isEnabled {
+            scheduleTasks[jobID]?.cancel()
+            scheduleTasks[jobID] = nil
+            schedule(jobID)
+        } else {
+            Task { _ = await performSync(jobID) }
+        }
     }
 
-    func reprocessExistingLocalFiles(_ jobID: UUID) {
-        Task { await performMetadataReprocess(jobID) }
+    func reprocessExistingLocalFiles(
+        _ jobID: UUID,
+        scope: MetadataReprocessScope = .all
+    ) {
+        Task { await performMetadataReprocess(jobID, scope: scope) }
     }
 
     func isJobBusy(_ jobID: UUID) -> Bool {
@@ -892,6 +924,22 @@ final class AppStore: ObservableObject {
 
     func metadataAuditTrail(for jobID: UUID) -> [MetadataAuditEntry] {
         metadataAuditEntries[jobID, default: []]
+    }
+
+    func syncFailureHistory(for jobID: UUID) -> [SyncFailureRecord] {
+        syncFailureEntries[jobID, default: []].sorted {
+            if $0.occurredAt != $1.occurredAt { return $0.occurredAt > $1.occurredAt }
+            return $0.id.uuidString > $1.id.uuidString
+        }
+    }
+
+    func clearSyncFailureHistory(for jobID: UUID) {
+        do {
+            let retained = try syncFailureRepository.remove(jobID: jobID)
+            syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
+        } catch {
+            alertMessage = "The sync error log could not be cleared: \(error.localizedDescription)"
+        }
     }
 
     /// Persists a completed run's per-file metadata decisions. Engine callers
@@ -1011,12 +1059,16 @@ final class AppStore: ObservableObject {
             return .cancelled
         } catch {
             let message = error.localizedDescription
+            recordSyncFailure(message, jobID: jobID)
             phases[jobID] = .failed(message, retryAt: nil)
             return .failed(message)
         }
     }
 
-    private func performMetadataReprocess(_ jobID: UUID) async {
+    private func performMetadataReprocess(
+        _ jobID: UUID,
+        scope: MetadataReprocessScope
+    ) async {
         guard !runningJobs.contains(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return }
         runningJobs.insert(jobID)
@@ -1028,6 +1080,7 @@ final class AppStore: ObservableObject {
             let rightPassword = job.right.kind.isRemote ? try cachedPassword(for: job.right.credentialID) : nil
             let result = try await engine.reprocessExistingLocalFiles(
                 job: job,
+                scope: scope,
                 leftPassword: leftPassword,
                 rightPassword: rightPassword
             )
@@ -1052,6 +1105,17 @@ final class AppStore: ObservableObject {
             self.alertMessage = alertMessage + "\n\n" + message
         } else {
             alertMessage = message
+        }
+    }
+
+    private func recordSyncFailure(_ message: String, jobID: UUID) {
+        let entry = SyncFailureRecord(jobID: jobID, message: message)
+        syncFailureEntries[jobID, default: []].append(entry)
+        do {
+            let retained = try syncFailureRepository.append(entry)
+            syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
+        } catch {
+            appendAlert("The sync error could not be added to the error log: \(error.localizedDescription)")
         }
     }
 

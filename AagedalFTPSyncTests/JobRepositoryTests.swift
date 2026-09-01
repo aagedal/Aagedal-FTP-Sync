@@ -165,6 +165,40 @@ final class SyncRetryPolicyTests: XCTestCase {
     }
 }
 
+final class SyncFailureRepositoryTests: XCTestCase {
+    func testPersistsBoundsAndRemovesPerJobFailureHistory() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sync-failures-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: url.appendingPathExtension("backup"))
+        }
+        let repository = SyncFailureRepository(fileURL: url, maximumEntries: 2)
+        let firstJobID = UUID()
+        let secondJobID = UUID()
+        let baseDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try repository.append(SyncFailureRecord(
+            jobID: firstJobID,
+            occurredAt: baseDate,
+            message: "First"
+        ))
+        try repository.append(SyncFailureRecord(
+            jobID: firstJobID,
+            occurredAt: baseDate.addingTimeInterval(1),
+            message: "Second"
+        ))
+        try repository.append(SyncFailureRecord(
+            jobID: secondJobID,
+            occurredAt: baseDate.addingTimeInterval(2),
+            message: "Third"
+        ))
+
+        XCTAssertEqual(try repository.loadResult().entries.map(\.message), ["Second", "Third"])
+        XCTAssertEqual(try repository.remove(jobID: firstJobID).map(\.message), ["Third"])
+    }
+}
+
 @MainActor
 final class AppStorePersistenceTests: XCTestCase {
     func testFailedSaveDoesNotPublishTheDraftJob() {
