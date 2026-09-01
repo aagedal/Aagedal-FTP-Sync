@@ -832,3 +832,64 @@ final class AppStorePersistenceTests: XCTestCase {
         )
     }
 }
+
+final class MenuBarActivityStateTests: XCTestCase {
+    func testFailureHasPriorityOverWarningsAndSyncing() {
+        let state = MenuBarActivityState(phases: [
+            .syncing,
+            .succeeded(
+                Date(),
+                transferred: 1,
+                deleted: 0,
+                processed: 0,
+                conflicts: ["duplicate.jpg"],
+                metadataReport: .empty,
+                nextRun: nil
+            ),
+            .failed("Server unavailable", retryAt: nil)
+        ])
+
+        XCTAssertEqual(state.severity, .failed)
+        XCTAssertEqual(state.systemImageName, "exclamationmark.triangle.fill")
+        XCTAssertEqual(
+            state.accessibilityLabel(transferredFileCount: 3),
+            "Aagedal FTP Sync, 1 job failed, 1 job needs attention, 1 job syncing, 3 files synced since the jobs started"
+        )
+    }
+
+    func testWarningUsesAttentionIconAndAccessibleStatus() {
+        let state = MenuBarActivityState(phases: [
+            .succeeded(
+                Date(),
+                transferred: 0,
+                deleted: 0,
+                processed: 0,
+                conflicts: ["duplicate.jpg"],
+                metadataReport: .empty,
+                nextRun: nil
+            )
+        ])
+
+        XCTAssertEqual(state.severity, .warning)
+        XCTAssertEqual(state.systemImageName, "exclamationmark.triangle")
+        XCTAssertEqual(
+            state.accessibilityLabel(transferredFileCount: 0),
+            "Aagedal FTP Sync, 1 job needs attention"
+        )
+    }
+
+    func testNormalAndSyncingStatesRetainExistingIcons() {
+        let normal = MenuBarActivityState(phases: [.stopped])
+        let syncing = MenuBarActivityState(phases: [.waiting(Date()), .syncing])
+
+        XCTAssertEqual(normal.severity, .normal)
+        XCTAssertEqual(normal.systemImageName, "arrow.triangle.2.circlepath.circle")
+        XCTAssertEqual(normal.accessibilityLabel(transferredFileCount: 0), "Aagedal FTP Sync")
+        XCTAssertEqual(syncing.severity, .syncing)
+        XCTAssertEqual(syncing.systemImageName, "arrow.triangle.2.circlepath")
+        XCTAssertEqual(
+            syncing.accessibilityLabel(transferredFileCount: 1),
+            "Aagedal FTP Sync, 1 job syncing, 1 file synced since the jobs started"
+        )
+    }
+}

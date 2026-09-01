@@ -116,8 +116,10 @@ private struct MenuBarActivityLabel: View {
 
     var body: some View {
         let count = store.transferredFileCount()
+        let state = MenuBarActivityState(phases: Array(store.phases.values))
         HStack(spacing: 3) {
-            Image(systemName: store.isSyncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.circle")
+            Image(systemName: state.systemImageName)
+                .foregroundStyle(foregroundStyle(for: state.severity))
             if count > 0 {
                 Text(count > 999 ? "999+" : "\(count)")
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
@@ -129,12 +131,85 @@ private struct MenuBarActivityLabel: View {
                     }
             }
         }
-        .accessibilityLabel(accessibilityLabel(for: count))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(state.accessibilityLabel(transferredFileCount: count))
     }
 
-    private func accessibilityLabel(for count: Int) -> String {
-        guard count > 0 else { return "Aagedal FTP Sync" }
-        let files = count == 1 ? "1 file" : "\(count) files"
-        return "Aagedal FTP Sync, \(files) synced since the jobs started"
+    private func foregroundStyle(for severity: MenuBarActivityState.Severity) -> Color {
+        switch severity {
+        case .failed: .red
+        case .warning: .orange
+        case .syncing, .normal: .primary
+        }
+    }
+}
+
+struct MenuBarActivityState: Equatable {
+    enum Severity: Equatable {
+        case normal
+        case syncing
+        case warning
+        case failed
+    }
+
+    let failedJobCount: Int
+    let warningJobCount: Int
+    let syncingJobCount: Int
+
+    init(phases: [JobPhase]) {
+        failedJobCount = phases.count { phase in
+            if case .failed = phase { return true }
+            return false
+        }
+        warningJobCount = phases.count { phase in
+            guard case .succeeded(
+                _, _, _, _, let conflicts, let metadataReport, _
+            ) = phase else { return false }
+            return !conflicts.isEmpty || metadataReport.failed > 0
+        }
+        syncingJobCount = phases.count { $0 == .syncing }
+    }
+
+    var severity: Severity {
+        if failedJobCount > 0 { return .failed }
+        if warningJobCount > 0 { return .warning }
+        if syncingJobCount > 0 { return .syncing }
+        return .normal
+    }
+
+    var systemImageName: String {
+        switch severity {
+        case .failed: "exclamationmark.triangle.fill"
+        case .warning: "exclamationmark.triangle"
+        case .syncing: "arrow.triangle.2.circlepath"
+        case .normal: "arrow.triangle.2.circlepath.circle"
+        }
+    }
+
+    func accessibilityLabel(transferredFileCount: Int) -> String {
+        var details: [String] = []
+        if failedJobCount > 0 {
+            details.append(jobCountDescription(failedJobCount, singular: "failed", plural: "failed"))
+        }
+        if warningJobCount > 0 {
+            details.append(jobCountDescription(
+                warningJobCount,
+                singular: "needs attention",
+                plural: "need attention"
+            ))
+        }
+        if syncingJobCount > 0 {
+            details.append(jobCountDescription(syncingJobCount, singular: "syncing", plural: "syncing"))
+        }
+        if transferredFileCount > 0 {
+            let files = transferredFileCount == 1 ? "1 file" : "\(transferredFileCount) files"
+            details.append("\(files) synced since the jobs started")
+        }
+        guard !details.isEmpty else { return "Aagedal FTP Sync" }
+        return "Aagedal FTP Sync, " + details.joined(separator: ", ")
+    }
+
+    private func jobCountDescription(_ count: Int, singular: String, plural: String) -> String {
+        count == 1 ? "1 job \(singular)" : "\(count) jobs \(plural)"
     }
 }
