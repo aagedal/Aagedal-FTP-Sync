@@ -28,7 +28,41 @@ enum TransactionalRemoval {
             }
             throw error
         }
-        for holding in holdings { try await delete(holding) }
+        for index in holdings.indices {
+            do {
+                try await delete(holdings[index])
+            } catch {
+                var restoreFailures: [String] = []
+                for restoreIndex in index..<holdings.count {
+                    do {
+                        try await move(holdings[restoreIndex], sources[restoreIndex])
+                    } catch {
+                        restoreFailures.append(labels[restoreIndex])
+                    }
+                }
+
+                let alreadyRemoved = Array(labels.prefix(index))
+                var details: [String] = []
+                if alreadyRemoved.isEmpty {
+                    details.append("No source files were deleted before the failure.")
+                } else {
+                    details.append(
+                        "Verified processed copies remain available for source files already removed: \(alreadyRemoved.joined(separator: ", "))."
+                    )
+                }
+                if restoreFailures.isEmpty {
+                    details.append("Every undeleted staged source item was restored to its original name.")
+                } else {
+                    details.append(
+                        "Staged source items could not be restored to their original names: \(restoreFailures.joined(separator: ", "))."
+                    )
+                }
+                details.append("Deletion error: \(error.localizedDescription)")
+                throw AppError.transferFailed(
+                    "Final source removal could not be completed. " + details.joined(separator: " ")
+                )
+            }
+        }
     }
 }
 

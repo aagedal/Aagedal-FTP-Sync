@@ -4,6 +4,76 @@ import SwiftExif
 import XCTest
 @testable import AagedalFTPSync
 
+final class TransactionalRemovalTests: XCTestCase {
+    func testFirstDeletionFailureRestoresEveryStagedSource() async throws {
+        let sources = ["first.source", "second.source"]
+        let holdings = ["first.hold", "second.hold"]
+        var locations = Set(sources)
+
+        do {
+            try await TransactionalRemoval.stageAndDelete(
+                sources: sources,
+                holdings: holdings,
+                labels: ["first.raw", "second.xmp"],
+                move: { source, destination in
+                    guard locations.remove(source) != nil else {
+                        throw AppError.transferFailed("Missing \(source)")
+                    }
+                    locations.insert(destination)
+                },
+                delete: { _ in
+                    throw AppError.transferFailed("Injected delete failure")
+                }
+            )
+            XCTFail("The injected deletion failure should be reported.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("No source files were deleted"))
+            XCTAssertTrue(error.localizedDescription.contains("restored to its original name"))
+        }
+
+        XCTAssertEqual(locations, Set(sources))
+        XCTAssertTrue(locations.isDisjoint(with: holdings))
+    }
+
+    func testLaterDeletionFailureRestoresRemainingSourceAndReportsRemovedItem() async throws {
+        let sources = ["first.source", "second.source"]
+        let holdings = ["first.hold", "second.hold"]
+        var locations = Set(sources)
+        var deletionCount = 0
+
+        do {
+            try await TransactionalRemoval.stageAndDelete(
+                sources: sources,
+                holdings: holdings,
+                labels: ["first.raw", "second.xmp"],
+                move: { source, destination in
+                    guard locations.remove(source) != nil else {
+                        throw AppError.transferFailed("Missing \(source)")
+                    }
+                    locations.insert(destination)
+                },
+                delete: { holding in
+                    deletionCount += 1
+                    if deletionCount == 2 {
+                        throw AppError.transferFailed("Injected second delete failure")
+                    }
+                    guard locations.remove(holding) != nil else {
+                        throw AppError.transferFailed("Missing \(holding)")
+                    }
+                }
+            )
+            XCTFail("The injected second deletion failure should be reported.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("already removed: first.raw"))
+            XCTAssertTrue(error.localizedDescription.contains("restored to its original name"))
+        }
+
+        XCTAssertFalse(locations.contains(sources[0]))
+        XCTAssertTrue(locations.contains(sources[1]))
+        XCTAssertTrue(locations.isDisjoint(with: holdings))
+    }
+}
+
 final class LocalSyncIntegrationTests: XCTestCase {
     func testLocalArrivalDateIsSetForNewAndReplacementPublication() async throws {
         let fixture = try LocalFixture()

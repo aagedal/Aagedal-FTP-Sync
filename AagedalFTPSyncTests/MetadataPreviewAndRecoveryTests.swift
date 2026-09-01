@@ -384,6 +384,122 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         )
     }
 
+    func testReprocessStopsBeforeWritingWhenSourceListingIsUnavailable() async throws {
+        let folder = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let sourceFolder = folder.appendingPathComponent("source")
+        let destinationFolder = folder.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+        let destination = destinationFolder.appendingPathComponent("JAD_OFFLINE.CR3")
+        let original = Data("camera raw data".utf8)
+        try original.write(to: destination)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: destination.path)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = SyncJob(
+            name: "Unavailable source",
+            left: try localEndpoint(for: sourceFolder),
+            right: try localEndpoint(for: destinationFolder),
+            direction: .leftToRight,
+            filter: FileFilter(preset: .raw),
+            intervalSeconds: 5,
+            isEnabled: false
+        )
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Must not be written")
+            )]
+        )
+        let engine = SyncEngine(sessionFactory: { _, _, _ in
+            throw AppError.transferFailed("The source is offline.")
+        })
+
+        do {
+            _ = try await engine.reprocessExistingLocalFiles(job: job)
+            XCTFail("Reprocessing should stop when source timestamps cannot be loaded.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Source modification times could not be loaded"))
+        }
+
+        XCTAssertEqual(try Data(contentsOf: destination), original)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.deletingPathExtension().appendingPathExtension("xmp").path
+            )
+        )
+    }
+
+    func testReprocessRejectsMissingSourceTimestampWhenDatesWereNotPreserved() async throws {
+        let folder = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let sourceFolder = folder.appendingPathComponent("source")
+        let destinationFolder = folder.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destinationFolder, withIntermediateDirectories: true)
+        let destination = destinationFolder.appendingPathComponent("JAD_MOVED.CR3")
+        let original = Data("camera raw data".utf8)
+        try original.write(to: destination)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: destination.path)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        var job = SyncJob(
+            name: "Missing source timestamp",
+            left: try localEndpoint(for: sourceFolder),
+            right: try localEndpoint(for: destinationFolder),
+            direction: .leftToRight,
+            filter: FileFilter(preset: .raw),
+            intervalSeconds: 5,
+            isEnabled: false,
+            preserveModificationDates: false
+        )
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Assignment",
+                startsAt: timestamp.addingTimeInterval(-60),
+                endsAt: timestamp.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Must not be written")
+            )]
+        )
+
+        do {
+            _ = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+            XCTFail("Reprocessing should reject a destination arrival date as a source modification date.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Source modification times are unavailable"))
+        }
+
+        XCTAssertEqual(try Data(contentsOf: destination), original)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.deletingPathExtension().appendingPathExtension("xmp").path
+            )
+        )
+    }
+
     func testTIFFAndHEICFixturesRoundTripScheduledMetadata() throws {
         let folder = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }

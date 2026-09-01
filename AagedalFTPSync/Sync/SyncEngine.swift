@@ -239,7 +239,7 @@ struct SyncEngine: Sendable {
             managedFolder: job.usesManagedFolderStructure ? .syncedFiles : nil
         )
         let destinationFiles = try await destination.listFiles()
-        let sourceFiles = await sourceFilesForReprocessing(
+        let sourceFiles = try await sourceFilesForReprocessing(
             job: job,
             automation: automation,
             leftPassword: leftPassword,
@@ -252,6 +252,19 @@ struct SyncEngine: Sendable {
                 return automation.matchingPhotographer(for: file.relativePath)?.id == scopedPhotographerID
             }
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        if automation.timestampPolicy == .sourceModification, !job.preserveModificationDates {
+            let missingSourcePaths = files
+                .map(\.relativePath)
+                .filter { sourceFiles[$0] == nil }
+            if let firstMissingPath = missingSourcePaths.first {
+                let description = missingSourcePaths.count == 1
+                    ? firstMissingPath
+                    : "\(firstMissingPath) and \(missingSourcePaths.count - 1) other files"
+                throw AppError.invalidConfiguration(
+                    "Source modification times are unavailable for \(description). Reconnect or restore the source files before reprocessing, or use camera capture time."
+                )
+            }
+        }
         var scanned = scope.isClip ? 0 : files.count
         var applied = 0
         var skipped = 0
@@ -416,7 +429,7 @@ struct SyncEngine: Sendable {
         automation: MetadataAutomation,
         leftPassword: String?,
         rightPassword: String?
-    ) async -> [String: SyncFile] {
+    ) async throws -> [String: SyncFile] {
         guard automation.timestampPolicy == .sourceModification else { return [:] }
 
         let sourceEndpoint: Endpoint
@@ -429,19 +442,31 @@ struct SyncEngine: Sendable {
             sourceEndpoint = job.right
             password = rightPassword
         case .bidirectional:
-            return [:]
+            throw AppError.invalidConfiguration("Metadata reprocessing requires a one-way job.")
         }
 
-        guard let source = try? sessionFactory(sourceEndpoint, password, nil) else {
-            return [:]
+        let source: any EndpointSession
+        do {
+            source = try sessionFactory(sourceEndpoint, password, nil)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw AppError.transferFailed(
+                "Source modification times could not be loaded for metadata reprocessing. Reconnect the source and try again. \(error.localizedDescription)"
+            )
         }
         do {
             let files = try await source.listFiles()
             await source.close()
             return files
+        } catch is CancellationError {
+            await source.close()
+            throw CancellationError()
         } catch {
             await source.close()
-            return [:]
+            throw AppError.transferFailed(
+                "Source modification times could not be loaded for metadata reprocessing. Reconnect the source and try again. \(error.localizedDescription)"
+            )
         }
     }
 

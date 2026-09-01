@@ -236,10 +236,10 @@ final class AppStore: ObservableObject {
         var job = SyncJob(name: uniqueName())
         job.isEnabled = false
         job.startsOnAppLaunch = false
-        jobs.append(job)
+        let updatedJobs = jobs + [job]
+        guard persistAndPublishJobs(updatedJobs) else { return job }
         selectedJobID = job.id
         phases[job.id] = .stopped
-        persist()
         return job
     }
 
@@ -278,26 +278,29 @@ final class AppStore: ObservableObject {
 
     func updateFilter(jobID: UUID, preset: FilterPreset) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        jobs[index].filter.preset = preset
-        persist()
+        var updatedJobs = jobs
+        updatedJobs[index].filter.preset = preset
+        _ = persistAndPublishJobs(updatedJobs)
     }
 
     func updateInterval(jobID: UUID, seconds: Double) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        jobs[index].intervalSeconds = min(max(seconds, 2), 300)
-        persist()
+        var updatedJobs = jobs
+        updatedJobs[index].intervalSeconds = min(max(seconds, 2), 300)
+        guard persistAndPublishJobs(updatedJobs) else { return }
         reschedule(jobID)
     }
 
     func updateFileAge(jobID: UUID, recentHours: Int?) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        jobs[index].filter.recentHours = recentHours
+        var updatedJobs = jobs
+        updatedJobs[index].filter.recentHours = recentHours
         if let recentHours,
-           let cleanup = jobs[index].targetCleanup,
+           let cleanup = updatedJobs[index].targetCleanup,
            cleanup.olderThanHours <= recentHours {
-            jobs[index].targetCleanup?.olderThanHours = recentHours + 1
+            updatedJobs[index].targetCleanup?.olderThanHours = recentHours + 1
         }
-        persist()
+        _ = persistAndPublishJobs(updatedJobs)
     }
 
     @discardableResult
@@ -798,9 +801,11 @@ final class AppStore: ObservableObject {
 
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        if enabled, !jobs[index].isEnabled { transferTotals.reset(jobID: jobID) }
-        jobs[index].isEnabled = enabled
-        persist()
+        let wasEnabled = jobs[index].isEnabled
+        var updatedJobs = jobs
+        updatedJobs[index].isEnabled = enabled
+        guard persistAndPublishJobs(updatedJobs) else { return }
+        if enabled, !wasEnabled { transferTotals.reset(jobID: jobID) }
         reschedule(jobID)
     }
 
@@ -809,14 +814,16 @@ final class AppStore: ObservableObject {
             alertMessage = "Wait for the current operation to finish before deleting this job."
             return
         }
+        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
+        let updatedJobs = jobs.filter { $0.id != jobID }
+        guard persistAndPublishJobs(updatedJobs, errorPrefix: "The job could not be deleted") else { return }
+
         scheduleTasks[jobID]?.cancel()
         scheduleTasks[jobID] = nil
-        guard let job = jobs.first(where: { $0.id == jobID }) else { return }
         keychain.removePassword(for: job.left.credentialID)
         keychain.removePassword(for: job.right.credentialID)
         removeCachedPassword(for: job.left.credentialID)
         removeCachedPassword(for: job.right.credentialID)
-        jobs.removeAll { $0.id == jobID }
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }
         phases[jobID] = nil
         metadataReprocessPhases[jobID] = nil
@@ -834,7 +841,6 @@ final class AppStore: ObservableObject {
         } catch {
             appendAlert("The sync error log for this job could not be removed: \(error.localizedDescription)")
         }
-        persist()
     }
 
     func runNow(_ jobID: UUID) {
@@ -886,13 +892,17 @@ final class AppStore: ObservableObject {
             return
         }
 
+        var updatedJobs = jobs
+        updatedJobs[index].isEnabled = false
+        updatedJobs[index].startsOnAppLaunch = false
+        guard persistAndPublishJobs(updatedJobs, errorPrefix: "The job could not be disabled for reset") else {
+            return
+        }
+
         scheduleTasks[jobID]?.cancel()
         scheduleTasks[jobID] = nil
-        jobs[index].isEnabled = false
-        jobs[index].startsOnAppLaunch = false
         phases[jobID] = .stopped
         resettingJobs.insert(jobID)
-        persist()
 
         let task = Task { [weak self] in
             guard let self else { return }
@@ -964,17 +974,20 @@ final class AppStore: ObservableObject {
     }
 
     func startAll() {
-        for index in jobs.indices {
-            if !jobs[index].isEnabled { transferTotals.reset(jobID: jobs[index].id) }
-            jobs[index].isEnabled = true
+        var updatedJobs = jobs
+        let newlyEnabledJobIDs = updatedJobs.compactMap { $0.isEnabled ? nil : $0.id }
+        for index in updatedJobs.indices {
+            updatedJobs[index].isEnabled = true
         }
-        persist()
+        guard persistAndPublishJobs(updatedJobs) else { return }
+        for jobID in newlyEnabledJobIDs { transferTotals.reset(jobID: jobID) }
         restartSchedules()
     }
 
     func stopAll() {
-        for index in jobs.indices { jobs[index].isEnabled = false }
-        persist()
+        var updatedJobs = jobs
+        for index in updatedJobs.indices { updatedJobs[index].isEnabled = false }
+        guard persistAndPublishJobs(updatedJobs) else { return }
         restartSchedules()
     }
 
@@ -1187,9 +1200,19 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func persist() {
-        do { try repository.save(jobs) }
-        catch { alertMessage = "Changes could not be saved: \(error.localizedDescription)" }
+    @discardableResult
+    private func persistAndPublishJobs(
+        _ updatedJobs: [SyncJob],
+        errorPrefix: String = "Changes could not be saved"
+    ) -> Bool {
+        do {
+            try repository.save(updatedJobs)
+            jobs = updatedJobs
+            return true
+        } catch {
+            alertMessage = "\(errorPrefix): \(error.localizedDescription)"
+            return false
+        }
     }
 
     private func appendAlert(_ message: String) {

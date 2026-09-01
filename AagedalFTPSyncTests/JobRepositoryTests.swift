@@ -301,9 +301,28 @@ final class SyncFailureRepositoryTests: XCTestCase {
 
 @MainActor
 final class AppStorePersistenceTests: XCTestCase {
+    func testFailedAddDoesNotPublishTheNewJob() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("failed-add-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = makeStore(
+            repository: JobRepository(fileURL: URL(fileURLWithPath: "/dev/null/jobs.json")),
+            root: root
+        )
+
+        _ = store.addJob()
+
+        XCTAssertTrue(store.jobs.isEmpty)
+        XCTAssertNil(store.selectedJobID)
+        XCTAssertNotNil(store.alertMessage)
+    }
+
     func testFailedSaveDoesNotPublishTheDraftJob() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("failed-save-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
         let repository = JobRepository(fileURL: URL(fileURLWithPath: "/dev/null/jobs.json"))
-        let store = AppStore(repository: repository)
+        let store = makeStore(repository: repository, root: root)
         let bookmark = Data([1])
         let job = SyncJob(
             name: "Unsaved",
@@ -317,6 +336,52 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertFalse(store.saveJob(job, leftPassword: "", rightPassword: ""))
         XCTAssertTrue(store.jobs.isEmpty)
         XCTAssertNotNil(store.alertMessage)
+    }
+
+    func testFailedEnableDoesNotPublishOrScheduleTheChange() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("failed-enable-\(UUID().uuidString)", isDirectory: true)
+        let persistenceDirectory = root.appendingPathComponent("store", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: persistenceDirectory, withIntermediateDirectories: true)
+        let repository = JobRepository(fileURL: persistenceDirectory.appendingPathComponent("jobs.json"))
+        var job = SyncJob(name: "Stay disabled")
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        try repository.save([job])
+        let store = makeStore(repository: repository, root: root)
+        let jobID = try XCTUnwrap(store.jobs.first?.id)
+        try FileManager.default.removeItem(at: persistenceDirectory)
+        try Data("blocks directory recreation".utf8).write(to: persistenceDirectory)
+
+        store.setEnabled(true, for: jobID)
+
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+        XCTAssertFalse(store.isJobBusy(jobID))
+        XCTAssertNotNil(store.alertMessage)
+    }
+
+    func testFailedDeleteKeepsTheJobPublished() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("failed-delete-\(UUID().uuidString)", isDirectory: true)
+        let persistenceDirectory = root.appendingPathComponent("store", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: persistenceDirectory, withIntermediateDirectories: true)
+        let repository = JobRepository(fileURL: persistenceDirectory.appendingPathComponent("jobs.json"))
+        var job = SyncJob(name: "Must survive")
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        try repository.save([job])
+        let store = makeStore(repository: repository, root: root)
+        let jobID = try XCTUnwrap(store.jobs.first?.id)
+        try FileManager.default.removeItem(at: persistenceDirectory)
+        try Data("blocks directory recreation".utf8).write(to: persistenceDirectory)
+
+        store.removeJob(jobID)
+
+        XCTAssertEqual(store.jobs.map(\.id), [jobID])
+        XCTAssertEqual(store.selectedJobID, jobID)
+        XCTAssertTrue(store.alertMessage?.contains("could not be deleted") == true)
     }
 
     func testRecoveredJobsRemainPausedForReview() throws {
@@ -380,5 +445,26 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertFalse(store.saveMetadataPreset(MetadataPreset(name: "Unsaved")))
         XCTAssertTrue(store.metadataPresets.isEmpty)
         XCTAssertNotNil(store.alertMessage)
+    }
+
+    private func makeStore(repository: JobRepository, root: URL) -> AppStore {
+        AppStore(
+            repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(
+                fileURL: root.appendingPathComponent("presets.json")
+            ),
+            photographerProfileRepository: PhotographerProfileRepository(
+                fileURL: root.appendingPathComponent("photographers.json")
+            ),
+            metadataAuditRepository: MetadataAuditRepository(
+                fileURL: root.appendingPathComponent("audit.json")
+            ),
+            syncFailureRepository: SyncFailureRepository(
+                fileURL: root.appendingPathComponent("failures.json")
+            ),
+            sourceSignatureRepository: SourceSignatureRepository(
+                fileURL: root.appendingPathComponent("signatures.json")
+            )
+        )
     }
 }
