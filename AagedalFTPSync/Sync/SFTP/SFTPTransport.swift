@@ -54,6 +54,58 @@ actor SFTPTransport {
         return result
     }
 
+    func listFilesForFastStart(
+        filter: FileFilter,
+        minimumCount: Int
+    ) async throws -> [String: SyncFile] {
+        let sftp = try await connect()
+        var result: [String: SyncFile] = [:]
+        var eligibleCount = 0
+        var scannedDirectoryCount = 0
+        var directories: [(remote: String, relative: String, modifiedAt: Date)] = [
+            (normalizedRoot, "", .distantFuture),
+        ]
+        while !directories.isEmpty,
+              eligibleCount < max(minimumCount, 1) || scannedDirectoryCount < 2 {
+            try Task.checkCancellation()
+            let directory = directories.removeFirst()
+            scannedDirectoryCount += 1
+            let responses = try await sftp.listDirectory(atPath: directory.remote)
+            for entry in responses.flatMap(\.components) {
+                guard PathSafety.isSafeServerName(entry.filename),
+                      !PathSafety.isInternalStagingPath(entry.filename) else { continue }
+                let relative = directory.relative.isEmpty
+                    ? entry.filename
+                    : "\(directory.relative)/\(entry.filename)"
+                let remote = join(directory.remote, entry.filename)
+                let mode = entry.attributes.permissions ?? 0
+                let kind = mode & 0o170000
+                let modifiedAt = entry.attributes.accessModificationTime?.modificationTime ?? .distantPast
+                if kind == 0o040000 {
+                    directories.append((remote, relative, modifiedAt))
+                } else if kind != 0o120000 {
+                    if let existing = result[relative],
+                       !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
+                        throw AppError.transferFailed(
+                            "Two server paths differ only by Unicode representation: \(existing.relativePath) and \(relative)."
+                        )
+                    }
+                    result[relative] = SyncFile(
+                        relativePath: relative,
+                        size: Int64(entry.attributes.size ?? 0),
+                        modifiedAt: modifiedAt
+                    )
+                    if filter.includesFileType(path: relative) { eligibleCount += 1 }
+                }
+            }
+            directories.sort {
+                if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
+                return $0.relative < $1.relative
+            }
+        }
+        return result
+    }
+
     func download(file: SyncFile, to temporaryURL: URL) async throws {
         let sftp = try await connect()
         _ = FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)

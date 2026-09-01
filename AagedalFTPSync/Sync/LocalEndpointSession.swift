@@ -1,6 +1,6 @@
 import Foundation
 
-struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
+struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchecked Sendable {
     private let access: BookmarkAccess
     private let rootURL: URL
     private let fileManager = FileManager.default
@@ -47,6 +47,48 @@ struct LocalEndpointSession: EndpointSession, @unchecked Sendable {
             )
         }
         return files
+    }
+
+    func fileInfo(relativePath: String) async throws -> SyncFile? {
+        guard PathSafety.isSafeRelativePath(relativePath) else {
+            throw AppError.transferFailed("A file contained an unsafe relative path and was skipped.")
+        }
+        var currentURL = rootURL
+        let components = relativePath.split(separator: "/").map(String.init)
+        for (index, component) in components.enumerated() {
+            let names = try fileManager.contentsOfDirectory(atPath: currentURL.path)
+            if names.contains(where: { PathSafety.hasIdenticalRepresentation($0, component) }) {
+                currentURL.appendPathComponent(component)
+                let componentValues = try currentURL.resourceValues(
+                    forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+                )
+                if componentValues.isSymbolicLink == true {
+                    throw AppError.transferFailed(
+                        "A file path contained a symbolic link and was rejected: \(relativePath)"
+                    )
+                }
+                if index < components.count - 1, componentValues.isDirectory != true { return nil }
+                continue
+            }
+            if let collision = names.first(where: {
+                PathSafety.localPathCollision(in: [$0, component]) != nil
+            }) {
+                throw AppError.transferFailed(
+                    "Two file paths cannot safely coexist on the local destination: \(collision) and \(component). Rename one before syncing."
+                )
+            }
+            return nil
+        }
+
+        let values = try currentURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
+        )
+        guard values.isRegularFile == true, values.isSymbolicLink != true else { return nil }
+        return SyncFile(
+            relativePath: relativePath,
+            size: Int64(values.fileSize ?? 0),
+            modifiedAt: values.contentModificationDate ?? .distantPast
+        )
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {

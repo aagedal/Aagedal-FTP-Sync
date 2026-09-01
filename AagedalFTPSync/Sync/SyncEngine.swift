@@ -51,12 +51,65 @@ private struct TransferMetadataOutcome: Sendable {
     let publishedProcessedPaths: Set<String>
 }
 
+private struct FastStartTransferResult: Sendable {
+    let transferredPaths: Set<String>
+    let metadataReport: MetadataRunReport
+
+    static let empty = FastStartTransferResult(transferredPaths: [], metadataReport: .empty)
+}
+
+enum FastStartPolicy {
+    static let batchSize = 5
+    static let refinementCount = 50
+
+    static func candidates(
+        from files: [String: SyncFile],
+        filter: FileFilter,
+        requireAccurateDate: Bool
+    ) -> [SyncFile] {
+        let handledSidecars = Set(files.values.compactMap { file -> String? in
+            guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return nil }
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+            return files[sidecarPath] == nil ? nil : sidecarPath
+        })
+        let filtered = files.values.filter { file in
+            !handledSidecars.contains(file.relativePath)
+                && (requireAccurateDate
+                    ? filter.includes(path: file.relativePath, modifiedAt: file.modifiedAt)
+                    : filter.includesFileType(path: file.relativePath))
+        }
+        return Array(filtered.sorted {
+            if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt > $1.modifiedAt }
+            return $0.relativePath < $1.relativePath
+        }.prefix(refinementCount))
+    }
+}
+
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
     private let sourceSignatureRepository: SourceSignatureRepository
+    private let sessionFactory: @Sendable (
+        Endpoint,
+        String?,
+        ManagedOutputFolder?
+    ) throws -> any EndpointSession
 
-    init(sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository()) {
+    init(
+        sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
+        sessionFactory: @escaping @Sendable (
+            Endpoint,
+            String?,
+            ManagedOutputFolder?
+        ) throws -> any EndpointSession = { endpoint, password, managedFolder in
+            try EndpointSessionFactory.make(
+                endpoint: endpoint,
+                password: password,
+                managedFolder: managedFolder
+            )
+        }
+    ) {
         self.sourceSignatureRepository = sourceSignatureRepository
+        self.sessionFactory = sessionFactory
     }
 
     func run(job: SyncJob, leftPassword: String?, rightPassword: String?) async throws -> SyncResult {
@@ -67,35 +120,43 @@ struct SyncEngine: Sendable {
         let rightManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .leftToRight
             ? .syncedFiles
             : nil
-        let left = try EndpointSessionFactory.make(
-            endpoint: job.left,
-            password: leftPassword,
-            managedFolder: leftManagedFolder
-        )
-        let right = try EndpointSessionFactory.make(
-            endpoint: job.right,
-            password: rightPassword,
-            managedFolder: rightManagedFolder
-        )
+        let left = try sessionFactory(job.left, leftPassword, leftManagedFolder)
+        let right = try sessionFactory(job.right, rightPassword, rightManagedFolder)
         let processedDestination: (any EndpointSession)?
         switch job.movesProcessedFiles ? job.effectiveProcessedFilesLocation : nil {
         case .customFolder:
             processedDestination = try job.processedFolder.map {
-                try EndpointSessionFactory.make(endpoint: $0, password: nil)
+                try sessionFactory($0, nil, nil)
             }
         case .processedSubfolder:
             guard let destinationEndpoint = job.destinationEndpoint else {
                 throw AppError.invalidConfiguration("Managed output folders require a one-way job.")
             }
-            processedDestination = try EndpointSessionFactory.make(
-                endpoint: destinationEndpoint,
-                password: nil,
-                managedFolder: .processedFiles
-            )
+            processedDestination = try sessionFactory(destinationEndpoint, nil, .processedFiles)
         case nil:
             processedDestination = nil
         }
         do {
+            let fastStartResult: FastStartTransferResult
+            switch job.direction {
+            case .leftToRight:
+                fastStartResult = try await transferFastStartBatch(
+                    from: left,
+                    sourceEndpoint: job.left,
+                    to: right,
+                    job: job
+                )
+            case .rightToLeft:
+                fastStartResult = try await transferFastStartBatch(
+                    from: right,
+                    sourceEndpoint: job.right,
+                    to: left,
+                    job: job
+                )
+            case .bidirectional:
+                fastStartResult = .empty
+            }
+
             async let leftListing = left.listFiles()
             async let rightListing = right.listFiles()
             async let processedListing = processedDestination?.listFiles() ?? [:]
@@ -111,8 +172,9 @@ struct SyncEngine: Sendable {
                     files: leftFiles,
                     to: right,
                     files: rightFiles,
-                processedDestination: processedDestination,
-                processedFiles: processedFiles,
+                    processedDestination: processedDestination,
+                    processedFiles: processedFiles,
+                    alreadyTransferredPaths: fastStartResult.transferredPaths,
                     job: job
                 )
                 conflicts = []
@@ -125,6 +187,7 @@ struct SyncEngine: Sendable {
                     files: leftFiles,
                     processedDestination: processedDestination,
                     processedFiles: processedFiles,
+                    alreadyTransferredPaths: fastStartResult.transferredPaths,
                     job: job
                 )
                 conflicts = []
@@ -139,6 +202,8 @@ struct SyncEngine: Sendable {
                 transferResult = (result.transferred, 0, .empty)
                 conflicts = result.conflicts
             }
+            var metadataReport = fastStartResult.metadataReport
+            metadataReport.append(contentsOf: transferResult.metadataReport)
             let deleted = try await cleanupTargetIfNeeded(
                 job: job,
                 left: left,
@@ -150,11 +215,11 @@ struct SyncEngine: Sendable {
             await right.close()
             await processedDestination?.close()
             return SyncResult(
-                transferred: transferResult.transferred,
+                transferred: fastStartResult.transferredPaths.count + transferResult.transferred,
                 deleted: deleted,
                 processed: transferResult.processed,
                 conflicts: conflicts,
-                metadataReport: transferResult.metadataReport
+                metadataReport: metadataReport
             )
         } catch {
             await left.close()
@@ -408,7 +473,7 @@ struct SyncEngine: Sendable {
             return [:]
         }
 
-        guard let source = try? EndpointSessionFactory.make(endpoint: sourceEndpoint, password: password) else {
+        guard let source = try? sessionFactory(sourceEndpoint, password, nil) else {
             return [:]
         }
         do {
@@ -478,6 +543,123 @@ struct SyncEngine: Sendable {
         return deleted
     }
 
+    private func transferFastStartBatch(
+        from source: any EndpointSession,
+        sourceEndpoint: Endpoint,
+        to destination: any EndpointSession,
+        job: SyncJob
+    ) async throws -> FastStartTransferResult {
+        guard sourceEndpoint.kind.isRemote,
+              job.destinationEndpoint?.kind == .local,
+              let fastSource = source as? any FastStartSourceSession,
+              let destinationLookup = destination as? any EndpointFileLookupSession else {
+            return .empty
+        }
+
+        var discoveredFiles = try await fastSource.listFilesForFastStart(
+            filter: job.filter,
+            minimumCount: FastStartPolicy.refinementCount
+        )
+        guard !discoveredFiles.isEmpty else { return .empty }
+
+        let preliminaryCandidates = FastStartPolicy.candidates(
+            from: discoveredFiles,
+            filter: job.filter,
+            requireAccurateDate: false
+        )
+        var missingCandidates: [SyncFile] = []
+        for candidate in preliminaryCandidates {
+            let destinationFile = try await destinationLookup.fileInfo(
+                relativePath: candidate.relativePath
+            )
+            guard destinationFile == nil else { continue }
+            missingCandidates.append(candidate)
+            if missingCandidates.count == FastStartPolicy.batchSize { break }
+        }
+        guard !missingCandidates.isEmpty else { return .empty }
+
+        var filesToRefresh = Dictionary(
+            uniqueKeysWithValues: missingCandidates.map { ($0.relativePath, $0) }
+        )
+        for candidate in missingCandidates where MetadataWriter.usesXMPSidecar(for: candidate.relativePath) {
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: candidate.relativePath)
+            if let sidecar = discoveredFiles[sidecarPath] {
+                filesToRefresh[sidecarPath] = sidecar
+            }
+        }
+        let refreshedFiles = try await fastSource.refreshMetadataForFastStart(
+            Array(filesToRefresh.values)
+        )
+        let refreshedFilesByPath = Dictionary(
+            uniqueKeysWithValues: refreshedFiles.map { ($0.relativePath, $0) }
+        )
+        for file in refreshedFiles { discoveredFiles[file.relativePath] = file }
+
+        let accurateCandidates = FastStartPolicy.candidates(
+            from: refreshedFilesByPath,
+            filter: job.filter,
+            requireAccurateDate: true
+        )
+        var selectedCandidates: [SyncFile] = []
+        for file in accurateCandidates {
+            if MetadataWriter.usesXMPSidecar(for: file.relativePath) {
+                let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+                let willPublishSidecar = discoveredFiles[sidecarPath] != nil
+                    || shouldAttemptProcessedMove(file, automation: job.metadataAutomation)
+                if willPublishSidecar {
+                    _ = try await destinationLookup.fileInfo(relativePath: sidecarPath)
+                }
+            }
+            selectedCandidates.append(file)
+            if selectedCandidates.count == FastStartPolicy.batchSize { break }
+        }
+        guard !selectedCandidates.isEmpty else { return .empty }
+
+        try validateGeneratedSidecarOutputPaths(
+            candidates: selectedCandidates,
+            sourceFiles: discoveredFiles,
+            automation: job.metadataAutomation,
+            enforceLocalPathRules: true
+        )
+        var transferredPaths = Set<String>()
+        var metadataReport = MetadataRunReport.empty
+        let runID = UUID()
+        for file in selectedCandidates {
+            try Task.checkCancellation()
+            let sourceSidecar = MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                ? discoveredFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
+                : nil
+            let outcome = try await transfer(
+                file,
+                from: source,
+                to: destination,
+                processedDestination: nil,
+                occupiedProcessedPaths: [],
+                existingProcessedFiles: [:],
+                preserveDate: job.preserveModificationDates,
+                verifySize: job.verifyFileSizes,
+                metadataAutomation: job.metadataAutomation,
+                sortProcessedFilesByPhotographer: false,
+                sourceSidecar: sourceSidecar,
+                jobID: job.id,
+                runID: runID
+            )
+            if let auditEntry = outcome.auditEntry { metadataReport.append(auditEntry) }
+            if outcome.embeddedMetadataApplied {
+                try await sourceSignatureRepository.record(
+                    file,
+                    jobID: job.id,
+                    sourceEndpoint: sourceEndpoint
+                )
+            }
+            transferredPaths.insert(file.relativePath)
+        }
+        return FastStartTransferResult(
+            transferredPaths: transferredPaths,
+            metadataReport: metadataReport
+        )
+    }
+
     private func transferNewer(
         from source: any EndpointSession,
         sourceEndpoint: Endpoint,
@@ -486,6 +668,7 @@ struct SyncEngine: Sendable {
         files destinationFiles: [String: SyncFile],
         processedDestination: (any EndpointSession)?,
         processedFiles: [String: SyncFile],
+        alreadyTransferredPaths: Set<String> = [],
         job: SyncJob
     ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport) {
         let savedSignatures = try await sourceSignatureRepository.signatures(
@@ -546,7 +729,8 @@ struct SyncEngine: Sendable {
                 jobID: job.id,
                 runID: runID
             )
-            if let auditEntry = outcome.auditEntry {
+            if let auditEntry = outcome.auditEntry,
+               !alreadyTransferredPaths.contains(file.relativePath) || auditEntry.status == .failed {
                 metadataReport.append(auditEntry)
             }
             if outcome.embeddedMetadataApplied {
@@ -558,7 +742,7 @@ struct SyncEngine: Sendable {
             }
             if outcome.movedToProcessed { processed += 1 }
             occupiedProcessedPaths.formUnion(outcome.publishedProcessedPaths)
-            transferred += 1
+            if !alreadyTransferredPaths.contains(file.relativePath) { transferred += 1 }
         }
         return (transferred, processed, metadataReport)
     }

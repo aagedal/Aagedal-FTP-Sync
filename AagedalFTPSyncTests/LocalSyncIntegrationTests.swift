@@ -5,6 +5,24 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testFastStartDestinationLookupRejectsCaseEquivalentCollision() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let existingURL = fixture.right.appendingPathComponent("NEWS_001.JPG")
+        try Data("existing".utf8).write(to: existingURL)
+        let session = try LocalEndpointSession(endpoint: fixture.endpoint(for: fixture.right))
+
+        let existing = try await session.fileInfo(relativePath: "NEWS_001.JPG")
+        XCTAssertEqual(existing?.size, 8)
+        do {
+            _ = try await session.fileInfo(relativePath: "news_001.jpg")
+            XCTFail("Expected the case-equivalent destination path to be rejected.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("cannot safely coexist"))
+        }
+        XCTAssertEqual(try Data(contentsOf: existingURL), Data("existing".utf8))
+    }
+
     @MainActor
     func testResetJobClearsPersistedDownloadHistory() async throws {
         let fixture = try LocalFixture()
