@@ -15,6 +15,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
     @Published private(set) var metadataPresets: [MetadataPreset]
     @Published private(set) var photographerLibrary: [PhotographerProfile]
+    @Published private(set) var serverProfiles: [ServerProfile]
     @Published private(set) var metadataAuditEntries: [UUID: [MetadataAuditEntry]] = [:]
     @Published private(set) var syncFailureEntries: [UUID: [SyncFailureRecord]] = [:]
     @Published private(set) var phases: [UUID: JobPhase] = [:]
@@ -44,6 +45,7 @@ final class AppStore: ObservableObject {
         repository: JobRepository = JobRepository(),
         metadataPresetRepository: MetadataPresetRepository = MetadataPresetRepository(),
         photographerProfileRepository: PhotographerProfileRepository = PhotographerProfileRepository(),
+        serverProfileRepository: ServerProfileRepository = ServerProfileRepository(),
         metadataAuditRepository: MetadataAuditRepository = MetadataAuditRepository(),
         syncFailureRepository: SyncFailureRepository = SyncFailureRepository(),
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
@@ -57,6 +59,7 @@ final class AppStore: ObservableObject {
             jobRepository: repository,
             metadataPresetRepository: metadataPresetRepository,
             photographerProfileRepository: photographerProfileRepository,
+            serverProfileRepository: serverProfileRepository,
             metadataAuditRepository: metadataAuditRepository,
             syncFailureRepository: syncFailureRepository,
             keychain: keychain
@@ -75,6 +78,7 @@ final class AppStore: ObservableObject {
         jobs = persistenceLoad.state.jobs
         metadataPresets = persistenceLoad.state.metadataPresets
         photographerLibrary = persistenceLoad.state.photographerLibrary
+        serverProfiles = persistenceLoad.state.serverProfiles
         metadataAuditEntries = persistenceLoad.state.metadataAuditEntries
         syncFailureEntries = persistenceLoad.state.syncFailureEntries
         for warning in persistenceLoad.warnings {
@@ -273,6 +277,7 @@ final class AppStore: ObservableObject {
                     jobs: prepared.state.jobs,
                     metadataPresets: prepared.state.metadataPresets,
                     photographerLibrary: prepared.state.photographers,
+                    serverProfiles: serverProfiles,
                     metadataAuditEntries: metadataAuditEntries,
                     syncFailureEntries: syncFailureEntries
                 )
@@ -758,6 +763,7 @@ final class AppStore: ObservableObject {
             jobs: jobs,
             metadataPresets: metadataPresets,
             photographerLibrary: photographerLibrary,
+            serverProfiles: serverProfiles,
             metadataAuditEntries: metadataAuditEntries,
             syncFailureEntries: syncFailureEntries
         )

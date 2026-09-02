@@ -4,8 +4,25 @@ struct AppPersistentState: Sendable {
     let jobs: [SyncJob]
     let metadataPresets: [MetadataPreset]
     let photographerLibrary: [PhotographerProfile]
+    let serverProfiles: [ServerProfile]
     let metadataAuditEntries: [UUID: [MetadataAuditEntry]]
     let syncFailureEntries: [UUID: [SyncFailureRecord]]
+
+    init(
+        jobs: [SyncJob],
+        metadataPresets: [MetadataPreset],
+        photographerLibrary: [PhotographerProfile],
+        serverProfiles: [ServerProfile] = [],
+        metadataAuditEntries: [UUID: [MetadataAuditEntry]],
+        syncFailureEntries: [UUID: [SyncFailureRecord]]
+    ) {
+        self.jobs = jobs
+        self.metadataPresets = metadataPresets
+        self.photographerLibrary = photographerLibrary
+        self.serverProfiles = serverProfiles
+        self.metadataAuditEntries = metadataAuditEntries
+        self.syncFailureEntries = syncFailureEntries
+    }
 }
 
 struct AppPersistenceLoadResult: Sendable {
@@ -42,6 +59,7 @@ final class AppPersistenceCoordinator {
     private let jobRepository: JobRepository
     private let metadataPresetRepository: MetadataPresetRepository
     private let photographerProfileRepository: PhotographerProfileRepository
+    private let serverProfileRepository: ServerProfileRepository
     private let metadataAuditRepository: MetadataAuditRepository
     private let syncFailureRepository: SyncFailureRepository
     private let keychain: KeychainStore
@@ -53,6 +71,7 @@ final class AppPersistenceCoordinator {
         jobRepository: JobRepository,
         metadataPresetRepository: MetadataPresetRepository,
         photographerProfileRepository: PhotographerProfileRepository,
+        serverProfileRepository: ServerProfileRepository = ServerProfileRepository(),
         metadataAuditRepository: MetadataAuditRepository,
         syncFailureRepository: SyncFailureRepository,
         keychain: KeychainStore
@@ -60,6 +79,7 @@ final class AppPersistenceCoordinator {
         self.jobRepository = jobRepository
         self.metadataPresetRepository = metadataPresetRepository
         self.photographerProfileRepository = photographerProfileRepository
+        self.serverProfileRepository = serverProfileRepository
         self.metadataAuditRepository = metadataAuditRepository
         self.syncFailureRepository = syncFailureRepository
         self.keychain = keychain
@@ -67,6 +87,18 @@ final class AppPersistenceCoordinator {
 
     func load() -> AppPersistenceLoadResult {
         var warnings: [String] = []
+
+        let serverProfiles: [ServerProfile]
+        do {
+            let result = try serverProfileRepository.loadResult()
+            serverProfiles = result.profiles
+            if result.recoveredFromBackup {
+                warnings.append("The server profile library was damaged, so its most recent backup was restored.")
+            }
+        } catch {
+            serverProfiles = []
+            warnings.append("Saved server profiles could not be loaded: \(error.localizedDescription)")
+        }
 
         let metadataPresets: [MetadataPreset]
         do {
@@ -149,6 +181,7 @@ final class AppPersistenceCoordinator {
                 jobs: jobs,
                 metadataPresets: metadataPresets,
                 photographerLibrary: photographerLibrary,
+                serverProfiles: serverProfiles,
                 metadataAuditEntries: metadataAuditEntries,
                 syncFailureEntries: syncFailureEntries
             ),
@@ -167,6 +200,10 @@ final class AppPersistenceCoordinator {
 
     func savePhotographers(_ photographers: [PhotographerProfile]) throws {
         try photographerProfileRepository.save(photographers)
+    }
+
+    func saveServerProfiles(_ profiles: [ServerProfile]) throws {
+        try serverProfileRepository.save(profiles)
     }
 
     func saveJobsAndPhotographers(

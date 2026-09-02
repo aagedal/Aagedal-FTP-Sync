@@ -58,6 +58,9 @@
 		C0DEC006000000000000000C /* MetadataTimelineViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC006000000000000000B /* MetadataTimelineViews.swift */; };
 		C0DEC006000000000000000E /* LaunchAtLoginCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC006000000000000000D /* LaunchAtLoginCoordinator.swift */; };
 		C0DEC0060000000000000010 /* SyncRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC006000000000000000F /* SyncRuntimeSupport.swift */; };
+		C0DEC0070000000000000002 /* ServerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000001 /* ServerProfile.swift */; };
+		C0DEC0070000000000000004 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000003 /* ServerProfileRepository.swift */; };
+		C0DEC0070000000000000006 /* ServerProfileRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
@@ -135,6 +138,9 @@
 		C0DEC006000000000000000B /* MetadataTimelineViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataTimelineViews.swift; sourceTree = "<group>"; };
 		C0DEC006000000000000000D /* LaunchAtLoginCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginCoordinator.swift; sourceTree = "<group>"; };
 		C0DEC006000000000000000F /* SyncRuntimeSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncRuntimeSupport.swift; sourceTree = "<group>"; };
+		C0DEC0070000000000000001 /* ServerProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfile.swift; sourceTree = "<group>"; };
+		C0DEC0070000000000000003 /* ServerProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepository.swift; sourceTree = "<group>"; };
+		C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepositoryTests.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
@@ -219,6 +225,7 @@
 				8AEBDEF3E2B948F87059A6BB /* MetadataAuditRepository.swift */,
 				B6C27623376060CBE9454422 /* MetadataPresetRepository.swift */,
 				A3D327D757CE0DF46C28BCB0 /* PhotographerProfileRepository.swift */,
+				C0DEC0070000000000000003 /* ServerProfileRepository.swift */,
 				467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */,
 				2B5E8FA03C4D5162738495A6 /* SyncFailureRepository.swift */,
 			);
@@ -286,6 +293,7 @@
 				94DF32BB9FEF45202CA10C58 /* MetadataPreviewAndRecoveryTests.swift */,
 				886036FB1249F217586D7284 /* PathSafetyTests.swift */,
 				F180097B77641B0CA2B18DB1 /* PhotographerProfileRepositoryTests.swift */,
+				C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */,
 				019FF4B35E61EB52439E87F7 /* SourceSignatureRepositoryTests.swift */,
 				A279E40E0C0EE63158560C37 /* SSHHostKeyFingerprintTests.swift */,
 				C0DEC0040000000000000003 /* SyncEventLoggerTests.swift */,
@@ -388,6 +396,7 @@
 				81DD31A592B3E52144C2A522 /* MetadataAudit.swift */,
 				F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */,
 				350292561BFD12A24A59A67B /* MetadataPreset.swift */,
+				C0DEC0070000000000000001 /* ServerProfile.swift */,
 				5B454FB4A4C0AB0EA736CC08 /* SyncJob.swift */,
 			);
 			path = Models;
@@ -535,6 +544,8 @@
 				3710B1ACB6F8926631BD9AEF /* MetadataWriter.swift in Sources */,
 				F1FE64BEF3B4B67CC678E60E /* PathSafety.swift in Sources */,
 				FBE2E72C3D51ABCC3F05B457 /* PhotographerProfileRepository.swift in Sources */,
+				C0DEC0070000000000000002 /* ServerProfile.swift in Sources */,
+				C0DEC0070000000000000004 /* ServerProfileRepository.swift in Sources */,
 				AA1076CD38765D19227AF21F /* PhotographerSettingsView.swift in Sources */,
 				03B9BB504A33709EB3DD70B4 /* SFTPEndpointSession.swift in Sources */,
 				09AEF27861375CC02EB37B6D /* SFTPTransport.swift in Sources */,
@@ -569,6 +580,7 @@
 				6287983979D1DB58DCCC3BB4 /* MetadataPreviewAndRecoveryTests.swift in Sources */,
 				EED6ECBBCC58617795A3D8EB /* PathSafetyTests.swift in Sources */,
 				0F97FD0CCF4785E58BE889A1 /* PhotographerProfileRepositoryTests.swift in Sources */,
+				C0DEC0070000000000000006 /* ServerProfileRepositoryTests.swift in Sources */,
 				9A8B2CACA5C0E649C2E29F01 /* SSHHostKeyFingerprintTests.swift in Sources */,
 				1DD55244C13A4F93BAB1F59A /* SourceSignatureRepositoryTests.swift in Sources */,
 				C0DEC0040000000000000004 /* SyncEventLoggerTests.swift in Sources */,
