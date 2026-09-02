@@ -141,6 +141,80 @@ final class SyncSchedulerTests: XCTestCase {
 }
 
 @MainActor
+final class SyncFailureNotificationCoordinatorTests: XCTestCase {
+    func testFirstFailureNotifiesAndIdenticalRetriesStayQuiet() {
+        let delivery = SyncFailureNotificationDeliverySpy()
+        let clock = SyncFailureNotificationClock()
+        let coordinator = SyncFailureNotificationCoordinator(
+            delivery: delivery,
+            minimumNotificationInterval: 15 * 60,
+            now: { clock.now }
+        )
+        let jobID = UUID()
+
+        coordinator.recordFailure(jobID: jobID, jobName: "  Newsroom  ", message: "Offline")
+        clock.now = clock.now.addingTimeInterval(60 * 60)
+        coordinator.recordFailure(jobID: jobID, jobName: "Newsroom", message: "Offline")
+
+        XCTAssertEqual(delivery.notifications, [
+            SyncFailureNotification(jobID: jobID, jobName: "Newsroom")
+        ])
+    }
+
+    func testChangedFailureIsThrottledUntilMinimumIntervalPasses() {
+        let delivery = SyncFailureNotificationDeliverySpy()
+        let clock = SyncFailureNotificationClock()
+        let coordinator = SyncFailureNotificationCoordinator(
+            delivery: delivery,
+            minimumNotificationInterval: 15 * 60,
+            now: { clock.now }
+        )
+        let jobID = UUID()
+
+        coordinator.recordFailure(jobID: jobID, jobName: "Wire", message: "Offline")
+        clock.now = clock.now.addingTimeInterval(14 * 60)
+        coordinator.recordFailure(jobID: jobID, jobName: "Wire", message: "Login failed")
+        clock.now = clock.now.addingTimeInterval(60)
+        coordinator.recordFailure(jobID: jobID, jobName: "Wire", message: "Login failed")
+
+        XCTAssertEqual(delivery.notifications.count, 2)
+    }
+
+    func testSuccessRearmsFailureTransition() {
+        let delivery = SyncFailureNotificationDeliverySpy()
+        let clock = SyncFailureNotificationClock()
+        let coordinator = SyncFailureNotificationCoordinator(
+            delivery: delivery,
+            minimumNotificationInterval: 15 * 60,
+            now: { clock.now }
+        )
+        let jobID = UUID()
+
+        coordinator.recordFailure(jobID: jobID, jobName: "Archive", message: "Offline")
+        coordinator.recordSuccess(jobID: jobID)
+        coordinator.recordFailure(jobID: jobID, jobName: "Archive", message: "Offline")
+
+        XCTAssertEqual(delivery.notifications.count, 2)
+    }
+
+    func testFailuresAreThrottledIndependentlyPerJobAndBlankNamesAreSafe() {
+        let delivery = SyncFailureNotificationDeliverySpy()
+        let coordinator = SyncFailureNotificationCoordinator(delivery: delivery)
+        let firstJobID = UUID()
+        let secondJobID = UUID()
+
+        coordinator.recordFailure(jobID: firstJobID, jobName: "First", message: "Offline")
+        coordinator.recordFailure(jobID: secondJobID, jobName: "   ", message: "Offline")
+
+        XCTAssertEqual(delivery.notifications, [
+            SyncFailureNotification(jobID: firstJobID, jobName: "First"),
+            SyncFailureNotification(jobID: secondJobID, jobName: "Unnamed job"),
+        ])
+        XCTAssertTrue(delivery.notifications.allSatisfy { !$0.identifier.contains("Offline") })
+    }
+}
+
+@MainActor
 private final class SyncSchedulerDelegateSpy: SyncSchedulerDelegate {
     struct NextRunEvent {
         let jobID: UUID
@@ -191,4 +265,18 @@ private final class SyncSchedulerDelegateSpy: SyncSchedulerDelegate {
         blockedContinuation = nil
         continuation?.resume(returning: attempt)
     }
+}
+
+@MainActor
+private final class SyncFailureNotificationDeliverySpy: SyncFailureNotificationDelivering {
+    private(set) var notifications: [SyncFailureNotification] = []
+
+    func deliver(_ notification: SyncFailureNotification) {
+        notifications.append(notification)
+    }
+}
+
+@MainActor
+private final class SyncFailureNotificationClock {
+    var now = Date(timeIntervalSince1970: 1_800_000_000)
 }

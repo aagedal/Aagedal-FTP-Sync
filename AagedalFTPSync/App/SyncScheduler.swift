@@ -1,4 +1,110 @@
 import Foundation
+import UserNotifications
+
+struct SyncFailureNotification: Equatable, Sendable {
+    let jobID: UUID
+    let jobName: String
+
+    var identifier: String {
+        "sync-failure-\(jobID.uuidString.lowercased())"
+    }
+}
+
+@MainActor
+protocol SyncFailureNotificationDelivering: AnyObject {
+    func deliver(_ notification: SyncFailureNotification)
+}
+
+@MainActor
+final class SystemSyncFailureNotificationDelivery: SyncFailureNotificationDelivering {
+    private let center: UNUserNotificationCenter
+
+    init(center: UNUserNotificationCenter = .current()) {
+        self.center = center
+    }
+
+    func deliver(_ notification: SyncFailureNotification) {
+        Task { [center] in
+            let settings = await center.notificationSettings()
+            let isAuthorized: Bool
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                isAuthorized = true
+            case .notDetermined:
+                isAuthorized = (try? await center.requestAuthorization(options: [.alert, .sound])) == true
+            case .denied:
+                isAuthorized = false
+            @unknown default:
+                isAuthorized = false
+            }
+            guard isAuthorized else { return }
+
+            let content = UNMutableNotificationContent()
+            content.title = "Sync job needs attention"
+            content.subtitle = notification.jobName
+            content.body = "Open Aagedal FTP Sync to review the error and retry the job."
+            content.sound = .default
+            content.userInfo = ["jobID": notification.jobID.uuidString]
+            let request = UNNotificationRequest(
+                identifier: notification.identifier,
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
+        }
+    }
+}
+
+/// Converts run results into privacy-safe, per-job notifications without
+/// repeating the same failure on every scheduled retry.
+@MainActor
+final class SyncFailureNotificationCoordinator {
+    private struct FailureState {
+        var message: String
+        var lastNotificationAt: Date
+    }
+
+    private let delivery: any SyncFailureNotificationDelivering
+    private let minimumNotificationInterval: TimeInterval
+    private let now: @MainActor () -> Date
+    private var failureStates: [UUID: FailureState] = [:]
+
+    init(
+        delivery: any SyncFailureNotificationDelivering = SystemSyncFailureNotificationDelivery(),
+        minimumNotificationInterval: TimeInterval = 15 * 60,
+        now: @escaping @MainActor () -> Date = Date.init
+    ) {
+        precondition(minimumNotificationInterval >= 0)
+        self.delivery = delivery
+        self.minimumNotificationInterval = minimumNotificationInterval
+        self.now = now
+    }
+
+    func recordFailure(jobID: UUID, jobName: String, message: String) {
+        let timestamp = now()
+        if let state = failureStates[jobID] {
+            guard state.message != message,
+                  timestamp.timeIntervalSince(state.lastNotificationAt) >= minimumNotificationInterval else {
+                return
+            }
+        }
+
+        failureStates[jobID] = FailureState(message: message, lastNotificationAt: timestamp)
+        let normalizedName = jobName.trimmingCharacters(in: .whitespacesAndNewlines)
+        delivery.deliver(SyncFailureNotification(
+            jobID: jobID,
+            jobName: normalizedName.isEmpty ? "Unnamed job" : normalizedName
+        ))
+    }
+
+    func recordSuccess(jobID: UUID) {
+        failureStates[jobID] = nil
+    }
+
+    func removeJob(_ jobID: UUID) {
+        failureStates[jobID] = nil
+    }
+}
 
 enum SyncAttempt {
     case succeeded

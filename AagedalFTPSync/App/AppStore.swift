@@ -176,6 +176,7 @@ final class AppStore: ObservableObject {
     private let jobResetService: JobResetService
     private let engine: SyncEngine
     private let syncConcurrencyController: SyncConcurrencyController
+    private let failureNotificationCoordinator: SyncFailureNotificationCoordinator
     private let scheduler: SyncScheduler
     private var metadataReprocessTasks: [UUID: Task<Void, Never>] = [:]
     private var resetTasks: [UUID: Task<Void, Never>] = [:]
@@ -192,7 +193,8 @@ final class AppStore: ObservableObject {
         jobResetService: JobResetService = JobResetService(),
         keychain: KeychainStore = KeychainStore(),
         engine: SyncEngine? = nil,
-        syncConcurrencyController: SyncConcurrencyController = SyncConcurrencyController()
+        syncConcurrencyController: SyncConcurrencyController = SyncConcurrencyController(),
+        failureNotificationCoordinator: SyncFailureNotificationCoordinator = SyncFailureNotificationCoordinator()
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -207,6 +209,7 @@ final class AppStore: ObservableObject {
         self.jobResetService = jobResetService
         self.engine = engine ?? SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
         self.syncConcurrencyController = syncConcurrencyController
+        self.failureNotificationCoordinator = failureNotificationCoordinator
         scheduler = SyncScheduler()
         let persistenceLoad = persistenceCoordinator.load()
         jobs = persistenceLoad.state.jobs
@@ -681,6 +684,7 @@ final class AppStore: ObservableObject {
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }
         phases[jobID] = nil
         metadataReprocessPhases[jobID] = nil
+        failureNotificationCoordinator.removeJob(jobID)
         syncFailureEntries[jobID] = nil
         transferTotals.remove(jobID: jobID)
         do {
@@ -741,6 +745,7 @@ final class AppStore: ObservableObject {
 
         scheduler.cancel(jobID)
         phases[jobID] = .stopped
+        failureNotificationCoordinator.recordSuccess(jobID: jobID)
         resettingJobs.insert(jobID)
 
         let task = Task { [weak self] in
@@ -962,6 +967,7 @@ final class AppStore: ObservableObject {
                 metadataReport: result.metadataReport,
                 nextRun: nil
             )
+            failureNotificationCoordinator.recordSuccess(jobID: jobID)
             attempt = .succeeded
         } catch is CancellationError {
             phases[jobID] = .stopped
@@ -1088,6 +1094,13 @@ final class AppStore: ObservableObject {
     private func recordSyncFailure(_ message: String, jobID: UUID) {
         let entry = SyncFailureRecord(jobID: jobID, message: message)
         syncFailureEntries[jobID, default: []].append(entry)
+        if let jobName = jobs.first(where: { $0.id == jobID })?.name {
+            failureNotificationCoordinator.recordFailure(
+                jobID: jobID,
+                jobName: jobName,
+                message: message
+            )
+        }
         do {
             let retained = try persistenceCoordinator.appendSyncFailure(entry)
             syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)

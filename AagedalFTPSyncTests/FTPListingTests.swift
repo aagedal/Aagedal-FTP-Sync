@@ -239,6 +239,7 @@ final class FTPListingTests: XCTestCase {
         })
         let job = partialFailureJob()
         try repository.save([job])
+        let notificationDelivery = PartialFailureNotificationDeliverySpy()
         let store = AppStore(
             repository: repository,
             metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
@@ -246,7 +247,10 @@ final class FTPListingTests: XCTestCase {
             metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
             syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
             sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
-            engine: engine
+            engine: engine,
+            failureNotificationCoordinator: SyncFailureNotificationCoordinator(
+                delivery: notificationDelivery
+            )
         )
 
         store.runNow(job.id)
@@ -261,6 +265,9 @@ final class FTPListingTests: XCTestCase {
         }
         XCTAssertTrue(message.contains("Sync stopped after 1 file transferred"))
         XCTAssertEqual(store.syncFailureHistory(for: job.id).first?.message, message)
+        XCTAssertEqual(notificationDelivery.notifications, [
+            SyncFailureNotification(jobID: job.id, jobName: job.name)
+        ])
     }
 
     func testRemoteSyncPublishesOnlyAfterFullListingValidation() async throws {
@@ -463,6 +470,15 @@ final class FTPListingTests: XCTestCase {
         job.isEnabled = false
         job.startsOnAppLaunch = false
         return job
+    }
+}
+
+@MainActor
+private final class PartialFailureNotificationDeliverySpy: SyncFailureNotificationDelivering {
+    private(set) var notifications: [SyncFailureNotification] = []
+
+    func deliver(_ notification: SyncFailureNotification) {
+        notifications.append(notification)
     }
 }
 
