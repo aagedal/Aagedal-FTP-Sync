@@ -66,6 +66,7 @@ private struct TransferStepFailure: LocalizedError, Sendable {
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
     private let sourceSignatureRepository: SourceSignatureRepository
+    private let eventLogger: any SyncEventLogging
     private let sessionFactory: @Sendable (
         Endpoint,
         String?,
@@ -74,6 +75,7 @@ struct SyncEngine: Sendable {
 
     init(
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
+        eventLogger: any SyncEventLogging = SystemSyncEventLogger(),
         sessionFactory: @escaping @Sendable (
             Endpoint,
             String?,
@@ -87,10 +89,71 @@ struct SyncEngine: Sendable {
         }
     ) {
         self.sourceSignatureRepository = sourceSignatureRepository
+        self.eventLogger = eventLogger
         self.sessionFactory = sessionFactory
     }
 
     func run(job: SyncJob, leftPassword: String?, rightPassword: String?) async throws -> SyncResult {
+        let runID = UUID()
+        eventLogger.record(SyncLogEvent(
+            runID: runID,
+            jobID: job.id,
+            stage: .run,
+            operation: .sync,
+            outcome: .started
+        ))
+        do {
+            let result = try await performRun(
+                job: job,
+                leftPassword: leftPassword,
+                rightPassword: rightPassword,
+                runID: runID
+            )
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: job.id,
+                stage: .run,
+                operation: .sync,
+                outcome: .succeeded,
+                transferred: result.transferred,
+                deleted: result.deleted,
+                processed: result.processed,
+                conflictCount: result.conflicts.count
+            ))
+            return result
+        } catch is CancellationError {
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: job.id,
+                stage: .run,
+                operation: .sync,
+                outcome: .cancelled
+            ))
+            throw CancellationError()
+        } catch {
+            let partialResult = (error as? SyncRunFailure)?.partialResult ?? SyncResult(transferred: 0, deleted: 0)
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: job.id,
+                stage: .run,
+                operation: .sync,
+                outcome: .failed,
+                transferred: partialResult.transferred,
+                deleted: partialResult.deleted,
+                processed: partialResult.processed,
+                conflictCount: partialResult.conflicts.count,
+                failureCategory: SyncLogFailureCategory.classify(error)
+            ))
+            throw error
+        }
+    }
+
+    private func performRun(
+        job: SyncJob,
+        leftPassword: String?,
+        rightPassword: String?,
+        runID: UUID
+    ) async throws -> SyncResult {
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
         let leftManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .rightToLeft
             ? .syncedFiles
@@ -101,23 +164,45 @@ struct SyncEngine: Sendable {
         let left = try sessionFactory(job.left, leftPassword, leftManagedFolder)
         let right = try sessionFactory(job.right, rightPassword, rightManagedFolder)
         let processedDestination: (any EndpointSession)?
+        let processedDestinationKind: EndpointKind?
         switch job.movesProcessedFiles ? job.effectiveProcessedFilesLocation : nil {
         case .customFolder:
             processedDestination = try job.processedFolder.map {
                 try sessionFactory($0, nil, nil)
             }
+            processedDestinationKind = job.processedFolder?.kind
         case .processedSubfolder:
             guard let destinationEndpoint = job.destinationEndpoint else {
                 throw AppError.invalidConfiguration("Managed output folders require a one-way job.")
             }
             processedDestination = try sessionFactory(destinationEndpoint, nil, .processedFiles)
+            processedDestinationKind = destinationEndpoint.kind
         case nil:
             processedDestination = nil
+            processedDestinationKind = nil
         }
         do {
-            async let leftListing = left.listFiles()
-            async let rightListing = right.listFiles()
-            async let processedListing = processedDestination?.listFiles() ?? [:]
+            async let leftListing = loggedListing(
+                from: left,
+                endpointKind: job.left.kind,
+                role: .left,
+                runID: runID,
+                jobID: job.id
+            )
+            async let rightListing = loggedListing(
+                from: right,
+                endpointKind: job.right.kind,
+                role: .right,
+                runID: runID,
+                jobID: job.id
+            )
+            async let processedListing = loggedListingIfPresent(
+                from: processedDestination,
+                endpointKind: processedDestinationKind,
+                role: .processed,
+                runID: runID,
+                jobID: job.id
+            )
             let (leftFiles, rightFiles, processedFiles) = try await (leftListing, rightListing, processedListing)
             try validateLocalDestinationPaths(job: job, leftFiles: leftFiles, rightFiles: rightFiles)
             switch job.direction {
@@ -148,7 +233,8 @@ struct SyncEngine: Sendable {
                     files: rightFiles,
                     processedDestination: processedDestination,
                     processedFiles: processedFiles,
-                    job: job
+                    job: job,
+                    runID: runID
                 )
                 conflicts = []
             case .rightToLeft:
@@ -160,7 +246,8 @@ struct SyncEngine: Sendable {
                     files: leftFiles,
                     processedDestination: processedDestination,
                     processedFiles: processedFiles,
-                    job: job
+                    job: job,
+                    runID: runID
                 )
                 conflicts = []
             case .bidirectional:
@@ -169,7 +256,8 @@ struct SyncEngine: Sendable {
                     leftFiles: leftFiles,
                     right: right,
                     rightFiles: rightFiles,
-                    job: job
+                    job: job,
+                    runID: runID
                 )
                 transferResult = (result.transferred, 0, .empty)
                 conflicts = result.conflicts
@@ -206,6 +294,78 @@ struct SyncEngine: Sendable {
             await processedDestination?.close()
             throw error
         }
+    }
+
+    private func loggedListing(
+        from session: any EndpointSession,
+        endpointKind: EndpointKind,
+        role: SyncLogEndpointRole,
+        runID: UUID,
+        jobID: UUID
+    ) async throws -> [String: SyncFile] {
+        eventLogger.record(SyncLogEvent(
+            runID: runID,
+            jobID: jobID,
+            stage: .protocolOperation,
+            operation: .listing,
+            outcome: .started,
+            endpointRole: role,
+            endpointKind: endpointKind
+        ))
+        do {
+            let files = try await session.listFiles()
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .protocolOperation,
+                operation: .listing,
+                outcome: .succeeded,
+                endpointRole: role,
+                endpointKind: endpointKind,
+                itemCount: files.count
+            ))
+            return files
+        } catch is CancellationError {
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .protocolOperation,
+                operation: .listing,
+                outcome: .cancelled,
+                endpointRole: role,
+                endpointKind: endpointKind
+            ))
+            throw CancellationError()
+        } catch {
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .protocolOperation,
+                operation: .listing,
+                outcome: .failed,
+                endpointRole: role,
+                endpointKind: endpointKind,
+                failureCategory: SyncLogFailureCategory.classify(error)
+            ))
+            throw error
+        }
+    }
+
+    private func loggedListingIfPresent(
+        from session: (any EndpointSession)?,
+        endpointKind: EndpointKind?,
+        role: SyncLogEndpointRole,
+        runID: UUID,
+        jobID: UUID
+    ) async throws -> [String: SyncFile] {
+        guard let session, let endpointKind else { return [:] }
+        return try await loggedListing(
+            from: session,
+            endpointKind: endpointKind,
+            role: role,
+            runID: runID,
+            jobID: jobID
+        )
     }
 
     func reprocessExistingLocalFiles(
@@ -637,7 +797,8 @@ struct SyncEngine: Sendable {
         files destinationFiles: [String: SyncFile],
         processedDestination: (any EndpointSession)?,
         processedFiles: [String: SyncFile],
-        job: SyncJob
+        job: SyncJob,
+        runID: UUID
     ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport) {
         let savedSignatures = try await sourceSignatureRepository.signatures(
             jobID: job.id,
@@ -679,7 +840,6 @@ struct SyncEngine: Sendable {
         var occupiedProcessedPaths = Set(processedFiles.keys)
         var metadataReport = MetadataRunReport.empty
         var pendingSourceSignatures: [SyncFile] = []
-        let runID = UUID()
         for file in candidates {
             do {
                 try Task.checkCancellation()
@@ -709,6 +869,10 @@ struct SyncEngine: Sendable {
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
                         : nil,
+                    sourceRole: job.direction == .leftToRight ? .left : .right,
+                    sourceKind: sourceEndpoint.kind,
+                    destinationRole: job.direction == .leftToRight ? .right : .left,
+                    destinationKind: job.destinationEndpoint?.kind,
                     jobID: job.id,
                     runID: runID
                 )
@@ -816,25 +980,34 @@ struct SyncEngine: Sendable {
         leftFiles: [String: SyncFile],
         right: any EndpointSession,
         rightFiles: [String: SyncFile],
-        job: SyncJob
+        job: SyncJob,
+        runID: UUID
     ) async throws -> (transferred: Int, conflicts: [String]) {
         let paths = Set(leftFiles.keys).union(rightFiles.keys)
-        var actions: [(SyncFile, any EndpointSession, any EndpointSession)] = []
+        var actions: [(
+            file: SyncFile,
+            source: any EndpointSession,
+            destination: any EndpointSession,
+            sourceRole: SyncLogEndpointRole,
+            sourceKind: EndpointKind,
+            destinationRole: SyncLogEndpointRole,
+            destinationKind: EndpointKind
+        )] = []
         var conflicts: [String] = []
         for path in paths {
             let leftFile = leftFiles[path]
             let rightFile = rightFiles[path]
             switch (leftFile, rightFile) {
             case let (file?, nil) where job.filter.includes(path: path, modifiedAt: file.modifiedAt):
-                actions.append((file, left, right))
+                actions.append((file, left, right, .left, job.left.kind, .right, job.right.kind))
             case let (nil, file?) where job.filter.includes(path: path, modifiedAt: file.modifiedAt):
-                actions.append((file, right, left))
+                actions.append((file, right, left, .right, job.right.kind, .left, job.left.kind))
             case let (leftFile?, rightFile?):
                 guard job.filter.includes(path: path, modifiedAt: max(leftFile.modifiedAt, rightFile.modifiedAt)) else { continue }
                 if leftFile.modifiedAt > rightFile.modifiedAt.addingTimeInterval(tolerance) {
-                    actions.append((leftFile, left, right))
+                    actions.append((leftFile, left, right, .left, job.left.kind, .right, job.right.kind))
                 } else if rightFile.modifiedAt > leftFile.modifiedAt.addingTimeInterval(tolerance) {
-                    actions.append((rightFile, right, left))
+                    actions.append((rightFile, right, left, .right, job.right.kind, .left, job.left.kind))
                 } else if job.verifyFileSizes, leftFile.size != rightFile.size {
                     // Equal timestamps with different sizes are ambiguous. Keep both by refusing to overwrite.
                     conflicts.append(path)
@@ -844,15 +1017,15 @@ struct SyncEngine: Sendable {
                 continue
             }
         }
-        actions.sort { $0.0.modifiedAt > $1.0.modifiedAt }
+        actions.sort { $0.file.modifiedAt > $1.file.modifiedAt }
         var transferred = 0
-        for (file, source, destination) in actions {
+        for action in actions {
             try Task.checkCancellation()
             do {
                 _ = try await transfer(
-                    file,
-                    from: source,
-                    to: destination,
+                    action.file,
+                    from: action.source,
+                    to: action.destination,
                     existingDestinationFiles: [:],
                     processedDestination: nil,
                     occupiedProcessedPaths: [],
@@ -862,8 +1035,12 @@ struct SyncEngine: Sendable {
                     metadataAutomation: nil,
                     sortProcessedFilesByPhotographer: false,
                     sourceSidecar: nil,
+                    sourceRole: action.sourceRole,
+                    sourceKind: action.sourceKind,
+                    destinationRole: action.destinationRole,
+                    destinationKind: action.destinationKind,
                     jobID: job.id,
-                    runID: UUID()
+                    runID: runID
                 )
                 transferred += 1
             } catch is CancellationError {
@@ -917,6 +1094,10 @@ struct SyncEngine: Sendable {
         metadataAutomation: MetadataAutomation?,
         sortProcessedFilesByPhotographer: Bool,
         sourceSidecar: SyncFile?,
+        sourceRole: SyncLogEndpointRole,
+        sourceKind: EndpointKind,
+        destinationRole: SyncLogEndpointRole,
+        destinationKind: EndpointKind?,
         jobID: UUID,
         runID: UUID
     ) async throws -> TransferMetadataOutcome {
@@ -930,9 +1111,57 @@ struct SyncEngine: Sendable {
             if let metadataTemporaryURL { try? FileManager.default.removeItem(at: metadataTemporaryURL) }
             if let metadataTemporarySidecarURL { try? FileManager.default.removeItem(at: metadataTemporarySidecarURL) }
         }
-        try await source.exportFile(file, to: temporaryURL)
-        if let sourceSidecar {
-            try await source.exportFile(sourceSidecar, to: temporarySidecarURL)
+        let sourceItemCount = sourceSidecar == nil ? 1 : 2
+        eventLogger.record(SyncLogEvent(
+            runID: runID,
+            jobID: jobID,
+            stage: .protocolOperation,
+            operation: .sourceRead,
+            outcome: .started,
+            endpointRole: sourceRole,
+            endpointKind: sourceKind,
+            itemCount: sourceItemCount
+        ))
+        do {
+            try await source.exportFile(file, to: temporaryURL)
+            if let sourceSidecar {
+                try await source.exportFile(sourceSidecar, to: temporarySidecarURL)
+            }
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .protocolOperation,
+                operation: .sourceRead,
+                outcome: .succeeded,
+                endpointRole: sourceRole,
+                endpointKind: sourceKind,
+                itemCount: sourceItemCount
+            ))
+        } catch is CancellationError {
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .protocolOperation,
+                operation: .sourceRead,
+                outcome: .cancelled,
+                endpointRole: sourceRole,
+                endpointKind: sourceKind,
+                itemCount: sourceItemCount
+            ))
+            throw CancellationError()
+        } catch {
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .protocolOperation,
+                operation: .sourceRead,
+                outcome: .failed,
+                endpointRole: sourceRole,
+                endpointKind: sourceKind,
+                itemCount: sourceItemCount,
+                failureCategory: SyncLogFailureCategory.classify(error)
+            ))
+            throw error
         }
 
         let activeAutomation = metadataAutomation?.isEnabled == true ? metadataAutomation : nil
@@ -1054,12 +1283,59 @@ struct SyncEngine: Sendable {
                 EndpointFileImport(localURL: sidecarImport.url, file: sidecarImport.file)
             )
         }
-        try await destination.importFilesTransactionally(
-            destinationImports,
-            replacing: existingDestinationFiles,
-            preserveDate: preserveDate,
-            verifySize: verifySize
-        )
+        eventLogger.record(SyncLogEvent(
+            runID: runID,
+            jobID: jobID,
+            stage: .publication,
+            operation: .destinationOutput,
+            outcome: .started,
+            endpointRole: destinationRole,
+            endpointKind: destinationKind,
+            itemCount: destinationImports.count
+        ))
+        do {
+            try await destination.importFilesTransactionally(
+                destinationImports,
+                replacing: existingDestinationFiles,
+                preserveDate: preserveDate,
+                verifySize: verifySize
+            )
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .publication,
+                operation: .destinationOutput,
+                outcome: .succeeded,
+                endpointRole: destinationRole,
+                endpointKind: destinationKind,
+                itemCount: destinationImports.count
+            ))
+        } catch is CancellationError {
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .publication,
+                operation: .destinationOutput,
+                outcome: .cancelled,
+                endpointRole: destinationRole,
+                endpointKind: destinationKind,
+                itemCount: destinationImports.count
+            ))
+            throw CancellationError()
+        } catch {
+            eventLogger.record(SyncLogEvent(
+                runID: runID,
+                jobID: jobID,
+                stage: .publication,
+                operation: .destinationOutput,
+                outcome: .failed,
+                endpointRole: destinationRole,
+                endpointKind: destinationKind,
+                itemCount: destinationImports.count,
+                failureCategory: SyncLogFailureCategory.classify(error)
+            ))
+            throw error
+        }
         var movedToProcessed = false
         var publishedProcessedPaths = Set<String>()
         if auditEntry?.status == .applied,
