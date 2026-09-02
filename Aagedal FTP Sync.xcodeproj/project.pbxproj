@@ -48,6 +48,8 @@
 		C0DEC0030000000000000002 /* DeliveryLatencyBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0030000000000000001 /* DeliveryLatencyBenchmarkTests.swift */; };
 		C0DEC0040000000000000002 /* SyncEventLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0040000000000000001 /* SyncEventLogger.swift */; };
 		C0DEC0040000000000000004 /* SyncEventLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0040000000000000003 /* SyncEventLoggerTests.swift */; };
+		C0DEC0050000000000000002 /* SupportBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0050000000000000001 /* SupportBundle.swift */; };
+		C0DEC0050000000000000004 /* SupportBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0050000000000000003 /* SupportBundleTests.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
@@ -115,6 +117,8 @@
 		C0DEC0030000000000000001 /* DeliveryLatencyBenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliveryLatencyBenchmarkTests.swift; sourceTree = "<group>"; };
 		C0DEC0040000000000000001 /* SyncEventLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEventLogger.swift; sourceTree = "<group>"; };
 		C0DEC0040000000000000003 /* SyncEventLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEventLoggerTests.swift; sourceTree = "<group>"; };
+		C0DEC0050000000000000001 /* SupportBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundle.swift; sourceTree = "<group>"; };
+		C0DEC0050000000000000003 /* SupportBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundleTests.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
@@ -222,6 +226,7 @@
 				F36DFB49077346301C4F656C /* PathSafety.swift */,
 				128375A15BD2E6D85930D82F /* SSHHostKeyFingerprint.swift */,
 				C0DEC0040000000000000001 /* SyncEventLogger.swift */,
+				C0DEC0050000000000000001 /* SupportBundle.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -268,6 +273,7 @@
 				019FF4B35E61EB52439E87F7 /* SourceSignatureRepositoryTests.swift */,
 				A279E40E0C0EE63158560C37 /* SSHHostKeyFingerprintTests.swift */,
 				C0DEC0040000000000000003 /* SyncEventLoggerTests.swift */,
+				C0DEC0050000000000000003 /* SupportBundleTests.swift */,
 				98C086F6C3B781DCF036C21D /* SyncJobValidationTests.swift */,
 				C0DEC002000000000000000B /* SyncSchedulerTests.swift */,
 			);
@@ -504,6 +510,7 @@
 				F740A1A2353AD74015A8B6D9 /* SSHHostKeyFingerprint.swift in Sources */,
 				53A288A039BF1709C1AE3329 /* SourceSignatureRepository.swift in Sources */,
 				C0DEC0040000000000000002 /* SyncEventLogger.swift in Sources */,
+				C0DEC0050000000000000002 /* SupportBundle.swift in Sources */,
 				1A4D7E9F2B3C405162738495 /* SyncFailureRepository.swift in Sources */,
 				9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */,
 				272053804C39268361FC3A77 /* SyncJob.swift in Sources */,
@@ -533,6 +540,7 @@
 				9A8B2CACA5C0E649C2E29F01 /* SSHHostKeyFingerprintTests.swift in Sources */,
 				1DD55244C13A4F93BAB1F59A /* SourceSignatureRepositoryTests.swift in Sources */,
 				C0DEC0040000000000000004 /* SyncEventLoggerTests.swift in Sources */,
+				C0DEC0050000000000000004 /* SupportBundleTests.swift in Sources */,
 				E9F5C8F408685FF6E937756D /* SyncJobValidationTests.swift in Sources */,
 				C0DEC002000000000000000C /* SyncSchedulerTests.swift in Sources */,
 			);

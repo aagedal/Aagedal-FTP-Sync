@@ -6,7 +6,9 @@ struct JobsWindowView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var showConfigurationImporter = false
     @State private var showConfigurationExporter = false
+    @State private var showSupportBundleExporter = false
     @State private var exportDocument = ConfigurationTransferFile()
+    @State private var supportBundleDocument = RedactedSupportBundleFile()
     @State private var exportFilename = "Aagedal FTP Sync Package"
     @State private var pendingTransfer: PendingConfigurationTransfer?
     @State private var importSummary: String?
@@ -70,6 +72,12 @@ struct JobsWindowView: View {
                                 }
                                 .disabled(scope != .metadata && store.jobs.isEmpty)
                             }
+
+                            Divider()
+
+                            Button("Export Redacted Support Bundle…", systemImage: "lifepreserver") {
+                                prepareSupportBundleExport()
+                            }
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
@@ -122,6 +130,16 @@ struct JobsWindowView: View {
         ) { result in
             if case .failure(let error) = result {
                 store.alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
+            }
+        }
+        .fileExporter(
+            isPresented: $showSupportBundleExporter,
+            document: supportBundleDocument,
+            contentType: .json,
+            defaultFilename: "Aagedal FTP Sync Support Bundle"
+        ) { result in
+            if case .failure(let error) = result {
+                store.alertMessage = "The support bundle could not be exported: \(error.localizedDescription)"
             }
         }
         .sheet(item: $pendingTransfer) { transfer in
@@ -192,6 +210,12 @@ struct JobsWindowView: View {
         exportFilename = scope.defaultFilename
         DispatchQueue.main.async { showConfigurationExporter = true }
         return true
+    }
+
+    private func prepareSupportBundleExport() {
+        guard let data = store.supportBundleData() else { return }
+        supportBundleDocument = RedactedSupportBundleFile(data: data)
+        DispatchQueue.main.async { showSupportBundleExporter = true }
     }
 
     private func importConfiguration(_ data: Data, _ password: String?) -> Bool {

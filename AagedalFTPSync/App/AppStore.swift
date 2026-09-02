@@ -392,6 +392,28 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func supportBundleData(
+        bundle: Bundle = .main,
+        processInfo: ProcessInfo = .processInfo
+    ) -> Data? {
+        do {
+            return try SupportBundleCodec.encode(
+                jobs: jobs,
+                metadataPresetCount: metadataPresets.count,
+                photographerCount: photographerLibrary.count,
+                failures: syncFailureEntries,
+                applicationVersion: bundle.object(
+                    forInfoDictionaryKey: "CFBundleShortVersionString"
+                ) as? String ?? "unknown",
+                build: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
+                operatingSystem: processInfo.operatingSystemVersionString
+            )
+        } catch {
+            alertMessage = "The support bundle could not be created: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     @discardableResult
     func importConfiguration(from data: Data, password: String?) -> ConfigurationImportResult? {
         do {
