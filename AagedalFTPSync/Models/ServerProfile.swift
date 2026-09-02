@@ -73,6 +73,24 @@ struct ServerProfile: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+struct ServerProfileUsage: Identifiable, Equatable, Sendable {
+    let jobID: UUID
+    let jobName: String
+    let usesLocationA: Bool
+    let usesLocationB: Bool
+
+    var id: UUID { jobID }
+
+    var locationDescription: String {
+        switch (usesLocationA, usesLocationB) {
+        case (true, true): "Locations A and B"
+        case (true, false): "Location A"
+        case (false, true): "Location B"
+        case (false, false): ""
+        }
+    }
+}
+
 struct ServerProfileMigrationResult: Equatable, Sendable {
     let jobs: [SyncJob]
     let profiles: [ServerProfile]
@@ -192,5 +210,17 @@ extension SyncJob {
         resolved.left = try left.resolvingServerProfile(in: profiles)
         resolved.right = try right.resolvingServerProfile(in: profiles)
         return resolved
+    }
+
+    func serverProfileUsage(for profileID: UUID) -> ServerProfileUsage? {
+        let usesLocationA = left.serverProfileID == profileID
+        let usesLocationB = right.serverProfileID == profileID
+        guard usesLocationA || usesLocationB else { return nil }
+        return ServerProfileUsage(
+            jobID: id,
+            jobName: name,
+            usesLocationA: usesLocationA,
+            usesLocationB: usesLocationB
+        )
     }
 }

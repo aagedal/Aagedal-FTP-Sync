@@ -43,10 +43,22 @@ struct AagedalFTPSyncApp: App {
         }
         .defaultSize(width: 700, height: 450)
 
-        Settings {
-            PhotographerSettingsView()
+        Window("Servers", id: "servers") {
+            ServerSettingsView()
                 .environmentObject(store)
                 .background(RegularWindowTracker())
+        }
+        .defaultSize(width: 780, height: 560)
+
+        Settings {
+            TabView {
+                ServerSettingsView()
+                    .tabItem { Label("Servers", systemImage: "server.rack") }
+                PhotographerSettingsView()
+                    .tabItem { Label("Photographers", systemImage: "person.2") }
+            }
+            .environmentObject(store)
+            .background(RegularWindowTracker())
         }
     }
 }

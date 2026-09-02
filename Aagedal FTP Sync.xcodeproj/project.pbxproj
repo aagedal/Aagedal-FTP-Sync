@@ -61,6 +61,7 @@
 		C0DEC0070000000000000002 /* ServerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000001 /* ServerProfile.swift */; };
 		C0DEC0070000000000000004 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000003 /* ServerProfileRepository.swift */; };
 		C0DEC0070000000000000006 /* ServerProfileRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */; };
+		C0DEC0070000000000000008 /* ServerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000007 /* ServerSettingsView.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
@@ -141,6 +142,7 @@
 		C0DEC0070000000000000001 /* ServerProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfile.swift; sourceTree = "<group>"; };
 		C0DEC0070000000000000003 /* ServerProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepository.swift; sourceTree = "<group>"; };
 		C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepositoryTests.swift; sourceTree = "<group>"; };
+		C0DEC0070000000000000007 /* ServerSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettingsView.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
@@ -330,6 +332,7 @@
 				3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */,
 				C0DEC006000000000000000B /* MetadataTimelineViews.swift */,
 				DFD7C0B7D522D2DE507BA375 /* PhotographerSettingsView.swift */,
+				C0DEC0070000000000000007 /* ServerSettingsView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -546,6 +549,7 @@
 				FBE2E72C3D51ABCC3F05B457 /* PhotographerProfileRepository.swift in Sources */,
 				C0DEC0070000000000000002 /* ServerProfile.swift in Sources */,
 				C0DEC0070000000000000004 /* ServerProfileRepository.swift in Sources */,
+				C0DEC0070000000000000008 /* ServerSettingsView.swift in Sources */,
 				AA1076CD38765D19227AF21F /* PhotographerSettingsView.swift in Sources */,
 				03B9BB504A33709EB3DD70B4 /* SFTPEndpointSession.swift in Sources */,
 				09AEF27861375CC02EB37B6D /* SFTPTransport.swift in Sources */,

@@ -193,6 +193,34 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func serverProfileUsages(for profileID: UUID) -> [ServerProfileUsage] {
+        jobs.compactMap { $0.serverProfileUsage(for: profileID) }.sorted {
+            let comparison = $0.jobName.localizedCaseInsensitiveCompare($1.jobName)
+            return comparison == .orderedSame
+                ? $0.jobID.uuidString < $1.jobID.uuidString
+                : comparison == .orderedAscending
+        }
+    }
+
+    @discardableResult
+    func removeServerProfile(_ profileID: UUID) -> Bool {
+        do {
+            let result = try persistenceCoordinator.removeServerProfile(
+                profileID: profileID,
+                jobs: jobs,
+                previousProfiles: serverProfiles
+            )
+            serverProfiles = result.profiles
+            for warning in result.cleanupWarnings {
+                appendAlert("The removed server password could not be deleted: \(warning)")
+            }
+            return true
+        } catch {
+            alertMessage = error.localizedDescription
+            return false
+        }
+    }
+
     func updateFilter(jobID: UUID, preset: FilterPreset) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         var updatedJobs = jobs

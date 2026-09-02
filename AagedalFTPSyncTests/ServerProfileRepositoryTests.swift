@@ -184,5 +184,19 @@ final class ServerProfileAppStoreTests: XCTestCase {
         XCTAssertEqual(store.jobs.first?.left.serverProfileID, profile.id)
         XCTAssertEqual(store.jobs.first?.left.remotePath, "/incoming/picture-desk")
         XCTAssertEqual(store.jobs.first?.left.host, "photos.example.test")
+        XCTAssertEqual(
+            store.serverProfileUsages(for: profile.id),
+            [
+                ServerProfileUsage(
+                    jobID: job.id,
+                    jobName: job.name,
+                    usesLocationA: true,
+                    usesLocationB: false
+                )
+            ]
+        )
+        XCTAssertFalse(store.removeServerProfile(profile.id))
+        XCTAssertEqual(store.serverProfiles, [profile])
+        XCTAssertTrue(store.alertMessage?.contains(job.name) == true)
     }
 }

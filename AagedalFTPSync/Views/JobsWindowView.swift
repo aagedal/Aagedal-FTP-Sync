@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct JobsWindowView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var editingSession = JobEditingSession()
     @State private var showConfigurationImporter = false
     @State private var showConfigurationExporter = false
@@ -69,6 +70,12 @@ struct JobsWindowView: View {
                         .keyboardShortcut("n", modifiers: .command)
                         Spacer()
                         Menu {
+                            Button("Manage Servers…", systemImage: "server.rack") {
+                                openServersWindow()
+                            }
+
+                            Divider()
+
                             Button("Import Configuration Package…", systemImage: "square.and.arrow.down") {
                                 showConfigurationImporter = true
                             }
@@ -242,6 +249,12 @@ struct JobsWindowView: View {
             return
         }
         beginNewJob()
+    }
+
+    private func openServersWindow() {
+        RegularWindowController.shared.prepareForOpening()
+        openWindow(id: "servers")
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private func handleNewJobDraftRequest() {

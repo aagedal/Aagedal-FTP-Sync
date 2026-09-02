@@ -376,6 +376,67 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
     }
 
+    func testReferencedServerProfileCannotBeDeleted() throws {
+        let credentialID = "referenced-server-credential"
+        let keychain = TestKeychain(values: [credentialID: "saved-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "referenced-profile-delete", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Shared picture desk",
+            kind: .ftps,
+            host: "pictures.example.com",
+            username: "pictures",
+            credentialID: credentialID
+        )
+        var job = remoteJob(leftCredentialID: credentialID)
+        job.name = "Morning pictures"
+        job.left = profile.endpoint(remotePath: "/incoming")
+        job.right = profile.endpoint(remotePath: "/processed")
+        try fixture.serverProfileRepository.save([profile])
+
+        XCTAssertThrowsError(try fixture.coordinator.removeServerProfile(
+            profileID: profile.id,
+            jobs: [job],
+            previousProfiles: [profile]
+        )) { error in
+            XCTAssertEqual(
+                error as? ServerProfileRemovalError,
+                .referenced(profileName: profile.name, jobNames: [job.name])
+            )
+        }
+
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), [profile])
+        XCTAssertEqual(keychain.valuesSnapshot(), [credentialID: "saved-password"])
+        XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
+    }
+
+    func testUnusedServerProfileDeletionCommitsBeforeRemovingCredential() throws {
+        let credentialID = "unused-server-credential"
+        let keychain = TestKeychain(values: [credentialID: "saved-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "unused-profile-delete", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Retired desk",
+            kind: .ftp,
+            host: "retired.example.com",
+            username: "pictures",
+            credentialID: credentialID
+        )
+        try fixture.serverProfileRepository.save([profile])
+
+        let result = try fixture.coordinator.removeServerProfile(
+            profileID: profile.id,
+            jobs: [],
+            previousProfiles: [profile]
+        )
+
+        XCTAssertTrue(result.profiles.isEmpty)
+        XCTAssertTrue(result.cleanupWarnings.isEmpty)
+        XCTAssertTrue(try fixture.serverProfileRepository.load().isEmpty)
+        XCTAssertNil(keychain.value(for: credentialID))
+        XCTAssertEqual(keychain.removedCredentialIDs, [credentialID])
+    }
+
     func testLoadMigratesMatchingLegacyConnectionsToOneProfileWithoutChangingCredentials() throws {
         let credentialID = "legacy-shared-credential"
         let keychain = TestKeychain(values: [credentialID: "existing-password"])

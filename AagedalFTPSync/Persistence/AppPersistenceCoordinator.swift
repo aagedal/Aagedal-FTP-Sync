@@ -44,6 +44,23 @@ struct CredentialedServerProfileSaveResult: Sendable {
     let cleanupWarnings: [String]
 }
 
+struct CredentialedServerProfileRemovalResult: Sendable {
+    let profiles: [ServerProfile]
+    let cleanupWarnings: [String]
+}
+
+enum ServerProfileRemovalError: LocalizedError, Equatable {
+    case referenced(profileName: String, jobNames: [String])
+
+    var errorDescription: String? {
+        switch self {
+        case .referenced(let profileName, let jobNames):
+            let jobs = jobNames.map { "“\($0)”" }.joined(separator: ", ")
+            return "“\(profileName)” is used by \(jobs). Choose another server for those jobs before deleting this profile."
+        }
+    }
+}
+
 private struct AppPersistenceTransactionError: LocalizedError {
     let operation: Error
     let rollback: Error
@@ -469,6 +486,35 @@ final class AppPersistenceCoordinator {
             jobs: updatedJobs,
             profiles: updatedProfiles,
             savedProfile: savedProfile,
+            cleanupWarnings: cleanupWarnings
+        )
+    }
+
+    func removeServerProfile(
+        profileID: UUID,
+        jobs: [SyncJob],
+        previousProfiles: [ServerProfile]
+    ) throws -> CredentialedServerProfileRemovalResult {
+        guard let profile = previousProfiles.first(where: { $0.id == profileID }) else {
+            return CredentialedServerProfileRemovalResult(profiles: previousProfiles, cleanupWarnings: [])
+        }
+
+        let usages = jobs.compactMap { $0.serverProfileUsage(for: profileID) }
+        guard usages.isEmpty else {
+            let names = usages.map(\.jobName).sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+            throw ServerProfileRemovalError.referenced(profileName: profile.name, jobNames: names)
+        }
+
+        let updatedProfiles = previousProfiles.filter { $0.id != profileID }
+        try serverProfileRepository.save(updatedProfiles)
+
+        let previousCredentialIDs = credentialIDs(in: previousProfiles, jobs: jobs)
+        let retainedCredentialIDs = credentialIDs(in: updatedProfiles, jobs: jobs)
+        let cleanupWarnings = removeCredentials(previousCredentialIDs.subtracting(retainedCredentialIDs))
+        return CredentialedServerProfileRemovalResult(
+            profiles: updatedProfiles,
             cleanupWarnings: cleanupWarnings
         )
     }
