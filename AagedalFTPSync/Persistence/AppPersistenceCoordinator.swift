@@ -37,6 +37,13 @@ struct CredentialedJobSaveResult: Sendable {
     let cleanupWarnings: [String]
 }
 
+struct CredentialedServerProfileSaveResult: Sendable {
+    let jobs: [SyncJob]
+    let profiles: [ServerProfile]
+    let savedProfile: ServerProfile
+    let cleanupWarnings: [String]
+}
+
 private struct AppPersistenceTransactionError: LocalizedError {
     let operation: Error
     let rollback: Error
@@ -237,10 +244,6 @@ final class AppPersistenceCoordinator {
         try photographerProfileRepository.save(photographers)
     }
 
-    func saveServerProfiles(_ profiles: [ServerProfile]) throws {
-        try serverProfileRepository.save(profiles)
-    }
-
     private func saveServerProfileMigration(
         previousJobs: [SyncJob],
         previousProfiles: [ServerProfile],
@@ -390,6 +393,86 @@ final class AppPersistenceCoordinator {
         )
     }
 
+    func saveServerProfile(
+        previousJobs: [SyncJob],
+        previousProfiles: [ServerProfile],
+        draftProfile: ServerProfile,
+        password suppliedPassword: String
+    ) throws -> CredentialedServerProfileSaveResult {
+        let previousProfile = previousProfiles.first(where: { $0.id == draftProfile.id })
+        let savedPassword = try previousProfile.map { try password(forCredentialID: $0.credentialID) } ?? nil
+        let requestedPassword = suppliedPassword.isEmpty ? nil : suppliedPassword
+
+        var savedProfile = draftProfile
+        let stagedPassword: String?
+        if let previousProfile, savedPassword == requestedPassword {
+            savedProfile.credentialID = previousProfile.credentialID
+            stagedPassword = nil
+        } else {
+            savedProfile.credentialID = UUID().uuidString
+            stagedPassword = requestedPassword
+        }
+
+        var stagedCredentialIDs: [String] = []
+        if let stagedPassword {
+            do {
+                try keychain.setPassword(stagedPassword, for: savedProfile.credentialID)
+                cachedPasswords[savedProfile.credentialID] = stagedPassword
+                loadedCredentialIDs.insert(savedProfile.credentialID)
+                stagedCredentialIDs.append(savedProfile.credentialID)
+            } catch {
+                throw rollbackStagedCredentials(stagedCredentialIDs, after: error)
+            }
+        }
+
+        var updatedProfiles = previousProfiles
+        if let index = updatedProfiles.firstIndex(where: { $0.id == savedProfile.id }) {
+            updatedProfiles[index] = savedProfile
+        } else {
+            updatedProfiles.append(savedProfile)
+        }
+
+        var updatedJobs = previousJobs
+        for index in updatedJobs.indices {
+            if updatedJobs[index].left.serverProfileID == savedProfile.id {
+                updatedJobs[index].left = savedProfile.endpoint(remotePath: updatedJobs[index].left.remotePath)
+            }
+            if updatedJobs[index].right.serverProfileID == savedProfile.id {
+                updatedJobs[index].right = savedProfile.endpoint(remotePath: updatedJobs[index].right.remotePath)
+            }
+        }
+
+        do {
+            try serverProfileRepository.save(updatedProfiles)
+            try jobRepository.save(updatedJobs)
+        } catch {
+            let operationError = error
+            let transactionError: Error
+            if let rollbackError = attemptRollback([
+                { try self.jobRepository.save(previousJobs) },
+                { try self.serverProfileRepository.save(previousProfiles) }
+            ]) {
+                transactionError = AppPersistenceTransactionError(
+                    operation: operationError,
+                    rollback: rollbackError
+                )
+            } else {
+                transactionError = operationError
+            }
+            throw rollbackStagedCredentials(stagedCredentialIDs, after: transactionError)
+        }
+
+        let previousCredentialIDs = credentialIDs(in: previousProfiles, jobs: previousJobs)
+        let retainedCredentialIDs = credentialIDs(in: updatedProfiles, jobs: updatedJobs)
+        let cleanupWarnings = removeCredentials(previousCredentialIDs.subtracting(retainedCredentialIDs))
+        return CredentialedServerProfileSaveResult(
+            jobs: updatedJobs,
+            profiles: updatedProfiles,
+            savedProfile: savedProfile,
+            cleanupWarnings: cleanupWarnings
+        )
+    }
+
     func removeCredentials(for job: SyncJob, retainedJobs: [SyncJob]) -> [String] {
         removeCredentials(credentialIDs(in: [job]).subtracting(credentialIDs(in: retainedJobs)))
     }
@@ -477,6 +560,10 @@ final class AppPersistenceCoordinator {
                 .filter { $0.kind.isRemote && $0.serverProfileID == nil }
                 .map(\.credentialID)
         })
+    }
+
+    private func credentialIDs(in profiles: [ServerProfile], jobs: [SyncJob]) -> Set<String> {
+        Set(profiles.map(\.credentialID)).union(credentialIDs(in: jobs))
     }
 
     private func removeCredentials(_ credentialIDs: Set<String>) -> [String] {

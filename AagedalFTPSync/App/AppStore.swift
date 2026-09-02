@@ -159,6 +159,40 @@ final class AppStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func saveServerProfile(_ profile: ServerProfile, password: String) -> Bool {
+        if let message = profile.validationMessage {
+            alertMessage = message
+            return false
+        }
+        let affectedJobIDs = Set(jobs.compactMap { job in
+            job.left.serverProfileID == profile.id || job.right.serverProfileID == profile.id
+                ? job.id
+                : nil
+        })
+        do {
+            let result = try persistenceCoordinator.saveServerProfile(
+                previousJobs: jobs,
+                previousProfiles: serverProfiles,
+                draftProfile: profile,
+                password: password
+            )
+            jobs = result.jobs
+            serverProfiles = result.profiles
+            for warning in result.cleanupWarnings {
+                appendAlert("An obsolete saved password could not be removed: \(warning)")
+            }
+            for jobID in affectedJobIDs {
+                scheduleSourceSignatureMaintenance(jobID: jobID)
+                scheduler.reschedule(jobID, job: jobs.first(where: { $0.id == jobID }))
+            }
+            return true
+        } catch {
+            alertMessage = error.localizedDescription
+            return false
+        }
+    }
+
     func updateFilter(jobID: UUID, preset: FilterPreset) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         var updatedJobs = jobs
@@ -582,6 +616,10 @@ final class AppStore: ObservableObject {
 
     func password(for endpoint: Endpoint) throws -> String {
         try persistenceCoordinator.password(for: endpoint) ?? ""
+    }
+
+    func password(for serverProfile: ServerProfile) throws -> String {
+        try persistenceCoordinator.password(for: serverProfile.endpoint()) ?? ""
     }
 
     var activeCount: Int { jobs.filter(\.isEnabled).count }

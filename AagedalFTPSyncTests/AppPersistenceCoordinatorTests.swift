@@ -262,6 +262,120 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
     }
 
+    func testServerProfilePasswordChangeCommitsProfileAndReferencedJobsBeforeRemovingOldCredential() throws {
+        let oldCredentialID = "shared-old-credential"
+        let keychain = TestKeychain(values: [oldCredentialID: "old-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "profile-credential-change", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Picture desk",
+            kind: .sftp,
+            host: "old.example.com",
+            username: "pictures",
+            credentialID: oldCredentialID,
+            hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        var job = remoteJob(leftCredentialID: oldCredentialID)
+        job.left = profile.endpoint(remotePath: "/incoming/pictures")
+        job.right = .local
+        try fixture.serverProfileRepository.save([profile])
+        try fixture.jobRepository.save([job])
+
+        var draft = profile
+        draft.host = "new.example.com"
+        let result = try fixture.coordinator.saveServerProfile(
+            previousJobs: [job],
+            previousProfiles: [profile],
+            draftProfile: draft,
+            password: "new-password"
+        )
+
+        XCTAssertNotEqual(result.savedProfile.credentialID, oldCredentialID)
+        XCTAssertEqual(result.jobs[0].left.serverProfileID, profile.id)
+        XCTAssertEqual(result.jobs[0].left.remotePath, "/incoming/pictures")
+        XCTAssertEqual(result.jobs[0].left.host, "new.example.com")
+        XCTAssertEqual(result.jobs[0].left.credentialID, result.savedProfile.credentialID)
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), result.profiles)
+        XCTAssertEqual(try fixture.jobRepository.load(), result.jobs)
+        XCTAssertEqual(keychain.value(for: result.savedProfile.credentialID), "new-password")
+        XCTAssertNil(keychain.value(for: oldCredentialID))
+        XCTAssertEqual(keychain.removedCredentialIDs, [oldCredentialID])
+        XCTAssertTrue(result.cleanupWarnings.isEmpty)
+    }
+
+    func testServerProfileJobCommitFailureRestoresProfileAndRemovesStagedCredential() throws {
+        let oldCredentialID = "profile-durable-password"
+        let keychain = TestKeychain(values: [oldCredentialID: "old-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "profile-job-commit-failure", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Picture desk",
+            kind: .ftps,
+            host: "old.example.com",
+            username: "pictures",
+            credentialID: oldCredentialID
+        )
+        var job = remoteJob(leftCredentialID: oldCredentialID)
+        job.left = profile.endpoint(remotePath: "/incoming")
+        job.right = .local
+        try fixture.serverProfileRepository.save([profile])
+        try fixture.jobRepository.save([job])
+
+        var draft = profile
+        draft.host = "new.example.com"
+        var unencodableJob = job
+        unencodableJob.intervalSeconds = .nan
+
+        XCTAssertThrowsError(try fixture.coordinator.saveServerProfile(
+            previousJobs: [unencodableJob],
+            previousProfiles: [profile],
+            draftProfile: draft,
+            password: "new-password"
+        ))
+
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), [profile])
+        XCTAssertEqual(keychain.valuesSnapshot(), [oldCredentialID: "old-password"])
+        XCTAssertEqual(keychain.writeCount, 1)
+        XCTAssertEqual(keychain.removedCredentialIDs.count, 1)
+        XCTAssertNotEqual(keychain.removedCredentialIDs.first, oldCredentialID)
+    }
+
+    func testServerProfileKeychainFailureLeavesProfileAndJobsUnchanged() throws {
+        let oldCredentialID = "profile-existing-password"
+        let keychain = TestKeychain(
+            values: [oldCredentialID: "old-password"],
+            failWriteNumber: 1
+        )
+        let fixture = try PersistenceCoordinatorFixture(prefix: "profile-keychain-failure", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Picture desk",
+            kind: .ftps,
+            host: "old.example.com",
+            username: "pictures",
+            credentialID: oldCredentialID
+        )
+        var job = remoteJob(leftCredentialID: oldCredentialID)
+        job.left = profile.endpoint(remotePath: "/incoming")
+        job.right = .local
+        try fixture.serverProfileRepository.save([profile])
+        try fixture.jobRepository.save([job])
+
+        var draft = profile
+        draft.host = "new.example.com"
+        XCTAssertThrowsError(try fixture.coordinator.saveServerProfile(
+            previousJobs: [job],
+            previousProfiles: [profile],
+            draftProfile: draft,
+            password: "new-password"
+        ))
+
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), [profile])
+        XCTAssertEqual(try fixture.jobRepository.load(), [job])
+        XCTAssertEqual(keychain.valuesSnapshot(), [oldCredentialID: "old-password"])
+        XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
+    }
+
     func testLoadMigratesMatchingLegacyConnectionsToOneProfileWithoutChangingCredentials() throws {
         let credentialID = "legacy-shared-credential"
         let keychain = TestKeychain(values: [credentialID: "existing-password"])
