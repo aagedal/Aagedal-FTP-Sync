@@ -88,15 +88,18 @@ final class AppPersistenceCoordinator {
     func load() -> AppPersistenceLoadResult {
         var warnings: [String] = []
 
-        let serverProfiles: [ServerProfile]
+        var serverProfiles: [ServerProfile]
+        let serverProfilesLoaded: Bool
         do {
             let result = try serverProfileRepository.loadResult()
             serverProfiles = result.profiles
+            serverProfilesLoaded = true
             if result.recoveredFromBackup {
                 warnings.append("The server profile library was damaged, so its most recent backup was restored.")
             }
         } catch {
             serverProfiles = []
+            serverProfilesLoaded = false
             warnings.append("Saved server profiles could not be loaded: \(error.localizedDescription)")
         }
 
@@ -137,6 +140,30 @@ final class AppPersistenceCoordinator {
             jobs = []
             jobsRecoveredFromBackup = false
             warnings.append("Saved jobs could not be loaded: \(error.localizedDescription)")
+        }
+
+        if serverProfilesLoaded {
+            let migration = ServerProfile.migratingEmbeddedEndpoints(
+                in: jobs,
+                existingProfiles: serverProfiles
+            )
+            if migration.migratedEndpointCount > 0 {
+                do {
+                    try saveServerProfileMigration(
+                        previousJobs: jobs,
+                        previousProfiles: serverProfiles,
+                        migratedJobs: migration.jobs,
+                        migratedProfiles: migration.profiles
+                    )
+                    jobs = migration.jobs
+                    serverProfiles = migration.profiles
+                } catch {
+                    warnings.append(
+                        "Existing remote connections could not be migrated to server profiles. "
+                            + "They remain unchanged and migration will be retried next time: \(error.localizedDescription)"
+                    )
+                }
+            }
         }
 
         for index in jobs.indices {
@@ -212,6 +239,27 @@ final class AppPersistenceCoordinator {
 
     func saveServerProfiles(_ profiles: [ServerProfile]) throws {
         try serverProfileRepository.save(profiles)
+    }
+
+    private func saveServerProfileMigration(
+        previousJobs: [SyncJob],
+        previousProfiles: [ServerProfile],
+        migratedJobs: [SyncJob],
+        migratedProfiles: [ServerProfile]
+    ) throws {
+        do {
+            try serverProfileRepository.save(migratedProfiles)
+            try jobRepository.save(migratedJobs)
+        } catch {
+            let operationError = error
+            if let rollbackError = attemptRollback([
+                { try self.jobRepository.save(previousJobs) },
+                { try self.serverProfileRepository.save(previousProfiles) }
+            ]) {
+                throw AppPersistenceTransactionError(operation: operationError, rollback: rollbackError)
+            }
+            throw operationError
+        }
     }
 
     func saveJobsAndPhotographers(

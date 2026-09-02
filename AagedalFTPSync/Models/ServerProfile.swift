@@ -73,6 +73,96 @@ struct ServerProfile: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+struct ServerProfileMigrationResult: Equatable, Sendable {
+    let jobs: [SyncJob]
+    let profiles: [ServerProfile]
+    let migratedEndpointCount: Int
+}
+
+extension ServerProfile {
+    /// Converts legacy remote endpoints into references without moving or
+    /// rewriting their existing Keychain credentials. Endpoints share a
+    /// profile only when every connection setting, including the credential
+    /// identifier and SFTP trust, already matches.
+    static func migratingEmbeddedEndpoints(
+        in jobs: [SyncJob],
+        existingProfiles: [ServerProfile]
+    ) -> ServerProfileMigrationResult {
+        var migratedJobs = jobs
+        var profiles = existingProfiles
+        var migratedEndpointCount = 0
+        var usedNames = Set(profiles.map { foldedName($0.name) })
+
+        func migrate(_ endpoint: inout Endpoint) {
+            guard endpoint.kind.isRemote, endpoint.serverProfileID == nil else { return }
+
+            if let matchingProfile = profiles.first(where: { $0.matchesConnection(of: endpoint) }) {
+                endpoint.serverProfileID = matchingProfile.id
+                migratedEndpointCount += 1
+                return
+            }
+
+            let baseName = endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !baseName.isEmpty else { return }
+            let name = uniqueName(basedOn: baseName, usedNames: &usedNames)
+            let profile = ServerProfile(
+                name: name,
+                kind: endpoint.kind,
+                host: endpoint.host,
+                port: endpoint.port,
+                username: endpoint.username,
+                credentialID: endpoint.credentialID,
+                hostKeyFingerprint: endpoint.hostKeyFingerprint
+            )
+            // Legacy jobs with incomplete connection or trust settings must
+            // remain editable as embedded endpoints rather than preventing all
+            // otherwise valid profiles from being persisted.
+            guard profile.validationMessage == nil else { return }
+
+            profiles.append(profile)
+            endpoint.serverProfileID = profile.id
+            migratedEndpointCount += 1
+        }
+
+        for index in migratedJobs.indices {
+            migrate(&migratedJobs[index].left)
+            migrate(&migratedJobs[index].right)
+        }
+
+        return ServerProfileMigrationResult(
+            jobs: migratedJobs,
+            profiles: profiles,
+            migratedEndpointCount: migratedEndpointCount
+        )
+    }
+
+    private func matchesConnection(of endpoint: Endpoint) -> Bool {
+        kind == endpoint.kind
+            && host == endpoint.host
+            && port == endpoint.port
+            && username == endpoint.username
+            && credentialID == endpoint.credentialID
+            && hostKeyFingerprint == endpoint.hostKeyFingerprint
+    }
+
+    private static func uniqueName(basedOn baseName: String, usedNames: inout Set<String>) -> String {
+        var candidate = baseName
+        var suffix = 2
+        while !usedNames.insert(foldedName(candidate)).inserted {
+            candidate = "\(baseName) (\(suffix))"
+            suffix += 1
+        }
+        return candidate
+    }
+
+    private static func foldedName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+    }
+}
+
 enum ServerProfileResolutionError: LocalizedError, Equatable {
     case missingProfile(UUID)
 

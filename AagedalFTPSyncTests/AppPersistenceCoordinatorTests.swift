@@ -262,6 +262,89 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
     }
 
+    func testLoadMigratesMatchingLegacyConnectionsToOneProfileWithoutChangingCredentials() throws {
+        let credentialID = "legacy-shared-credential"
+        let keychain = TestKeychain(values: [credentialID: "existing-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "server-profile-migration", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        var first = remoteJob(leftCredentialID: credentialID)
+        first.name = "Picture desk"
+        first.left.remotePath = "/incoming/pictures"
+        first.right = .local
+        var second = first
+        second.id = UUID()
+        second.name = "Sports desk"
+        second.left.remotePath = "/incoming/sports"
+        try fixture.jobRepository.save([first, second])
+
+        let result = fixture.coordinator.load()
+
+        let profile = try XCTUnwrap(result.state.serverProfiles.first)
+        XCTAssertEqual(result.state.serverProfiles.count, 1)
+        XCTAssertEqual(profile.name, "source.example.com")
+        XCTAssertEqual(profile.credentialID, credentialID)
+        XCTAssertEqual(result.state.jobs.map(\.left.serverProfileID), [profile.id, profile.id])
+        XCTAssertEqual(result.state.jobs.map(\.left.remotePath), ["/incoming/pictures", "/incoming/sports"])
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), [profile])
+        XCTAssertEqual(try fixture.jobRepository.load(), result.state.jobs)
+        XCTAssertEqual(try fixture.coordinator.password(for: result.state.jobs[0].left), "existing-password")
+        XCTAssertEqual(keychain.writeCount, 0)
+        XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
+    }
+
+    func testLoadReusesExistingMatchingProfileAndIsIdempotent() throws {
+        let fixture = try PersistenceCoordinatorFixture(prefix: "server-profile-reuse")
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Shared newsroom",
+            kind: .sftp,
+            host: "source.example.com",
+            username: "source",
+            credentialID: "existing-profile-credential",
+            hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        var job = remoteJob(leftCredentialID: profile.credentialID)
+        job.right = .local
+        try fixture.serverProfileRepository.save([profile])
+        try fixture.jobRepository.save([job])
+
+        let firstLoad = fixture.coordinator.load()
+        let secondLoad = fixture.coordinator.load()
+
+        XCTAssertEqual(firstLoad.state.serverProfiles, [profile])
+        XCTAssertEqual(firstLoad.state.jobs.first?.left.serverProfileID, profile.id)
+        XCTAssertEqual(secondLoad.state.serverProfiles, firstLoad.state.serverProfiles)
+        XCTAssertEqual(secondLoad.state.jobs, firstLoad.state.jobs)
+    }
+
+    func testLoadKeepsDistinctCredentialsAndIncompleteConnectionsIndependent() throws {
+        let fixture = try PersistenceCoordinatorFixture(prefix: "server-profile-distinct")
+        defer { fixture.removeTemporaryFiles() }
+        var first = remoteJob(leftCredentialID: "first-credential")
+        first.left.kind = .ftp
+        first.left.port = EndpointKind.ftp.defaultPort
+        first.right = .local
+        var second = remoteJob(leftCredentialID: "second-credential")
+        second.id = UUID()
+        second.left.kind = .ftps
+        second.left.port = EndpointKind.ftps.defaultPort
+        second.right = .local
+        var incomplete = remoteJob(leftCredentialID: "incomplete-credential")
+        incomplete.id = UUID()
+        incomplete.left.hostKeyFingerprint = ""
+        incomplete.right = .local
+        try fixture.jobRepository.save([first, second, incomplete])
+
+        let result = fixture.coordinator.load()
+
+        XCTAssertEqual(result.state.serverProfiles.count, 2)
+        XCTAssertEqual(Set(result.state.serverProfiles.map(\.credentialID)), ["first-credential", "second-credential"])
+        XCTAssertEqual(result.state.serverProfiles.map(\.kind), [.ftp, .ftps])
+        XCTAssertNotEqual(result.state.jobs[0].left.serverProfileID, result.state.jobs[1].left.serverProfileID)
+        XCTAssertNil(result.state.jobs[2].left.serverProfileID)
+        XCTAssertEqual(result.state.jobs[2].left.credentialID, "incomplete-credential")
+    }
+
     private func remoteJob(leftCredentialID: String, rightCredentialID: String = "unused-right") -> SyncJob {
         SyncJob(
             name: "Remote job",
@@ -289,12 +372,14 @@ private struct PersistenceCoordinatorFixture {
     let jobsURL: URL
     let presetsURL: URL
     let photographersURL: URL
+    let serverProfilesURL: URL
     let auditsURL: URL
     let failuresURL: URL
 
     let jobRepository: JobRepository
     let metadataPresetRepository: MetadataPresetRepository
     let photographerProfileRepository: PhotographerProfileRepository
+    let serverProfileRepository: ServerProfileRepository
     let metadataAuditRepository: MetadataAuditRepository
     let syncFailureRepository: SyncFailureRepository
     let coordinator: AppPersistenceCoordinator
@@ -308,18 +393,21 @@ private struct PersistenceCoordinatorFixture {
         jobsURL = root.appendingPathComponent("jobs.json")
         presetsURL = root.appendingPathComponent("presets.json")
         photographersURL = root.appendingPathComponent("photographers.json")
+        serverProfilesURL = root.appendingPathComponent("server-profiles.json")
         auditsURL = root.appendingPathComponent("audits.json")
         failuresURL = root.appendingPathComponent("failures.json")
 
         jobRepository = JobRepository(fileURL: jobsURL)
         metadataPresetRepository = MetadataPresetRepository(fileURL: presetsURL)
         photographerProfileRepository = PhotographerProfileRepository(fileURL: photographersURL)
+        serverProfileRepository = ServerProfileRepository(fileURL: serverProfilesURL)
         metadataAuditRepository = MetadataAuditRepository(fileURL: auditsURL)
         syncFailureRepository = SyncFailureRepository(fileURL: failuresURL)
         coordinator = AppPersistenceCoordinator(
             jobRepository: jobRepository,
             metadataPresetRepository: metadataPresetRepository,
             photographerProfileRepository: photographerProfileRepository,
+            serverProfileRepository: serverProfileRepository,
             metadataAuditRepository: metadataAuditRepository,
             syncFailureRepository: syncFailureRepository,
             keychain: keychain
