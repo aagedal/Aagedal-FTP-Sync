@@ -5,6 +5,7 @@ struct EndpointSummaryCard: View {
     let title: String
     @Binding var endpoint: Endpoint
     @Binding var password: String
+    let serverProfiles: [ServerProfile]
     @State private var showSettings = false
 
     var body: some View {
@@ -80,13 +81,19 @@ struct EndpointSummaryCard: View {
             EndpointSettingsSheet(
                 title: title,
                 endpoint: $endpoint,
-                password: $password
+                password: $password,
+                serverProfiles: serverProfiles
             )
         }
     }
 
     private func setKind(_ kind: EndpointKind) {
         guard kind != endpoint.kind else { return }
+        if endpoint.serverProfileID != nil {
+            endpoint.serverProfileID = nil
+            endpoint.credentialID = UUID().uuidString
+            password = ""
+        }
         endpoint.kind = kind
         if kind.isRemote { endpoint.port = kind.defaultPort }
     }
@@ -97,6 +104,7 @@ private struct EndpointSettingsSheet: View {
     let title: String
     @Binding var endpoint: Endpoint
     @Binding var password: String
+    let serverProfiles: [ServerProfile]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -121,7 +129,11 @@ private struct EndpointSettingsSheet: View {
 
             Form {
                 Section("Connection") {
-                    EndpointEditor(endpoint: $endpoint, password: $password)
+                    EndpointEditor(
+                        endpoint: $endpoint,
+                        password: $password,
+                        serverProfiles: serverProfiles
+                    )
                 }
             }
             .formStyle(.grouped)
@@ -156,18 +168,35 @@ private extension Endpoint {
 }
 
 private struct EndpointEditor: View {
+    @EnvironmentObject private var store: AppStore
     @Binding var endpoint: Endpoint
     @Binding var password: String
+    let serverProfiles: [ServerProfile]
     @State private var showFolderPicker = false
-    @State private var folderError: String?
+    @State private var settingsError: String?
     @State private var connectionTestState = ConnectionTestState.idle
     @State private var connectionTestTask: Task<Void, Never>?
 
     var body: some View {
         Group {
+            if endpoint.kind.isRemote,
+               !serverProfiles.isEmpty || endpoint.serverProfileID != nil {
+                Picker("Server profile", selection: serverProfileSelection) {
+                    Text("Custom connection").tag(Optional<UUID>.none)
+                    ForEach(serverProfiles) { profile in
+                        Text(profile.name).tag(Optional(profile.id))
+                    }
+                    if let profileID = endpoint.serverProfileID,
+                       !serverProfiles.contains(where: { $0.id == profileID }) {
+                        Text("Missing server profile").tag(Optional(profileID))
+                    }
+                }
+            }
+
             Picker("Type", selection: $endpoint.kind) {
                 ForEach(EndpointKind.allCases) { Text($0.title).tag($0) }
             }
+            .disabled(endpoint.serverProfileID != nil)
             .onChange(of: endpoint.kind) { oldKind, newKind in
                 if oldKind != newKind, newKind.isRemote { endpoint.port = newKind.defaultPort }
             }
@@ -184,18 +213,28 @@ private struct EndpointEditor: View {
             } else {
                 TextField("Server", text: $endpoint.host, prompt: Text("photos.example.com"))
                     .textContentType(.URL)
+                    .disabled(endpoint.serverProfileID != nil)
                 TextField("Port", value: $endpoint.port, format: .number)
                     .frame(maxWidth: 180)
+                    .disabled(endpoint.serverProfileID != nil)
                 TextField("Username", text: $endpoint.username)
                     .textContentType(.username)
+                    .disabled(endpoint.serverProfileID != nil)
                 HStack {
-                    SecureField("Password", text: $password)
-                        .textContentType(.password)
-                    if !password.isEmpty {
-                        Button("Remove Saved Password", role: .destructive) {
-                            password = ""
+                    if endpoint.serverProfileID == nil {
+                        SecureField("Password", text: $password)
+                            .textContentType(.password)
+                        if !password.isEmpty {
+                            Button("Remove Saved Password", role: .destructive) {
+                                password = ""
+                            }
+                            .help("The password is removed from Keychain when the job is saved.")
                         }
-                        .help("The password is removed from Keychain when the job is saved.")
+                    } else {
+                        LabeledContent("Password") {
+                            Text("Managed by server profile")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 TextField("Remote folder", text: $endpoint.remotePath, prompt: Text("/incoming"))
@@ -213,6 +252,7 @@ private struct EndpointEditor: View {
                         prompt: Text("SHA256:…")
                     )
                     .textContentType(.none)
+                    .disabled(endpoint.serverProfileID != nil)
                     Text("Test the connection to discover the fingerprint, verify it with the server administrator, then trust it. SFTP stays blocked until the fingerprint is saved.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -231,23 +271,46 @@ private struct EndpointEditor: View {
                     endpoint.localPath = bookmark.resolvedURL.path
                     endpoint.bookmark = bookmark.data
                 } catch {
-                    folderError = "Folder access could not be saved: \(error.localizedDescription)"
+                    settingsError = "Folder access could not be saved: \(error.localizedDescription)"
                 }
             case .failure(let error):
-                folderError = "The folder could not be selected: \(error.localizedDescription)"
+                settingsError = "The folder could not be selected: \(error.localizedDescription)"
             }
         }
-        .alert("Folder Access", isPresented: Binding(
-            get: { folderError != nil },
-            set: { if !$0 { folderError = nil } }
+        .alert("Connection Settings", isPresented: Binding(
+            get: { settingsError != nil },
+            set: { if !$0 { settingsError = nil } }
         )) {
-            Button("OK") { folderError = nil }
+            Button("OK") { settingsError = nil }
         } message: {
-            Text(folderError ?? "")
+            Text(settingsError ?? "")
         }
         .onChange(of: endpoint) { _, _ in resetConnectionTest() }
         .onChange(of: password) { _, _ in resetConnectionTest() }
         .onDisappear { connectionTestTask?.cancel() }
+    }
+
+    private var serverProfileSelection: Binding<UUID?> {
+        Binding(
+            get: { endpoint.serverProfileID },
+            set: { profileID in
+                if let profileID,
+                   let profile = serverProfiles.first(where: { $0.id == profileID }) {
+                    endpoint = profile.endpoint(remotePath: endpoint.remotePath)
+                    do {
+                        password = try store.password(for: endpoint)
+                        settingsError = nil
+                    } catch {
+                        password = ""
+                        settingsError = "The server profile password could not be loaded: \(error.localizedDescription)"
+                    }
+                } else if endpoint.serverProfileID != nil {
+                    endpoint.serverProfileID = nil
+                    endpoint.credentialID = UUID().uuidString
+                    password = ""
+                }
+            }
+        )
     }
 
     @ViewBuilder

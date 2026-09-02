@@ -125,7 +125,14 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) -> Bool {
-        if let message = job.validationMessage {
+        let resolvedJob: SyncJob
+        do {
+            resolvedJob = try job.resolvingServerProfiles(in: serverProfiles)
+        } catch {
+            alertMessage = error.localizedDescription
+            return false
+        }
+        if let message = resolvedJob.validationMessage {
             alertMessage = message
             return false
         }
@@ -134,7 +141,7 @@ final class AppStore: ObservableObject {
         do {
             let result = try persistenceCoordinator.saveJob(
                 previousJobs: jobs,
-                draftJob: job,
+                draftJob: resolvedJob,
                 leftPassword: leftPassword,
                 rightPassword: rightPassword
             )
@@ -632,7 +639,16 @@ final class AppStore: ObservableObject {
 
     private func performSync(_ jobID: UUID) async -> SyncAttempt {
         guard !scheduler.isRunning(jobID),
-              let job = jobs.first(where: { $0.id == jobID }) else { return .skipped }
+              let savedJob = jobs.first(where: { $0.id == jobID }) else { return .skipped }
+        let job: SyncJob
+        do {
+            job = try savedJob.resolvingServerProfiles(in: serverProfiles)
+        } catch {
+            let message = error.localizedDescription
+            recordSyncFailure(message, jobID: jobID)
+            phases[jobID] = .failed(message, retryAt: nil)
+            return .failed(message)
+        }
         let leaseID: UUID
         do {
             leaseID = try await syncConcurrencyController.acquire(
@@ -709,7 +725,16 @@ final class AppStore: ObservableObject {
         scope: MetadataReprocessScope
     ) async {
         guard !scheduler.isRunning(jobID),
-              let job = jobs.first(where: { $0.id == jobID }) else { return }
+              let savedJob = jobs.first(where: { $0.id == jobID }) else { return }
+        let job: SyncJob
+        do {
+            job = try savedJob.resolvingServerProfiles(in: serverProfiles)
+        } catch {
+            let message = error.localizedDescription
+            metadataReprocessPhases[jobID] = .failed(message)
+            alertMessage = message
+            return
+        }
         let leaseID: UUID
         do {
             leaseID = try await syncConcurrencyController.acquire(

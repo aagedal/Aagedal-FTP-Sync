@@ -48,7 +48,8 @@ struct JobDetailEditor: View {
                         EndpointSummaryCard(
                             title: draft.direction == .bidirectional ? "Location A" : "Source",
                             endpoint: firstEndpointBinding,
-                            password: firstPasswordBinding
+                            password: firstPasswordBinding,
+                            serverProfiles: store.serverProfiles
                         )
 
                         directionControl
@@ -56,7 +57,8 @@ struct JobDetailEditor: View {
                         EndpointSummaryCard(
                             title: destinationLocationTitle,
                             endpoint: secondEndpointBinding,
-                            password: secondPasswordBinding
+                            password: secondPasswordBinding,
+                            serverProfiles: store.serverProfiles
                         )
                     }
                     .padding(.vertical, 4)

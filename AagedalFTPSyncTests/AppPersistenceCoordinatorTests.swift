@@ -234,6 +234,34 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertEqual(try fixture.jobRepository.load(), [job])
     }
 
+    func testSavingReferencedEndpointCannotRewriteSharedProfileCredential() throws {
+        let profileID = UUID()
+        let credentialID = "shared-profile-credential"
+        let keychain = TestKeychain(values: [credentialID: "profile-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "profile-job-save", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        var job = remoteJob(leftCredentialID: credentialID)
+        job.right = .local
+        job.left.serverProfileID = profileID
+        try fixture.jobRepository.save([job])
+
+        var draft = job
+        draft.left.remotePath = "/incoming/another-desk"
+        let result = try fixture.coordinator.saveJob(
+            previousJobs: [job],
+            draftJob: draft,
+            leftPassword: "attempted-job-password-change",
+            rightPassword: ""
+        )
+
+        XCTAssertEqual(result.savedJob.left.serverProfileID, profileID)
+        XCTAssertEqual(result.savedJob.left.remotePath, "/incoming/another-desk")
+        XCTAssertEqual(result.savedJob.left.credentialID, credentialID)
+        XCTAssertEqual(keychain.valuesSnapshot(), [credentialID: "profile-password"])
+        XCTAssertEqual(keychain.writeCount, 0)
+        XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
+    }
+
     private func remoteJob(leftCredentialID: String, rightCredentialID: String = "unused-right") -> SyncJob {
         SyncJob(
             name: "Remote job",

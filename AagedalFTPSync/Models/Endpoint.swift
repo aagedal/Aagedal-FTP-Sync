@@ -33,6 +33,10 @@ struct Endpoint: Codable, Hashable, Sendable {
     var kind: EndpointKind
     var localPath: String
     var bookmark: Data?
+    /// Identifies the shared connection settings used by this remote endpoint.
+    /// The endpoint continues to own `remotePath`; the remaining remote fields
+    /// are a runtime projection kept for compatibility with the sync engine.
+    var serverProfileID: UUID?
     var host: String
     var port: Int
     var username: String
@@ -44,6 +48,7 @@ struct Endpoint: Codable, Hashable, Sendable {
         kind: EndpointKind,
         localPath: String = "",
         bookmark: Data? = nil,
+        serverProfileID: UUID? = nil,
         host: String = "",
         port: Int? = nil,
         username: String = "",
@@ -54,6 +59,7 @@ struct Endpoint: Codable, Hashable, Sendable {
         self.kind = kind
         self.localPath = localPath
         self.bookmark = bookmark
+        self.serverProfileID = serverProfileID
         self.host = host
         self.port = port ?? kind.defaultPort
         self.username = username
@@ -63,7 +69,7 @@ struct Endpoint: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, localPath, bookmark, host, port, username, remotePath, credentialID, hostKeyFingerprint
+        case kind, localPath, bookmark, serverProfileID, host, port, username, remotePath, credentialID, hostKeyFingerprint
     }
 
     init(from decoder: Decoder) throws {
@@ -71,6 +77,7 @@ struct Endpoint: Codable, Hashable, Sendable {
         kind = try container.decode(EndpointKind.self, forKey: .kind)
         localPath = try container.decode(String.self, forKey: .localPath)
         bookmark = try container.decodeIfPresent(Data.self, forKey: .bookmark)
+        serverProfileID = try container.decodeIfPresent(UUID.self, forKey: .serverProfileID)
         host = try container.decode(String.self, forKey: .host)
         port = try container.decode(Int.self, forKey: .port)
         username = try container.decode(String.self, forKey: .username)

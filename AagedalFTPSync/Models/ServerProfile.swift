@@ -62,6 +62,7 @@ struct ServerProfile: Codable, Identifiable, Hashable, Sendable {
     func endpoint(remotePath: String = "/") -> Endpoint {
         Endpoint(
             kind: kind,
+            serverProfileID: id,
             host: host,
             port: port,
             username: username,
@@ -72,3 +73,34 @@ struct ServerProfile: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+enum ServerProfileResolutionError: LocalizedError, Equatable {
+    case missingProfile(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingProfile:
+            "A remote location references a server profile that is no longer available. Choose another server profile before running the job."
+        }
+    }
+}
+
+extension Endpoint {
+    /// Refreshes the runtime connection projection from the referenced profile
+    /// while preserving the path that belongs to this job endpoint.
+    func resolvingServerProfile(in profiles: [ServerProfile]) throws -> Endpoint {
+        guard let serverProfileID else { return self }
+        guard let profile = profiles.first(where: { $0.id == serverProfileID }) else {
+            throw ServerProfileResolutionError.missingProfile(serverProfileID)
+        }
+        return profile.endpoint(remotePath: remotePath)
+    }
+}
+
+extension SyncJob {
+    func resolvingServerProfiles(in profiles: [ServerProfile]) throws -> SyncJob {
+        var resolved = self
+        resolved.left = try left.resolvingServerProfile(in: profiles)
+        resolved.right = try right.resolvingServerProfile(in: profiles)
+        return resolved
+    }
+}

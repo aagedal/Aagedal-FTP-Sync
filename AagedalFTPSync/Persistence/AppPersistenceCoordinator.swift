@@ -124,7 +124,7 @@ final class AppPersistenceCoordinator {
             warnings.append("Saved photographers could not be loaded: \(error.localizedDescription)")
         }
 
-        let jobs: [SyncJob]
+        var jobs: [SyncJob]
         let jobsRecoveredFromBackup: Bool
         do {
             let result = try jobRepository.loadResult()
@@ -137,6 +137,14 @@ final class AppPersistenceCoordinator {
             jobs = []
             jobsRecoveredFromBackup = false
             warnings.append("Saved jobs could not be loaded: \(error.localizedDescription)")
+        }
+
+        for index in jobs.indices {
+            do {
+                jobs[index] = try jobs[index].resolvingServerProfiles(in: serverProfiles)
+            } catch {
+                warnings.append("“\(jobs[index].name)” could not resolve its saved server profile: \(error.localizedDescription)")
+            }
         }
 
         let migratedPhotographers = Self.mergedPhotographerLibrary(
@@ -363,6 +371,11 @@ final class AppPersistenceCoordinator {
         guard endpoint.kind.isRemote else {
             return CredentialUpdate(endpoint: endpoint, stagedPassword: nil)
         }
+        // A referenced profile owns its Keychain credential. Saving a job may
+        // change only the endpoint's remote path, never the shared password.
+        if endpoint.serverProfileID != nil {
+            return CredentialUpdate(endpoint: endpoint, stagedPassword: nil)
+        }
 
         if let previousEndpoint, previousEndpoint.kind.isRemote {
             let savedPassword = try password(forCredentialID: previousEndpoint.credentialID)
@@ -412,7 +425,9 @@ final class AppPersistenceCoordinator {
 
     private func credentialIDs(in jobs: [SyncJob]) -> Set<String> {
         Set(jobs.flatMap { job in
-            [job.left, job.right].filter(\.kind.isRemote).map(\.credentialID)
+            [job.left, job.right]
+                .filter { $0.kind.isRemote && $0.serverProfileID == nil }
+                .map(\.credentialID)
         })
     }
 
