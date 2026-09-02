@@ -62,6 +62,7 @@
 		C0DEC0070000000000000004 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000003 /* ServerProfileRepository.swift */; };
 		C0DEC0070000000000000006 /* ServerProfileRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */; };
 		C0DEC0070000000000000008 /* ServerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0070000000000000007 /* ServerSettingsView.swift */; };
+		C0DEC0080000000000000002 /* RemoteTransportIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0080000000000000001 /* RemoteTransportIntegrationTests.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
@@ -143,6 +144,7 @@
 		C0DEC0070000000000000003 /* ServerProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepository.swift; sourceTree = "<group>"; };
 		C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepositoryTests.swift; sourceTree = "<group>"; };
 		C0DEC0070000000000000007 /* ServerSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettingsView.swift; sourceTree = "<group>"; };
+		C0DEC0080000000000000001 /* RemoteTransportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTransportIntegrationTests.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
@@ -295,6 +297,7 @@
 				94DF32BB9FEF45202CA10C58 /* MetadataPreviewAndRecoveryTests.swift */,
 				886036FB1249F217586D7284 /* PathSafetyTests.swift */,
 				F180097B77641B0CA2B18DB1 /* PhotographerProfileRepositoryTests.swift */,
+				C0DEC0080000000000000001 /* RemoteTransportIntegrationTests.swift */,
 				C0DEC0070000000000000005 /* ServerProfileRepositoryTests.swift */,
 				019FF4B35E61EB52439E87F7 /* SourceSignatureRepositoryTests.swift */,
 				A279E40E0C0EE63158560C37 /* SSHHostKeyFingerprintTests.swift */,
@@ -584,6 +587,7 @@
 				6287983979D1DB58DCCC3BB4 /* MetadataPreviewAndRecoveryTests.swift in Sources */,
 				EED6ECBBCC58617795A3D8EB /* PathSafetyTests.swift in Sources */,
 				0F97FD0CCF4785E58BE889A1 /* PhotographerProfileRepositoryTests.swift in Sources */,
+				C0DEC0080000000000000002 /* RemoteTransportIntegrationTests.swift in Sources */,
 				C0DEC0070000000000000006 /* ServerProfileRepositoryTests.swift in Sources */,
 				9A8B2CACA5C0E649C2E29F01 /* SSHHostKeyFingerprintTests.swift in Sources */,
 				1DD55244C13A4F93BAB1F59A /* SourceSignatureRepositoryTests.swift in Sources */,

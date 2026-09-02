@@ -4,6 +4,19 @@ struct ConfigurationTransferState: Equatable, Sendable {
     let jobs: [SyncJob]
     let metadataPresets: [MetadataPreset]
     let photographers: [PhotographerProfile]
+    let serverProfiles: [ServerProfile]
+
+    init(
+        jobs: [SyncJob],
+        metadataPresets: [MetadataPreset],
+        photographers: [PhotographerProfile],
+        serverProfiles: [ServerProfile] = []
+    ) {
+        self.jobs = jobs
+        self.metadataPresets = metadataPresets
+        self.photographers = photographers
+        self.serverProfiles = serverProfiles
+    }
 }
 
 struct PreparedConfigurationImport: Equatable, Sendable {
@@ -20,6 +33,7 @@ struct ConfigurationImportResult: Equatable, Sendable {
     let skippedMetadataProgramming: Int
     let importedPresets: Int
     let importedPhotographers: Int
+    let importedServerProfiles: Int
 
     var summary: String {
         var parts: [String] = []
@@ -38,6 +52,13 @@ struct ConfigurationImportResult: Equatable, Sendable {
         }
         if importedPhotographers > 0 {
             parts.append(importedPhotographers == 1 ? "1 photographer" : "\(importedPhotographers) photographers")
+        }
+        if importedServerProfiles > 0 {
+            parts.append(
+                importedServerProfiles == 1
+                    ? "1 server profile"
+                    : "\(importedServerProfiles) server profiles"
+            )
         }
         if skippedMetadataProgramming > 0 {
             parts.append(
@@ -59,6 +80,7 @@ struct ConfigurationTransferCoordinator {
         let transfer = ConfigurationTransfer(
             scope: scope,
             jobs: state.jobs,
+            serverProfiles: state.serverProfiles,
             metadataPresets: state.metadataPresets,
             photographers: state.photographers
         )
@@ -90,6 +112,44 @@ struct ConfigurationTransferCoordinator {
         guard Set(presetIDs).count == presetIDs.count else {
             throw AppError.invalidConfiguration("The package contains the same metadata preset more than once.")
         }
+        let sourceProfileIDs = transfer.serverProfiles.map(\.id)
+        guard Set(sourceProfileIDs).count == sourceProfileIDs.count else {
+            throw AppError.invalidConfiguration("The package contains the same server profile more than once.")
+        }
+        let referencedProfileIDs = Set(transfer.jobs.flatMap { job in
+            [job.left.serverProfileID, job.right.serverProfileID, job.processedFolder?.serverProfileID]
+                .compactMap { $0 }
+        })
+        guard Set(sourceProfileIDs).isSubset(of: referencedProfileIDs) else {
+            throw AppError.invalidConfiguration(
+                "The package contains a server profile that is not used by an imported job."
+            )
+        }
+        if transfer.version >= 2,
+           !referencedProfileIDs.isSubset(of: Set(sourceProfileIDs)) {
+            throw AppError.invalidConfiguration(
+                "The package is missing a server profile used by an imported job."
+            )
+        }
+        let allowsMissingProfileReferences = transfer.version == 1
+
+        var updatedProfiles = currentState.serverProfiles
+        var importedProfilesBySourceID: [UUID: ServerProfile] = [:]
+        var usedProfileNames = Set(updatedProfiles.map { foldedName($0.name) })
+        for sourceProfile in transfer.serverProfiles {
+            if let message = sourceProfile.validationMessage {
+                throw AppError.invalidConfiguration("\(sourceProfile.name): \(message)")
+            }
+            let trimmedName = sourceProfile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = uniqueImportedServerName(trimmedName, usedNames: &usedProfileNames)
+            let importedID = UUID()
+            let imported = sourceProfile.preparedForImport(id: importedID, name: name)
+            importedProfilesBySourceID[sourceProfile.id] = imported
+            updatedProfiles.append(imported)
+        }
+        updatedProfiles.sort {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
 
         var updatedJobs = currentState.jobs
         var importedJobIDs: [UUID: UUID] = [:]
@@ -105,7 +165,28 @@ struct ConfigurationTransferCoordinator {
             let name = uniqueImportedJobName(trimmedName, usedNames: &usedNames)
             let importedID = UUID()
             importedJobIDs[sourceJob.id] = importedID
-            updatedJobs.append(sourceJob.preparedForImport(id: importedID, name: name))
+            var importedJob = sourceJob.preparedForImport(id: importedID, name: name)
+            importedJob.left = try importedEndpoint(
+                importedJob.left,
+                sourceProfileID: sourceJob.left.serverProfileID,
+                importedProfilesBySourceID: importedProfilesBySourceID,
+                allowsMissingProfileReferences: allowsMissingProfileReferences
+            )
+            importedJob.right = try importedEndpoint(
+                importedJob.right,
+                sourceProfileID: sourceJob.right.serverProfileID,
+                importedProfilesBySourceID: importedProfilesBySourceID,
+                allowsMissingProfileReferences: allowsMissingProfileReferences
+            )
+            if let processedFolder = importedJob.processedFolder {
+                importedJob.processedFolder = try importedEndpoint(
+                    processedFolder,
+                    sourceProfileID: sourceJob.processedFolder?.serverProfileID,
+                    importedProfilesBySourceID: importedProfilesBySourceID,
+                    allowsMissingProfileReferences: allowsMissingProfileReferences
+                )
+            }
+            updatedJobs.append(importedJob)
         }
 
         var appliedProgramming = 0
@@ -214,7 +295,8 @@ struct ConfigurationTransferCoordinator {
             state: ConfigurationTransferState(
                 jobs: updatedJobs,
                 metadataPresets: updatedPresets,
-                photographers: updatedPhotographers
+                photographers: updatedPhotographers,
+                serverProfiles: updatedProfiles
             ),
             result: ConfigurationImportResult(
                 scope: transfer.scope,
@@ -222,10 +304,58 @@ struct ConfigurationTransferCoordinator {
                 importedMetadataProgramming: appliedProgramming,
                 skippedMetadataProgramming: skippedProgramming,
                 importedPresets: transfer.metadataPresets.count,
-                importedPhotographers: normalizedImportedPhotographers.count
+                importedPhotographers: normalizedImportedPhotographers.count,
+                importedServerProfiles: transfer.serverProfiles.count
             ),
             selectedJobID: selectedJobID,
             importedJobIDs: importedJobIDs
+        )
+    }
+
+    private func importedEndpoint(
+        _ endpoint: Endpoint,
+        sourceProfileID: UUID?,
+        importedProfilesBySourceID: [UUID: ServerProfile],
+        allowsMissingProfileReferences: Bool
+    ) throws -> Endpoint {
+        guard let sourceProfileID else { return endpoint }
+        guard let importedProfile = importedProfilesBySourceID[sourceProfileID] else {
+            // Packages written before server profiles were included still carry
+            // a usable connection projection. Treat that as an embedded endpoint
+            // instead of retaining a reference that cannot resolve on this Mac.
+            guard allowsMissingProfileReferences else {
+                throw AppError.invalidConfiguration(
+                    "The package is missing a server profile used by an imported job."
+                )
+            }
+            var legacyEmbedded = endpoint
+            legacyEmbedded.serverProfileID = nil
+            return legacyEmbedded
+        }
+        return importedProfile.endpoint(remotePath: endpoint.remotePath)
+    }
+
+    private func uniqueImportedServerName(
+        _ base: String,
+        usedNames: inout Set<String>
+    ) -> String {
+        var candidate = base
+        if usedNames.contains(foldedName(candidate)) {
+            candidate = "\(base) (Imported)"
+        }
+        var suffix = 2
+        while usedNames.contains(foldedName(candidate)) {
+            candidate = "\(base) (Imported \(suffix))"
+            suffix += 1
+        }
+        usedNames.insert(foldedName(candidate))
+        return candidate
+    }
+
+    private func foldedName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
         )
     }
 

@@ -170,6 +170,195 @@ final class ConfigurationTransferTests: XCTestCase {
         XCTAssertNotEqual(imported.right.credentialID, fixture.job.right.credentialID)
     }
 
+    func testJobsExportIncludesOnlyReferencedServerProfilesWithoutCredentialReferences() throws {
+        let referenced = ServerProfile(
+            name: "Picture Desk",
+            kind: .sftp,
+            host: "pictures.example.test",
+            username: "desk",
+            credentialID: "saved-picture-desk-password",
+            hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        let unreferenced = ServerProfile(
+            name: "Archive",
+            kind: .ftp,
+            host: "archive.example.test",
+            username: "archive",
+            credentialID: "saved-archive-password"
+        )
+        var job = SyncJob(name: "Profile-backed job")
+        job.left = referenced.endpoint(remotePath: "/incoming/camera-1")
+        job.right = Endpoint(kind: .local)
+
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [job],
+            serverProfiles: [referenced, unreferenced],
+            metadataPresets: [],
+            photographers: []
+        )
+        let encoded = try ConfigurationTransferCodec.encode(transfer, password: nil)
+        let decoded = try ConfigurationTransferCodec.decode(encoded, password: nil)
+
+        XCTAssertEqual(decoded.serverProfiles.count, 1)
+        XCTAssertEqual(decoded.serverProfiles[0].id, referenced.id)
+        XCTAssertEqual(decoded.serverProfiles[0].name, referenced.name)
+        XCTAssertNotEqual(decoded.serverProfiles[0].credentialID, referenced.credentialID)
+        XCTAssertEqual(decoded.jobs[0].left.serverProfileID, referenced.id)
+        XCTAssertEqual(decoded.jobs[0].left.credentialID, decoded.serverProfiles[0].credentialID)
+        XCTAssertEqual(decoded.jobs[0].left.remotePath, "/incoming/camera-1")
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains(referenced.credentialID))
+        XCTAssertFalse(String(decoding: encoded, as: UTF8.self).contains(unreferenced.credentialID))
+    }
+
+    func testLegacyPackageWithoutProfilesDecodesWithEmptyProfileLibrary() throws {
+        let fixture = makeFixture()
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [fixture.job],
+            metadataPresets: [],
+            photographers: []
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: ConfigurationTransferCodec.encode(transfer, password: nil)
+            ) as? [String: Any]
+        )
+        object["version"] = 1
+        object.removeValue(forKey: "serverProfiles")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try ConfigurationTransferCodec.decode(legacyData, password: nil)
+
+        XCTAssertTrue(decoded.serverProfiles.isEmpty)
+        XCTAssertEqual(decoded.version, 1)
+    }
+
+    func testCurrentExportsUsePayloadVersionTwo() throws {
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [SyncJob(name: "Current package")],
+            metadataPresets: [],
+            photographers: []
+        )
+
+        let decoded = try ConfigurationTransferCodec.decode(
+            ConfigurationTransferCodec.encode(transfer, password: nil),
+            password: nil
+        )
+
+        XCTAssertEqual(decoded.version, 2)
+    }
+
+    func testVersionTwoPackageRejectsMissingReferencedServerProfile() throws {
+        let profile = ServerProfile(
+            name: "Required FTP",
+            kind: .ftp,
+            host: "required.example.test",
+            username: "desk"
+        )
+        var job = SyncJob(name: "Requires profile")
+        job.left = profile.endpoint(remotePath: "/incoming")
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [job],
+            serverProfiles: [profile],
+            metadataPresets: [],
+            photographers: []
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: ConfigurationTransferCodec.encode(transfer, password: nil)
+            ) as? [String: Any]
+        )
+        object.removeValue(forKey: "serverProfiles")
+        let malformed = try JSONSerialization.data(withJSONObject: object)
+
+        XCTAssertThrowsError(
+            try ConfigurationTransferCodec.decode(malformed, password: nil)
+        ) { error in
+            XCTAssertEqual(error as? ConfigurationTransferError, .inconsistentContents)
+        }
+    }
+
+    func testPackageRejectsDuplicateProfilesAndFiltersUnreferencedProfiles() {
+        let profile = ServerProfile(
+            name: "News FTP",
+            kind: .ftp,
+            host: "news.example.test",
+            username: "desk"
+        )
+        var referencedJob = SyncJob(name: "Referenced")
+        referencedJob.left = profile.endpoint(remotePath: "/incoming")
+        let duplicate = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [referencedJob],
+            serverProfiles: [profile, profile],
+            metadataPresets: [],
+            photographers: []
+        )
+        XCTAssertThrowsError(try ConfigurationTransferCodec.encode(duplicate, password: nil)) { error in
+            XCTAssertEqual(error as? ConfigurationTransferError, .inconsistentContents)
+        }
+
+        let unreferenced = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [SyncJob(name: "Embedded")],
+            serverProfiles: [profile],
+            metadataPresets: [],
+            photographers: []
+        )
+        XCTAssertTrue(unreferenced.serverProfiles.isEmpty)
+    }
+
+    @MainActor
+    func testAppStorePersistsImportedServerProfileAndResolvableJobReference() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("configuration-profile-import-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let serverRepository = ServerProfileRepository(fileURL: root.appendingPathComponent("servers.json"))
+        let profile = ServerProfile(
+            name: "Imported SFTP",
+            kind: .sftp,
+            host: "sftp.example.test",
+            username: "desk",
+            credentialID: "source-credential",
+            hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        var job = SyncJob(name: "Imported profile job")
+        job.left = profile.endpoint(remotePath: "/camera")
+        job.right = Endpoint(kind: .local)
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [job],
+            serverProfiles: [profile],
+            metadataPresets: [],
+            photographers: []
+        )
+        let data = try ConfigurationTransferCodec.encode(transfer, password: nil)
+        let store = AppStore(
+            repository: jobRepository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(
+                fileURL: root.appendingPathComponent("photographers.json")
+            ),
+            serverProfileRepository: serverRepository,
+            metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json"))
+        )
+
+        let result = try XCTUnwrap(store.importConfiguration(from: data, password: nil))
+
+        XCTAssertEqual(result.importedServerProfiles, 1)
+        let importedProfile = try XCTUnwrap(store.serverProfiles.first)
+        let importedJob = try XCTUnwrap(store.jobs.first)
+        XCTAssertEqual(importedJob.left.serverProfileID, importedProfile.id)
+        XCTAssertEqual(importedJob.left.remotePath, "/camera")
+        XCTAssertEqual(try serverRepository.load(), [importedProfile])
+        XCTAssertEqual(try jobRepository.load(), [importedJob])
+        XCTAssertNoThrow(try importedJob.resolvingServerProfiles(in: store.serverProfiles))
+    }
+
     @MainActor
     func testAppStoreImportsPackageAsSafeCopyAndPersistsLibraries() throws {
         let root = FileManager.default.temporaryDirectory

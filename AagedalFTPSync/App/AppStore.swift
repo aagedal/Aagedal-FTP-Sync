@@ -366,11 +366,12 @@ final class AppStore: ObservableObject {
                     jobs: prepared.state.jobs,
                     metadataPresets: prepared.state.metadataPresets,
                     photographerLibrary: prepared.state.photographers,
-                    serverProfiles: serverProfiles,
+                    serverProfiles: prepared.state.serverProfiles,
                     metadataAuditEntries: metadataAuditEntries,
                     syncFailureEntries: syncFailureEntries
                 )
             )
+            serverProfiles = prepared.state.serverProfiles
             jobs = prepared.state.jobs
             metadataPresets = prepared.state.metadataPresets
             photographerLibrary = prepared.state.photographers
@@ -888,7 +889,8 @@ final class AppStore: ObservableObject {
         ConfigurationTransferState(
             jobs: jobs,
             metadataPresets: metadataPresets,
-            photographers: photographerLibrary
+            photographers: photographerLibrary,
+            serverProfiles: serverProfiles
         )
     }
 

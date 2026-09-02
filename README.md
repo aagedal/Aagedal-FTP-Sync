@@ -1,8 +1,8 @@
-# Aagedal FTP Sync 2.6
+# Aagedal FTP Sync 2.7
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.6 adds a managed download and processed-file structure to the automatic editorial metadata workflow. It has no hard-coded server and does not bundle rclone.
+Version 2.7 adds reusable server profiles, safer configuration transfer, faster first-file delivery on large remote trees, and stronger unattended failure reporting. It has no hard-coded server and does not bundle rclone.
 
 ## What is new
 
@@ -17,6 +17,7 @@ Version 2.6 adds a managed download and processed-file structure to the automati
 - Original filenames and modification dates are preserved when the server supports it
 - Optional SHA-256 comparison detects changed contents even when file size and modification date still match
 - Passwords are kept in macOS Keychain, never in the jobs file
+- Named FTP, FTPS, and SFTP server profiles can be reused by jobs with independent remote paths
 - Security-scoped folder bookmarks survive sandboxed app restarts
 - SFTP host keys require explicit SHA-256 fingerprint verification; unexpected changes are rejected
 - FTPS certificates use normal system trust validation
@@ -31,7 +32,7 @@ Version 2.6 adds a managed download and processed-file structure to the automati
 - Original source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
 - Successfully tagged files can use a custom processed folder or a managed main folder containing sibling `Synced Files` and `Processed Files` folders
 - Processed pictures can optionally be sorted into sanitized per-photographer sub-folders while preserving their source-relative paths
-- Sync jobs and metadata programming can be exported separately or together in `.aftpsync` packages, with password protection enabled by default
+- Sync jobs, their referenced server profiles, and metadata programming can be exported separately or together in `.aftpsync` packages, with password protection enabled by default
 
 ## Requirements
 
@@ -58,6 +59,12 @@ xcodebuild test \
   -scheme AagedalFTPSync \
   -destination 'platform=macOS' \
   CODE_SIGNING_ALLOWED=NO
+```
+
+Opt-in loopback FTP and SFTP write/fault tests use the pinned Python packages in `Scripts/delivery-latency-requirements.txt`. Install them in an activated virtual environment, then run:
+
+```sh
+Scripts/run-remote-transport-tests.py
 ```
 
 ## First setup
@@ -101,7 +108,7 @@ Dependency security and release verification are documented in [`SECURITY.md`](S
 
 Jobs are stored as readable JSON under the app’s Application Support container. Secrets are referenced by random credential IDs and live only in Keychain.
 
-Portable `.aftpsync` packages never contain Keychain passwords or security-scoped folder bookmarks. Password protection is enabled by default and uses PBKDF2-HMAC-SHA256 with AES-256-GCM authenticated encryption, but it can be turned off for non-sensitive transfers. Unencrypted packages expose server addresses, usernames, paths, and metadata programming to anyone who can read the file. Imported jobs are disabled and receive fresh identifiers, so folder permissions and server passwords must be configured again before syncing.
+Portable `.aftpsync` packages never contain Keychain passwords or security-scoped folder bookmarks. Referenced server profiles are included with fresh profile and credential identifiers so shared connections remain intact without exposing passwords. Password protection is enabled by default and uses PBKDF2-HMAC-SHA256 with AES-256-GCM authenticated encryption, but it can be turned off for non-sensitive transfers. Unencrypted packages expose server addresses, usernames, paths, and metadata programming to anyone who can read the file. Imported jobs are disabled and receive fresh identifiers, so folder permissions and server passwords must be configured again before syncing.
 
 ## License
 

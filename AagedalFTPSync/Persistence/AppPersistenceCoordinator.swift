@@ -318,11 +318,13 @@ final class AppPersistenceCoordinator {
         do {
             try photographerProfileRepository.save(updated.photographerLibrary)
             try metadataPresetRepository.save(updated.metadataPresets)
+            try serverProfileRepository.save(updated.serverProfiles)
             try jobRepository.save(updated.jobs)
         } catch {
             let operationError = error
             if let rollbackError = attemptRollback([
                 { try self.jobRepository.save(previous.jobs) },
+                { try self.serverProfileRepository.save(previous.serverProfiles) },
                 { try self.metadataPresetRepository.save(previous.metadataPresets) },
                 { try self.photographerProfileRepository.save(previous.photographerLibrary) }
             ]) {

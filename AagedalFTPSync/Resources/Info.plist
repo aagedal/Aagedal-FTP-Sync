@@ -36,7 +36,7 @@
 				<string>public.data</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Aagedal FTP Sync Encrypted Configuration</string>
+			<string>Aagedal FTP Sync Configuration Package</string>
 			<key>UTTypeIdentifier</key>
 			<string>no.aagedal.aftpsync.configuration</string>
 			<key>UTTypeTagSpecification</key>

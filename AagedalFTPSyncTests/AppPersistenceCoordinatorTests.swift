@@ -108,6 +108,53 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertEqual(try fixture.jobRepository.load(), [previousJob])
     }
 
+    func testSaveConfigurationRollsBackNewServerProfileWhenUpdatedJobEncodingFails() throws {
+        let fixture = try PersistenceCoordinatorFixture(prefix: "configuration-server-rollback")
+        defer { fixture.removeTemporaryFiles() }
+
+        let previousJob = SyncJob(name: "Previous job")
+        var unencodableUpdatedJob = previousJob
+        unencodableUpdatedJob.name = "Imported job"
+        unencodableUpdatedJob.intervalSeconds = .nan
+        let importedProfile = ServerProfile(
+            name: "Imported server",
+            kind: .ftps,
+            host: "imported.example.test",
+            username: "pictures"
+        )
+        let previousState = AppPersistentState(
+            jobs: [previousJob],
+            metadataPresets: [],
+            photographerLibrary: [],
+            serverProfiles: [],
+            metadataAuditEntries: [:],
+            syncFailureEntries: [:]
+        )
+        let updatedState = AppPersistentState(
+            jobs: [unencodableUpdatedJob],
+            metadataPresets: [],
+            photographerLibrary: [],
+            serverProfiles: [importedProfile],
+            metadataAuditEntries: [:],
+            syncFailureEntries: [:]
+        )
+        try fixture.jobRepository.save(previousState.jobs)
+
+        XCTAssertThrowsError(
+            try fixture.coordinator.saveConfiguration(previous: previousState, updated: updatedState)
+        ) { error in
+            guard let encodingError = error as? EncodingError else {
+                return XCTFail("Expected the original job encoding error, got \(error)")
+            }
+            guard case .invalidValue = encodingError else {
+                return XCTFail("Expected an invalid-value encoding error, got \(encodingError)")
+            }
+        }
+
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), [])
+        XCTAssertEqual(try fixture.jobRepository.load(), [previousJob])
+    }
+
     func testPasswordChangeUsesFreshCredentialAndCommitsBeforeRemovingOldPassword() throws {
         let leftCredentialID = "left-old"
         let rightCredentialID = "right-old"

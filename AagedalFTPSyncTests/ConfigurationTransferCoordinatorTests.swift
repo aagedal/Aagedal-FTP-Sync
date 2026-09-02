@@ -173,6 +173,108 @@ final class ConfigurationTransferCoordinatorTests: XCTestCase {
         XCTAssertEqual(currentState.photographers, [existingPhotographer])
     }
 
+    func testSharedServerProfileImportRemapsReferencesAndKeepsRemotePaths() throws {
+        let sourceProfile = ServerProfile(
+            name: "Shared News Server",
+            kind: .sftp,
+            host: "news.example.test",
+            username: "desk",
+            credentialID: "source-keychain-reference",
+            hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        var first = SyncJob(name: "Camera One")
+        first.left = sourceProfile.endpoint(remotePath: "/incoming/one")
+        first.right = Endpoint(kind: .local)
+        var second = SyncJob(name: "Camera Two")
+        second.left = sourceProfile.endpoint(remotePath: "/incoming/two")
+        second.right = Endpoint(kind: .local)
+        let existingProfile = ServerProfile(
+            name: "shared news server",
+            kind: .ftp,
+            host: "old.example.test",
+            username: "old"
+        )
+        let exported = try coordinator.exportData(
+            scope: .jobs,
+            password: nil,
+            state: ConfigurationTransferState(
+                jobs: [first, second],
+                metadataPresets: [],
+                photographers: [],
+                serverProfiles: [sourceProfile]
+            )
+        )
+
+        let prepared = try coordinator.prepareImport(
+            from: exported,
+            password: nil,
+            currentState: ConfigurationTransferState(
+                jobs: [],
+                metadataPresets: [],
+                photographers: [],
+                serverProfiles: [existingProfile]
+            )
+        )
+
+        XCTAssertEqual(prepared.result.importedServerProfiles, 1)
+        XCTAssertEqual(prepared.state.serverProfiles.count, 2)
+        let importedProfile = try XCTUnwrap(
+            prepared.state.serverProfiles.first { $0.id != existingProfile.id }
+        )
+        XCTAssertEqual(importedProfile.name, "Shared News Server (Imported)")
+        XCTAssertNotEqual(importedProfile.id, sourceProfile.id)
+        XCTAssertNotEqual(importedProfile.credentialID, sourceProfile.credentialID)
+        XCTAssertEqual(prepared.state.jobs.map(\.left.serverProfileID), [importedProfile.id, importedProfile.id])
+        XCTAssertEqual(prepared.state.jobs.map(\.left.remotePath), ["/incoming/one", "/incoming/two"])
+        XCTAssertTrue(prepared.state.jobs.allSatisfy {
+            $0.left.credentialID == importedProfile.credentialID
+        })
+    }
+
+    func testLegacyReferencedEndpointWithoutIncludedProfileBecomesEmbedded() throws {
+        let missingProfile = ServerProfile(
+            name: "Legacy FTP",
+            kind: .ftp,
+            host: "legacy.example.test",
+            username: "legacy"
+        )
+        var job = SyncJob(name: "Legacy profile export")
+        job.left = Endpoint(
+            kind: .ftp,
+            serverProfileID: missingProfile.id,
+            host: "legacy.example.test",
+            username: "legacy",
+            remotePath: "/incoming"
+        )
+        job.right = Endpoint(kind: .local)
+        let transfer = ConfigurationTransfer(
+            scope: .jobs,
+            jobs: [job],
+            serverProfiles: [missingProfile],
+            metadataPresets: [],
+            photographers: []
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: ConfigurationTransferCodec.encode(transfer, password: nil)
+            ) as? [String: Any]
+        )
+        object["version"] = 1
+        object.removeValue(forKey: "serverProfiles")
+        let legacyTransfer = try ConfigurationTransferCodec.decode(
+            JSONSerialization.data(withJSONObject: object),
+            password: nil
+        )
+
+        let prepared = try coordinator.prepareImport(legacyTransfer, currentState: emptyState)
+
+        let imported = try XCTUnwrap(prepared.state.jobs.first)
+        XCTAssertNil(imported.left.serverProfileID)
+        XCTAssertEqual(imported.left.host, "legacy.example.test")
+        XCTAssertEqual(imported.left.remotePath, "/incoming")
+        XCTAssertTrue(prepared.state.serverProfiles.isEmpty)
+    }
+
     private var emptyState: ConfigurationTransferState {
         ConfigurationTransferState(jobs: [], metadataPresets: [], photographers: [])
     }

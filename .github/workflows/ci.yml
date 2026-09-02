@@ -1,0 +1,40 @@
+name: Release checks
+
+on:
+  pull_request:
+  push:
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  security-baseline:
+    name: Security baseline
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install security-script prerequisites
+        run: command -v rg >/dev/null || brew install ripgrep
+      - name: Verify dependency security baseline
+        run: Scripts/check-security-baseline.sh
+
+  vendored-ssh-signatures:
+    name: Vendored SSH signature tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run signature regression tests
+        run: swift test --package-path Vendor/swift-nio-ssh --filter NIOSSHSignatureTests
+
+  application-tests:
+    name: Application tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run application test suite
+        run: >-
+          xcodebuild test
+          -project 'Aagedal FTP Sync.xcodeproj'
+          -scheme AagedalFTPSync
+          -destination 'platform=macOS'
+          CODE_SIGNING_ALLOWED=NO

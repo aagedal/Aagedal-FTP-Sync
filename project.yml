@@ -1,4 +1,4 @@
-name: AagedalFTPSync
+name: Aagedal FTP Sync
 options:
   bundleIdPrefix: no.aagedal
   deploymentTarget:
@@ -8,8 +8,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    CURRENT_PROJECT_VERSION: 26
-    MARKETING_VERSION: 2.6.0
+    CURRENT_PROJECT_VERSION: 32
+    MARKETING_VERSION: 2.7.0
     DEVELOPMENT_TEAM: 3R5QGG9DW6
     CODE_SIGN_STYLE: Automatic
     DEAD_CODE_STRIPPING: YES

@@ -9,6 +9,8 @@
 - Reprocess existing metadata for all matching files, one photographer, or one timeline clip from contextual timeline actions.
 - Treat camera RAW files and their generated or existing XMP sidecars as one recoverable cleanup group.
 - Add an opt-in SHA-256 content-integrity check for equal-size, equal-timestamp files, repairing one-way mismatches and reporting two-way mismatches without overwriting either copy.
+- Add reusable FTP, FTPS, and SFTP server profiles and preserve their shared job references in portable configuration packages without exporting Keychain passwords.
+- Add automated CI release checks for the security baseline, vendored SSH signature regressions, and the application test suite.
 
 ## 2.6.0 — 2026-08-30
 

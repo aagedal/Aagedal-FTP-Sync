@@ -33,7 +33,8 @@ struct MetadataProgrammingTransfer: Codable, Equatable, Sendable {
 }
 
 struct ConfigurationTransfer: Codable, Equatable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
+    static let minimumSupportedVersion = 1
     static let formatIdentifier = "aagedal-ftp-sync-configuration"
 
     let format: String
@@ -41,6 +42,7 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
     let scope: ConfigurationTransferScope
     let exportedAt: Date
     let jobs: [SyncJob]
+    let serverProfiles: [ServerProfile]
     let metadataProgramming: [MetadataProgrammingTransfer]
     let metadataPresets: [MetadataPreset]
     let photographers: [PhotographerProfile]
@@ -48,6 +50,7 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
     init(
         scope: ConfigurationTransferScope,
         jobs: [SyncJob],
+        serverProfiles: [ServerProfile] = [],
         metadataPresets: [MetadataPreset],
         photographers: [PhotographerProfile],
         exportedAt: Date = Date()
@@ -59,12 +62,15 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
 
         switch scope {
         case .jobs:
-            self.jobs = jobs.map { $0.portableCopy(includeMetadata: false) }
+            let portableProfiles = Self.portableProfiles(referencedBy: jobs, from: serverProfiles)
+            self.jobs = Self.portableJobs(jobs, using: portableProfiles)
+            self.serverProfiles = portableProfiles
             metadataProgramming = []
             self.metadataPresets = []
             self.photographers = []
         case .metadata:
             self.jobs = []
+            self.serverProfiles = []
             metadataProgramming = jobs.compactMap { job in
                 job.metadataAutomation.map {
                     MetadataProgrammingTransfer(jobID: job.id, jobName: job.name, automation: $0)
@@ -73,7 +79,9 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
             self.metadataPresets = metadataPresets
             self.photographers = photographers
         case .package:
-            self.jobs = jobs.map { $0.portableCopy(includeMetadata: false) }
+            let portableProfiles = Self.portableProfiles(referencedBy: jobs, from: serverProfiles)
+            self.jobs = Self.portableJobs(jobs, using: portableProfiles)
+            self.serverProfiles = portableProfiles
             metadataProgramming = jobs.compactMap { job in
                 job.metadataAutomation.map {
                     MetadataProgrammingTransfer(jobID: job.id, jobName: job.name, automation: $0)
@@ -82,6 +90,73 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
             self.metadataPresets = metadataPresets
             self.photographers = photographers
         }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case format, version, scope, exportedAt, jobs, serverProfiles
+        case metadataProgramming, metadataPresets, photographers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        format = try container.decode(String.self, forKey: .format)
+        version = try container.decode(Int.self, forKey: .version)
+        scope = try container.decode(ConfigurationTransferScope.self, forKey: .scope)
+        exportedAt = try container.decode(Date.self, forKey: .exportedAt)
+        jobs = try container.decode([SyncJob].self, forKey: .jobs)
+        serverProfiles = try container.decodeIfPresent([ServerProfile].self, forKey: .serverProfiles) ?? []
+        metadataProgramming = try container.decode(
+            [MetadataProgrammingTransfer].self,
+            forKey: .metadataProgramming
+        )
+        metadataPresets = try container.decode([MetadataPreset].self, forKey: .metadataPresets)
+        photographers = try container.decode([PhotographerProfile].self, forKey: .photographers)
+    }
+
+    private static func portableProfiles(
+        referencedBy jobs: [SyncJob],
+        from profiles: [ServerProfile]
+    ) -> [ServerProfile] {
+        let referencedIDs = Set(jobs.flatMap { job in
+            [job.left.serverProfileID, job.right.serverProfileID, job.processedFolder?.serverProfileID]
+                .compactMap { $0 }
+        })
+        return profiles
+            .filter { referencedIDs.contains($0.id) }
+            .map { $0.portableCopy() }
+    }
+
+    private static func portableJobs(
+        _ jobs: [SyncJob],
+        using profiles: [ServerProfile]
+    ) -> [SyncJob] {
+        var profilesByID: [UUID: ServerProfile] = [:]
+        for profile in profiles {
+            profilesByID[profile.id] = profile
+        }
+        return jobs.map { job in
+            var portable = job.portableCopy(includeMetadata: false)
+            portable.left = portableEndpoint(portable.left, profilesByID: profilesByID)
+            portable.right = portableEndpoint(portable.right, profilesByID: profilesByID)
+            if let processedFolder = portable.processedFolder {
+                portable.processedFolder = portableEndpoint(
+                    processedFolder,
+                    profilesByID: profilesByID
+                )
+            }
+            return portable
+        }
+    }
+
+    private static func portableEndpoint(
+        _ endpoint: Endpoint,
+        profilesByID: [UUID: ServerProfile]
+    ) -> Endpoint {
+        guard let profileID = endpoint.serverProfileID,
+              let profile = profilesByID[profileID] else {
+            return endpoint
+        }
+        return profile.endpoint(remotePath: endpoint.remotePath)
     }
 }
 
@@ -179,7 +254,8 @@ enum ConfigurationTransferCodec {
             }
             return .encrypted
         case ConfigurationTransfer.formatIdentifier:
-            guard probe.version == ConfigurationTransfer.currentVersion else {
+            guard (ConfigurationTransfer.minimumSupportedVersion ... ConfigurationTransfer.currentVersion)
+                .contains(probe.version) else {
                 throw ConfigurationTransferError.unsupportedVersion(probe.version)
             }
             return .unencrypted
@@ -256,7 +332,8 @@ enum ConfigurationTransferCodec {
         guard transfer.format == ConfigurationTransfer.formatIdentifier else {
             throw ConfigurationTransferError.invalidFormat
         }
-        guard transfer.version == ConfigurationTransfer.currentVersion else {
+        guard (ConfigurationTransfer.minimumSupportedVersion ... ConfigurationTransfer.currentVersion)
+            .contains(transfer.version) else {
             throw ConfigurationTransferError.unsupportedVersion(transfer.version)
         }
         let isConsistent: Bool
@@ -269,11 +346,27 @@ enum ConfigurationTransferCodec {
                 && transfer.photographers.isEmpty
         case .metadata:
             isConsistent = transfer.jobs.isEmpty
+                && transfer.serverProfiles.isEmpty
         case .package:
             isConsistent = !transfer.jobs.isEmpty
                 && transfer.jobs.allSatisfy { $0.metadataAutomation == nil }
         }
-        guard isConsistent else { throw ConfigurationTransferError.inconsistentContents }
+        let profileIDs = transfer.serverProfiles.map(\.id)
+        let referencedProfileIDs = Set(transfer.jobs.flatMap { job in
+            [job.left.serverProfileID, job.right.serverProfileID, job.processedFolder?.serverProfileID]
+                .compactMap { $0 }
+        })
+        let transferredProfileIDs = Set(profileIDs)
+        let profileShapeMatchesVersion = transfer.version == 1
+            ? transfer.serverProfiles.isEmpty
+            : referencedProfileIDs == transferredProfileIDs
+        guard isConsistent,
+              Set(profileIDs).count == profileIDs.count,
+              transferredProfileIDs.isSubset(of: referencedProfileIDs),
+              profileShapeMatchesVersion,
+              transfer.serverProfiles.allSatisfy({ $0.validationMessage == nil }) else {
+            throw ConfigurationTransferError.inconsistentContents
+        }
     }
 
     private static func deriveKey(
@@ -381,6 +474,21 @@ extension SyncJob {
         result.processedFolder = processedFolder?.preparedForImport()
         result.isEnabled = false
         result.startOnAppLaunch = false
+        return result
+    }
+}
+
+extension ServerProfile {
+    func portableCopy() -> ServerProfile {
+        var result = self
+        result.credentialID = UUID().uuidString
+        return result
+    }
+
+    func preparedForImport(id: UUID = UUID(), name: String? = nil) -> ServerProfile {
+        var result = portableCopy()
+        result.id = id
+        result.name = name ?? self.name
         return result
     }
 }

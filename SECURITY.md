@@ -2,13 +2,13 @@
 
 ## Supported release
 
-Security fixes are currently developed for the upcoming 2.6 release. Older builds should be upgraded when 2.6 becomes available.
+Security fixes are currently developed for the upcoming 2.7 release. Older builds should be upgraded when 2.7 becomes available.
 
 Please report a suspected vulnerability privately to the repository owner rather than opening a public issue with exploit details. Include the affected version, protocol, reproduction steps, and any crash report that does not contain credentials or private file contents.
 
 ## Dependency security baseline
 
-The 2.6 source tree deliberately vendors the SSH packages under `Vendor/` because Citadel 0.12.1 requires APIs from the Wellz26 SwiftNIO SSH fork that are not available in Apple's upstream package.
+The 2.7 source tree deliberately vendors the SSH packages under `Vendor/` because Citadel 0.12.1 requires APIs from the Wellz26 SwiftNIO SSH fork that are not available in Apple's upstream package.
 
 | Component | Baseline | Local security treatment |
 | --- | --- | --- |
@@ -42,4 +42,4 @@ The Citadel and SwiftNIO SSH baselines require manual comparison with their upst
 
 The `.aftpsync` extension identifies an Aagedal FTP Sync configuration package; the extension itself is not a security boundary. Encryption is enabled by default but can be explicitly turned off. Encrypted package contents use AES-256-GCM authenticated encryption. A 256-bit key is derived from a user password of at least 12 characters using PBKDF2-HMAC-SHA256 with a random 128-bit salt and 600,000 iterations. Unencrypted packages can expose server addresses, usernames, paths, and editorial metadata, and the export UI warns about this before saving.
 
-Exports deliberately omit passwords stored in Keychain and machine-bound security-scoped folder bookmarks. Imports create disabled jobs with fresh job and credential identifiers, and users must grant folder access and enter server passwords again. The importer rejects oversized files, unsupported or excessive key-derivation parameters, inconsistent package scopes, authentication failures, and malformed contents.
+Exports deliberately omit passwords stored in Keychain and machine-bound security-scoped folder bookmarks. Referenced server profiles are included with fresh profile and credential identifiers so their job relationships remain portable without carrying secrets. Imports create disabled jobs with fresh job and credential identifiers, and users must grant folder access and enter server passwords again. The importer rejects oversized files, unsupported or excessive key-derivation parameters, inconsistent package scopes, authentication failures, and malformed contents.
