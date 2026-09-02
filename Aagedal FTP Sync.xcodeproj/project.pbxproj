@@ -50,6 +50,14 @@
 		C0DEC0040000000000000004 /* SyncEventLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0040000000000000003 /* SyncEventLoggerTests.swift */; };
 		C0DEC0050000000000000002 /* SupportBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0050000000000000001 /* SupportBundle.swift */; };
 		C0DEC0050000000000000004 /* SupportBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0050000000000000003 /* SupportBundleTests.swift */; };
+		C0DEC0060000000000000002 /* MetadataLibraryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0060000000000000001 /* MetadataLibraryCoordinator.swift */; };
+		C0DEC0060000000000000004 /* JobEditingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0060000000000000003 /* JobEditingSession.swift */; };
+		C0DEC0060000000000000006 /* EndpointEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0060000000000000005 /* EndpointEditor.swift */; };
+		C0DEC0060000000000000008 /* MetadataPreviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0060000000000000007 /* MetadataPreviewViews.swift */; };
+		C0DEC006000000000000000A /* MetadataPhotographerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0060000000000000009 /* MetadataPhotographerViews.swift */; };
+		C0DEC006000000000000000C /* MetadataTimelineViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC006000000000000000B /* MetadataTimelineViews.swift */; };
+		C0DEC006000000000000000E /* LaunchAtLoginCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC006000000000000000D /* LaunchAtLoginCoordinator.swift */; };
+		C0DEC0060000000000000010 /* SyncRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC006000000000000000F /* SyncRuntimeSupport.swift */; };
 		9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D12C26DBF0C7188148A3A3B6 /* SyncEngine.swift */; };
 		A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */; };
 		A70C312EEF8E01ED646593F1 /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7C9A9E66272BD20EDEAFC35 /* MetadataAutomation.swift */; };
@@ -119,6 +127,14 @@
 		C0DEC0040000000000000003 /* SyncEventLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEventLoggerTests.swift; sourceTree = "<group>"; };
 		C0DEC0050000000000000001 /* SupportBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundle.swift; sourceTree = "<group>"; };
 		C0DEC0050000000000000003 /* SupportBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundleTests.swift; sourceTree = "<group>"; };
+		C0DEC0060000000000000001 /* MetadataLibraryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataLibraryCoordinator.swift; sourceTree = "<group>"; };
+		C0DEC0060000000000000003 /* JobEditingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobEditingSession.swift; sourceTree = "<group>"; };
+		C0DEC0060000000000000005 /* EndpointEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointEditor.swift; sourceTree = "<group>"; };
+		C0DEC0060000000000000007 /* MetadataPreviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreviewViews.swift; sourceTree = "<group>"; };
+		C0DEC0060000000000000009 /* MetadataPhotographerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPhotographerViews.swift; sourceTree = "<group>"; };
+		C0DEC006000000000000000B /* MetadataTimelineViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataTimelineViews.swift; sourceTree = "<group>"; };
+		C0DEC006000000000000000D /* LaunchAtLoginCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginCoordinator.swift; sourceTree = "<group>"; };
+		C0DEC006000000000000000F /* SyncRuntimeSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncRuntimeSupport.swift; sourceTree = "<group>"; };
 		467206FD7B3D29AB8F5A936D /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
 		4EE6AA9D13A9BB120C5E7450 /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		4F54CBB0D3F7DA297835A0A7 /* JobRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepository.swift; sourceTree = "<group>"; };
@@ -294,12 +310,17 @@
 			children = (
 				02EC1F74EDD6F1B832D4756B /* AboutView.swift */,
 				BB7F4BDFAD79EBFE76AAD0CC /* ConfigurationTransferView.swift */,
+				C0DEC0060000000000000005 /* EndpointEditor.swift */,
 				B1F77C1BCC8CDA6038939531 /* JobDetailEditor.swift */,
+				C0DEC0060000000000000003 /* JobEditingSession.swift */,
 				FE273065A756601A22D84D27 /* JobsWindowView.swift */,
 				113A0B3ADC59BFE97A673EA5 /* MenuBarView.swift */,
 				D5AF6BCFE2CFB96A935039B7 /* MetadataAuditTrailView.swift */,
+				C0DEC0060000000000000009 /* MetadataPhotographerViews.swift */,
+				C0DEC0060000000000000007 /* MetadataPreviewViews.swift */,
 				C0DEC0010000000000000001 /* MetadataProgrammingCoordinator.swift */,
 				3A91914BD1AA4B29B45D4B12 /* MetadataProgrammingView.swift */,
+				C0DEC006000000000000000B /* MetadataTimelineViews.swift */,
 				DFD7C0B7D522D2DE507BA375 /* PhotographerSettingsView.swift */,
 			);
 			path = Views;
@@ -343,7 +364,10 @@
 			children = (
 				0F52E20A9F7F6EA39DCDD0BD /* AagedalFTPSyncApp.swift */,
 				F26F9F2F58732670EB2AFEA1 /* AppStore.swift */,
+				C0DEC006000000000000000D /* LaunchAtLoginCoordinator.swift */,
+				C0DEC0060000000000000001 /* MetadataLibraryCoordinator.swift */,
 				C0DEC0020000000000000005 /* SyncScheduler.swift */,
+				C0DEC006000000000000000F /* SyncRuntimeSupport.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -482,14 +506,17 @@
 				C0DEC0020000000000000004 /* ConfigurationTransferCoordinator.swift in Sources */,
 				4980FD85B29C37C25B81D518 /* ConfigurationTransferView.swift in Sources */,
 				321D42AE4C4597EED466F6E5 /* Endpoint.swift in Sources */,
+				C0DEC0060000000000000006 /* EndpointEditor.swift in Sources */,
 				744593AB9031434E395773DE /* EndpointSession.swift in Sources */,
 				DB23A9DE82ED66DAF6941E4F /* FTPConnection.swift in Sources */,
 				E53F0414C64324DD591A8565 /* FTPEndpointSession.swift in Sources */,
 				1382D24F531BFD46E1664DBF /* FolderBookmark.swift in Sources */,
 				01913F955C8613902226012F /* JobDetailEditor.swift in Sources */,
+				C0DEC0060000000000000004 /* JobEditingSession.swift in Sources */,
 				68EB7CC627EBAFDF35AB6B5B /* JobRepository.swift in Sources */,
 				B6D05E27795ADA53187E0B2A /* JobsWindowView.swift in Sources */,
 				66D659A9283970C862F17B6F /* KeychainStore.swift in Sources */,
+				C0DEC006000000000000000E /* LaunchAtLoginCoordinator.swift in Sources */,
 				67B74AE97D4B2424175EF24F /* LocalEndpointSession.swift in Sources */,
 				6C02AAB9B7076B51AA0763DD /* MenuBarView.swift in Sources */,
 				1DDF3D25630A7918F2C80ED8 /* MetadataAudit.swift in Sources */,
@@ -499,8 +526,12 @@
 				B01A7C900948FDDA2383CC94 /* MetadataPreset.swift in Sources */,
 				4A8ED69FC5E89F620E4C7B8B /* MetadataPresetRepository.swift in Sources */,
 				A5C4820E525BB7A25A2B2BAC /* MetadataPreview.swift in Sources */,
+				C0DEC0060000000000000008 /* MetadataPreviewViews.swift in Sources */,
+				C0DEC006000000000000000A /* MetadataPhotographerViews.swift in Sources */,
+				C0DEC0060000000000000002 /* MetadataLibraryCoordinator.swift in Sources */,
 				C0DEC0010000000000000002 /* MetadataProgrammingCoordinator.swift in Sources */,
 				D98A73D2A882C307EEF7BB8B /* MetadataProgrammingView.swift in Sources */,
+				C0DEC006000000000000000C /* MetadataTimelineViews.swift in Sources */,
 				3710B1ACB6F8926631BD9AEF /* MetadataWriter.swift in Sources */,
 				F1FE64BEF3B4B67CC678E60E /* PathSafety.swift in Sources */,
 				FBE2E72C3D51ABCC3F05B457 /* PhotographerProfileRepository.swift in Sources */,
@@ -515,6 +546,7 @@
 				9C2B5D56DE83713CA0DADCE1 /* SyncEngine.swift in Sources */,
 				272053804C39268361FC3A77 /* SyncJob.swift in Sources */,
 				C0DEC0020000000000000006 /* SyncScheduler.swift in Sources */,
+				C0DEC0060000000000000010 /* SyncRuntimeSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

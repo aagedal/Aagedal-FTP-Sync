@@ -3,157 +3,11 @@ import Combine
 import Foundation
 import ServiceManagement
 
-struct JobTransferTotals: Sendable {
-    private var cumulativeFileCounts: [UUID: Int] = [:]
-    private var latestSessionFileCounts: [UUID: Int] = [:]
-
-    mutating func record(jobID: UUID, fileCount: Int) {
-        latestSessionFileCounts[jobID] = fileCount
-        guard fileCount > 0 else { return }
-        cumulativeFileCounts[jobID, default: 0] += fileCount
-    }
-
-    func fileCount(jobID: UUID, latestSessionOnly: Bool) -> Int {
-        let counts = latestSessionOnly ? latestSessionFileCounts : cumulativeFileCounts
-        return counts[jobID, default: 0]
-    }
-
-    mutating func reset(jobID: UUID) {
-        cumulativeFileCounts[jobID] = 0
-        latestSessionFileCounts[jobID] = 0
-    }
-
-    mutating func remove(jobID: UUID) {
-        cumulativeFileCounts[jobID] = nil
-        latestSessionFileCounts[jobID] = nil
-    }
-}
-
 enum MetadataReprocessPhase: Equatable, Sendable {
     case idle
     case running
     case succeeded(Date, MetadataReprocessResult)
     case failed(String)
-}
-
-struct SyncConcurrencyPolicy: Equatable, Sendable {
-    static let appDefault = SyncConcurrencyPolicy(globalLimit: 2, perHostLimit: 1)
-
-    let globalLimit: Int
-    let perHostLimit: Int?
-
-    init(globalLimit: Int, perHostLimit: Int?) {
-        precondition(globalLimit > 0)
-        precondition(perHostLimit == nil || perHostLimit! > 0)
-        self.globalLimit = globalLimit
-        self.perHostLimit = perHostLimit
-    }
-}
-
-struct SyncRemoteHost: Hashable, Sendable {
-    let host: String
-    let port: Int
-
-    init?(endpoint: Endpoint) {
-        guard endpoint.kind.isRemote else { return nil }
-        host = endpoint.host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        port = endpoint.port
-    }
-
-    static func hosts(for job: SyncJob) -> Set<SyncRemoteHost> {
-        Set([job.left, job.right, job.processedFolder].compactMap { endpoint in
-            endpoint.flatMap(SyncRemoteHost.init(endpoint:))
-        })
-    }
-}
-
-struct SyncConcurrencySnapshot: Equatable, Sendable {
-    let activeCount: Int
-    let pendingCount: Int
-}
-
-actor SyncConcurrencyController {
-    private struct PendingRequest {
-        let id: UUID
-        let hosts: Set<SyncRemoteHost>
-        let continuation: CheckedContinuation<UUID, any Error>
-    }
-
-    private let policy: SyncConcurrencyPolicy
-    private var activeLeases: [UUID: Set<SyncRemoteHost>] = [:]
-    private var activeHostCounts: [SyncRemoteHost: Int] = [:]
-    private var pendingRequests: [PendingRequest] = []
-
-    init(policy: SyncConcurrencyPolicy = .appDefault) {
-        self.policy = policy
-    }
-
-    func acquire(hosts: Set<SyncRemoteHost>) async throws -> UUID {
-        let requestID = UUID()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                guard !Task.isCancelled else {
-                    continuation.resume(throwing: CancellationError())
-                    return
-                }
-                pendingRequests.append(PendingRequest(
-                    id: requestID,
-                    hosts: hosts,
-                    continuation: continuation
-                ))
-                admitAvailableRequests()
-            }
-        } onCancel: {
-            Task { await self.cancelPendingRequest(requestID) }
-        }
-    }
-
-    func release(_ leaseID: UUID) {
-        guard let hosts = activeLeases.removeValue(forKey: leaseID) else { return }
-        for host in hosts {
-            let remaining = activeHostCounts[host, default: 1] - 1
-            activeHostCounts[host] = remaining > 0 ? remaining : nil
-        }
-        admitAvailableRequests()
-    }
-
-    func snapshot() -> SyncConcurrencySnapshot {
-        SyncConcurrencySnapshot(
-            activeCount: activeLeases.count,
-            pendingCount: pendingRequests.count
-        )
-    }
-
-    private func cancelPendingRequest(_ requestID: UUID) {
-        guard let index = pendingRequests.firstIndex(where: { $0.id == requestID }) else { return }
-        let request = pendingRequests.remove(at: index)
-        request.continuation.resume(throwing: CancellationError())
-        admitAvailableRequests()
-    }
-
-    private func admitAvailableRequests() {
-        while activeLeases.count < policy.globalLimit,
-              let index = pendingRequests.firstIndex(where: { canAdmit($0.hosts) }) {
-            let request = pendingRequests.remove(at: index)
-            activeLeases[request.id] = request.hosts
-            for host in request.hosts {
-                activeHostCounts[host, default: 0] += 1
-            }
-            request.continuation.resume(returning: request.id)
-        }
-    }
-
-    private func canAdmit(_ hosts: Set<SyncRemoteHost>) -> Bool {
-        guard activeLeases.count < policy.globalLimit else { return false }
-        guard let perHostLimit = policy.perHostLimit else { return true }
-        return hosts.allSatisfy { activeHostCounts[$0, default: 0] < perHostLimit }
-    }
-}
-
-struct PhotographerLibraryImportResult: Equatable, Sendable {
-    let addedCount: Int
-    let updatedCount: Int
-    let unchangedCount: Int
 }
 
 @MainActor
@@ -173,6 +27,8 @@ final class AppStore: ObservableObject {
 
     private let persistenceCoordinator: AppPersistenceCoordinator
     private let configurationTransferCoordinator = ConfigurationTransferCoordinator()
+    private let metadataLibraryCoordinator: MetadataLibraryCoordinator
+    private let launchAtLoginCoordinator = LaunchAtLoginCoordinator()
     private let sourceSignatureRepository: SourceSignatureRepository
     private let jobResetService: JobResetService
     private let engine: SyncEngine
@@ -206,6 +62,9 @@ final class AppStore: ObservableObject {
             keychain: keychain
         )
         self.persistenceCoordinator = persistenceCoordinator
+        metadataLibraryCoordinator = MetadataLibraryCoordinator(
+            persistenceCoordinator: persistenceCoordinator
+        )
         self.sourceSignatureRepository = sourceSignatureRepository
         self.jobResetService = jobResetService
         self.engine = engine ?? SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
@@ -318,57 +177,28 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
-        guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
-        var normalizedAutomation = automation
-        normalizedAutomation.photographers = automation.photographers.map { profile in
-            var normalized = profile.usingCreatorAsPhotographerName()
-            normalized.filenamePrefix = normalized.formattedFilenamePrefixes
-            return normalized
-        }
-        var updatedJob = jobs[index]
-        updatedJob.metadataAutomation = normalizedAutomation
-        if let message = updatedJob.validationMessage {
-            alertMessage = message
-            return false
-        }
-
-        var updatedJobs = jobs
-        updatedJobs[index] = updatedJob
-        let updatedPhotographerLibrary = mergedPhotographerLibrary(
-            photographerLibrary,
-            with: normalizedAutomation.photographers
-        )
-        if let duplicate = duplicateFilenameInitials(in: updatedPhotographerLibrary) {
-            alertMessage = "The filename initials \(duplicate) are already used by another photographer."
-            return false
-        }
         do {
-            try persistenceCoordinator.saveJobsAndPhotographers(
-                previousJobs: jobs,
-                previousPhotographers: photographerLibrary,
-                updatedJobs: updatedJobs,
-                updatedPhotographers: updatedPhotographerLibrary
-            )
-            photographerLibrary = updatedPhotographerLibrary
-            jobs = updatedJobs
+            guard let updated = try metadataLibraryCoordinator.saveAutomation(
+                automation,
+                for: jobID,
+                state: metadataLibraryState
+            ) else { return false }
+            jobs = updated.jobs
+            photographerLibrary = updated.photographers
             return true
         } catch {
-            alertMessage = "Metadata programming could not be saved: \(error.localizedDescription)"
+            alertMessage = error.localizedDescription
             return false
         }
     }
 
     func photographerUsageCount(_ photographerID: UUID) -> Int {
-        jobs.reduce(into: 0) { count, job in
-            if job.metadataAutomation?.photographers.contains(where: { $0.id == photographerID }) == true {
-                count += 1
-            }
-        }
+        metadataLibraryCoordinator.usageCount(for: photographerID, in: jobs)
     }
 
     func photographerLibraryExportData() -> Data? {
         do {
-            return try PhotographerLibraryTransferCodec.encode(photographerLibrary)
+            return try metadataLibraryCoordinator.exportData(for: photographerLibrary)
         } catch {
             alertMessage = "The photographer list could not be exported: \(error.localizedDescription)"
             return nil
@@ -378,8 +208,13 @@ final class AppStore: ObservableObject {
     @discardableResult
     func importPhotographerLibrary(from data: Data) -> PhotographerLibraryImportResult? {
         do {
-            let importedProfiles = try PhotographerLibraryTransferCodec.decode(data)
-            return try importPhotographerProfiles(importedProfiles)
+            let importResult = try metadataLibraryCoordinator.importLibrary(
+                from: data,
+                state: metadataLibraryState
+            )
+            jobs = importResult.state.jobs
+            photographerLibrary = importResult.state.photographers
+            return importResult.result
         } catch {
             alertMessage = "The photographers could not be imported: \(error.localizedDescription)"
             return nil
@@ -460,191 +295,34 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func savePhotographerProfile(_ profile: PhotographerProfile) -> Bool {
-        let normalizedProfile = profile.usingCreatorAsPhotographerName()
-        let trimmedName = normalizedProfile.photographerName
-        guard !trimmedName.isEmpty else {
-            alertMessage = "Give the photographer a name."
-            return false
-        }
-        guard !normalizedProfile.normalizedPrefixes.isEmpty else {
-            alertMessage = "Give \(trimmedName) filename initials."
-            return false
-        }
-        let otherPrefixes = Set(photographerLibrary
-            .filter { $0.id != normalizedProfile.id }
-            .flatMap(\.normalizedPrefixes))
-        if let duplicate = normalizedProfile.normalizedPrefixes.first(where: otherPrefixes.contains) {
-            alertMessage = "The filename initials \(duplicate) are already used by another photographer."
-            return false
-        }
-
-        var updatedProfile = normalizedProfile
-        updatedProfile.filenamePrefix = normalizedProfile.formattedFilenamePrefixes
-        var updatedLibrary = photographerLibrary
-        if let index = updatedLibrary.firstIndex(where: { $0.id == profile.id }) {
-            updatedLibrary[index] = updatedProfile
-        } else {
-            updatedLibrary.append(updatedProfile)
-        }
-        updatedLibrary.sort {
-            $0.photographerName.localizedCaseInsensitiveCompare($1.photographerName) == .orderedAscending
-        }
-
-        var updatedJobs = jobs
-        for jobIndex in updatedJobs.indices {
-            guard var automation = updatedJobs[jobIndex].metadataAutomation,
-                  let photographerIndex = automation.photographers.firstIndex(where: { $0.id == profile.id }) else {
-                continue
-            }
-            automation.photographers[photographerIndex] = updatedProfile
-            if let message = automation.validationMessage {
-                alertMessage = "\(updatedJobs[jobIndex].name): \(message)"
-                return false
-            }
-            updatedJobs[jobIndex].metadataAutomation = automation
-        }
-
         do {
-            try persistenceCoordinator.saveJobsAndPhotographers(
-                previousJobs: jobs,
-                previousPhotographers: photographerLibrary,
-                updatedJobs: updatedJobs,
-                updatedPhotographers: updatedLibrary
+            let updated = try metadataLibraryCoordinator.saveProfile(
+                profile,
+                state: metadataLibraryState
             )
-            photographerLibrary = updatedLibrary
-            jobs = updatedJobs
+            jobs = updated.jobs
+            photographerLibrary = updated.photographers
             return true
         } catch {
-            alertMessage = "The photographer could not be saved: \(error.localizedDescription)"
+            alertMessage = error.localizedDescription
             return false
         }
     }
 
     @discardableResult
     func removePhotographerProfile(_ photographerID: UUID) -> Bool {
-        let usageCount = photographerUsageCount(photographerID)
-        guard usageCount == 0 else {
-            let jobsDescription = usageCount == 1 ? "1 sync job" : "\(usageCount) sync jobs"
-            alertMessage = "Remove this photographer from \(jobsDescription) before deleting the shared profile."
-            return false
-        }
-        let updatedLibrary = photographerLibrary.filter { $0.id != photographerID }
-        guard updatedLibrary.count != photographerLibrary.count else { return true }
         do {
-            try persistenceCoordinator.savePhotographers(updatedLibrary)
-            photographerLibrary = updatedLibrary
+            let updated = try metadataLibraryCoordinator.removeProfile(
+                photographerID,
+                state: metadataLibraryState
+            )
+            jobs = updated.jobs
+            photographerLibrary = updated.photographers
             return true
         } catch {
-            alertMessage = "The photographer could not be removed: \(error.localizedDescription)"
+            alertMessage = error.localizedDescription
             return false
         }
-    }
-
-    private func importPhotographerProfiles(
-        _ importedProfiles: [PhotographerProfile]
-    ) throws -> PhotographerLibraryImportResult {
-        var seenIDs = Set<UUID>()
-        var normalizedProfiles: [PhotographerProfile] = []
-        normalizedProfiles.reserveCapacity(importedProfiles.count)
-
-        for profile in importedProfiles {
-            guard seenIDs.insert(profile.id).inserted else {
-                throw AppError.invalidConfiguration("The imported list contains the same photographer more than once.")
-            }
-            var normalized = profile.usingCreatorAsPhotographerName()
-            let trimmedName = normalized.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedName.isEmpty else {
-                throw AppError.invalidConfiguration("An imported photographer does not have a name.")
-            }
-            guard !normalized.normalizedPrefixes.isEmpty else {
-                throw AppError.invalidConfiguration("Give \(trimmedName) filename initials before importing this list.")
-            }
-            normalized.name = trimmedName
-            normalized.creator = trimmedName
-            normalized.filenamePrefix = normalized.formattedFilenamePrefixes
-            normalizedProfiles.append(normalized)
-        }
-
-        let existingByID = Dictionary(uniqueKeysWithValues: photographerLibrary.map { ($0.id, $0) })
-        var mergedByID = existingByID
-        for profile in normalizedProfiles {
-            mergedByID[profile.id] = profile
-        }
-        let updatedLibrary = mergedByID.values.sorted {
-            $0.photographerName.localizedCaseInsensitiveCompare($1.photographerName) == .orderedAscending
-        }
-        if let duplicate = duplicateFilenameInitials(in: updatedLibrary) {
-            throw AppError.invalidConfiguration("The filename initials \(duplicate) are already used by another photographer.")
-        }
-
-        let importedByID = Dictionary(uniqueKeysWithValues: normalizedProfiles.map { ($0.id, $0) })
-        var updatedJobs = jobs
-        for jobIndex in updatedJobs.indices {
-            guard var automation = updatedJobs[jobIndex].metadataAutomation else { continue }
-            var changed = false
-            for photographerIndex in automation.photographers.indices {
-                let photographerID = automation.photographers[photographerIndex].id
-                guard let imported = importedByID[photographerID] else { continue }
-                automation.photographers[photographerIndex] = imported
-                changed = true
-            }
-            guard changed else { continue }
-            if let message = automation.validationMessage {
-                throw AppError.invalidConfiguration("\(updatedJobs[jobIndex].name): \(message)")
-            }
-            updatedJobs[jobIndex].metadataAutomation = automation
-        }
-
-        try persistenceCoordinator.saveJobsAndPhotographers(
-            previousJobs: jobs,
-            previousPhotographers: photographerLibrary,
-            updatedJobs: updatedJobs,
-            updatedPhotographers: updatedLibrary
-        )
-        photographerLibrary = updatedLibrary
-        jobs = updatedJobs
-
-        let addedCount = normalizedProfiles.filter { existingByID[$0.id] == nil }.count
-        let updatedCount = normalizedProfiles.filter {
-            guard let existing = existingByID[$0.id] else { return false }
-            return existing != $0
-        }.count
-        return PhotographerLibraryImportResult(
-            addedCount: addedCount,
-            updatedCount: updatedCount,
-            unchangedCount: normalizedProfiles.count - addedCount - updatedCount
-        )
-    }
-
-    private func mergedPhotographerLibrary(
-        _ existing: [PhotographerProfile],
-        with profiles: [PhotographerProfile]
-    ) -> [PhotographerProfile] {
-        var merged = existing
-        for profile in profiles where !profile.photographerName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !profile.normalizedPrefixes.isEmpty {
-            if let index = merged.firstIndex(where: { $0.id == profile.id }) {
-                merged[index] = profile
-            } else {
-                merged.append(profile)
-            }
-        }
-        return merged.sorted {
-            $0.photographerName.localizedCaseInsensitiveCompare($1.photographerName) == .orderedAscending
-        }
-    }
-
-    private func duplicateFilenameInitials(in profiles: [PhotographerProfile]) -> String? {
-        var owners: [String: UUID] = [:]
-        for profile in profiles {
-            for prefix in profile.normalizedPrefixes {
-                if let owner = owners[prefix], owner != profile.id {
-                    return prefix
-                }
-                owners[prefix] = profile.id
-            }
-        }
-        return nil
     }
 
     @discardableResult
@@ -856,15 +534,8 @@ final class AppStore: ObservableObject {
     }
 
     func setLaunchAtLoginEnabled(_ enabled: Bool) {
-        let service = SMAppService.mainApp
         do {
-            if enabled {
-                if service.status == .notRegistered || service.status == .notFound {
-                    try service.register()
-                }
-            } else if service.status != .notRegistered {
-                try service.unregister()
-            }
+            try launchAtLoginCoordinator.setEnabled(enabled)
         } catch {
             alertMessage = "Launch at Login could not be \(enabled ? "enabled" : "disabled"): \(error.localizedDescription)"
         }
@@ -872,11 +543,11 @@ final class AppStore: ObservableObject {
     }
 
     func refreshLaunchAtLoginStatus() {
-        launchAtLoginStatus = SMAppService.mainApp.status
+        launchAtLoginStatus = launchAtLoginCoordinator.status
     }
 
     func openLoginItemsSettings() {
-        SMAppService.openSystemSettingsLoginItems()
+        launchAtLoginCoordinator.openSettings()
     }
 
     func startAll() {
@@ -1090,6 +761,10 @@ final class AppStore: ObservableObject {
             metadataAuditEntries: metadataAuditEntries,
             syncFailureEntries: syncFailureEntries
         )
+    }
+
+    private var metadataLibraryState: MetadataLibraryState {
+        MetadataLibraryState(jobs: jobs, photographers: photographerLibrary)
     }
 
     private var currentConfigurationTransferState: ConfigurationTransferState {
