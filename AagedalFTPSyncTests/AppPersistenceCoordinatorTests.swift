@@ -376,6 +376,77 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
     }
 
+    func testDuplicateServerProfileCopiesConnectionAndPasswordUnderIndependentIdentities() throws {
+        let credentialID = "shared-profile-credential"
+        let keychain = TestKeychain(values: [credentialID: "saved-password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "profile-duplicate", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Picture desk",
+            kind: .sftp,
+            host: "pictures.example.com",
+            port: 2222,
+            username: "pictures",
+            credentialID: credentialID,
+            hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        var job = remoteJob(leftCredentialID: credentialID)
+        job.left = profile.endpoint(remotePath: "/incoming")
+        job.right = .local
+        try fixture.serverProfileRepository.save([profile])
+        try fixture.jobRepository.save([job])
+
+        let result = try fixture.coordinator.duplicateServerProfile(
+            profileID: profile.id,
+            jobs: [job],
+            previousProfiles: [profile]
+        )
+
+        let duplicate = result.savedProfile
+        XCTAssertEqual(duplicate.name, "Picture desk Copy")
+        XCTAssertNotEqual(duplicate.id, profile.id)
+        XCTAssertNotEqual(duplicate.credentialID, profile.credentialID)
+        XCTAssertEqual(duplicate.kind, profile.kind)
+        XCTAssertEqual(duplicate.host, profile.host)
+        XCTAssertEqual(duplicate.port, profile.port)
+        XCTAssertEqual(duplicate.username, profile.username)
+        XCTAssertEqual(duplicate.hostKeyFingerprint, profile.hostKeyFingerprint)
+        XCTAssertEqual(keychain.value(for: profile.credentialID), "saved-password")
+        XCTAssertEqual(keychain.value(for: duplicate.credentialID), "saved-password")
+        XCTAssertEqual(result.jobs, [job])
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), result.profiles)
+        XCTAssertEqual(try fixture.jobRepository.load(), [job])
+        XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
+    }
+
+    func testDuplicateServerProfileKeychainFailureLeavesOriginalStateUnchanged() throws {
+        let credentialID = "duplicate-source-credential"
+        let keychain = TestKeychain(
+            values: [credentialID: "saved-password"],
+            failWriteNumber: 1
+        )
+        let fixture = try PersistenceCoordinatorFixture(prefix: "profile-duplicate-failure", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Picture desk",
+            kind: .ftps,
+            host: "pictures.example.com",
+            username: "pictures",
+            credentialID: credentialID
+        )
+        try fixture.serverProfileRepository.save([profile])
+
+        XCTAssertThrowsError(try fixture.coordinator.duplicateServerProfile(
+            profileID: profile.id,
+            jobs: [],
+            previousProfiles: [profile]
+        ))
+
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), [profile])
+        XCTAssertEqual(keychain.valuesSnapshot(), [credentialID: "saved-password"])
+        XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
+    }
+
     func testReferencedServerProfileCannotBeDeleted() throws {
         let credentialID = "referenced-server-credential"
         let keychain = TestKeychain(values: [credentialID: "saved-password"])

@@ -21,6 +21,12 @@ struct ServerSettingsView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Add Server")
+                    Button(action: duplicateProfile) {
+                        Image(systemName: "plus.square.on.square")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(selectedProfile == nil || hasUnsavedChanges || credentialLoadError != nil)
+                    .help("Duplicate Server")
                     Button(action: requestDeletion) {
                         Image(systemName: "minus")
                     }
@@ -288,6 +294,15 @@ struct ServerSettingsView: View {
         guard let draft, store.saveServerProfile(draft, password: password) else { return }
         isNewProfile = false
         self.draft = store.serverProfiles.first { $0.id == draft.id }
+        loadSelectedProfile()
+    }
+
+    private func duplicateProfile() {
+        guard let selectedProfile,
+              let duplicate = store.duplicateServerProfile(selectedProfile.id) else { return }
+        isNewProfile = false
+        selectedProfileID = duplicate.id
+        draft = duplicate
         loadSelectedProfile()
     }
 

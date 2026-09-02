@@ -61,6 +61,14 @@ enum ServerProfileRemovalError: LocalizedError, Equatable {
     }
 }
 
+enum ServerProfileDuplicationError: LocalizedError, Equatable {
+    case missingSource
+
+    var errorDescription: String? {
+        "The server profile to duplicate is no longer available."
+    }
+}
+
 private struct AppPersistenceTransactionError: LocalizedError {
     let operation: Error
     let rollback: Error
@@ -487,6 +495,24 @@ final class AppPersistenceCoordinator {
             profiles: updatedProfiles,
             savedProfile: savedProfile,
             cleanupWarnings: cleanupWarnings
+        )
+    }
+
+    func duplicateServerProfile(
+        profileID: UUID,
+        jobs: [SyncJob],
+        previousProfiles: [ServerProfile]
+    ) throws -> CredentialedServerProfileSaveResult {
+        guard let source = previousProfiles.first(where: { $0.id == profileID }) else {
+            throw ServerProfileDuplicationError.missingSource
+        }
+
+        let password = try password(forCredentialID: source.credentialID) ?? ""
+        return try saveServerProfile(
+            previousJobs: jobs,
+            previousProfiles: previousProfiles,
+            draftProfile: source.independentCopy(existingProfiles: previousProfiles),
+            password: password
         )
     }
 

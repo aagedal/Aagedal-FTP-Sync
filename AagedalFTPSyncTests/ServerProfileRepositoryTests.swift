@@ -100,6 +100,30 @@ final class ServerProfileRepositoryTests: XCTestCase {
         XCTAssertEqual(endpoint.serverProfileID, profile.id)
     }
 
+    func testIndependentCopyUsesFreshIdentitiesAndCollisionSafeName() {
+        let profile = ServerProfile(
+            name: "Picture Desk",
+            kind: .sftp,
+            host: "sftp.example.test",
+            port: 2222,
+            username: "desk",
+            credentialID: "shared-credential",
+            hostKeyFingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        )
+        let firstCopy = ServerProfile(name: "picture desk copy", host: "copy.example.test", username: "copy")
+
+        let duplicate = profile.independentCopy(existingProfiles: [profile, firstCopy])
+
+        XCTAssertEqual(duplicate.name, "Picture Desk Copy 2")
+        XCTAssertNotEqual(duplicate.id, profile.id)
+        XCTAssertNotEqual(duplicate.credentialID, profile.credentialID)
+        XCTAssertEqual(duplicate.kind, profile.kind)
+        XCTAssertEqual(duplicate.host, profile.host)
+        XCTAssertEqual(duplicate.port, profile.port)
+        XCTAssertEqual(duplicate.username, profile.username)
+        XCTAssertEqual(duplicate.hostKeyFingerprint, profile.hostKeyFingerprint)
+    }
+
     func testJobsResolveSharedConnectionSettingsWhileKeepingIndependentPaths() throws {
         let profile = ServerProfile(
             name: "News SFTP",

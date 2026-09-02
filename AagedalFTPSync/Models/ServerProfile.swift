@@ -98,6 +98,29 @@ struct ServerProfileMigrationResult: Equatable, Sendable {
 }
 
 extension ServerProfile {
+    /// Creates a connection-equivalent profile with independent persistence
+    /// and Keychain identities. The saved password is copied transactionally
+    /// by `AppPersistenceCoordinator` rather than shared by identifier.
+    func independentCopy(existingProfiles: [ServerProfile]) -> ServerProfile {
+        let baseName = "\(name) Copy"
+        let usedNames = Set(existingProfiles.map { Self.foldedName($0.name) })
+        var candidate = baseName
+        var suffix = 2
+        while usedNames.contains(Self.foldedName(candidate)) {
+            candidate = "\(baseName) \(suffix)"
+            suffix += 1
+        }
+
+        return ServerProfile(
+            name: candidate,
+            kind: kind,
+            host: host,
+            port: port,
+            username: username,
+            hostKeyFingerprint: hostKeyFingerprint
+        )
+    }
+
     /// Converts legacy remote endpoints into references without moving or
     /// rewriting their existing Keychain credentials. Endpoints share a
     /// profile only when every connection setting, including the credential

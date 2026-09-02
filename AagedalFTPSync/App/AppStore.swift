@@ -203,6 +203,26 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
+    func duplicateServerProfile(_ profileID: UUID) -> ServerProfile? {
+        do {
+            let result = try persistenceCoordinator.duplicateServerProfile(
+                profileID: profileID,
+                jobs: jobs,
+                previousProfiles: serverProfiles
+            )
+            jobs = result.jobs
+            serverProfiles = result.profiles
+            for warning in result.cleanupWarnings {
+                appendAlert("An obsolete saved password could not be removed: \(warning)")
+            }
+            return result.savedProfile
+        } catch {
+            alertMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    @discardableResult
     func removeServerProfile(_ profileID: UUID) -> Bool {
         do {
             let result = try persistenceCoordinator.removeServerProfile(
