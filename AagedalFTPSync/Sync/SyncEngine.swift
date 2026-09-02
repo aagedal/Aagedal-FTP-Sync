@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum MetadataReprocessScope: Equatable, Sendable {
@@ -1143,26 +1144,41 @@ struct SyncEngine: Sendable {
         let effectiveDestinationFiles = destinationFiles.merging(earlySnapshot.destinationFiles) {
             _, earlyFile in earlyFile
         }
-        let preliminaryCandidates = sourceFiles.values
-            .filter { job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt) }
-            .filter { file in
-                guard let earlySignature = earlySnapshot.signatures[file.relativePath] else { return true }
-                return !earlySignature.matches(file, timestampTolerance: tolerance)
+        var preliminaryCandidates: [SyncFile] = []
+        for file in sourceFiles.values {
+            guard job.filter.includes(path: file.relativePath, modifiedAt: file.modifiedAt) else { continue }
+            if let earlySignature = earlySnapshot.signatures[file.relativePath],
+               earlySignature.matches(file, timestampTolerance: tolerance) {
+                continue
             }
-            .filter { file in
-                let willRewriteMetadata = job.metadataAutomation?
-                    .matchesPhotographer(relativePath: file.relativePath) == true
-                    && !MetadataWriter.usesXMPSidecar(for: file.relativePath)
-                let destinationNeedsTransfer = needsTransfer(
+            let willRewriteMetadata = job.metadataAutomation?
+                .matchesPhotographer(relativePath: file.relativePath) == true
+                && !MetadataWriter.usesXMPSidecar(for: file.relativePath)
+            let destinationFile = effectiveDestinationFiles[file.relativePath]
+            var destinationNeedsTransfer = needsTransfer(
+                file,
+                destinationFile,
+                verifySize: job.verifyFileSizes,
+                metadataMayRewriteDestination: willRewriteMetadata,
+                savedSourceSignature: savedSignatures[file.relativePath]
+            )
+            if !destinationNeedsTransfer,
+               job.verifiesMatchingFileContents,
+               !willRewriteMetadata,
+               let destinationFile,
+               hasMatchingSizeAndTimestamp(file, destinationFile) {
+                destinationNeedsTransfer = !(try await contentsMatch(
                     file,
-                    effectiveDestinationFiles[file.relativePath],
-                    verifySize: job.verifyFileSizes,
-                    metadataMayRewriteDestination: willRewriteMetadata,
-                    savedSourceSignature: savedSignatures[file.relativePath]
-                )
-                return destinationNeedsTransfer
-                    || (processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation))
+                    in: source,
+                    destinationFile,
+                    in: destination
+                ))
             }
+            if destinationNeedsTransfer
+                || (processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation)) {
+                preliminaryCandidates.append(file)
+            }
+        }
         let handledSourceSidecars = Set(preliminaryCandidates.compactMap { file -> String? in
             guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return nil }
             let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
@@ -1364,6 +1380,12 @@ struct SyncEngine: Sendable {
                     // Equal timestamps with different sizes are ambiguous. Keep both by refusing to overwrite.
                     conflicts.append(path)
                     continue
+                } else if job.verifiesMatchingFileContents,
+                          hasMatchingSizeAndTimestamp(leftFile, rightFile),
+                          !(try await contentsMatch(leftFile, in: left, rightFile, in: right)) {
+                    // Equal metadata with different content is also ambiguous in a two-way job.
+                    conflicts.append(path)
+                    continue
                 }
             default:
                 continue
@@ -1431,6 +1453,52 @@ struct SyncEngine: Sendable {
         // Existing jobs have no saved signatures yet. A single safe bootstrap
         // transfer records the original source size before future comparisons.
         return source.size != destination.size
+    }
+
+    private func hasMatchingSizeAndTimestamp(_ first: SyncFile, _ second: SyncFile) -> Bool {
+        first.size == second.size
+            && abs(first.modifiedAt.timeIntervalSince(second.modifiedAt)) <= tolerance
+    }
+
+    private func contentsMatch(
+        _ first: SyncFile,
+        in firstSession: any EndpointSession,
+        _ second: SyncFile,
+        in secondSession: any EndpointSession
+    ) async throws -> Bool {
+        let firstURL = try makeTemporaryURL(for: first)
+        let secondURL = try makeTemporaryURL(for: second)
+        defer { try? FileManager.default.removeItem(at: firstURL) }
+        defer { try? FileManager.default.removeItem(at: secondURL) }
+
+        do {
+            try Task.checkCancellation()
+            try await firstSession.exportFile(first, to: firstURL)
+            let firstDigest = try contentDigest(at: firstURL)
+            try? FileManager.default.removeItem(at: firstURL)
+            try Task.checkCancellation()
+            try await secondSession.exportFile(second, to: secondURL)
+            let secondDigest = try contentDigest(at: secondURL)
+            return firstDigest == secondDigest
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw AppError.transferFailed(
+                "Content verification failed for \(first.relativePath): \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func contentDigest(at url: URL) throws -> SHA256.Digest {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            try Task.checkCancellation()
+            guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { break }
+            hasher.update(data: data)
+        }
+        return hasher.finalize()
     }
 
     private func transfer(

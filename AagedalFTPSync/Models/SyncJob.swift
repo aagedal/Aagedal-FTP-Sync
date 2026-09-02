@@ -162,6 +162,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var latestSessionTransferCountOnly: Bool? = false
     var preserveModificationDates = true
     var verifyFileSizes = true
+    // Optional so jobs saved by earlier versions retain metadata-only comparisons.
+    var verifyMatchingFileContents: Bool? = false
     var targetCleanup: TargetCleanup? = nil
     // Optional so jobs saved by earlier versions continue to decode.
     var processedFolder: Endpoint? = nil
@@ -180,6 +182,11 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var showsLatestSessionTransferCountOnly: Bool {
         get { latestSessionTransferCountOnly ?? false }
         set { latestSessionTransferCountOnly = newValue }
+    }
+
+    var verifiesMatchingFileContents: Bool {
+        get { verifyMatchingFileContents ?? false }
+        set { verifyMatchingFileContents = newValue }
     }
 
     var movesProcessedFiles: Bool {

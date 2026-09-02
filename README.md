@@ -15,6 +15,7 @@ Version 2.6 adds a managed download and processed-file structure to the automati
 - Optional recent-file windows for busy assignment folders
 - Optional age-based cleanup of matching files in a one-way job's local target
 - Original filenames and modification dates are preserved when the server supports it
+- Optional SHA-256 comparison detects changed contents even when file size and modification date still match
 - Passwords are kept in macOS Keychain, never in the jobs file
 - Security-scoped folder bookmarks survive sandboxed app restarts
 - SFTP host keys require explicit SHA-256 fingerprint verification; unexpected changes are rejected
@@ -73,7 +74,7 @@ The menu-bar panel provides start/stop controls, status, one-click sync, and a p
 
 ## Synchronization behavior
 
-One-way jobs copy files that are missing or newer at the destination. Two-way jobs copy unique files in both directions and use the newer modification date when both sides contain a path. If timestamps are effectively equal but sizes differ, the app reports a conflict and refuses to overwrite either file because the correct version is ambiguous.
+One-way jobs copy files that are missing or newer at the destination. Two-way jobs copy unique files in both directions and use the newer modification date when both sides contain a path. If timestamps are effectively equal but sizes differ, the app reports a conflict and refuses to overwrite either file because the correct version is ambiguous. Jobs can optionally download equal-size, equal-timestamp files and compare SHA-256 checksums. A one-way mismatch refreshes the destination; a two-way mismatch is reported as a conflict. This mode is intentionally off by default because it reads both copies and can add substantial remote transfer time.
 
 The app runs at most two sync or metadata-reprocessing operations at once and admits only one operation at a time for the same normalized remote host and port. Jobs waiting for capacity remain cancellable, and each admitted job still lists its own endpoints concurrently.
 

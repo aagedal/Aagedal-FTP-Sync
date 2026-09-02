@@ -27,6 +27,7 @@ final class SupportBundleTests: XCTestCase {
         )
         job.targetCleanup = TargetCleanup(olderThanHours: 24)
         job.metadataAutomation = MetadataAutomation(isEnabled: true)
+        job.verifiesMatchingFileContents = true
         let failure = SyncFailureRecord(
             jobID: job.id,
             occurredAt: Date(timeIntervalSince1970: 2_000),
@@ -57,6 +58,7 @@ final class SupportBundleTests: XCTestCase {
         XCTAssertEqual(bundle.configuration.jobs.first?.customExtensionCount, 2)
         XCTAssertEqual(bundle.configuration.jobs.first?.cleanupEnabled, true)
         XCTAssertEqual(bundle.configuration.jobs.first?.metadataAutomationEnabled, true)
+        XCTAssertEqual(bundle.configuration.jobs.first?.verifiesMatchingFileContents, true)
         XCTAssertEqual(bundle.recentErrors, [
             .init(
                 occurredAt: failure.occurredAt,

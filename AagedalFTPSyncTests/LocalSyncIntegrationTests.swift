@@ -1594,6 +1594,50 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(secondResult, SyncResult(transferred: 0, deleted: 0))
     }
 
+    func testOneWayIntegrityModeRepairsEqualMetadataContentMismatch() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("NEWS_001.jpg")
+        let destination = fixture.right.appendingPathComponent("NEWS_001.jpg")
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try Data("source-data".utf8).write(to: source)
+        try Data("broken-data".utf8).write(to: destination)
+        for url in [source, destination] {
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: url.path)
+        }
+        var job = try fixture.job(direction: .leftToRight)
+        job.verifiesMatchingFileContents = true
+
+        let repair = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let unchanged = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(repair, SyncResult(transferred: 1, deleted: 0))
+        XCTAssertEqual(try Data(contentsOf: destination), Data("source-data".utf8))
+        XCTAssertEqual(unchanged, SyncResult(transferred: 0, deleted: 0))
+    }
+
+    func testEqualMetadataContentMismatchIsIgnoredWithoutIntegrityMode() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let source = fixture.left.appendingPathComponent("NEWS_001.jpg")
+        let destination = fixture.right.appendingPathComponent("NEWS_001.jpg")
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        try Data("source-data".utf8).write(to: source)
+        try Data("broken-data".utf8).write(to: destination)
+        for url in [source, destination] {
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: url.path)
+        }
+
+        let result = try await SyncEngine().run(
+            job: fixture.job(direction: .leftToRight),
+            leftPassword: nil,
+            rightPassword: nil
+        )
+
+        XCTAssertEqual(result, SyncResult(transferred: 0, deleted: 0))
+        XCTAssertEqual(try Data(contentsOf: destination), Data("broken-data".utf8))
+    }
+
     func testTwoWaySyncCopiesUniqueFilesInBothDirections() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
@@ -1628,6 +1672,27 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(result, SyncResult(transferred: 0, deleted: 0, conflicts: ["conflict.jpg"]))
         XCTAssertEqual(try Data(contentsOf: leftFile), Data("left".utf8))
         XCTAssertEqual(try Data(contentsOf: rightFile), Data("different-right".utf8))
+    }
+
+    func testTwoWayIntegrityModeReportsEqualMetadataContentMismatch() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let leftFile = fixture.left.appendingPathComponent("conflict.jpg")
+        let rightFile = fixture.right.appendingPathComponent("conflict.jpg")
+        try Data("left-version".utf8).write(to: leftFile)
+        try Data("right-versio".utf8).write(to: rightFile)
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        for url in [leftFile, rightFile] {
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: url.path)
+        }
+        var job = try fixture.job(direction: .bidirectional)
+        job.verifiesMatchingFileContents = true
+
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result, SyncResult(transferred: 0, deleted: 0, conflicts: ["conflict.jpg"]))
+        XCTAssertEqual(try Data(contentsOf: leftFile), Data("left-version".utf8))
+        XCTAssertEqual(try Data(contentsOf: rightFile), Data("right-versio".utf8))
     }
 
     func testCleanupDeletesOnlyOldMatchingFilesFromTarget() async throws {

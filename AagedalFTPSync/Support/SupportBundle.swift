@@ -33,6 +33,7 @@ struct RedactedSupportBundle: Codable, Equatable, Sendable {
         let startsOnAppLaunch: Bool
         let preservesModificationDates: Bool
         let verifiesFileSizes: Bool
+        let verifiesMatchingFileContents: Bool?
         let cleanupEnabled: Bool
         let processedFilesEnabled: Bool
         let processedFilesLocation: ProcessedFilesLocation?
@@ -126,6 +127,7 @@ enum SupportBundleCodec {
             startsOnAppLaunch: job.startsOnAppLaunch,
             preservesModificationDates: job.preserveModificationDates,
             verifiesFileSizes: job.verifyFileSizes,
+            verifiesMatchingFileContents: job.verifiesMatchingFileContents,
             cleanupEnabled: job.targetCleanup != nil,
             processedFilesEnabled: job.movesProcessedFiles,
             processedFilesLocation: job.movesProcessedFiles ? job.effectiveProcessedFilesLocation : nil,

@@ -25,6 +25,7 @@ final class ConfigurationTransferTests: XCTestCase {
         XCTAssertNil(decoded.jobs[0].left.bookmark)
         XCTAssertNil(decoded.jobs[0].right.bookmark)
         XCTAssertNotEqual(decoded.jobs[0].left.credentialID, fixture.job.left.credentialID)
+        XCTAssertTrue(decoded.jobs[0].verifiesMatchingFileContents)
         XCTAssertEqual(decoded.metadataProgramming.count, 1)
         XCTAssertEqual(decoded.metadataProgramming[0].automation, fixture.job.metadataAutomation)
         XCTAssertEqual(decoded.metadataPresets, [fixture.preset])
@@ -259,6 +260,7 @@ final class ConfigurationTransferTests: XCTestCase {
             )
         )
         job.metadataAutomation = automation
+        job.verifiesMatchingFileContents = true
         let preset = MetadataPreset(name: "Breaking news", fields: clip.fields)
         return (job, photographer, preset)
     }

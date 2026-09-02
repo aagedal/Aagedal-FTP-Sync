@@ -193,6 +193,22 @@ final class JobRepositoryTests: XCTestCase {
         XCTAssertFalse(loaded.showsLatestSessionTransferCountOnly)
     }
 
+    func testLegacyJobLeavesMatchingContentVerificationDisabled() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-integrity-jobs-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let repository = JobRepository(fileURL: url)
+
+        try repository.save([SyncJob(name: "Legacy integrity job")])
+        let data = try Data(contentsOf: url)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        json[0]["verifyMatchingFileContents"] = nil
+        try JSONSerialization.data(withJSONObject: json).write(to: url, options: .atomic)
+
+        let loaded = try XCTUnwrap(repository.load().first)
+        XCTAssertFalse(loaded.verifiesMatchingFileContents)
+    }
+
     func testLegacyProcessedFolderDefaultsToCustomFolderWithoutPhotographerSorting() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("legacy-processed-jobs-\(UUID().uuidString).json")

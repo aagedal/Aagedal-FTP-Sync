@@ -168,6 +168,11 @@ struct JobDetailEditor: View {
                 Section("Safety") {
                     Toggle("Preserve modification dates", isOn: $session.draft.preserveModificationDates)
                     Toggle("Verify file sizes", isOn: $session.draft.verifyFileSizes)
+                    Toggle(
+                        "Compare contents when size and date match",
+                        isOn: matchingContentVerificationBinding
+                    )
+                    .help("Downloads matching files and compares SHA-256 checksums. This is slower, especially for remote folders.")
 
                     Toggle("Automatically delete old files from the local target", isOn: targetCleanupBinding)
                         .disabled(draft.targetCleanup == nil && !hasLocalOneWayTarget)
@@ -292,6 +297,13 @@ struct JobDetailEditor: View {
         } message: {
             Text(resetConfirmationMessage)
         }
+    }
+
+    private var matchingContentVerificationBinding: Binding<Bool> {
+        Binding(
+            get: { draft.verifiesMatchingFileContents },
+            set: { draft.verifiesMatchingFileContents = $0 }
+        )
     }
 
     @ViewBuilder
