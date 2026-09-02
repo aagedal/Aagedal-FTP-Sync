@@ -43,40 +43,42 @@ actor SFTPTransport {
     }
 
     func listFiles() async throws -> [String: SyncFile] {
+        try await walkFiles(onCompletedDirectory: nil)
+    }
+
+    func listFilesIncrementally(
+        onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
+    ) async throws -> [String: SyncFile] {
+        try await walkFiles(onCompletedDirectory: onCompletedDirectory)
+    }
+
+    private func walkFiles(
+        onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?
+    ) async throws -> [String: SyncFile] {
         let sftp = try await connect()
-        var result: [String: SyncFile] = [:]
-        var directories: [(remote: String, relative: String)] = [
-            (try await resolvedRoot(using: sftp), ""),
-        ]
-        while !directories.isEmpty {
-            try Task.checkCancellation()
-            let directory = directories.removeFirst()
-            let responses = try await sftp.listDirectory(atPath: directory.remote)
-            for entry in responses.flatMap(\.components) {
-                guard PathSafety.isSafeServerName(entry.filename),
-                      !PathSafety.isInternalStagingPath(entry.filename) else { continue }
-                let relative = directory.relative.isEmpty ? entry.filename : "\(directory.relative)/\(entry.filename)"
-                let remote = join(directory.remote, entry.filename)
-                let mode = entry.attributes.permissions ?? 0
-                let kind = mode & 0o170000
-                if kind == 0o040000 {
-                    directories.append((remote, relative))
-                } else if kind == 0o100000 {
-                    if let existing = result[relative],
-                       !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
-                        throw AppError.transferFailed(
-                            "Two server paths differ only by Unicode representation: \(existing.relativePath) and \(relative)."
-                        )
-                    }
-                    result[relative] = SyncFile(
-                        relativePath: relative,
+        return try await RemoteTreeWalker.listFiles(
+            root: try await resolvedRoot(using: sftp),
+            join: { root, child in
+                root.hasSuffix("/") ? root + child : root + "/" + child
+            },
+            listDirectory: { remoteDirectory in
+                let responses = try await sftp.listDirectory(atPath: remoteDirectory)
+                return responses.flatMap(\.components).compactMap { entry in
+                    guard PathSafety.isSafeServerName(entry.filename) else { return nil }
+                    let kind = (entry.attributes.permissions ?? 0) & 0o170000
+                    guard kind == 0o040000 || kind == 0o100000 else { return nil }
+                    let modificationTime = entry.attributes.accessModificationTime?.modificationTime
+                    return RemoteDirectoryEntry(
+                        name: entry.filename,
+                        isDirectory: kind == 0o040000,
                         size: Int64(entry.attributes.size ?? 0),
-                        modifiedAt: entry.attributes.accessModificationTime?.modificationTime ?? .distantPast
+                        modifiedAt: modificationTime ?? .distantPast,
+                        hasAuthoritativeTimestamp: kind == 0o040000 || modificationTime != nil
                     )
                 }
-            }
-        }
-        return result
+            },
+            onCompletedDirectory: onCompletedDirectory
+        )
     }
 
     func download(file: SyncFile, to temporaryURL: URL) async throws {

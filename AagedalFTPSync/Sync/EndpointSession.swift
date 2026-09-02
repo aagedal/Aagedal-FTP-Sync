@@ -5,6 +5,106 @@ struct EndpointFileImport: Sendable {
     let file: SyncFile
 }
 
+struct RemoteTreeEntry: Sendable {
+    let relativePath: String
+    let file: SyncFile?
+    let hasAuthoritativeTimestamp: Bool
+
+    var isDirectory: Bool { file == nil }
+}
+
+struct CompletedDirectoryListing: Sendable {
+    let relativeDirectory: String
+    let entries: [RemoteTreeEntry]
+    let validatedAncestors: [String]
+}
+
+struct RemoteDirectoryEntry: Sendable {
+    let name: String
+    let isDirectory: Bool
+    let size: Int64
+    let modifiedAt: Date
+    let hasAuthoritativeTimestamp: Bool
+}
+
+enum RemoteTreeWalker {
+    static func listFiles(
+        root: String,
+        join: @Sendable (String, String) -> String,
+        listDirectory: @Sendable (String) async throws -> [RemoteDirectoryEntry],
+        onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?
+    ) async throws -> [String: SyncFile] {
+        var files: [String: SyncFile] = [:]
+        var directories = [(remote: root, relative: "")]
+        var directoryIndex = 0
+
+        while directoryIndex < directories.count {
+            try Task.checkCancellation()
+            let directory = directories[directoryIndex]
+            directoryIndex += 1
+            let entries = try await listDirectory(directory.remote)
+                .filter { !PathSafety.isInternalStagingPath($0.name) }
+
+            if let collision = PathSafety.localPathCollision(in: entries.map(\.name)) {
+                let directoryLabel = directory.relative.isEmpty ? "/" : directory.relative
+                throw AppError.transferFailed(
+                    "Two server entries cannot safely coexist at \(directoryLabel): \(collision[0]) and \(collision[1]). Rename one before syncing."
+                )
+            }
+
+            var completedEntries: [RemoteTreeEntry] = []
+            var childDirectories: [(remote: String, relative: String)] = []
+            for entry in entries {
+                guard PathSafety.isSafeServerName(entry.name) else { continue }
+                let relative = directory.relative.isEmpty
+                    ? entry.name
+                    : "\(directory.relative)/\(entry.name)"
+                if entry.isDirectory {
+                    childDirectories.append((join(directory.remote, entry.name), relative))
+                    completedEntries.append(RemoteTreeEntry(
+                        relativePath: relative,
+                        file: nil,
+                        hasAuthoritativeTimestamp: true
+                    ))
+                } else {
+                    let file = SyncFile(
+                        relativePath: relative,
+                        size: entry.size,
+                        modifiedAt: entry.modifiedAt
+                    )
+                    if let existing = files[relative],
+                       !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
+                        throw AppError.transferFailed(
+                            "Two server paths differ only by Unicode representation: \(existing.relativePath) and \(relative)."
+                        )
+                    }
+                    files[relative] = file
+                    completedEntries.append(RemoteTreeEntry(
+                        relativePath: relative,
+                        file: file,
+                        hasAuthoritativeTimestamp: entry.hasAuthoritativeTimestamp
+                    ))
+                }
+            }
+            childDirectories.sort { $0.relative < $1.relative }
+            directories.append(contentsOf: childDirectories)
+
+            let components = directory.relative.split(separator: "/").map(String.init)
+            let ancestors = components.indices.map {
+                components[...$0].joined(separator: "/")
+            }
+            if let onCompletedDirectory {
+                try await onCompletedDirectory(CompletedDirectoryListing(
+                    relativeDirectory: directory.relative,
+                    entries: completedEntries,
+                    validatedAncestors: ancestors
+                ))
+            }
+        }
+        return files
+    }
+}
+
 enum TransactionalRemoval {
     static func stageAndDelete<Item>(
         sources: [Item],
@@ -72,8 +172,12 @@ enum TransactionalRemoval {
 }
 
 protocol EndpointSession: Sendable {
+    var supportsCompletedDirectoryListings: Bool { get }
     func testConnection() async throws
     func listFiles() async throws -> [String: SyncFile]
+    func listFilesIncrementally(
+        onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
+    ) async throws -> [String: SyncFile]
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws
     func importFile(
         from localURL: URL,
@@ -84,6 +188,11 @@ protocol EndpointSession: Sendable {
     func importFilesTransactionally(
         _ imports: [EndpointFileImport],
         replacing existingFiles: [String: SyncFile],
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws
+    func importFilesTransactionallyIfAbsent(
+        _ imports: [EndpointFileImport],
         preserveDate: Bool,
         verifySize: Bool
     ) async throws
@@ -109,6 +218,26 @@ protocol EndpointFileLookupSession: EndpointSession {
 }
 
 extension EndpointSession {
+    var supportsCompletedDirectoryListings: Bool { false }
+
+    func listFilesIncrementally(
+        onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
+    ) async throws -> [String: SyncFile] {
+        let files = try await listFiles()
+        try await onCompletedDirectory(CompletedDirectoryListing(
+            relativeDirectory: "",
+            entries: files.values.map {
+                RemoteTreeEntry(
+                    relativePath: $0.relativePath,
+                    file: $0,
+                    hasAuthoritativeTimestamp: true
+                )
+            },
+            validatedAncestors: []
+        ))
+        return files
+    }
+
     func testConnection() async throws {
         _ = try await listFiles()
     }
@@ -228,6 +357,24 @@ extension EndpointSession {
         verifySize: Bool
     ) async throws {
         throw AppError.invalidConfiguration("Collision-safe processed-file import is not supported by this location.")
+    }
+
+    func importFilesTransactionallyIfAbsent(
+        _ imports: [EndpointFileImport],
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        guard imports.count == 1, let item = imports.first else {
+            throw AppError.invalidConfiguration(
+                "Collision-safe atomic output-group publication is not supported by this location."
+            )
+        }
+        try await importFileIfAbsent(
+            from: item.localURL,
+            as: item.file,
+            preserveDate: preserveDate,
+            verifySize: verifySize
+        )
     }
 
     func removeFile(_ file: SyncFile) async throws {

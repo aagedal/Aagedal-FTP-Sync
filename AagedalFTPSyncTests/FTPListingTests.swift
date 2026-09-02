@@ -393,6 +393,342 @@ final class FTPListingTests: XCTestCase {
         XCTAssertEqual(importCount, 0)
     }
 
+    func testCompletedDirectoryPublishesBeforeFullScanAndCountsEachFileOnce() async throws {
+        let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = SyncFile(relativePath: "first/NEWS.JPG", size: 5, modifiedAt: baseDate)
+        let second = SyncFile(relativePath: "later/MORE.JPG", size: 6, modifiedAt: baseDate.addingTimeInterval(-1))
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("first", files: [first]), directorySnapshot("later", files: [second])],
+            finalFiles: [first.relativePath: first, second.relativePath: second],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        let result = try await engine.run(
+            job: partialFailureJob(),
+            leftPassword: "secret",
+            rightPassword: nil
+        )
+        let events = await timeline.events
+        let fullListingIndex = try XCTUnwrap(events.firstIndex(of: "source-full-list"))
+        let firstImportIndex = try XCTUnwrap(events.firstIndex(of: "conditional-import:first/NEWS.JPG"))
+
+        XCTAssertLessThan(firstImportIndex, fullListingIndex)
+        XCTAssertEqual(result.transferred, 2)
+        let importCount = await destination.importCount
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(importCount, 2)
+        XCTAssertEqual(storedFiles, [first.relativePath: first, second.relativePath: second])
+    }
+
+    func testCompletedDirectoryRejectsSameStemRAWOwnersBeforePublication() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let cr2 = SyncFile(relativePath: "desk/JAD_SAME.CR2", size: 5, modifiedAt: date)
+        let nef = SyncFile(relativePath: "desk/JAD_SAME.NEF", size: 6, modifiedAt: date)
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("desk", files: [cr2, nef])],
+            finalFiles: [
+                cr2.relativePath: cr2,
+                nef.relativePath: nef,
+            ],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: "Example"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Later",
+            startsAt: date.addingTimeInterval(3_600),
+            endsAt: date.addingTimeInterval(7_200)
+        )
+        var job = partialFailureJob()
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        do {
+            _ = try await engine.run(job: job, leftPassword: "secret", rightPassword: nil)
+            XCTFail("Conflicting RAW owners must be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("would both write desk/JAD_SAME.xmp"))
+        }
+        let importCount = await destination.importCount
+        XCTAssertEqual(importCount, 0)
+    }
+
+    func testRemoteTreeWalkerRejectsCaseAndUnicodeEquivalentSiblings() async throws {
+        for names in [["News", "news"], ["Café", "Cafe\u{301}"]] {
+            do {
+                _ = try await RemoteTreeWalker.listFiles(
+                    root: "/",
+                    join: { root, child in root + child },
+                    listDirectory: { _ in
+                        names.map {
+                            RemoteDirectoryEntry(
+                                name: $0,
+                                isDirectory: true,
+                                size: 0,
+                                modifiedAt: .distantPast,
+                                hasAuthoritativeTimestamp: true
+                            )
+                        }
+                    },
+                    onCompletedDirectory: { _ in }
+                )
+                XCTFail("Equivalent siblings must be rejected")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("cannot safely coexist"))
+            }
+        }
+    }
+
+    func testRemoteTreeWalkerUsesStableBreadthFirstSnapshots() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let tree: [String: [RemoteDirectoryEntry]] = [
+            "/": [
+                RemoteDirectoryEntry(name: "z", isDirectory: true, size: 0, modifiedAt: date, hasAuthoritativeTimestamp: true),
+                RemoteDirectoryEntry(name: "a", isDirectory: true, size: 0, modifiedAt: date, hasAuthoritativeTimestamp: true),
+            ],
+            "/a": [
+                RemoteDirectoryEntry(name: "first.jpg", isDirectory: false, size: 1, modifiedAt: date, hasAuthoritativeTimestamp: true),
+            ],
+            "/z": [
+                RemoteDirectoryEntry(name: "second.jpg", isDirectory: false, size: 2, modifiedAt: date, hasAuthoritativeTimestamp: true),
+            ],
+        ]
+        let collector = SnapshotCollector()
+
+        let files = try await RemoteTreeWalker.listFiles(
+            root: "/",
+            join: { root, child in root == "/" ? root + child : root + "/" + child },
+            listDirectory: { tree[$0] ?? [] },
+            onCompletedDirectory: { await collector.append($0) }
+        )
+        let snapshots = await collector.snapshots
+
+        XCTAssertEqual(snapshots.map(\.relativeDirectory), ["", "a", "z"])
+        XCTAssertEqual(snapshots[1].validatedAncestors, ["a"])
+        XCTAssertEqual(Set(files.keys), ["a/first.jpg", "z/second.jpg"])
+    }
+
+    func testDestinationFileAppearingAtConditionalCommitIsNotOverwritten() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let incoming = SyncFile(relativePath: "NEWS.JPG", size: 5, modifiedAt: date)
+        let competing = SyncFile(relativePath: incoming.relativePath, size: 99, modifiedAt: date)
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [incoming])],
+            finalFiles: [incoming.relativePath: incoming],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(
+            timeline: timeline,
+            competingFileAtConditionalCommit: competing
+        )
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        do {
+            _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+            XCTFail("The conditional commit must fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("appeared before publication"))
+        }
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(storedFiles, [competing.relativePath: competing])
+    }
+
+    func testExistingCaseEquivalentDestinationCollisionIsNotOverwritten() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let incoming = SyncFile(relativePath: "NEWS.JPG", size: 5, modifiedAt: date)
+        let existing = SyncFile(relativePath: "news.jpg", size: 99, modifiedAt: date)
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [incoming])],
+            finalFiles: [incoming.relativePath: incoming],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(
+            timeline: timeline,
+            initialFiles: [existing.relativePath: existing]
+        )
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        do {
+            _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+            XCTFail("The case-equivalent collision must fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("cannot safely coexist"))
+        }
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(storedFiles, [existing.relativePath: existing])
+    }
+
+    func testEarlyCompanionFailureRollsBackPrimary() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let primary = SyncFile(relativePath: "NEWS.CR3", size: 5, modifiedAt: date)
+        let sidecar = SyncFile(relativePath: "NEWS.xmp", size: 6, modifiedAt: date)
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [primary, sidecar])],
+            finalFiles: [primary.relativePath: primary, sidecar.relativePath: sidecar],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(
+            timeline: timeline,
+            failedConditionalPath: sidecar.relativePath
+        )
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        do {
+            _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+            XCTFail("The companion commit must fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Injected conditional failure"))
+        }
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(storedFiles, [:])
+    }
+
+    func testChangedSignatureAfterEarlyPublicationReplacesFinalVersionWithoutDoubleCount() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let early = SyncFile(relativePath: "NEWS.JPG", size: 5, modifiedAt: date)
+        let final = SyncFile(relativePath: "NEWS.JPG", size: 8, modifiedAt: date.addingTimeInterval(5))
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [early])],
+            finalFiles: [final.relativePath: final],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        let result = try await engine.run(
+            job: partialFailureJob(),
+            leftPassword: "secret",
+            rightPassword: nil
+        )
+
+        XCTAssertEqual(result.transferred, 1)
+        let importCount = await destination.importCount
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(importCount, 2)
+        XCTAssertEqual(storedFiles, [final.relativePath: final])
+    }
+
+    func testNonAuthoritativeFTPTimestampDefersRecentFileUntilFullScan() async throws {
+        let file = SyncFile(relativePath: "NEWS.JPG", size: 5, modifiedAt: Date())
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [file], authoritativeTimestamp: false)],
+            finalFiles: [file.relativePath: file],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+        var job = partialFailureJob()
+        job.filter.recentHours = 1
+
+        _ = try await engine.run(job: job, leftPassword: "secret", rightPassword: nil)
+        let events = await timeline.events
+        let fullListingIndex = try XCTUnwrap(events.firstIndex(of: "source-full-list"))
+        let importIndex = try XCTUnwrap(events.firstIndex(of: "import:NEWS.JPG"))
+        XCTAssertGreaterThan(importIndex, fullListingIndex)
+    }
+
+    func testFullListingFailureReportsCompletedEarlyTransfer() async throws {
+        let file = SyncFile(
+            relativePath: "NEWS.JPG",
+            size: 5,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [file])],
+            finalFiles: [file.relativePath: file],
+            timeline: timeline,
+            failsAfterSnapshots: true
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+
+        do {
+            _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+            XCTFail("The full listing must fail")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.partialResult.transferred, 1)
+        }
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(storedFiles, [file.relativePath: file])
+    }
+
+    func testCancellationAfterEarlyPublicationRemainsCancellation() async throws {
+        let file = SyncFile(
+            relativePath: "NEWS.JPG",
+            size: 5,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [file])],
+            finalFiles: [file.relativePath: file],
+            timeline: timeline,
+            waitsAfterSnapshots: true
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+        let job = partialFailureJob()
+        let task = Task {
+            try await engine.run(
+                job: job,
+                leftPassword: "secret",
+                rightPassword: nil
+            )
+        }
+
+        for _ in 0..<200 {
+            if await destination.importCount == 1 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("The run must remain cancelled")
+        } catch is CancellationError {
+            // Expected.
+        }
+        let storedFiles = await destination.storedFiles
+        XCTAssertEqual(storedFiles, [file.relativePath: file])
+    }
+
     func testParsesMachineReadableListing() throws {
         let listing = """
         modify=20260821122345;size=43121;type=file; NEWS_001.JPG\r
@@ -471,6 +807,24 @@ final class FTPListingTests: XCTestCase {
         job.startsOnAppLaunch = false
         return job
     }
+
+    private func directorySnapshot(
+        _ directory: String,
+        files: [SyncFile],
+        authoritativeTimestamp: Bool = true
+    ) -> CompletedDirectoryListing {
+        CompletedDirectoryListing(
+            relativeDirectory: directory,
+            entries: files.map {
+                RemoteTreeEntry(
+                    relativePath: $0.relativePath,
+                    file: $0,
+                    hasAuthoritativeTimestamp: authoritativeTimestamp
+                )
+            },
+            validatedAncestors: directory.isEmpty ? [] : [directory]
+        )
+    }
 }
 
 @MainActor
@@ -487,6 +841,14 @@ private actor FastStartTimeline {
 
     func append(_ event: String) {
         events.append(event)
+    }
+}
+
+private actor SnapshotCollector {
+    private(set) var snapshots: [CompletedDirectoryListing] = []
+
+    func append(_ snapshot: CompletedDirectoryListing) {
+        snapshots.append(snapshot)
     }
 }
 
@@ -515,6 +877,141 @@ private actor FastStartSource: EndpointSession {
         preserveDate: Bool,
         verifySize: Bool
     ) async throws {}
+}
+
+private actor IncrementalSource: EndpointSession {
+    let snapshots: [CompletedDirectoryListing]
+    let finalFiles: [String: SyncFile]
+    let timeline: FastStartTimeline
+    let failsAfterSnapshots: Bool
+    let waitsAfterSnapshots: Bool
+
+    init(
+        snapshots: [CompletedDirectoryListing],
+        finalFiles: [String: SyncFile],
+        timeline: FastStartTimeline,
+        failsAfterSnapshots: Bool = false,
+        waitsAfterSnapshots: Bool = false
+    ) {
+        self.snapshots = snapshots
+        self.finalFiles = finalFiles
+        self.timeline = timeline
+        self.failsAfterSnapshots = failsAfterSnapshots
+        self.waitsAfterSnapshots = waitsAfterSnapshots
+    }
+
+    nonisolated var supportsCompletedDirectoryListings: Bool { true }
+
+    func listFiles() async throws -> [String: SyncFile] { finalFiles }
+
+    func listFilesIncrementally(
+        onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
+    ) async throws -> [String: SyncFile] {
+        for snapshot in snapshots {
+            await timeline.append("snapshot:\(snapshot.relativeDirectory)")
+            try await onCompletedDirectory(snapshot)
+        }
+        if waitsAfterSnapshots {
+            try await Task.sleep(for: .seconds(10))
+        }
+        await timeline.append("source-full-list")
+        if failsAfterSnapshots {
+            throw AppError.transferFailed("Injected full-list failure")
+        }
+        return finalFiles
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
+        await timeline.append("export:\(file.relativePath)")
+        try Data(repeating: UInt8(clamping: file.size), count: Int(file.size)).write(to: temporaryURL)
+    }
+
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {}
+}
+
+private actor ConditionalDestination: EndpointSession {
+    private(set) var storedFiles: [String: SyncFile]
+    private(set) var importCount = 0
+    let timeline: FastStartTimeline
+    let failedConditionalPath: String?
+    let competingFileAtConditionalCommit: SyncFile?
+
+    init(
+        timeline: FastStartTimeline,
+        initialFiles: [String: SyncFile] = [:],
+        failedConditionalPath: String? = nil,
+        competingFileAtConditionalCommit: SyncFile? = nil
+    ) {
+        self.timeline = timeline
+        storedFiles = initialFiles
+        self.failedConditionalPath = failedConditionalPath
+        self.competingFileAtConditionalCommit = competingFileAtConditionalCommit
+    }
+
+    func listFiles() async throws -> [String: SyncFile] {
+        await timeline.append("destination-full-list")
+        return storedFiles
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
+        try Data(repeating: UInt8(clamping: file.size), count: Int(file.size)).write(to: temporaryURL)
+    }
+
+    func importFile(
+        from localURL: URL,
+        as file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        storedFiles[file.relativePath] = file
+        importCount += 1
+        await timeline.append("import:\(file.relativePath)")
+    }
+
+    func importFilesTransactionallyIfAbsent(
+        _ imports: [EndpointFileImport],
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        var published: [String] = []
+        do {
+            for item in imports {
+                if let competingFileAtConditionalCommit,
+                   competingFileAtConditionalCommit.relativePath == item.file.relativePath {
+                    storedFiles[item.file.relativePath] = competingFileAtConditionalCommit
+                    throw AppError.transferFailed(
+                        "A file appeared before publication at \(item.file.relativePath)."
+                    )
+                }
+                if item.file.relativePath == failedConditionalPath {
+                    throw AppError.transferFailed(
+                        "Injected conditional failure for \(item.file.relativePath)"
+                    )
+                }
+                guard storedFiles[item.file.relativePath] == nil else {
+                    throw AppError.transferFailed(
+                        "A file appeared before publication at \(item.file.relativePath)."
+                    )
+                }
+                storedFiles[item.file.relativePath] = item.file
+                published.append(item.file.relativePath)
+                importCount += 1
+                await timeline.append("conditional-import:\(item.file.relativePath)")
+            }
+        } catch {
+            for path in published.reversed() { storedFiles[path] = nil }
+            throw error
+        }
+    }
+
+    func removeFile(_ file: SyncFile) async throws {
+        storedFiles[file.relativePath] = nil
+    }
 }
 
 private actor FastStartDestination: EndpointFileLookupSession {

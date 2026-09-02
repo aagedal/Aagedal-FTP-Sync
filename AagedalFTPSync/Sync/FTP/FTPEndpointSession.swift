@@ -4,6 +4,8 @@ struct FTPEndpointSession: EndpointSession, Sendable {
     private let endpoint: Endpoint
     private let connection: FTPConnection
 
+    var supportsCompletedDirectoryListings: Bool { true }
+
     init(endpoint: Endpoint, password: String) {
         self.endpoint = endpoint
         connection = FTPConnection(endpoint: endpoint, password: password)
@@ -14,36 +16,51 @@ struct FTPEndpointSession: EndpointSession, Sendable {
     }
 
     func listFiles() async throws -> [String: SyncFile] {
-        var result: [String: SyncFile] = [:]
-        var directories: [(remote: String, relative: String)] = [(normalizedRoot, "")]
-        while !directories.isEmpty {
-            try Task.checkCancellation()
-            let directory = directories.removeFirst()
-            let listing = try await connection.list(path: directory.remote)
-            let isMachineReadable = listing.lowercased().contains("type=")
-            for entry in Self.parseMLSD(listing) {
-                guard !PathSafety.isInternalStagingPath(entry.name) else { continue }
-                let relative = directory.relative.isEmpty ? entry.name : "\(directory.relative)/\(entry.name)"
-                let remote = directory.remote.hasSuffix("/") ? directory.remote + entry.name : directory.remote + "/" + entry.name
-                if entry.isDirectory {
-                    directories.append((remote, relative))
-                } else {
-                    if let existing = result[relative],
-                       !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
-                        throw AppError.transferFailed(
-                            "Two server paths differ only by Unicode representation: \(existing.relativePath) and \(relative)."
-                        )
+        try await walkFiles(onCompletedDirectory: nil)
+    }
+
+    func listFilesIncrementally(
+        onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
+    ) async throws -> [String: SyncFile] {
+        try await walkFiles(onCompletedDirectory: onCompletedDirectory)
+    }
+
+    private func walkFiles(
+        onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?
+    ) async throws -> [String: SyncFile] {
+        try await RemoteTreeWalker.listFiles(
+            root: normalizedRoot,
+            join: { root, child in
+                root.hasSuffix("/") ? root + child : root + "/" + child
+            },
+            listDirectory: { remoteDirectory in
+                let listing = try await connection.list(path: remoteDirectory)
+                let isMachineReadable = listing.lowercased().contains("type=")
+                var results: [RemoteDirectoryEntry] = []
+                for entry in Self.parseMLSD(listing) {
+                    let remote = remoteDirectory.hasSuffix("/")
+                        ? remoteDirectory + entry.name
+                        : remoteDirectory + "/" + entry.name
+                    let authoritativeDate: Date?
+                    if entry.isDirectory {
+                        authoritativeDate = nil
+                    } else if isMachineReadable, entry.hasAuthoritativeTimestamp {
+                        authoritativeDate = entry.modifiedAt
+                    } else {
+                        authoritativeDate = try? await connection.modificationDate(path: remote)
                     }
-                    // LIST dates do not declare a timezone. Prefer MDTM, whose
-                    // timestamp is defined as UTC, when MLSD is unavailable.
-                    let modifiedAt = isMachineReadable
-                        ? entry.modifiedAt
-                        : (try? await connection.modificationDate(path: remote)) ?? entry.modifiedAt
-                    result[relative] = SyncFile(relativePath: relative, size: entry.size, modifiedAt: modifiedAt)
+                    results.append(RemoteDirectoryEntry(
+                        name: entry.name,
+                        isDirectory: entry.isDirectory,
+                        size: entry.size,
+                        modifiedAt: authoritativeDate ?? entry.modifiedAt,
+                        hasAuthoritativeTimestamp: entry.isDirectory || authoritativeDate != nil
+                    ))
                 }
-            }
-        }
-        return result
+                return results
+            },
+            onCompletedDirectory: onCompletedDirectory
+        )
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
@@ -103,6 +120,7 @@ struct FTPEndpointSession: EndpointSession, Sendable {
         let isDirectory: Bool
         let size: Int64
         let modifiedAt: Date
+        let hasAuthoritativeTimestamp: Bool
     }
 
     static func parseMLSD(_ listing: String) -> [Entry] {
@@ -121,8 +139,14 @@ struct FTPEndpointSession: EndpointSession, Sendable {
             }
             let type = facts["type"]?.lowercased() ?? "file"
             guard type != "cdir", type != "pdir" else { return nil }
-            let date = facts["modify"].flatMap { ftpDateFormatter.date(from: String($0.prefix(14))) } ?? .distantPast
-            return Entry(name: name, isDirectory: type == "dir", size: Int64(facts["size"] ?? "0") ?? 0, modifiedAt: date)
+            let parsedDate = facts["modify"].flatMap { ftpDateFormatter.date(from: String($0.prefix(14))) }
+            return Entry(
+                name: name,
+                isDirectory: type == "dir",
+                size: Int64(facts["size"] ?? "0") ?? 0,
+                modifiedAt: parsedDate ?? .distantPast,
+                hasAuthoritativeTimestamp: type == "dir" || parsedDate != nil
+            )
         }
     }
 
@@ -139,7 +163,13 @@ struct FTPEndpointSession: EndpointSession, Sendable {
             if fields[7].contains(":"), date > Date().addingTimeInterval(86_400) {
                 date = Calendar(identifier: .gregorian).date(byAdding: .year, value: -1, to: date) ?? date
             }
-            return Entry(name: name, isDirectory: marker == "d", size: size, modifiedAt: date)
+            return Entry(
+                name: name,
+                isDirectory: marker == "d",
+                size: size,
+                modifiedAt: date,
+                hasAuthoritativeTimestamp: marker == "d"
+            )
         }
     }
 

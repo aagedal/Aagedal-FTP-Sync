@@ -20,6 +20,16 @@ REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 SERVICE_SCRIPT = REPOSITORY_ROOT / "Scripts" / "delivery_latency_services.py"
 DEFAULT_REPORT = REPOSITORY_ROOT / "Documentation" / "2.7-Delivery-Latency-Benchmark.md"
 RESULT_PREFIX = "AFTPSYNC_BENCHMARK_RESULT "
+BASELINE = {
+    ("ftp", "Cold", "Full scan"): (10.362, 10.953),
+    ("ftp", "Warm", "Full scan"): (9.188, 9.530),
+    ("ftp", "Cold", "First publication"): (15.693, 19.431),
+    ("ftp", "Warm", "First publication"): (15.881, 18.765),
+    ("sftp", "Cold", "Full scan"): (4.181, 4.760),
+    ("sftp", "Warm", "Full scan"): (4.354, 4.668),
+    ("sftp", "Cold", "First publication"): (11.563, 11.851),
+    ("sftp", "Warm", "First publication"): (9.820, 12.264),
+}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -181,6 +191,7 @@ def write_report(
     traversal_directories: int,
 ) -> None:
     rows = []
+    comparison_rows = []
     for result in payload["results"]:
         assert isinstance(result, dict)
         for state, key in (
@@ -195,6 +206,14 @@ def write_report(
                 f"| {str(result['protocolName']).upper()} | {state} | {metric} | "
                 f"{summary['median']:.3f} | {summary['p95']:.3f} |"
             )
+            baseline_median, baseline_p95 = BASELINE[(
+                str(result["protocolName"]), state, metric
+            )]
+            comparison_rows.append(
+                f"| {str(result['protocolName']).upper()} | {state} | {metric} | "
+                f"{format_change(summary['median'], baseline_median)} | "
+                f"{format_change(summary['p95'], baseline_p95)} |"
+            )
 
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     report = f"""# Aagedal FTP Sync 2.7 delivery-latency benchmark
@@ -207,8 +226,8 @@ Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using th
 - Service fixture versions: {service_versions()}.
 - One JPEG had a current modification date and all other files used 2000-01-01. The sync job's one-hour recent-file filter therefore published exactly one file.
 - Each cell used one unrecorded warm-up and {payload['iterations']} measured iterations. Cold means a new protocol connection for each iteration; warm means a reused authenticated connection. Both states benefit from the host filesystem cache after warm-up.
-- Full scan measures `EndpointSession.listFiles()`. First publication measures a complete `SyncEngine.run`, ending after the newest file was downloaded and accepted by the destination.
-- The current engine waits for the authoritative full listing before publication. These numbers are a 2.7 baseline, not a measurement of the completed-directory design.
+- Full scan measures `EndpointSession.listFiles()`. First publication is timestamped when the destination accepts the newest file; the benchmark still lets the authoritative full scan and reconciliation finish before starting another sample.
+- The comparison baseline was recorded on September 1, 2026 before completed-directory publication was implemented, using the same fixture and five-sample method.
 
 ## Results (seconds)
 
@@ -216,10 +235,24 @@ Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using th
 |---|---|---|---:|---:|
 {os.linesep.join(rows)}
 
+## Change from pre-implementation baseline
+
+Negative values are improvements.
+
+| Protocol | Connection | Metric | Median change | p95 change |
+|---|---|---|---:|---:|
+{os.linesep.join(comparison_rows)}
+
 With five samples, p95 is the slowest observed iteration (nearest-rank method). Loopback absolute timings are informational and should be compared only with runs using the same fixture and build configuration.
 """
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
+
+
+def format_change(current: float, baseline: float) -> str:
+    difference = current - baseline
+    percentage = difference / baseline * 100
+    return f"{difference:+.3f}s ({percentage:+.1f}%)"
 
 
 def main() -> int:

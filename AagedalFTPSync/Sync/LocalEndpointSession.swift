@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchecked Sendable {
@@ -139,6 +140,95 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             verifySize: verifySize,
             replaceExisting: false
         )
+    }
+
+    func importFilesTransactionallyIfAbsent(
+        _ imports: [EndpointFileImport],
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        guard Set(imports.map(\.file.relativePath)).count == imports.count else {
+            throw AppError.transferFailed("A destination output group contained duplicate paths.")
+        }
+        guard !imports.isEmpty else { return }
+
+        var prepared: [(staging: URL, destination: URL, file: SyncFile)] = []
+        var published: [(destination: URL, file: SyncFile)] = []
+        defer {
+            for item in prepared {
+                try? fileManager.removeItem(at: item.staging)
+            }
+        }
+
+        do {
+            for item in imports {
+                try Task.checkCancellation()
+                let destination = try safeURL(for: item.file.relativePath)
+                let directory = destination.deletingLastPathComponent()
+                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                let staging = directory.appendingPathComponent(
+                    ".aagedal-sync-\(UUID().uuidString).part"
+                )
+                try fileManager.copyItem(at: item.localURL, to: staging)
+                if verifySize {
+                    let attributes = try fileManager.attributesOfItem(atPath: staging.path)
+                    let copiedSize = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+                    guard copiedSize == item.file.size else {
+                        throw AppError.transferFailed(
+                            "Size verification failed for \(item.file.relativePath): expected \(item.file.size) bytes, copied \(copiedSize) bytes."
+                        )
+                    }
+                }
+                try fileManager.setAttributes(
+                    [.modificationDate: preserveDate ? item.file.modifiedAt : Date()],
+                    ofItemAtPath: staging.path
+                )
+                prepared.append((staging, destination, item.file))
+            }
+
+            for item in prepared {
+                try Task.checkCancellation()
+                do {
+                    try moveExclusively(from: item.staging, to: item.destination)
+                    published.append((item.destination, item.file))
+                } catch {
+                    if fileManager.fileExists(atPath: item.destination.path) {
+                        throw AppError.transferFailed(
+                            "A file appeared at \(item.file.relativePath) before publication. Nothing there was overwritten."
+                        )
+                    }
+                    throw error
+                }
+            }
+        } catch {
+            let publicationError = error
+            var rollbackFailures: [String] = []
+            for item in published.reversed() {
+                do { try fileManager.removeItem(at: item.destination) }
+                catch { rollbackFailures.append(item.file.relativePath) }
+            }
+            if !rollbackFailures.isEmpty {
+                throw AppError.transferFailed(
+                    "The collision-safe output group could not be published, and rollback failed for \(rollbackFailures.joined(separator: ", ")). Publication error: \(publicationError.localizedDescription)"
+                )
+            }
+            if publicationError is CancellationError { throw CancellationError() }
+            throw publicationError
+        }
+    }
+
+    private func moveExclusively(from source: URL, to destination: URL) throws {
+        let result = source.path.withCString { sourcePath in
+            destination.path.withCString { destinationPath in
+                renamex_np(sourcePath, destinationPath, UInt32(RENAME_EXCL))
+            }
+        }
+        guard result != 0 else { return }
+        let errorCode = errno
+        if let code = POSIXErrorCode(rawValue: errorCode) {
+            throw POSIXError(code)
+        }
+        throw CocoaError(.fileWriteUnknown)
     }
 
     private func importFile(

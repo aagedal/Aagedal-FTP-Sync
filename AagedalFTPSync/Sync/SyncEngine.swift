@@ -49,6 +49,7 @@ private struct TransferMetadataOutcome: Sendable {
     let embeddedMetadataApplied: Bool
     let movedToProcessed: Bool
     let publishedProcessedPaths: Set<String>
+    let publishedDestinationFiles: [String: SyncFile]
 }
 
 private struct TransferStepFailure: LocalizedError, Sendable {
@@ -61,6 +62,59 @@ private struct TransferStepFailure: LocalizedError, Sendable {
     }
 
     var errorDescription: String? { failureDescription }
+}
+
+private struct EarlyTransferSnapshot: Sendable {
+    let signatures: [String: SourceFileSignature]
+    let result: SyncResult
+    let sourceSignaturesToPersist: [SyncFile]
+    let destinationFiles: [String: SyncFile]
+
+    static let empty = EarlyTransferSnapshot(
+        signatures: [:],
+        result: SyncResult(transferred: 0, deleted: 0),
+        sourceSignaturesToPersist: [],
+        destinationFiles: [:]
+    )
+}
+
+private actor EarlyTransferState {
+    private let maximumTransfers: Int
+    private var signatures: [String: SourceFileSignature] = [:]
+    private var transferred = 0
+    private var metadataReport = MetadataRunReport.empty
+    private var sourceSignaturesToPersist: [SyncFile] = []
+    private var destinationFiles: [String: SyncFile] = [:]
+
+    init(maximumTransfers: Int = 4) {
+        self.maximumTransfers = maximumTransfers
+    }
+
+    func claim(_ candidates: [SyncFile]) -> [SyncFile] {
+        let remaining = max(0, maximumTransfers - signatures.count)
+        return Array(candidates.prefix(remaining))
+    }
+
+    func record(_ file: SyncFile, outcome: TransferMetadataOutcome) {
+        signatures[file.relativePath] = SourceFileSignature(file: file)
+        transferred += 1
+        if let auditEntry = outcome.auditEntry { metadataReport.append(auditEntry) }
+        if outcome.embeddedMetadataApplied { sourceSignaturesToPersist.append(file) }
+        destinationFiles.merge(outcome.publishedDestinationFiles) { _, newest in newest }
+    }
+
+    func snapshot() -> EarlyTransferSnapshot {
+        EarlyTransferSnapshot(
+            signatures: signatures,
+            result: SyncResult(
+                transferred: transferred,
+                deleted: 0,
+                metadataReport: metadataReport
+            ),
+            sourceSignaturesToPersist: sourceSignaturesToPersist,
+            destinationFiles: destinationFiles
+        )
+    }
 }
 
 struct SyncEngine: Sendable {
@@ -181,29 +235,126 @@ struct SyncEngine: Sendable {
             processedDestination = nil
             processedDestinationKind = nil
         }
+        let earlyTransferState = EarlyTransferState()
         do {
-            async let leftListing = loggedListing(
-                from: left,
-                endpointKind: job.left.kind,
-                role: .left,
-                runID: runID,
-                jobID: job.id
-            )
-            async let rightListing = loggedListing(
-                from: right,
-                endpointKind: job.right.kind,
-                role: .right,
-                runID: runID,
-                jobID: job.id
-            )
-            async let processedListing = loggedListingIfPresent(
-                from: processedDestination,
-                endpointKind: processedDestinationKind,
-                role: .processed,
-                runID: runID,
-                jobID: job.id
-            )
-            let (leftFiles, rightFiles, processedFiles) = try await (leftListing, rightListing, processedListing)
+            let processedListingTask = Task {
+                try await loggedListingIfPresent(
+                    from: processedDestination,
+                    endpointKind: processedDestinationKind,
+                    role: .processed,
+                    runID: runID,
+                    jobID: job.id
+                )
+            }
+            let leftListingTask: Task<[String: SyncFile], any Error>
+            let rightListingTask: Task<[String: SyncFile], any Error>
+            switch job.direction {
+            case .leftToRight where supportsEarlyDelivery(job: job, source: left):
+                rightListingTask = Task {
+                    try await loggedListing(
+                        from: right,
+                        endpointKind: job.right.kind,
+                        role: .right,
+                        runID: runID,
+                        jobID: job.id
+                    )
+                }
+                leftListingTask = Task {
+                    try await loggedListing(
+                        from: left,
+                        endpointKind: job.left.kind,
+                        role: .left,
+                        runID: runID,
+                        jobID: job.id,
+                        onCompletedDirectory: { listing in
+                            let destinationFiles = try await rightListingTask.value
+                            try await publishEarlyFiles(
+                                listing,
+                                from: left,
+                                sourceEndpoint: job.left,
+                                to: right,
+                                destinationFiles: destinationFiles,
+                                job: job,
+                                runID: runID,
+                                state: earlyTransferState
+                            )
+                        }
+                    )
+                }
+            case .rightToLeft where supportsEarlyDelivery(job: job, source: right):
+                leftListingTask = Task {
+                    try await loggedListing(
+                        from: left,
+                        endpointKind: job.left.kind,
+                        role: .left,
+                        runID: runID,
+                        jobID: job.id
+                    )
+                }
+                rightListingTask = Task {
+                    try await loggedListing(
+                        from: right,
+                        endpointKind: job.right.kind,
+                        role: .right,
+                        runID: runID,
+                        jobID: job.id,
+                        onCompletedDirectory: { listing in
+                            let destinationFiles = try await leftListingTask.value
+                            try await publishEarlyFiles(
+                                listing,
+                                from: right,
+                                sourceEndpoint: job.right,
+                                to: left,
+                                destinationFiles: destinationFiles,
+                                job: job,
+                                runID: runID,
+                                state: earlyTransferState
+                            )
+                        }
+                    )
+                }
+            default:
+                leftListingTask = Task {
+                    try await loggedListing(
+                        from: left,
+                        endpointKind: job.left.kind,
+                        role: .left,
+                        runID: runID,
+                        jobID: job.id
+                    )
+                }
+                rightListingTask = Task {
+                    try await loggedListing(
+                        from: right,
+                        endpointKind: job.right.kind,
+                        role: .right,
+                        runID: runID,
+                        jobID: job.id
+                    )
+                }
+            }
+            let leftFiles: [String: SyncFile]
+            let rightFiles: [String: SyncFile]
+            let processedFiles: [String: SyncFile]
+            do {
+                (leftFiles, rightFiles, processedFiles) = try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    return try await (
+                        leftListingTask.value,
+                        rightListingTask.value,
+                        processedListingTask.value
+                    )
+                } onCancel: {
+                    leftListingTask.cancel()
+                    rightListingTask.cancel()
+                    processedListingTask.cancel()
+                }
+            } catch {
+                leftListingTask.cancel()
+                rightListingTask.cancel()
+                processedListingTask.cancel()
+                throw error
+            }
             try validateLocalDestinationPaths(job: job, leftFiles: leftFiles, rightFiles: rightFiles)
             switch job.direction {
             case .leftToRight:
@@ -223,6 +374,7 @@ struct SyncEngine: Sendable {
             }
             let transferResult: (transferred: Int, processed: Int, metadataReport: MetadataRunReport)
             let conflicts: [String]
+            let earlySnapshot = await earlyTransferState.snapshot()
             switch job.direction {
             case .leftToRight:
                 transferResult = try await transferNewer(
@@ -234,7 +386,8 @@ struct SyncEngine: Sendable {
                     processedDestination: processedDestination,
                     processedFiles: processedFiles,
                     job: job,
-                    runID: runID
+                    runID: runID,
+                    earlySnapshot: earlySnapshot
                 )
                 conflicts = []
             case .rightToLeft:
@@ -247,7 +400,8 @@ struct SyncEngine: Sendable {
                     processedDestination: processedDestination,
                     processedFiles: processedFiles,
                     job: job,
-                    runID: runID
+                    runID: runID,
+                    earlySnapshot: earlySnapshot
                 )
                 conflicts = []
             case .bidirectional:
@@ -288,12 +442,71 @@ struct SyncEngine: Sendable {
             await right.close()
             await processedDestination?.close()
             return completedTransfers.adding(SyncResult(transferred: 0, deleted: deleted))
-        } catch {
+        } catch is CancellationError {
+            let earlySnapshot = await earlyTransferState.snapshot()
+            try? await persistEarlySourceSignatures(earlySnapshot, job: job)
             await left.close()
             await right.close()
             await processedDestination?.close()
+            throw CancellationError()
+        } catch let failure as SyncRunFailure {
+            let earlySnapshot = await earlyTransferState.snapshot()
+            let persistenceError: (any Error)?
+            do {
+                try await persistEarlySourceSignatures(earlySnapshot, job: job)
+                persistenceError = nil
+            } catch {
+                persistenceError = error
+            }
+            await left.close()
+            await right.close()
+            await processedDestination?.close()
+            if let persistenceError {
+                throw SyncRunFailure(
+                    failureDescription: failure.failureDescription
+                        + " Source signature persistence also failed: \(persistenceError.localizedDescription)",
+                    partialResult: failure.partialResult
+                )
+            }
+            throw failure
+        } catch {
+            let earlySnapshot = await earlyTransferState.snapshot()
+            let earlyResult = earlySnapshot.result
+            let persistenceError: (any Error)?
+            do {
+                try await persistEarlySourceSignatures(earlySnapshot, job: job)
+                persistenceError = nil
+            } catch {
+                persistenceError = error
+            }
+            await left.close()
+            await right.close()
+            await processedDestination?.close()
+            if earlyResult.hasActivity {
+                if let persistenceError {
+                    throw SyncRunFailure(
+                        failureDescription: error.localizedDescription
+                            + " Source signature persistence also failed: \(persistenceError.localizedDescription)",
+                        partialResult: earlyResult
+                    )
+                }
+                throw SyncRunFailure(error, partialResult: earlyResult)
+            }
             throw error
         }
+    }
+
+    private func persistEarlySourceSignatures(
+        _ snapshot: EarlyTransferSnapshot,
+        job: SyncJob
+    ) async throws {
+        guard !snapshot.sourceSignaturesToPersist.isEmpty,
+              let sourceEndpoint = job.sourceEndpoint else { return }
+        try await sourceSignatureRepository.record(
+            snapshot.sourceSignaturesToPersist,
+            jobID: job.id,
+            sourceEndpoint: sourceEndpoint
+        )
     }
 
     private func loggedListing(
@@ -301,7 +514,8 @@ struct SyncEngine: Sendable {
         endpointKind: EndpointKind,
         role: SyncLogEndpointRole,
         runID: UUID,
-        jobID: UUID
+        jobID: UUID,
+        onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)? = nil
     ) async throws -> [String: SyncFile] {
         eventLogger.record(SyncLogEvent(
             runID: runID,
@@ -313,7 +527,14 @@ struct SyncEngine: Sendable {
             endpointKind: endpointKind
         ))
         do {
-            let files = try await session.listFiles()
+            let files: [String: SyncFile]
+            if let onCompletedDirectory {
+                files = try await session.listFilesIncrementally(
+                    onCompletedDirectory: onCompletedDirectory
+                )
+            } else {
+                files = try await session.listFiles()
+            }
             eventLogger.record(SyncLogEvent(
                 runID: runID,
                 jobID: jobID,
@@ -789,6 +1010,120 @@ struct SyncEngine: Sendable {
             }
     }
 
+    private func supportsEarlyDelivery(job: SyncJob, source: any EndpointSession) -> Bool {
+        guard !job.movesProcessedFiles, source.supportsCompletedDirectoryListings else { return false }
+        switch job.direction {
+        case .leftToRight:
+            return job.left.kind.isRemote && job.right.kind == .local
+        case .rightToLeft:
+            return job.right.kind.isRemote && job.left.kind == .local
+        case .bidirectional:
+            return false
+        }
+    }
+
+    private func publishEarlyFiles(
+        _ listing: CompletedDirectoryListing,
+        from source: any EndpointSession,
+        sourceEndpoint: Endpoint,
+        to destination: any EndpointSession,
+        destinationFiles: [String: SyncFile],
+        job: SyncJob,
+        runID: UUID,
+        state: EarlyTransferState
+    ) async throws {
+        let directoryFiles = Dictionary(
+            uniqueKeysWithValues: listing.entries.compactMap { entry in
+                entry.file.map { ($0.relativePath, $0) }
+            }
+        )
+        let authoritativePaths = Set(listing.entries.compactMap { entry in
+            entry.file != nil && entry.hasAuthoritativeTimestamp ? entry.relativePath : nil
+        })
+        let requiresAuthoritativeTimestamp = sourceEndpoint.kind == .ftp || sourceEndpoint.kind == .ftps
+            ? job.filter.recentHours != nil
+                || (job.metadataAutomation?.isEnabled == true
+                    && job.metadataAutomation?.timestampPolicy == .sourceModification)
+            : false
+        let eligible = directoryFiles.values.filter { file in
+            job.filter.includes(path: file.relativePath, modifiedAt: file.modifiedAt)
+                && (!requiresAuthoritativeTimestamp || authoritativePaths.contains(file.relativePath))
+        }
+        let handledSourceSidecars = Set(eligible.compactMap { file -> String? in
+            guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return nil }
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+            return directoryFiles[sidecarPath] == nil ? nil : sidecarPath
+        })
+        let candidates = eligible
+            .filter { !handledSourceSidecars.contains($0.relativePath) }
+            .sorted { $0.modifiedAt > $1.modifiedAt }
+
+        try validateGeneratedSidecarOutputPaths(
+            candidates: candidates,
+            sourceFiles: directoryFiles,
+            automation: job.metadataAutomation,
+            enforceLocalPathRules: true,
+            occupiedDestinationPaths: Set(destinationFiles.keys)
+        )
+
+        let absentCandidates = candidates.filter { file in
+            potentialOutputPaths(
+                for: file,
+                sourceFiles: directoryFiles,
+                automation: job.metadataAutomation
+            ).allSatisfy { destinationFiles[$0] == nil }
+        }
+        let claimed = await state.claim(absentCandidates)
+        for file in claimed {
+            do {
+                try Task.checkCancellation()
+                let outcome = try await transfer(
+                    file,
+                    from: source,
+                    to: destination,
+                    existingDestinationFiles: [:],
+                    processedDestination: nil,
+                    occupiedProcessedPaths: [],
+                    existingProcessedFiles: [:],
+                    preserveDate: job.preserveModificationDates,
+                    verifySize: job.verifyFileSizes,
+                    metadataAutomation: job.metadataAutomation,
+                    sortProcessedFilesByPhotographer: false,
+                    sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                        ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
+                        : nil,
+                    sourceRole: job.direction == .leftToRight ? .left : .right,
+                    sourceKind: sourceEndpoint.kind,
+                    destinationRole: job.direction == .leftToRight ? .right : .left,
+                    destinationKind: .local,
+                    jobID: job.id,
+                    runID: runID,
+                    publishOnlyIfAbsent: true
+                )
+                await state.record(file, outcome: outcome)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let partialResult = (await state.snapshot()).result
+                throw SyncRunFailure(error, partialResult: partialResult)
+            }
+        }
+    }
+
+    private func potentialOutputPaths(
+        for file: SyncFile,
+        sourceFiles: [String: SyncFile],
+        automation: MetadataAutomation?
+    ) -> [String] {
+        var paths = [file.relativePath]
+        guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return paths }
+        let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+        if sourceFiles[sidecarPath] != nil || mayGenerateSidecar(file, automation: automation) {
+            paths.append(sidecarPath)
+        }
+        return paths
+    }
+
     private func transferNewer(
         from source: any EndpointSession,
         sourceEndpoint: Endpoint,
@@ -798,21 +1133,29 @@ struct SyncEngine: Sendable {
         processedDestination: (any EndpointSession)?,
         processedFiles: [String: SyncFile],
         job: SyncJob,
-        runID: UUID
+        runID: UUID,
+        earlySnapshot: EarlyTransferSnapshot = .empty
     ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport) {
         let savedSignatures = try await sourceSignatureRepository.signatures(
             jobID: job.id,
             sourceEndpoint: sourceEndpoint
         )
+        let effectiveDestinationFiles = destinationFiles.merging(earlySnapshot.destinationFiles) {
+            _, earlyFile in earlyFile
+        }
         let preliminaryCandidates = sourceFiles.values
             .filter { job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt) }
+            .filter { file in
+                guard let earlySignature = earlySnapshot.signatures[file.relativePath] else { return true }
+                return !earlySignature.matches(file, timestampTolerance: tolerance)
+            }
             .filter { file in
                 let willRewriteMetadata = job.metadataAutomation?
                     .matchesPhotographer(relativePath: file.relativePath) == true
                     && !MetadataWriter.usesXMPSidecar(for: file.relativePath)
                 let destinationNeedsTransfer = needsTransfer(
                     file,
-                    destinationFiles[file.relativePath],
+                    effectiveDestinationFiles[file.relativePath],
                     verifySize: job.verifyFileSizes,
                     metadataMayRewriteDestination: willRewriteMetadata,
                     savedSourceSignature: savedSignatures[file.relativePath]
@@ -833,13 +1176,20 @@ struct SyncEngine: Sendable {
             sourceFiles: sourceFiles,
             automation: job.metadataAutomation,
             enforceLocalPathRules: job.destinationEndpoint?.kind == .local,
-            occupiedDestinationPaths: Set(destinationFiles.keys)
+            occupiedDestinationPaths: Set(effectiveDestinationFiles.keys)
         )
-        var transferred = 0
-        var processed = 0
+        let changedEarlyPaths = Set(candidates.compactMap { file in
+            earlySnapshot.signatures[file.relativePath] == nil ? nil : file.relativePath
+        })
+        var transferred = earlySnapshot.result.transferred
+        var processed = earlySnapshot.result.processed
         var occupiedProcessedPaths = Set(processedFiles.keys)
-        var metadataReport = MetadataRunReport.empty
-        var pendingSourceSignatures: [SyncFile] = []
+        var metadataReport = MetadataRunReport(entries: earlySnapshot.result.metadataReport.entries.filter {
+            !changedEarlyPaths.contains($0.relativePath)
+        })
+        var pendingSourceSignatures = earlySnapshot.sourceSignaturesToPersist.filter {
+            !changedEarlyPaths.contains($0.relativePath)
+        }
         for file in candidates {
             do {
                 try Task.checkCancellation()
@@ -858,7 +1208,7 @@ struct SyncEngine: Sendable {
                     file,
                     from: source,
                     to: destination,
-                    existingDestinationFiles: destinationFiles,
+                    existingDestinationFiles: effectiveDestinationFiles,
                     processedDestination: processedDestination,
                     occupiedProcessedPaths: occupiedProcessedPaths,
                     existingProcessedFiles: processedFiles,
@@ -921,7 +1271,9 @@ struct SyncEngine: Sendable {
             }
             if outcome.movedToProcessed { processed += 1 }
             occupiedProcessedPaths.formUnion(outcome.publishedProcessedPaths)
-            transferred += 1
+            if earlySnapshot.signatures[file.relativePath] == nil {
+                transferred += 1
+            }
             if outcome.embeddedMetadataApplied {
                 pendingSourceSignatures.append(file)
             }
@@ -1099,7 +1451,8 @@ struct SyncEngine: Sendable {
         destinationRole: SyncLogEndpointRole,
         destinationKind: EndpointKind?,
         jobID: UUID,
-        runID: UUID
+        runID: UUID,
+        publishOnlyIfAbsent: Bool = false
     ) async throws -> TransferMetadataOutcome {
         let temporaryURL = try makeTemporaryURL(for: file)
         let temporarySidecarURL = temporaryURL.deletingPathExtension().appendingPathExtension("xmp")
@@ -1294,12 +1647,20 @@ struct SyncEngine: Sendable {
             itemCount: destinationImports.count
         ))
         do {
-            try await destination.importFilesTransactionally(
-                destinationImports,
-                replacing: existingDestinationFiles,
-                preserveDate: preserveDate,
-                verifySize: verifySize
-            )
+            if publishOnlyIfAbsent {
+                try await destination.importFilesTransactionallyIfAbsent(
+                    destinationImports,
+                    preserveDate: preserveDate,
+                    verifySize: verifySize
+                )
+            } else {
+                try await destination.importFilesTransactionally(
+                    destinationImports,
+                    replacing: existingDestinationFiles,
+                    preserveDate: preserveDate,
+                    verifySize: verifySize
+                )
+            }
             eventLogger.record(SyncLogEvent(
                 runID: runID,
                 jobID: jobID,
@@ -1414,7 +1775,10 @@ struct SyncEngine: Sendable {
                         auditEntry: auditEntry,
                         embeddedMetadataApplied: embeddedMetadataApplied,
                         movedToProcessed: movedToProcessed,
-                        publishedProcessedPaths: publishedProcessedPaths
+                        publishedProcessedPaths: publishedProcessedPaths,
+                        publishedDestinationFiles: Dictionary(
+                            uniqueKeysWithValues: destinationImports.map { ($0.file.relativePath, $0.file) }
+                        )
                     )
                 )
             }
@@ -1423,7 +1787,10 @@ struct SyncEngine: Sendable {
             auditEntry: auditEntry,
             embeddedMetadataApplied: embeddedMetadataApplied,
             movedToProcessed: movedToProcessed,
-            publishedProcessedPaths: publishedProcessedPaths
+            publishedProcessedPaths: publishedProcessedPaths,
+            publishedDestinationFiles: Dictionary(
+                uniqueKeysWithValues: destinationImports.map { ($0.file.relativePath, $0.file) }
+            )
         )
     }
 
@@ -1585,7 +1952,7 @@ struct SyncEngine: Sendable {
             guard MetadataWriter.usesXMPSidecar(for: candidate.relativePath) else { continue }
             let sidecarPath = MetadataWriter.sidecarRelativePath(for: candidate.relativePath)
             let willPublishSidecar = sourceFiles[sidecarPath] != nil
-                || shouldAttemptProcessedMove(candidate, automation: automation)
+                || mayGenerateSidecar(candidate, automation: automation)
             if willPublishSidecar {
                 try register(sidecarPath, owner: candidate.relativePath)
             }
@@ -1617,6 +1984,14 @@ struct SyncEngine: Sendable {
         case .cameraCapture:
             return true
         }
+    }
+
+    private func mayGenerateSidecar(
+        _ file: SyncFile,
+        automation: MetadataAutomation?
+    ) -> Bool {
+        guard let automation, automation.isEnabled else { return false }
+        return automation.matchesPhotographer(relativePath: file.relativePath)
     }
 
     private func metadataSkipDetail(

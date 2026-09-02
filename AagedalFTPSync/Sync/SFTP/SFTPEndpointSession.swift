@@ -5,6 +5,8 @@ import Foundation
 struct SFTPEndpointSession: EndpointSession, Sendable {
     private let transport: SFTPTransport
 
+    var supportsCompletedDirectoryListings: Bool { true }
+
     init(endpoint: Endpoint, password: String) {
         transport = SFTPTransport(endpoint: endpoint, password: password)
     }
@@ -15,6 +17,12 @@ struct SFTPEndpointSession: EndpointSession, Sendable {
 
     func listFiles() async throws -> [String: SyncFile] {
         try await transport.listFiles()
+    }
+
+    func listFilesIncrementally(
+        onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
+    ) async throws -> [String: SyncFile] {
+        try await transport.listFilesIncrementally(onCompletedDirectory: onCompletedDirectory)
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {

@@ -149,6 +149,46 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: existingURL), Data("existing".utf8))
     }
 
+    func testConditionalLocalGroupCommitPreservesCollisionAndRollsBackPrimary() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let primaryInput = fixture.outside.appendingPathComponent("conditional.CR3")
+        let sidecarInput = fixture.outside.appendingPathComponent("conditional.xmp")
+        try Data("primary".utf8).write(to: primaryInput)
+        try Data("incoming-sidecar".utf8).write(to: sidecarInput)
+        let existingSidecar = fixture.right.appendingPathComponent("conditional.xmp")
+        try Data("existing-sidecar".utf8).write(to: existingSidecar)
+        let session = try LocalEndpointSession(endpoint: fixture.endpoint(for: fixture.right))
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+
+        do {
+            try await session.importFilesTransactionallyIfAbsent(
+                [
+                    EndpointFileImport(
+                        localURL: primaryInput,
+                        file: SyncFile(relativePath: "conditional.CR3", size: 7, modifiedAt: date)
+                    ),
+                    EndpointFileImport(
+                        localURL: sidecarInput,
+                        file: SyncFile(relativePath: "conditional.xmp", size: 16, modifiedAt: date)
+                    ),
+                ],
+                preserveDate: true,
+                verifySize: true
+            )
+            XCTFail("The exclusive sidecar commit must fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("appeared at conditional.xmp"))
+        }
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.right.appendingPathComponent("conditional.CR3").path
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: existingSidecar), Data("existing-sidecar".utf8))
+    }
+
     @MainActor
     func testResetJobClearsPersistedDownloadHistory() async throws {
         let fixture = try LocalFixture()
