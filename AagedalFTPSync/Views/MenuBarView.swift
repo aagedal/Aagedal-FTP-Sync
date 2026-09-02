@@ -98,7 +98,7 @@ struct MenuBarView: View {
     }
 
     private func openJobsWindow(adding: Bool) {
-        if adding { _ = store.addJob() }
+        if adding { store.requestNewJobDraft() }
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
         NSApplication.shared.activate(ignoringOtherApps: true)

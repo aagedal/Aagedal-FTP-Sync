@@ -561,6 +561,94 @@ final class AppStorePersistenceTests: XCTestCase {
         XCTAssertNotNil(store.alertMessage)
     }
 
+    func testNewEditingSessionDoesNotPersistJobUntilFirstSuccessfulSave() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("new-job-draft-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        let session = JobEditingSession()
+        var draft = store.makeJobDraft()
+        draft.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data("source".utf8))
+        draft.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data("destination".utf8))
+
+        session.beginNewJob(draft)
+
+        XCTAssertTrue(session.isNewJob)
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertTrue(store.jobs.isEmpty)
+        XCTAssertTrue(try repository.load().isEmpty)
+
+        XCTAssertTrue(session.save(using: store))
+        XCTAssertFalse(session.isNewJob)
+        XCTAssertFalse(session.hasUnsavedChanges)
+        XCTAssertEqual(store.jobs.map(\.id), [draft.id])
+        XCTAssertEqual(try repository.load().map(\.id), [draft.id])
+    }
+
+    func testNewJobRequestDoesNotPersistPlaceholderJob() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("new-job-request-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+
+        store.requestNewJobDraft()
+
+        XCTAssertNotNil(store.newJobDraftRequestID)
+        XCTAssertTrue(store.jobs.isEmpty)
+        XCTAssertTrue(try repository.load().isEmpty)
+    }
+
+    func testEditingSessionTracksAndDiscardsJobAndPasswordChanges() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("job-editing-session-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = makeStore(
+            repository: JobRepository(fileURL: root.appendingPathComponent("jobs.json")),
+            root: root
+        )
+        let job = SyncJob(name: "Saved job")
+        let session = JobEditingSession()
+        session.edit(job)
+        session.loadCredentials(using: store)
+
+        XCTAssertFalse(session.hasUnsavedChanges)
+        session.draft.name = "Changed job"
+        XCTAssertTrue(session.hasUnsavedChanges)
+
+        session.markDiscarded()
+        XCTAssertEqual(session.draft, job)
+        XCTAssertFalse(session.hasUnsavedChanges)
+
+        session.leftPassword = "changed password"
+        XCTAssertTrue(session.hasUnsavedChanges)
+        session.markDiscarded()
+        XCTAssertEqual(session.leftPassword, "")
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testFailedFirstSaveKeepsNewJobAsUnsavedDraft() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("failed-new-job-draft-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = makeStore(
+            repository: JobRepository(fileURL: URL(fileURLWithPath: "/dev/null/jobs.json")),
+            root: root
+        )
+        let session = JobEditingSession()
+        var draft = store.makeJobDraft()
+        draft.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data("source".utf8))
+        draft.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data("destination".utf8))
+        session.beginNewJob(draft)
+
+        XCTAssertFalse(session.save(using: store))
+        XCTAssertTrue(session.isNewJob)
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertTrue(store.jobs.isEmpty)
+        XCTAssertNotNil(store.alertMessage)
+    }
+
     func testPasswordReadFailureIsReturnedToTheEditor() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("password-read-error-\(UUID().uuidString)", isDirectory: true)

@@ -169,6 +169,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
     @Published var selectedJobID: UUID?
     @Published var alertMessage: String?
+    @Published private(set) var newJobDraftRequestID: UUID?
 
     private let persistenceCoordinator: AppPersistenceCoordinator
     private let configurationTransferCoordinator = ConfigurationTransferCoordinator()
@@ -240,14 +241,23 @@ final class AppStore: ObservableObject {
     }
 
     func addJob() -> SyncJob {
-        var job = SyncJob(name: uniqueName())
-        job.isEnabled = false
-        job.startsOnAppLaunch = false
+        let job = makeJobDraft()
         let updatedJobs = jobs + [job]
         guard persistAndPublishJobs(updatedJobs) else { return job }
         selectedJobID = job.id
         phases[job.id] = .stopped
         return job
+    }
+
+    func makeJobDraft() -> SyncJob {
+        var job = SyncJob(name: uniqueName())
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        return job
+    }
+
+    func requestNewJobDraft() {
+        newJobDraftRequestID = UUID()
     }
 
     @discardableResult

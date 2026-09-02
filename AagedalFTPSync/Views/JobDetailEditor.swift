@@ -1,12 +1,110 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor
+final class JobEditingSession: ObservableObject {
+    @Published var draft = SyncJob()
+    @Published var leftPassword = ""
+    @Published var rightPassword = ""
+    @Published private(set) var credentialLoadError: String?
+    @Published private(set) var hasJob = false
+
+    private var savedJob: SyncJob?
+    private var savedLeftPassword = ""
+    private var savedRightPassword = ""
+    private var credentialsLoaded = false
+
+    var jobID: UUID? { hasJob ? draft.id : nil }
+    var isNewJob: Bool { hasJob && savedJob == nil }
+
+    var hasUnsavedChanges: Bool {
+        guard hasJob else { return false }
+        guard let savedJob else { return true }
+        return draft != savedJob
+            || leftPassword != savedLeftPassword
+            || rightPassword != savedRightPassword
+    }
+
+    func edit(_ job: SyncJob) {
+        draft = job
+        savedJob = job
+        leftPassword = ""
+        rightPassword = ""
+        savedLeftPassword = ""
+        savedRightPassword = ""
+        credentialLoadError = nil
+        credentialsLoaded = false
+        hasJob = true
+    }
+
+    func beginNewJob(_ job: SyncJob) {
+        draft = job
+        savedJob = nil
+        leftPassword = ""
+        rightPassword = ""
+        savedLeftPassword = ""
+        savedRightPassword = ""
+        credentialLoadError = nil
+        credentialsLoaded = true
+        hasJob = true
+    }
+
+    func clear() {
+        hasJob = false
+        savedJob = nil
+        credentialLoadError = nil
+        credentialsLoaded = false
+    }
+
+    func loadCredentials(using store: AppStore) {
+        guard hasJob, !credentialsLoaded else { return }
+        credentialsLoaded = true
+        do {
+            leftPassword = try store.password(for: draft.left)
+            rightPassword = try store.password(for: draft.right)
+            savedLeftPassword = leftPassword
+            savedRightPassword = rightPassword
+            credentialLoadError = nil
+        } catch {
+            credentialLoadError = "Saved passwords could not be loaded from Keychain. No password changes will be saved until this is resolved. \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
+    func save(using store: AppStore) -> Bool {
+        guard hasJob, credentialLoadError == nil else { return false }
+        // Metadata is edited in its own window. Merge the latest persisted programming
+        // so an older job-settings draft cannot overwrite it.
+        draft.metadataAutomation = store.jobs.first(where: { $0.id == draft.id })?.metadataAutomation
+        guard store.saveJob(draft, leftPassword: leftPassword, rightPassword: rightPassword),
+              let persistedJob = store.jobs.first(where: { $0.id == draft.id }) else {
+            return false
+        }
+        draft = persistedJob
+        savedJob = persistedJob
+        savedLeftPassword = leftPassword
+        savedRightPassword = rightPassword
+        store.selectedJobID = persistedJob.id
+        return true
+    }
+
+    func markDiscarded() {
+        guard hasJob else { return }
+        if let savedJob {
+            draft = savedJob
+            leftPassword = savedLeftPassword
+            rightPassword = savedRightPassword
+        } else {
+            clear()
+        }
+    }
+}
+
 struct JobDetailEditor: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
-    @State private var draft: SyncJob
-    @State private var leftPassword = ""
-    @State private var rightPassword = ""
+    @ObservedObject var session: JobEditingSession
+    let onDiscardNewJob: () -> Void
     @State private var showDeleteConfirmation = false
     @State private var showResetConfirmation = false
     @State private var saveConfirmation = false
@@ -14,26 +112,26 @@ struct JobDetailEditor: View {
     @State private var showSyncFailureHistory = false
     @State private var showProcessedFolderPicker = false
     @State private var processedFolderError: String?
-    @State private var credentialLoadError: String?
     @State private var showCredentialLoadError = false
 
-    init(job: SyncJob) {
-        _draft = State(initialValue: job)
+    private var draft: SyncJob {
+        get { session.draft }
+        nonmutating set { session.draft = newValue }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Form {
                 Section("Job") {
-                    TextField("Name", text: $draft.name)
+                    TextField("Name", text: $session.draft.name)
                     Toggle("Two-way sync", isOn: twoWayBinding)
-                    Toggle("Run automatically", isOn: $draft.isEnabled)
+                    Toggle("Run automatically", isOn: $session.draft.isEnabled)
                     Toggle("Start this job when the app launches", isOn: startOnAppLaunchBinding)
                     Toggle("Show latest sync session count only", isOn: latestSessionTransferCountBinding)
                         .help("A sync session is one scheduled check or a manual Sync Now run.")
                     LabeledContent("Check every") {
                         HStack {
-                            Slider(value: $draft.intervalSeconds, in: 2...300, step: 1)
+                            Slider(value: $session.draft.intervalSeconds, in: 2...300, step: 1)
                                 .frame(width: 220)
                             Text(intervalLabel).monospacedDigit().frame(width: 72, alignment: .trailing)
                         }
@@ -64,15 +162,15 @@ struct JobDetailEditor: View {
                 }
 
                 Section("File filter") {
-                    Picker("Quick filter", selection: $draft.filter.preset) {
+                    Picker("Quick filter", selection: $session.draft.filter.preset) {
                         ForEach(FilterPreset.allCases) { Text($0.title).tag($0) }
                     }
                     if draft.filter.preset == .custom {
-                        TextField("Extensions", text: $draft.filter.customExtensions, prompt: Text("jpg, jpeg, cr3, nef"))
+                        TextField("Extensions", text: $session.draft.filter.customExtensions, prompt: Text("jpg, jpeg, cr3, nef"))
                         Text("Separate extensions with commas or spaces.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    Toggle("Include hidden files", isOn: $draft.filter.includeHiddenFiles)
+                    Toggle("Include hidden files", isOn: $session.draft.filter.includeHiddenFiles)
                     Picker("File age", selection: recentHoursBinding) {
                         Text("Any age").tag(0)
                         Text("Last hour").tag(1)
@@ -96,6 +194,8 @@ struct JobDetailEditor: View {
                         openWindow(id: "metadata-programming")
                         NSApplication.shared.activate(ignoringOtherApps: true)
                     }
+                    .disabled(session.isNewJob)
+                    .help(session.isNewJob ? "Save this job before programming metadata." : "Open metadata programming for this job.")
                     Text("Assign permanent photographer profiles to filename initials, then program Headline, Description, and Keywords on a day timeline.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -165,8 +265,8 @@ struct JobDetailEditor: View {
                 }
 
                 Section("Safety") {
-                    Toggle("Preserve modification dates", isOn: $draft.preserveModificationDates)
-                    Toggle("Verify file sizes", isOn: $draft.verifyFileSizes)
+                    Toggle("Preserve modification dates", isOn: $session.draft.preserveModificationDates)
+                    Toggle("Verify file sizes", isOn: $session.draft.verifyFileSizes)
 
                     Toggle("Automatically delete old files from the local target", isOn: targetCleanupBinding)
                         .disabled(draft.targetCleanup == nil && !hasLocalOneWayTarget)
@@ -196,7 +296,9 @@ struct JobDetailEditor: View {
 
             Divider()
             HStack {
-                Button("Delete Job", role: .destructive) { showDeleteConfirmation = true }
+                Button(session.isNewJob ? "Discard Draft" : "Delete Job", role: .destructive) {
+                    showDeleteConfirmation = true
+                }
                     .disabled(store.isJobBusy(draft.id))
                     .help(store.isJobBusy(draft.id) ? "Wait for the current job operation to finish." : "Delete this job.")
                 Button("Reset Job…", role: .destructive) { showResetConfirmation = true }
@@ -212,22 +314,18 @@ struct JobDetailEditor: View {
                 Button("Sync Now") {
                     if save() { store.runNow(draft.id) }
                 }
-                .disabled(draft.validationMessage != nil || credentialLoadError != nil || store.isJobBusy(draft.id))
+                .disabled(draft.validationMessage != nil || session.credentialLoadError != nil || store.isJobBusy(draft.id))
                 Button("Save") { save() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut("s", modifiers: .command)
-                    .disabled(draft.validationMessage != nil || credentialLoadError != nil)
+                    .disabled(draft.validationMessage != nil || session.credentialLoadError != nil)
             }
             .padding(14)
         }
         .navigationTitle(draft.name)
         .onAppear {
-            do {
-                leftPassword = try store.password(for: draft.left)
-                rightPassword = try store.password(for: draft.right)
-                credentialLoadError = nil
-            } catch {
-                credentialLoadError = "Saved passwords could not be loaded from Keychain. No password changes will be saved until this is resolved. \(error.localizedDescription)"
+            session.loadCredentials(using: store)
+            if session.credentialLoadError != nil {
                 showCredentialLoadError = true
             }
         }
@@ -265,12 +363,24 @@ struct JobDetailEditor: View {
         .alert("Saved Passwords", isPresented: $showCredentialLoadError) {
             Button("OK") {}
         } message: {
-            Text(credentialLoadError ?? "")
+            Text(session.credentialLoadError ?? "")
         }
-        .confirmationDialog("Delete “\(draft.name)”?", isPresented: $showDeleteConfirmation) {
-            Button("Delete Job", role: .destructive) { store.removeJob(draft.id) }
+        .confirmationDialog(
+            session.isNewJob ? "Discard “\(draft.name)”?" : "Delete “\(draft.name)”?",
+            isPresented: $showDeleteConfirmation
+        ) {
+            Button(session.isNewJob ? "Discard Draft" : "Delete Job", role: .destructive) {
+                if session.isNewJob {
+                    session.markDiscarded()
+                    onDiscardNewJob()
+                } else {
+                    store.removeJob(draft.id)
+                }
+            }
         } message: {
-            Text("Files are not deleted, but this job and its saved credentials will be removed.")
+            Text(session.isNewJob
+                ? "This job has not been saved, so no stored jobs or credentials will be changed."
+                : "Files are not deleted, but this job and its saved credentials will be removed.")
         }
         .confirmationDialog("Reset “\(draft.name)”?", isPresented: $showResetConfirmation) {
             Button("Delete Downloads and Reset", role: .destructive) {
@@ -550,9 +660,9 @@ struct JobDetailEditor: View {
                     draft.right = draft.left
                     draft.left = source
 
-                    let sourcePassword = rightPassword
-                    rightPassword = leftPassword
-                    leftPassword = sourcePassword
+                    let sourcePassword = session.rightPassword
+                    session.rightPassword = session.leftPassword
+                    session.leftPassword = sourcePassword
                 }
                 draft.direction = enabled ? .bidirectional : .leftToRight
             }
@@ -581,20 +691,20 @@ struct JobDetailEditor: View {
 
     private var firstPasswordBinding: Binding<String> {
         Binding(
-            get: { draft.direction == .rightToLeft ? rightPassword : leftPassword },
+            get: { draft.direction == .rightToLeft ? session.rightPassword : session.leftPassword },
             set: {
-                if draft.direction == .rightToLeft { rightPassword = $0 }
-                else { leftPassword = $0 }
+                if draft.direction == .rightToLeft { session.rightPassword = $0 }
+                else { session.leftPassword = $0 }
             }
         )
     }
 
     private var secondPasswordBinding: Binding<String> {
         Binding(
-            get: { draft.direction == .rightToLeft ? leftPassword : rightPassword },
+            get: { draft.direction == .rightToLeft ? session.leftPassword : session.rightPassword },
             set: {
-                if draft.direction == .rightToLeft { leftPassword = $0 }
-                else { rightPassword = $0 }
+                if draft.direction == .rightToLeft { session.leftPassword = $0 }
+                else { session.rightPassword = $0 }
             }
         )
     }
@@ -643,10 +753,7 @@ struct JobDetailEditor: View {
 
     @discardableResult
     private func save() -> Bool {
-        // Metadata is edited in its own window. Merge the latest persisted programming
-        // so an older job-settings draft cannot overwrite it.
-        draft.metadataAutomation = store.jobs.first(where: { $0.id == draft.id })?.metadataAutomation
-        guard store.saveJob(draft, leftPassword: leftPassword, rightPassword: rightPassword) else {
+        guard session.save(using: store) else {
             saveConfirmation = false
             return false
         }
