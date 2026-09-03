@@ -337,6 +337,37 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func metadataProgrammingExportData(
+        for job: SyncJob,
+        automation: MetadataAutomation,
+        on days: Set<Date>,
+        calendar: Calendar,
+        password: String?
+    ) -> Data? {
+        let restrictedAutomation = automation.restricted(to: days, calendar: calendar)
+        guard !restrictedAutomation.clips.isEmpty else {
+            alertMessage = "The selected days do not contain any metadata programming to export."
+            return nil
+        }
+
+        var restrictedJob = job
+        restrictedJob.metadataAutomation = restrictedAutomation
+        do {
+            return try configurationTransferCoordinator.exportData(
+                scope: .metadata,
+                password: password,
+                state: ConfigurationTransferState(
+                    jobs: [restrictedJob],
+                    metadataPresets: [],
+                    photographers: restrictedAutomation.photographers
+                )
+            )
+        } catch {
+            alertMessage = "The metadata programming could not be exported: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     func supportBundleData(
         bundle: Bundle = .main,
         processInfo: ProcessInfo = .processInfo

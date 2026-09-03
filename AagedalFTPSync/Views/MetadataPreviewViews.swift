@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct MetadataFolderPreviewView: View {
@@ -86,17 +87,25 @@ struct ProgrammingMonthCalendar: View {
     @Binding var selection: Date
     let programmedDays: Set<Date>
     let calendar: Calendar
+    let onExport: (Set<Date>) -> Void
     @State private var displayedMonth: Date
+    @State private var daySelection: ProgrammingDaySelection
 
     init(
         selection: Binding<Date>,
         programmedDays: Set<Date>,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        onExport: @escaping (Set<Date>) -> Void
     ) {
         _selection = selection
         self.programmedDays = programmedDays
         self.calendar = calendar
+        self.onExport = onExport
         _displayedMonth = State(initialValue: Self.monthStart(for: selection.wrappedValue, calendar: calendar))
+        _daySelection = State(initialValue: ProgrammingDaySelection(
+            selectedDate: selection.wrappedValue,
+            calendar: calendar
+        ))
     }
 
     var body: some View {
@@ -134,6 +143,7 @@ struct ProgrammingMonthCalendar: View {
 
                 Button("Today") {
                     let today = Date()
+                    daySelection.select(today, extending: false)
                     selection = today
                     displayedMonth = Self.monthStart(for: today, calendar: calendar)
                 }
@@ -144,6 +154,7 @@ struct ProgrammingMonthCalendar: View {
         .padding(.top, 4)
         .frame(maxWidth: .infinity)
         .onChange(of: selection) { _, newSelection in
+            daySelection.synchronize(to: newSelection)
             let selectionMonth = Self.monthStart(for: newSelection, calendar: calendar)
             if !calendar.isDate(selectionMonth, equalTo: displayedMonth, toGranularity: .month) {
                 displayedMonth = selectionMonth
@@ -188,29 +199,35 @@ struct ProgrammingMonthCalendar: View {
     }
 
     private func dayButton(_ date: Date) -> some View {
-        let isSelected = calendar.isDate(date, inSameDayAs: selection)
+        let isActive = calendar.isDate(date, inSameDayAs: selection)
+        let isSelected = daySelection.contains(date)
         let isProgrammed = programmedDays.contains(calendar.startOfDay(for: date))
         let isToday = calendar.isDateInToday(date)
 
         return Button {
+            daySelection.select(date, extending: NSEvent.modifierFlags.contains(.shift))
             selection = date
         } label: {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(dayBackground(isSelected: isSelected, isProgrammed: isProgrammed))
+                    .fill(dayBackground(
+                        isActive: isActive,
+                        isSelected: isSelected,
+                        isProgrammed: isProgrammed
+                    ))
 
-                if isToday && !isSelected {
+                if isToday && !isActive {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(.tint, lineWidth: 1)
                 }
 
                 VStack(spacing: 2) {
                     Text(date.formatted(.dateTime.day()))
-                        .font(.body.monospacedDigit().weight(isSelected || isToday ? .semibold : .regular))
-                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                        .font(.body.monospacedDigit().weight(isActive || isToday ? .semibold : .regular))
+                        .foregroundStyle(isActive ? Color.white : Color.primary)
 
                     Circle()
-                        .fill(isSelected ? Color.white : Color.teal)
+                        .fill(isActive ? Color.white : Color.teal)
                         .frame(width: 5, height: 5)
                         .opacity(isProgrammed ? 1 : 0)
                 }
@@ -220,13 +237,42 @@ struct ProgrammingMonthCalendar: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(date.formatted(date: .complete, time: .omitted))
-        .accessibilityValue(isProgrammed ? "Programmed" : "No programming")
+        .accessibilityValue(dayAccessibilityValue(isSelected: isSelected, isProgrammed: isProgrammed))
+        .contextMenu {
+            Button {
+                let exportDays = daySelection.contextSelection(for: date)
+                if !daySelection.contains(date) {
+                    daySelection.select(date, extending: false)
+                    selection = date
+                }
+                onExport(exportDays)
+            } label: {
+                Label(exportTitle(for: date), systemImage: "square.and.arrow.up")
+            }
+            .disabled(programmedDays.isDisjoint(with: daySelection.contextSelection(for: date)))
+        }
     }
 
-    private func dayBackground(isSelected: Bool, isProgrammed: Bool) -> Color {
-        if isSelected { return .accentColor }
+    private func dayBackground(isActive: Bool, isSelected: Bool, isProgrammed: Bool) -> Color {
+        if isActive { return .accentColor }
+        if isSelected { return .accentColor.opacity(0.28) }
         if isProgrammed { return .teal.opacity(0.2) }
         return .clear
+    }
+
+    private func exportTitle(for date: Date) -> String {
+        daySelection.contextSelection(for: date).count == 1
+            ? "Export Metadata Programming for Day…"
+            : "Export Metadata Programming for Selected Days…"
+    }
+
+    private func dayAccessibilityValue(isSelected: Bool, isProgrammed: Bool) -> String {
+        switch (isSelected, isProgrammed) {
+        case (true, true): "Selected, programmed"
+        case (true, false): "Selected, no programming"
+        case (false, true): "Programmed"
+        case (false, false): "No programming"
+        }
     }
 
     private func monthButton(systemImage: String, offset: Int) -> some View {
@@ -246,6 +292,55 @@ struct ProgrammingMonthCalendar: View {
 
     private static func monthStart(for date: Date, calendar: Calendar) -> Date {
         calendar.dateInterval(of: .month, for: date)?.start ?? calendar.startOfDay(for: date)
+    }
+}
+
+struct ProgrammingDaySelection {
+    private let calendar: Calendar
+    private(set) var anchor: Date
+    private(set) var days: Set<Date>
+
+    init(selectedDate: Date, calendar: Calendar = .current) {
+        self.calendar = calendar
+        let day = calendar.startOfDay(for: selectedDate)
+        anchor = day
+        days = [day]
+    }
+
+    mutating func select(_ date: Date, extending: Bool) {
+        let day = calendar.startOfDay(for: date)
+        guard extending else {
+            anchor = day
+            days = [day]
+            return
+        }
+
+        let lowerBound = min(anchor, day)
+        let upperBound = max(anchor, day)
+        var range: Set<Date> = []
+        var cursor = lowerBound
+        while cursor <= upperBound {
+            range.insert(cursor)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor), next > cursor else {
+                break
+            }
+            cursor = next
+        }
+        days = range
+    }
+
+    mutating func synchronize(to date: Date) {
+        guard !contains(date) else { return }
+        select(date, extending: false)
+    }
+
+    func contains(_ date: Date) -> Bool {
+        days.contains(calendar.startOfDay(for: date))
+    }
+
+    func contextSelection(for date: Date) -> Set<Date> {
+        let day = calendar.startOfDay(for: date)
+        return days.contains(day) ? days : [day]
     }
 }
 
@@ -272,4 +367,3 @@ private extension MetadataPreviewStatus {
         }
     }
 }
-

@@ -526,6 +526,59 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         self.clips = clips
     }
 
+    func restricted(to days: Set<Date>, calendar: Calendar = .current) -> MetadataAutomation {
+        let dayIntervals = Self.mergedDayIntervals(for: days, calendar: calendar)
+        var restrictedClips: [MetadataScheduleClip] = []
+
+        for clip in clips {
+            let intersections = dayIntervals.compactMap { interval -> DateInterval? in
+                let start = max(clip.startsAt, interval.start)
+                let end = min(clip.endsAt, interval.end)
+                return start < end ? DateInterval(start: start, end: end) : nil
+            }
+            for (index, intersection) in intersections.enumerated() {
+                var restrictedClip = clip
+                if index > 0 {
+                    restrictedClip.id = UUID()
+                }
+                restrictedClip.startsAt = intersection.start
+                restrictedClip.endsAt = intersection.end
+                restrictedClips.append(restrictedClip)
+            }
+        }
+
+        let referencedPhotographerIDs = Set(restrictedClips.map(\.photographerID))
+        var result = self
+        result.photographers = photographers.filter { referencedPhotographerIDs.contains($0.id) }
+        result.clips = restrictedClips
+        return result
+    }
+
+    private static func mergedDayIntervals(
+        for days: Set<Date>,
+        calendar: Calendar
+    ) -> [DateInterval] {
+        let intervals = Set(days.map { calendar.startOfDay(for: $0) })
+            .sorted()
+            .compactMap { start -> DateInterval? in
+                guard let end = calendar.date(byAdding: .day, value: 1, to: start), end > start else {
+                    return nil
+                }
+                return DateInterval(start: start, end: end)
+            }
+
+        return intervals.reduce(into: []) { merged, interval in
+            guard let last = merged.last, interval.start <= last.end else {
+                merged.append(interval)
+                return
+            }
+            merged[merged.count - 1] = DateInterval(
+                start: last.start,
+                end: max(last.end, interval.end)
+            )
+        }
+    }
+
     func matchesPhotographer(relativePath: String) -> Bool {
         isEnabled && photographers.contains { $0.matches(relativePath: relativePath) }
     }

@@ -465,6 +465,109 @@ final class MetadataAutomationTests: XCTestCase {
         )])
     }
 
+    func testRestrictedAutomationClipsProgrammingToSelectedDaysAndPhotographers() {
+        let calendar = utcCalendar
+        let includedPhotographer = PhotographerProfile(
+            name: "Included",
+            filenamePrefix: "INC",
+            creator: "Included",
+            copyrightNotice: ""
+        )
+        let excludedPhotographer = PhotographerProfile(
+            name: "Excluded",
+            filenamePrefix: "EXC",
+            creator: "Excluded",
+            copyrightNotice: ""
+        )
+        let overnight = MetadataScheduleClip(
+            photographerID: includedPhotographer.id,
+            name: "Overnight",
+            startsAt: date(2026, 9, 2, 23, 0, calendar: calendar),
+            endsAt: date(2026, 9, 4, 1, 0, calendar: calendar)
+        )
+        let later = MetadataScheduleClip(
+            photographerID: excludedPhotographer.id,
+            name: "Later",
+            startsAt: date(2026, 9, 5, 10, 0, calendar: calendar),
+            endsAt: date(2026, 9, 5, 11, 0, calendar: calendar)
+        )
+        let automation = MetadataAutomation(
+            isEnabled: true,
+            photographers: [includedPhotographer, excludedPhotographer],
+            clips: [overnight, later]
+        )
+
+        let result = automation.restricted(
+            to: [date(2026, 9, 3, 12, 0, calendar: calendar)],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(result.photographers, [includedPhotographer])
+        XCTAssertEqual(result.clips.count, 1)
+        XCTAssertEqual(result.clips[0].id, overnight.id)
+        XCTAssertEqual(result.clips[0].startsAt, date(2026, 9, 3, 0, 0, calendar: calendar))
+        XCTAssertEqual(result.clips[0].endsAt, date(2026, 9, 4, 0, 0, calendar: calendar))
+    }
+
+    func testRestrictedAutomationSplitsClipAcrossNoncontiguousSelectedDays() {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD",
+            creator: "Jane",
+            copyrightNotice: ""
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Long assignment",
+            startsAt: date(2026, 9, 2, 12, 0, calendar: calendar),
+            endsAt: date(2026, 9, 6, 12, 0, calendar: calendar)
+        )
+        let automation = MetadataAutomation(photographers: [photographer], clips: [clip])
+
+        let result = automation.restricted(
+            to: [
+                date(2026, 9, 3, 12, 0, calendar: calendar),
+                date(2026, 9, 5, 12, 0, calendar: calendar),
+            ],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(result.clips.count, 2)
+        XCTAssertEqual(Set(result.clips.map(\.id)).count, 2)
+        XCTAssertEqual(
+            result.clips.map { DateInterval(start: $0.startsAt, end: $0.endsAt) },
+            [
+                DateInterval(
+                    start: date(2026, 9, 3, 0, 0, calendar: calendar),
+                    end: date(2026, 9, 4, 0, 0, calendar: calendar)
+                ),
+                DateInterval(
+                    start: date(2026, 9, 5, 0, 0, calendar: calendar),
+                    end: date(2026, 9, 6, 0, 0, calendar: calendar)
+                ),
+            ]
+        )
+    }
+
+    func testProgrammingDaySelectionUsesShiftRangeAndContextTarget() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Europe/Oslo"))
+        let first = date(2026, 3, 28, 12, 0, calendar: calendar)
+        let last = date(2026, 3, 30, 12, 0, calendar: calendar)
+        let unselected = date(2026, 4, 2, 12, 0, calendar: calendar)
+        var selection = ProgrammingDaySelection(selectedDate: first, calendar: calendar)
+
+        selection.select(last, extending: true)
+
+        XCTAssertEqual(selection.days.count, 3)
+        XCTAssertEqual(selection.contextSelection(for: last), selection.days)
+        XCTAssertEqual(
+            selection.contextSelection(for: unselected),
+            [calendar.startOfDay(for: unselected)]
+        )
+    }
+
     private var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

@@ -7,6 +7,11 @@ struct MetadataProgrammingView: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var coordinator = MetadataProgrammingCoordinator()
     @FocusState private var timelineFocused: Bool
+    @State private var pendingConfigurationTransfer: PendingConfigurationTransfer?
+    @State private var selectedExportDays: Set<Date> = []
+    @State private var showConfigurationExporter = false
+    @State private var exportDocument = ConfigurationTransferFile()
+    @State private var exportFilename = ConfigurationTransferScope.metadata.defaultFilename
 
     private var calendar: Calendar { coordinator.calendar }
     private var selectedDate: Date {
@@ -69,6 +74,10 @@ struct MetadataProgrammingView: View {
     private var isPreviewingMetadata: Bool { coordinator.isPreviewingMetadata }
 
     var body: some View {
+        alertContent
+    }
+
+    private var mainContent: some View {
         VStack(spacing: 0) {
             windowHeader
             Divider()
@@ -117,6 +126,10 @@ struct MetadataProgrammingView: View {
         .onChange(of: selectedDate) { _, _ in
             coordinator.clearPlayheadIfOutsideSelectedDay()
         }
+    }
+
+    private var sheetContent: some View {
+        mainContent
         .sheet(isPresented: Binding(
             get: { editingClipID != nil },
             set: { if !$0 { editingClipID = nil } }
@@ -155,6 +168,27 @@ struct MetadataProgrammingView: View {
                 )
             }
         }
+        .sheet(item: $pendingConfigurationTransfer) { transfer in
+            ConfigurationTransferOptionsView(
+                operation: transfer.operation,
+                onExport: prepareMetadataExport,
+                onImport: { _, _ in false }
+            )
+        }
+        .fileExporter(
+            isPresented: $showConfigurationExporter,
+            document: exportDocument,
+            contentType: .aagedalFTPSyncConfiguration,
+            defaultFilename: exportFilename
+        ) { result in
+            if case .failure(let error) = result {
+                store.alertMessage = "The metadata programming could not be exported: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private var dialogContent: some View {
+        sheetContent
         .confirmationDialog(
             "Remove photographer?",
             isPresented: Binding(
@@ -200,6 +234,10 @@ struct MetadataProgrammingView: View {
         } message: {
             Text(reprocessConfirmationMessage)
         }
+    }
+
+    private var alertContent: some View {
+        dialogContent
         .alert(
             "Preview Failed",
             isPresented: Binding(
@@ -210,6 +248,14 @@ struct MetadataProgrammingView: View {
             Button("OK", role: .cancel) { metadataPreviewError = nil }
         } message: {
             Text(metadataPreviewError ?? "The folder could not be previewed.")
+        }
+        .alert("Aagedal FTP Sync", isPresented: Binding(
+            get: { store.alertMessage != nil },
+            set: { if !$0 { store.alertMessage = nil } }
+        )) {
+            Button("OK") { store.alertMessage = nil }
+        } message: {
+            Text(store.alertMessage ?? "")
         }
     }
 
@@ -260,7 +306,8 @@ struct MetadataProgrammingView: View {
             ProgrammingMonthCalendar(
                 selection: $coordinator.selectedDate,
                 programmedDays: programmedDays,
-                calendar: calendar
+                calendar: calendar,
+                onExport: beginMetadataExport
             )
             .padding(12)
 
@@ -278,16 +325,30 @@ struct MetadataProgrammingView: View {
 
             Divider()
 
-            Button {
-                RegularWindowController.shared.prepareForOpening(windowID: "photographers")
-                openWindow(id: "photographers")
-            } label: {
-                Label("Manage All Photographers…", systemImage: "person.2")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(spacing: 0) {
+                Button {
+                    openJobSettings()
+                } label: {
+                    Label("Manage Sync Jobs…", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .padding(12)
+                .help("Open sync job settings in a separate window")
+
+                Divider()
+
+                Button {
+                    RegularWindowController.shared.prepareForOpening(windowID: "photographers")
+                    openWindow(id: "photographers")
+                } label: {
+                    Label("Manage All Photographers…", systemImage: "person.2")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .padding(12)
+                .help("Open the shared photographer library in a separate window")
             }
-            .buttonStyle(.plain)
-            .padding(12)
-            .help("Open the shared photographer library in a separate window")
         }
     }
 
@@ -313,6 +374,21 @@ struct MetadataProgrammingView: View {
         }
         .padding(.vertical, 3)
         .help("Program metadata for \(job.name)")
+        .contextMenu {
+            Button {
+                openJobSettings(for: job)
+            } label: {
+                Label("Job Settings…", systemImage: "gearshape")
+            }
+        }
+    }
+
+    private func openJobSettings(for job: SyncJob? = nil) {
+        if let job {
+            store.selectedJobID = job.id
+        }
+        RegularWindowController.shared.prepareForOpening(windowID: "jobs")
+        openWindow(id: "jobs")
     }
 
     private func metadataJobSummary(for automation: MetadataAutomation) -> String {
@@ -324,6 +400,54 @@ struct MetadataProgrammingView: View {
             : "\(photographerCount) photographers"
         let clips = clipCount == 1 ? "1 clip" : "\(clipCount) clips"
         return "\(status) · \(photographers) · \(clips)"
+    }
+
+    private func beginMetadataExport(for days: Set<Date>) {
+        selectedExportDays = days
+        pendingConfigurationTransfer = PendingConfigurationTransfer(operation: .export(.metadata))
+    }
+
+    private func prepareMetadataExport(
+        _ scope: ConfigurationTransferScope,
+        _ password: String?
+    ) -> Bool {
+        guard scope == .metadata,
+              let selectedJob,
+              let data = store.metadataProgrammingExportData(
+                  for: selectedJob,
+                  automation: draft,
+                  on: selectedExportDays,
+                  calendar: calendar,
+                  password: password
+              ) else {
+            return false
+        }
+        exportDocument = ConfigurationTransferFile(data: data)
+        exportFilename = metadataExportFilename(for: selectedExportDays)
+        DispatchQueue.main.async { showConfigurationExporter = true }
+        return true
+    }
+
+    private func metadataExportFilename(for days: Set<Date>) -> String {
+        let sortedDays = days.sorted()
+        guard let first = sortedDays.first else {
+            return ConfigurationTransferScope.metadata.defaultFilename
+        }
+        let firstStamp = metadataExportDateStamp(first)
+        guard let last = sortedDays.last, last != first else {
+            return "Aagedal Metadata Programming \(firstStamp)"
+        }
+        return "Aagedal Metadata Programming \(firstStamp) to \(metadataExportDateStamp(last))"
+    }
+
+    private func metadataExportDateStamp(_ date: Date) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
     }
 
     private var dayTimeline: some View {
