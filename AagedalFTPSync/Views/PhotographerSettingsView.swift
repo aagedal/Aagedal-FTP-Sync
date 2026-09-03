@@ -13,6 +13,9 @@ struct PhotographerSettingsView: View {
     @State private var importSummary: String?
     @State private var photographerSearch = ""
     @State private var photographerSortOrder = PhotographerSortOrder.ascending
+    @State private var promotedPhotographerID: UUID?
+    @State private var autosaveTask: Task<Void, Never>?
+    @State private var saveConfirmation = false
 
     var body: some View {
         HSplitView {
@@ -30,12 +33,15 @@ struct PhotographerSettingsView: View {
                         Divider()
 
                         Button("Import Photographers…", systemImage: "square.and.arrow.down") {
-                            showPhotographerImporter = true
+                            if commitPendingDraft(showValidationError: true) {
+                                showPhotographerImporter = true
+                            }
                         }
-                        .disabled(hasUnsavedChanges)
 
                         Button("Export Photographers…", systemImage: "square.and.arrow.up") {
-                            prepareExport()
+                            if commitPendingDraft(showValidationError: true) {
+                                prepareExport()
+                            }
                         }
                         .disabled(store.photographerLibrary.isEmpty)
                     } label: {
@@ -43,7 +49,7 @@ struct PhotographerSettingsView: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help(hasUnsavedChanges ? "Sort, export, or save changes before importing" : "Sort, import, or export photographers")
+                    .help("Sort, import, or export photographers")
                     Button(action: addPhotographer) {
                         Image(systemName: "plus")
                     }
@@ -65,22 +71,31 @@ struct PhotographerSettingsView: View {
 
                 Divider()
 
-                List(selection: $selectedPhotographerID) {
-                    ForEach(visiblePhotographers) { photographer in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(photographer.photographerName)
-                                .fontWeight(.medium)
-                            Text(profileSummary(photographer))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                ScrollViewReader { proxy in
+                    List(selection: photographerSelection) {
+                        ForEach(visiblePhotographers) { photographer in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(photographer.photographerName)
+                                    .fontWeight(.medium)
+                                Text(profileSummary(photographer))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 3)
+                            .tag(photographer.id)
+                            .id(photographer.id)
                         }
-                        .padding(.vertical, 3)
-                        .tag(photographer.id)
                     }
-                }
-                .overlay {
-                    if visiblePhotographers.isEmpty, !photographerSearch.isEmpty {
-                        ContentUnavailableView.search(text: photographerSearch)
+                    .overlay {
+                        if visiblePhotographers.isEmpty, !photographerSearch.isEmpty {
+                            ContentUnavailableView.search(text: photographerSearch)
+                        }
+                    }
+                    .onChange(of: selectedPhotographerID) { _, _ in
+                        scrollToSelectedPhotographer(using: proxy)
+                    }
+                    .onChange(of: visiblePhotographerIDs) { _, _ in
+                        scrollToSelectedPhotographer(using: proxy)
                     }
                 }
             }
@@ -102,13 +117,22 @@ struct PhotographerSettingsView: View {
 
                         Spacer()
 
-                        HStack {
-                            Spacer()
-                            Button("Revert", action: loadSelectedProfile)
-                                .disabled(!hasUnsavedChanges)
-                            Button("Save", action: saveDraft)
-                                .buttonStyle(.borderedProminent)
-                                .disabled(!hasUnsavedChanges)
+                        if let draftValidationMessage {
+                            Label(draftValidationMessage, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        } else if hasUnsavedChanges {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Saving…")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        } else if saveConfirmation {
+                            Label("Saved", systemImage: "checkmark.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.green)
                         }
                     }
                     .padding(20)
@@ -137,12 +161,20 @@ struct PhotographerSettingsView: View {
         .onChange(of: selectedPhotographerID) { _, _ in
             loadSelectedProfile()
         }
+        .onChange(of: draft) { _, _ in
+            scheduleAutosave()
+        }
         .onChange(of: store.photographerLibrary) { _, library in
             if let selectedPhotographerID,
                !library.contains(where: { $0.id == selectedPhotographerID }) {
                 self.selectedPhotographerID = library.first?.id
             }
-            loadSelectedProfile()
+            if !hasUnsavedChanges {
+                loadSelectedProfile()
+            }
+        }
+        .onDisappear {
+            _ = commitPendingDraft(showValidationError: false)
         }
         .fileImporter(
             isPresented: $showPhotographerImporter,
@@ -209,7 +241,7 @@ struct PhotographerSettingsView: View {
                 || photographer.formattedFilenamePrefixes.localizedCaseInsensitiveContains(query)
                 || photographer.copyrightNotice.localizedCaseInsensitiveContains(query)
         }
-        return filtered.sorted { lhs, rhs in
+        let sorted = filtered.sorted { lhs, rhs in
             let comparison = lhs.photographerName.localizedCaseInsensitiveCompare(rhs.photographerName)
             if comparison == .orderedSame {
                 return lhs.id.uuidString < rhs.id.uuidString
@@ -221,6 +253,32 @@ struct PhotographerSettingsView: View {
                 return comparison == .orderedDescending
             }
         }
+        guard let promotedPhotographerID,
+              let promotedIndex = sorted.firstIndex(where: { $0.id == promotedPhotographerID }) else {
+            return sorted
+        }
+        var ordered = sorted
+        let promoted = ordered.remove(at: promotedIndex)
+        ordered.insert(promoted, at: 0)
+        return ordered
+    }
+
+    private var visiblePhotographerIDs: [UUID] {
+        visiblePhotographers.map(\.id)
+    }
+
+    private var photographerSelection: Binding<UUID?> {
+        Binding(
+            get: { selectedPhotographerID },
+            set: { newSelection in
+                guard newSelection != selectedPhotographerID,
+                      commitPendingDraft(showValidationError: true) else { return }
+                if newSelection != promotedPhotographerID {
+                    promotedPhotographerID = nil
+                }
+                selectedPhotographerID = newSelection
+            }
+        )
     }
 
     private var draftBinding: Binding<PhotographerProfile>? {
@@ -236,11 +294,30 @@ struct PhotographerSettingsView: View {
         return draft != store.photographerLibrary.first(where: { $0.id == draft.id })
     }
 
+    private var draftValidationMessage: String? {
+        guard let draft else { return nil }
+        let name = draft.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty {
+            return "Give the photographer a name."
+        }
+        if draft.normalizedPrefixes.isEmpty {
+            return "Give \(name) filename initials."
+        }
+        let otherPrefixes = Set(store.photographerLibrary
+            .filter { $0.id != draft.id }
+            .flatMap(\.normalizedPrefixes))
+        if let duplicate = draft.normalizedPrefixes.first(where: otherPrefixes.contains) {
+            return "The filename initials \(duplicate) are already used by another photographer."
+        }
+        return nil
+    }
+
     private func loadSelectedProfile() {
         draft = selectedProfile
     }
 
     private func addPhotographer() {
+        guard commitPendingDraft(showValidationError: true) else { return }
         let name = uniqueName()
         let photographer = PhotographerProfile(
             name: name,
@@ -249,13 +326,58 @@ struct PhotographerSettingsView: View {
             copyrightNotice: ""
         )
         guard store.savePhotographerProfile(photographer) else { return }
+        photographerSearch = ""
+        promotedPhotographerID = photographer.id
         selectedPhotographerID = photographer.id
         draft = photographer
+        saveConfirmation = false
     }
 
-    private func saveDraft() {
-        guard let draft, store.savePhotographerProfile(draft) else { return }
+    @discardableResult
+    private func saveDraft() -> Bool {
+        guard let draft, store.savePhotographerProfile(draft) else { return false }
         self.draft = store.photographerLibrary.first { $0.id == draft.id }
+        saveConfirmation = true
+        return true
+    }
+
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        guard hasUnsavedChanges else { return }
+        saveConfirmation = false
+        guard draftValidationMessage == nil else { return }
+
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            _ = saveDraft()
+            autosaveTask = nil
+        }
+    }
+
+    @discardableResult
+    private func commitPendingDraft(showValidationError: Bool) -> Bool {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        guard hasUnsavedChanges else { return true }
+        if let draftValidationMessage {
+            if showValidationError {
+                store.alertMessage = draftValidationMessage
+            }
+            return false
+        }
+        return saveDraft()
+    }
+
+    private func scrollToSelectedPhotographer(using proxy: ScrollViewProxy) {
+        guard let selectedPhotographerID,
+              visiblePhotographerIDs.contains(selectedPhotographerID) else { return }
+        Task { @MainActor in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                proxy.scrollTo(selectedPhotographerID)
+            }
+        }
     }
 
     private func prepareExport() {
