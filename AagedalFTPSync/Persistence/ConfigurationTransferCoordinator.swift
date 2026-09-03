@@ -90,16 +90,41 @@ struct ConfigurationTransferCoordinator {
     func prepareImport(
         from data: Data,
         password: String?,
-        currentState: ConfigurationTransferState
+        currentState: ConfigurationTransferState,
+        expectedScope: ConfigurationTransferScope? = nil,
+        metadataTargetJobID: UUID? = nil
     ) throws -> PreparedConfigurationImport {
         let transfer = try ConfigurationTransferCodec.decode(data, password: password)
-        return try prepareImport(transfer, currentState: currentState)
+        if let expectedScope, transfer.scope != expectedScope {
+            throw AppError.invalidConfiguration(
+                "Choose an exported \(expectedScope.title.lowercased()) package."
+            )
+        }
+        return try prepareImport(
+            transfer,
+            currentState: currentState,
+            metadataTargetJobID: metadataTargetJobID
+        )
     }
 
     func prepareImport(
         _ transfer: ConfigurationTransfer,
-        currentState: ConfigurationTransferState
+        currentState: ConfigurationTransferState,
+        metadataTargetJobID: UUID? = nil
     ) throws -> PreparedConfigurationImport {
+        if let metadataTargetJobID {
+            guard transfer.scope == .metadata else {
+                throw AppError.invalidConfiguration("Only metadata programming can be imported into a sync job.")
+            }
+            guard currentState.jobs.contains(where: { $0.id == metadataTargetJobID }) else {
+                throw AppError.invalidConfiguration("The selected sync job is no longer available.")
+            }
+            guard transfer.metadataProgramming.count <= 1 else {
+                throw AppError.invalidConfiguration(
+                    "This package contains metadata programming for more than one job. Import it from the Sync Jobs window instead."
+                )
+            }
+        }
         let sourceJobIDs = transfer.jobs.map(\.id)
         guard Set(sourceJobIDs).count == sourceJobIDs.count else {
             throw AppError.invalidConfiguration("The package contains the same sync job more than once.")
@@ -194,7 +219,9 @@ struct ConfigurationTransferCoordinator {
         var targetedJobIDs = Set<UUID>()
         for programming in transfer.metadataProgramming {
             let targetID: UUID?
-            if transfer.scope == .package, let importedID = importedJobIDs[programming.jobID] {
+            if transfer.scope == .metadata, let metadataTargetJobID {
+                targetID = metadataTargetJobID
+            } else if transfer.scope == .package, let importedID = importedJobIDs[programming.jobID] {
                 targetID = importedID
             } else if updatedJobs.contains(where: { $0.id == programming.jobID }) {
                 targetID = programming.jobID

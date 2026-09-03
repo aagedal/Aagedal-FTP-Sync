@@ -65,6 +65,21 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["UI Smoke Fixture (Imported)"].waitForExistence(timeout: 5))
     }
 
+    func testMetadataProgrammingMakesImportDiscoverable() {
+        launch(seedJob: true)
+
+        element("open-metadata-programming").click()
+        let metadataWindow = app.windows["Metadata Programming"]
+        XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(element("import-metadata-programming").waitForExistence(timeout: 3))
+
+        let jobRow = metadataWindow.staticTexts["UI Smoke Fixture"].firstMatch
+        XCTAssertTrue(jobRow.waitForExistence(timeout: 3))
+        jobRow.rightClick()
+        XCTAssertTrue(app.menuItems["Import Metadata Programming…"].waitForExistence(timeout: 3))
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
     private func launch(seedJob: Bool = false, failFirstJobSave: Bool = false) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()

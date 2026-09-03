@@ -102,6 +102,38 @@ final class ConfigurationTransferCoordinatorTests: XCTestCase {
         XCTAssertEqual(prepared.result.skippedMetadataProgramming, 1)
     }
 
+    func testMetadataImportCanExplicitlyTargetADifferentlyNamedJob() throws {
+        let fixture = makeFixture(jobName: "Exporting Desk", prefix: "ED")
+        let target = SyncJob(name: "Receiving Desk")
+        let data = try coordinator.exportData(
+            scope: .metadata,
+            password: nil,
+            state: ConfigurationTransferState(
+                jobs: [fixture.job],
+                metadataPresets: [],
+                photographers: [fixture.photographer]
+            )
+        )
+
+        let prepared = try coordinator.prepareImport(
+            from: data,
+            password: nil,
+            currentState: ConfigurationTransferState(
+                jobs: [target],
+                metadataPresets: [],
+                photographers: []
+            ),
+            expectedScope: .metadata,
+            metadataTargetJobID: target.id
+        )
+
+        XCTAssertEqual(prepared.state.jobs.count, 1)
+        XCTAssertEqual(prepared.state.jobs[0].id, target.id)
+        XCTAssertEqual(prepared.state.jobs[0].metadataAutomation, fixture.job.metadataAutomation)
+        XCTAssertEqual(prepared.result.importedMetadataProgramming, 1)
+        XCTAssertEqual(prepared.result.skippedMetadataProgramming, 0)
+    }
+
     func testImportRejectsDuplicateJobIDs() throws {
         let fixture = makeFixture(jobName: "Duplicate", prefix: "DU")
         let transfer = ConfigurationTransfer(

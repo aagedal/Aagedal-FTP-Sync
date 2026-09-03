@@ -97,6 +97,7 @@ struct JobDetailEditor: View {
                         RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
                         openWindow(id: "metadata-programming")
                     }
+                    .accessibilityIdentifier("open-metadata-programming")
                     .disabled(session.isNewJob)
                     .help(session.isNewJob ? "Save this job before programming metadata." : "Open metadata programming for this job.")
                     Text("Assign permanent photographer profiles to filename initials, then program Headline, Description, and Keywords on a day timeline.")

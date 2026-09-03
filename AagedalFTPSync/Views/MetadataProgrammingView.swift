@@ -8,6 +8,9 @@ struct MetadataProgrammingView: View {
     @StateObject private var coordinator = MetadataProgrammingCoordinator()
     @FocusState private var timelineFocused: Bool
     @State private var pendingConfigurationTransfer: PendingConfigurationTransfer?
+    @State private var showConfigurationImporter = false
+    @State private var metadataImportTargetJobID: UUID?
+    @State private var importSummary: String?
     @State private var selectedExportDays: Set<Date> = []
     @State private var showConfigurationExporter = false
     @State private var exportDocument = ConfigurationTransferFile()
@@ -172,9 +175,15 @@ struct MetadataProgrammingView: View {
             ConfigurationTransferOptionsView(
                 operation: transfer.operation,
                 onExport: prepareMetadataExport,
-                onImport: { _, _ in false }
+                onImport: importMetadataProgramming
             )
         }
+        .fileImporter(
+            isPresented: $showConfigurationImporter,
+            allowedContentTypes: [.aagedalFTPSyncConfiguration],
+            allowsMultipleSelection: false,
+            onCompletion: loadMetadataPackage
+        )
         .fileExporter(
             isPresented: $showConfigurationExporter,
             document: exportDocument,
@@ -257,6 +266,14 @@ struct MetadataProgrammingView: View {
         } message: {
             Text(store.alertMessage ?? "")
         }
+        .alert("Metadata Imported", isPresented: Binding(
+            get: { importSummary != nil },
+            set: { if !$0 { importSummary = nil } }
+        )) {
+            Button("OK") { importSummary = nil }
+        } message: {
+            Text(importSummary ?? "")
+        }
     }
 
     private var windowHeader: some View {
@@ -290,6 +307,17 @@ struct MetadataProgrammingView: View {
             .help("Existing Fields: \(draft.existingFieldPolicy.explanation)")
 
             Spacer(minLength: 0)
+
+            Button {
+                if let selectedJob {
+                    beginMetadataImport(for: selectedJob)
+                }
+            } label: {
+                Label("Import…", systemImage: "square.and.arrow.down")
+            }
+            .accessibilityIdentifier("import-metadata-programming")
+            .disabled(selectedJob == nil)
+            .help("Import metadata programming into the selected sync job")
 
             Toggle("Activate", isOn: $coordinator.draft.isEnabled)
                 .toggleStyle(.switch)
@@ -376,6 +404,14 @@ struct MetadataProgrammingView: View {
         .help("Program metadata for \(job.name)")
         .contextMenu {
             Button {
+                beginMetadataImport(for: job)
+            } label: {
+                Label("Import Metadata Programming…", systemImage: "square.and.arrow.down")
+            }
+
+            Divider()
+
+            Button {
                 openJobSettings(for: job)
             } label: {
                 Label("Job Settings…", systemImage: "gearshape")
@@ -405,6 +441,48 @@ struct MetadataProgrammingView: View {
     private func beginMetadataExport(for days: Set<Date>) {
         selectedExportDays = days
         pendingConfigurationTransfer = PendingConfigurationTransfer(operation: .export(.metadata))
+    }
+
+    private func beginMetadataImport(for job: SyncJob) {
+        flushAutosave()
+        store.selectedJobID = job.id
+        metadataImportTargetJobID = job.id
+        showConfigurationImporter = true
+    }
+
+    private func loadMetadataPackage(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let hasAccess = url.startAccessingSecurityScopedResource()
+            defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
+            let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard fileSize <= ConfigurationTransferCodec.maximumFileSize else {
+                throw ConfigurationTransferError.fileTooLarge
+            }
+            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+            let protection = try ConfigurationTransferCodec.protection(of: data)
+            pendingConfigurationTransfer = PendingConfigurationTransfer(
+                operation: .importPackage(data, protection)
+            )
+        } catch {
+            store.alertMessage = "The metadata programming could not be opened: \(error.localizedDescription)"
+        }
+    }
+
+    private func importMetadataProgramming(_ data: Data, _ password: String?) -> Bool {
+        guard let metadataImportTargetJobID,
+              let result = store.importConfiguration(
+                  from: data,
+                  password: password,
+                  expectedScope: .metadata,
+                  metadataTargetJobID: metadataImportTargetJobID
+              ) else {
+            return false
+        }
+        loadSelectedJob()
+        importSummary = result.summary
+        self.metadataImportTargetJobID = nil
+        return true
     }
 
     private func prepareMetadataExport(

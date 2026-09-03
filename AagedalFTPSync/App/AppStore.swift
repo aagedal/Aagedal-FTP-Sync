@@ -391,12 +391,19 @@ final class AppStore: ObservableObject {
     }
 
     @discardableResult
-    func importConfiguration(from data: Data, password: String?) -> ConfigurationImportResult? {
+    func importConfiguration(
+        from data: Data,
+        password: String?,
+        expectedScope: ConfigurationTransferScope? = nil,
+        metadataTargetJobID: UUID? = nil
+    ) -> ConfigurationImportResult? {
         do {
             let prepared = try configurationTransferCoordinator.prepareImport(
                 from: data,
                 password: password,
-                currentState: currentConfigurationTransferState
+                currentState: currentConfigurationTransferState,
+                expectedScope: expectedScope,
+                metadataTargetJobID: metadataTargetJobID
             )
             try persistenceCoordinator.saveConfiguration(
                 previous: currentPersistentState,

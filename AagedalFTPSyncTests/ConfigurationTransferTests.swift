@@ -403,6 +403,145 @@ final class ConfigurationTransferTests: XCTestCase {
         XCTAssertEqual(try photographerRepository.load(), store.photographerLibrary)
     }
 
+    @MainActor
+    func testAppStoreMetadataOnlyExportImportsAndPersistsAgainstMatchingJob() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-only-transfer-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture()
+        let source = try makeIsolatedStore(
+            at: root.appendingPathComponent("source", isDirectory: true),
+            jobs: [fixture.job],
+            presets: [fixture.preset],
+            photographers: [fixture.photographer]
+        )
+        let destinationJob = SyncJob(name: "Receiving Desk")
+        let destination = try makeIsolatedStore(
+            at: root.appendingPathComponent("destination", isDirectory: true),
+            jobs: [destinationJob]
+        )
+
+        let data = try XCTUnwrap(
+            source.store.configurationExportData(scope: .metadata, password: password)
+        )
+        let result = try XCTUnwrap(
+            destination.store.importConfiguration(
+                from: data,
+                password: password,
+                expectedScope: .metadata,
+                metadataTargetJobID: destinationJob.id
+            )
+        )
+
+        XCTAssertEqual(result.scope, .metadata)
+        XCTAssertEqual(result.importedJobs, 0)
+        XCTAssertEqual(result.importedMetadataProgramming, 1)
+        XCTAssertEqual(result.importedPresets, 1)
+        XCTAssertEqual(result.importedPhotographers, 1)
+        XCTAssertEqual(destination.store.jobs.count, 1)
+        XCTAssertEqual(destination.store.jobs[0].id, destinationJob.id)
+        XCTAssertEqual(destination.store.jobs[0].metadataAutomation, fixture.job.metadataAutomation)
+        XCTAssertEqual(destination.store.metadataPresets, [fixture.preset])
+        XCTAssertEqual(destination.store.photographerLibrary, [fixture.photographer])
+        XCTAssertEqual(try destination.jobs.load(), destination.store.jobs)
+        XCTAssertEqual(try destination.presets.load(), destination.store.metadataPresets)
+        XCTAssertEqual(try destination.photographers.load(), destination.store.photographerLibrary)
+    }
+
+    @MainActor
+    func testSelectedDayMetadataExportTrimsClipsAndExcludesOtherDays() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-day-export-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = makeFixture()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let selectedDay = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 9,
+            day: 3
+        )))
+        let selectedDayEnd = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: selectedDay))
+        let crossingClip = MetadataScheduleClip(
+            photographerID: fixture.photographer.id,
+            name: "Overnight assignment",
+            startsAt: selectedDay.addingTimeInterval(-3_600),
+            endsAt: selectedDay.addingTimeInterval(2 * 3_600),
+            fields: fixture.preset.fields
+        )
+        let laterClip = MetadataScheduleClip(
+            photographerID: fixture.photographer.id,
+            name: "Later assignment",
+            startsAt: selectedDayEnd.addingTimeInterval(3_600),
+            endsAt: selectedDayEnd.addingTimeInterval(2 * 3_600),
+            fields: fixture.preset.fields
+        )
+        let automation = MetadataAutomation(
+            isEnabled: true,
+            photographers: [fixture.photographer],
+            clips: [crossingClip, laterClip]
+        )
+        let store = try makeIsolatedStore(at: root).store
+
+        let data = try XCTUnwrap(store.metadataProgrammingExportData(
+            for: fixture.job,
+            automation: automation,
+            on: [selectedDay],
+            calendar: calendar,
+            password: nil
+        ))
+        let decoded = try ConfigurationTransferCodec.decode(data, password: nil)
+        let exportedAutomation = try XCTUnwrap(decoded.metadataProgramming.first?.automation)
+
+        XCTAssertEqual(decoded.scope, .metadata)
+        XCTAssertEqual(decoded.metadataProgramming.count, 1)
+        XCTAssertEqual(exportedAutomation.photographers, [fixture.photographer])
+        XCTAssertEqual(exportedAutomation.clips.count, 1)
+        XCTAssertEqual(exportedAutomation.clips[0].id, crossingClip.id)
+        XCTAssertEqual(exportedAutomation.clips[0].startsAt, selectedDay)
+        XCTAssertEqual(exportedAutomation.clips[0].endsAt, selectedDay.addingTimeInterval(2 * 3_600))
+    }
+
+    @MainActor
+    private func makeIsolatedStore(
+        at root: URL,
+        jobs: [SyncJob] = [],
+        presets: [MetadataPreset] = [],
+        photographers: [PhotographerProfile] = []
+    ) throws -> (
+        store: AppStore,
+        jobs: JobRepository,
+        presets: MetadataPresetRepository,
+        photographers: PhotographerProfileRepository
+    ) {
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let presetRepository = MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json"))
+        let photographerRepository = PhotographerProfileRepository(
+            fileURL: root.appendingPathComponent("photographers.json")
+        )
+        try jobRepository.save(jobs)
+        try presetRepository.save(presets)
+        try photographerRepository.save(photographers)
+        let store = AppStore(
+            repository: jobRepository,
+            metadataPresetRepository: presetRepository,
+            photographerProfileRepository: photographerRepository,
+            serverProfileRepository: ServerProfileRepository(
+                fileURL: root.appendingPathComponent("servers.json")
+            ),
+            metadataAuditRepository: MetadataAuditRepository(
+                fileURL: root.appendingPathComponent("audit.json")
+            ),
+            syncFailureRepository: SyncFailureRepository(
+                fileURL: root.appendingPathComponent("sync-failures.json")
+            ),
+            sourceSignatureRepository: SourceSignatureRepository(
+                fileURL: root.appendingPathComponent("source-signatures.json")
+            )
+        )
+        return (store, jobRepository, presetRepository, photographerRepository)
+    }
+
     private func makeFixture() -> (
         job: SyncJob,
         photographer: PhotographerProfile,
