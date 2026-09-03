@@ -3,6 +3,8 @@ import SwiftUI
 
 struct PhotographerMapView: View {
     @EnvironmentObject private var store: AppStore
+    @AppStorage("photographerMapRenderingMode") private var renderingMode: PhotographerMapRenderingMode = .standard
+    @AppStorage("photographerMapShows3DBuildings") private var shows3DBuildings = false
     @State private var selectedDate = Date()
     @State private var secondsIntoDay: Double = 12 * 60 * 60
     @State private var cameraPosition: MapCameraPosition = .automatic
@@ -66,6 +68,22 @@ struct PhotographerMapView: View {
 
             Spacer()
 
+            Menu {
+                Picker("Map Style", selection: $renderingMode) {
+                    ForEach(PhotographerMapRenderingMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.systemImage)
+                            .tag(mode)
+                    }
+                }
+
+                Divider()
+
+                Toggle("3D Buildings", isOn: $shows3DBuildings)
+            } label: {
+                Label(renderingMode.title, systemImage: renderingMode.systemImage)
+            }
+            .help("Choose the map appearance and whether buildings are shown in 3D")
+
             Button {
                 moveDay(by: -1)
             } label: {
@@ -124,7 +142,7 @@ struct PhotographerMapView: View {
                 }
             }
         }
-        .mapStyle(.standard(elevation: .flat))
+        .mapStyle(mapStyle)
         .mapControls {
             MapCompass()
             MapScaleView()
@@ -133,6 +151,19 @@ struct PhotographerMapView: View {
         .overlay(alignment: .topLeading) {
             mapSummary
                 .padding(12)
+        }
+    }
+
+    private var mapStyle: MapStyle {
+        let elevation: MapStyle.Elevation = shows3DBuildings ? .realistic : .flat
+
+        switch renderingMode {
+        case .standard:
+            return .standard(elevation: elevation)
+        case .satellite:
+            return .hybrid(elevation: elevation)
+        case .satelliteWithoutLabels:
+            return .imagery(elevation: elevation)
         }
     }
 
@@ -313,6 +344,36 @@ struct PhotographerMapView: View {
             return "\(label) · \(coordinates)"
         }
         return coordinates
+    }
+}
+
+private enum PhotographerMapRenderingMode: String, CaseIterable, Identifiable {
+    case standard
+    case satellite
+    case satelliteWithoutLabels
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .standard:
+            return "Standard"
+        case .satellite:
+            return "Satellite"
+        case .satelliteWithoutLabels:
+            return "Satellite Without Labels"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .standard:
+            return "map"
+        case .satellite:
+            return "globe.americas.fill"
+        case .satelliteWithoutLabels:
+            return "photo"
+        }
     }
 }
 
