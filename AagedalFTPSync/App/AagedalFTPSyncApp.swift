@@ -47,6 +47,13 @@ struct AagedalFTPSyncApp: App {
         }
         .defaultSize(width: 700, height: 450)
 
+        Window("Photographer Map", id: "photographer-map") {
+            PhotographerMapView()
+                .environmentObject(store)
+                .background(RegularWindowTracker(windowID: "photographer-map"))
+        }
+        .defaultSize(width: 1120, height: 760)
+
         Window("Servers", id: "servers") {
             ServerSettingsView()
                 .environmentObject(store)

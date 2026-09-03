@@ -308,6 +308,12 @@ struct MetadataProgrammingView: View {
 
             Spacer(minLength: 0)
 
+            Button(action: openPhotographerMap) {
+                Label("Map", systemImage: "map")
+            }
+            .disabled(selectedJob == nil)
+            .help("Show scheduled photographer locations on a map")
+
             Button {
                 if let selectedJob {
                     beginMetadataImport(for: selectedJob)
@@ -428,6 +434,13 @@ struct MetadataProgrammingView: View {
         }
         RegularWindowController.shared.prepareForOpening(windowID: "jobs")
         openWindow(id: "jobs")
+    }
+
+    private func openPhotographerMap() {
+        flushAutosave()
+        store.metadataMapRequestedDate = playhead?.date ?? selectedDate
+        RegularWindowController.shared.prepareForOpening(windowID: "photographer-map")
+        openWindow(id: "photographer-map")
     }
 
     private func metadataJobSummary(for automation: MetadataAutomation) -> String {

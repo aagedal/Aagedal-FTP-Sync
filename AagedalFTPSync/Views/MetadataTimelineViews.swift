@@ -1,4 +1,5 @@
 import AppKit
+import MapKit
 import SwiftUI
 
 struct TimelineHourHeader: View {
@@ -485,7 +486,14 @@ private struct TimelineClipView: View {
                         .font(.caption2.weight(.bold))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(timelineTitle).font(.caption.weight(.semibold)).lineLimit(1)
+                    HStack(spacing: 3) {
+                        Text(timelineTitle).font(.caption.weight(.semibold)).lineLimit(1)
+                        if clip.gpsPosition != nil {
+                            Image(systemName: "mappin.and.ellipse")
+                                .font(.caption2.weight(.semibold))
+                                .accessibilityLabel("Has GPS location")
+                        }
+                    }
                     Text(timeLabel).font(.caption2.monospacedDigit()).lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -623,6 +631,10 @@ struct MetadataClipEditor: View {
                     TextField("Keywords", text: $keywordsText, prompt: Text("politics, conference, Oslo"))
                 }
 
+                Section("GPS Location") {
+                    ClipLocationEditor(position: $draft.gpsPosition)
+                }
+
                 Section("Reusable Presets") {
                     Picker("Preset", selection: $selectedPresetID) {
                         Text("Choose a preset").tag(Optional<UUID>.none)
@@ -671,7 +683,7 @@ struct MetadataClipEditor: View {
             }
             .padding(14)
         }
-        .frame(width: 620, height: 620)
+        .frame(width: 680, height: 780)
         .confirmationDialog(
             "Delete reusable preset?",
             isPresented: Binding(
@@ -696,6 +708,10 @@ struct MetadataClipEditor: View {
         let trimmedHeadline = draft.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHeadline.isEmpty else {
             validationMessage = "Give the metadata a headline."
+            return
+        }
+        if draft.gpsPosition?.isValid == false {
+            validationMessage = "Enter a latitude from −90 to 90 and a longitude from −180 to 180."
             return
         }
         draft.fields.headline = trimmedHeadline
@@ -740,5 +756,151 @@ struct MetadataClipEditor: View {
         normalizeKeywords()
         preset.fields = draft.fields
         _ = store.saveMetadataPreset(preset)
+    }
+}
+
+private struct ClipLocationEditor: View {
+    @Binding var position: ScheduledGPSPosition?
+    @State private var mapPosition: MapCameraPosition
+
+    private static let defaultCoordinate = CLLocationCoordinate2D(latitude: 59.9139, longitude: 10.7522)
+
+    init(position: Binding<ScheduledGPSPosition?>) {
+        _position = position
+        let coordinate = position.wrappedValue.map {
+            CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+        } ?? Self.defaultCoordinate
+        _mapPosition = State(initialValue: .region(MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+        )))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Add a GPS position to files matched by this clip", isOn: hasPositionBinding)
+
+            if position != nil {
+                MapReader { proxy in
+                    Map(position: $mapPosition) {
+                        if let coordinate {
+                            Marker(position?.displayLabel ?? "Clip location", coordinate: coordinate)
+                                .tint(.red)
+                        }
+                    }
+                    .mapStyle(.standard(elevation: .flat))
+                    .simultaneousGesture(
+                        SpatialTapGesture()
+                            .onEnded { value in
+                                guard let coordinate = proxy.convert(value.location, from: .local) else { return }
+                                updateCoordinate(coordinate)
+                            }
+                    )
+                }
+                .frame(height: 190)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(.separator, lineWidth: 1)
+                }
+
+                Text("Click the map to place the marker, or enter exact coordinates below.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                TextField("Location name", text: labelBinding, prompt: Text("Optional, for example Oslo City Hall"))
+
+                HStack {
+                    TextField("Latitude", value: latitudeBinding, format: coordinateFormat)
+                    TextField("Longitude", value: longitudeBinding, format: coordinateFormat)
+                }
+
+                HStack {
+                    Toggle("Altitude", isOn: hasAltitudeBinding)
+                        .fixedSize()
+                    if position?.altitudeMeters != nil {
+                        TextField("Meters", value: altitudeBinding, format: coordinateFormat)
+                            .frame(maxWidth: 180)
+                        Text("m")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private var coordinate: CLLocationCoordinate2D? {
+        guard let position else { return nil }
+        return CLLocationCoordinate2D(latitude: position.latitude, longitude: position.longitude)
+    }
+
+    private var coordinateFormat: FloatingPointFormatStyle<Double> {
+        .number.precision(.fractionLength(0...6))
+    }
+
+    private var hasPositionBinding: Binding<Bool> {
+        Binding(
+            get: { position != nil },
+            set: { enabled in
+                if enabled, position == nil {
+                    position = ScheduledGPSPosition(
+                        latitude: Self.defaultCoordinate.latitude,
+                        longitude: Self.defaultCoordinate.longitude
+                    )
+                } else if !enabled {
+                    position = nil
+                }
+            }
+        )
+    }
+
+    private var labelBinding: Binding<String> {
+        Binding(
+            get: { position?.label ?? "" },
+            set: { value in mutatePosition { $0.label = value } }
+        )
+    }
+
+    private var latitudeBinding: Binding<Double> {
+        Binding(
+            get: { position?.latitude ?? Self.defaultCoordinate.latitude },
+            set: { value in mutatePosition { $0.latitude = value } }
+        )
+    }
+
+    private var longitudeBinding: Binding<Double> {
+        Binding(
+            get: { position?.longitude ?? Self.defaultCoordinate.longitude },
+            set: { value in mutatePosition { $0.longitude = value } }
+        )
+    }
+
+    private var hasAltitudeBinding: Binding<Bool> {
+        Binding(
+            get: { position?.altitudeMeters != nil },
+            set: { enabled in
+                mutatePosition { $0.altitudeMeters = enabled ? ($0.altitudeMeters ?? 0) : nil }
+            }
+        )
+    }
+
+    private var altitudeBinding: Binding<Double> {
+        Binding(
+            get: { position?.altitudeMeters ?? 0 },
+            set: { value in mutatePosition { $0.altitudeMeters = value } }
+        )
+    }
+
+    private func updateCoordinate(_ coordinate: CLLocationCoordinate2D) {
+        mutatePosition {
+            $0.latitude = coordinate.latitude
+            $0.longitude = coordinate.longitude
+        }
+    }
+
+    private func mutatePosition(_ mutation: (inout ScheduledGPSPosition) -> Void) {
+        guard var updated = position else { return }
+        mutation(&updated)
+        position = updated
     }
 }

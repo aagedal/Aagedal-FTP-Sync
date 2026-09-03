@@ -178,6 +178,7 @@ enum MetadataWriter {
             try metadata.iptc.setValue(copyright, for: .copyrightNotice)
         }
         metadata.syncIPTCToXMP()
+        applyGPS(from: assignment, to: &metadata)
         let writeWarnings = try metadata.write(to: fileURL)
         return uniqueWarnings(readWarnings + writeWarnings)
     }
@@ -202,6 +203,10 @@ enum MetadataWriter {
             warnings.append(contentsOf: metadata.warnings)
             metadata.syncIPTCToXMP()
             xmp = metadata.xmp ?? xmp
+            if xmpGPSPosition(xmp) == nil,
+               let embeddedPosition = embeddedGPSPosition(metadata) {
+                setGPS(embeddedPosition, on: &xmp)
+            }
         }
         apply(assignment, to: &xmp)
 
@@ -237,6 +242,7 @@ enum MetadataWriter {
         if !copyright.isEmpty, shouldOverwrite || isEmpty(xmp.rights) {
             xmp.rights = copyright
         }
+        applyGPS(from: assignment, to: &xmp)
     }
 
     private enum FieldAssessment: Equatable {
@@ -283,6 +289,12 @@ enum MetadataWriter {
             overwrite: overwrite,
             into: &assessments
         )
+        assessGPS(
+            assignment.clip.gpsPosition,
+            currentValues: [embeddedGPSPosition(metadata), metadata.xmp.flatMap(xmpGPSPosition)],
+            overwrite: overwrite,
+            into: &assessments
+        )
 
         return combinedAssessment(assessments)
     }
@@ -310,6 +322,12 @@ enum MetadataWriter {
             overwrite: overwrite,
             into: &assessments
         )
+        assessGPS(
+            assignment.clip.gpsPosition,
+            currentValues: [xmpGPSPosition(xmp)],
+            overwrite: overwrite,
+            into: &assessments
+        )
 
         return combinedAssessment(assessments)
     }
@@ -333,6 +351,165 @@ enum MetadataWriter {
             assessments.append(.willChange)
         } else {
             assessments.append(.preserved)
+        }
+    }
+
+    private static func assessGPS(
+        _ desiredPosition: ScheduledGPSPosition?,
+        currentValues: [ScheduledGPSPosition?],
+        overwrite: Bool,
+        into assessments: inout [FieldAssessment]
+    ) {
+        guard let desiredPosition, desiredPosition.isValid else { return }
+        let populated = currentValues.compactMap { $0 }
+        if !populated.isEmpty,
+           populated.allSatisfy({ positionsMatch($0, desiredPosition) }) {
+            assessments.append(.matches)
+        } else if overwrite || populated.isEmpty {
+            assessments.append(.willChange)
+        } else {
+            assessments.append(.preserved)
+        }
+    }
+
+    private static func applyGPS(from assignment: MetadataAssignment, to metadata: inout ImageMetadata) {
+        guard let desiredPosition = assignment.clip.gpsPosition,
+              desiredPosition.isValid else { return }
+        let hasExistingPosition = embeddedGPSPosition(metadata) != nil
+            || metadata.xmp.flatMap(xmpGPSPosition) != nil
+        guard assignment.existingFieldPolicy == .overwrite || !hasExistingPosition else { return }
+
+        metadata.setGPS(
+            latitude: desiredPosition.latitude,
+            longitude: desiredPosition.longitude,
+            altitude: desiredPosition.altitudeMeters
+        )
+        // A scheduled location is a position, not a recorded satellite fix. Do
+        // not claim that the time at which metadata was applied was a GPS fix.
+        _ = metadata.removeGPSTag(ExifTag.gpsTimeStamp)
+        _ = metadata.removeGPSTag(ExifTag.gpsDateStamp)
+
+        var xmp = metadata.xmp ?? XMPData()
+        setGPS(desiredPosition, on: &xmp)
+        metadata.xmp = xmp
+    }
+
+    private static func applyGPS(from assignment: MetadataAssignment, to xmp: inout XMPData) {
+        guard let desiredPosition = assignment.clip.gpsPosition,
+              desiredPosition.isValid else { return }
+        guard assignment.existingFieldPolicy == .overwrite || xmpGPSPosition(xmp) == nil else { return }
+        setGPS(desiredPosition, on: &xmp)
+    }
+
+    private static func setGPS(_ position: ScheduledGPSPosition, on xmp: inout XMPData) {
+        xmp.exifGPSLatitude = xmpCoordinate(position.latitude, isLatitude: true)
+        xmp.exifGPSLongitude = xmpCoordinate(position.longitude, isLatitude: false)
+        if let altitude = position.altitudeMeters {
+            xmp.exifGPSAltitude = "\(Int((abs(altitude) * 1_000).rounded()))/1000"
+            xmp.setValue(
+                .simple(altitude < 0 ? "1" : "0"),
+                namespace: XMPNamespace.exif,
+                property: "GPSAltitudeRef"
+            )
+        } else {
+            xmp.exifGPSAltitude = nil
+            xmp.removeValue(namespace: XMPNamespace.exif, property: "GPSAltitudeRef")
+        }
+        xmp.exifGPSTimeStamp = nil
+    }
+
+    private static func embeddedGPSPosition(_ metadata: ImageMetadata) -> ScheduledGPSPosition? {
+        guard let latitude = metadata.exif?.gpsLatitude,
+              let longitude = metadata.exif?.gpsLongitude,
+              latitude.isFinite,
+              longitude.isFinite else { return nil }
+        let altitude = metadata.exif?.gpsAltitude
+        let position = ScheduledGPSPosition(
+            latitude: latitude,
+            longitude: longitude,
+            altitudeMeters: altitude
+        )
+        return position.isValid ? position : nil
+    }
+
+    private static func xmpGPSPosition(_ xmp: XMPData) -> ScheduledGPSPosition? {
+        guard let latitude = parseXMPCoordinate(xmp.exifGPSLatitude, isLatitude: true),
+              let longitude = parseXMPCoordinate(xmp.exifGPSLongitude, isLatitude: false) else {
+            return nil
+        }
+        var altitude = parseRational(xmp.exifGPSAltitude)
+        if xmp.simpleValue(namespace: XMPNamespace.exif, property: "GPSAltitudeRef") == "1" {
+            altitude = altitude.map { -abs($0) }
+        }
+        let position = ScheduledGPSPosition(
+            latitude: latitude,
+            longitude: longitude,
+            altitudeMeters: altitude
+        )
+        return position.isValid ? position : nil
+    }
+
+    private static func xmpCoordinate(_ coordinate: Double, isLatitude: Bool) -> String {
+        let absolute = abs(coordinate)
+        let degrees = Int(absolute.rounded(.down))
+        let minutes = (absolute - Double(degrees)) * 60
+        let direction: Character
+        if isLatitude {
+            direction = coordinate < 0 ? "S" : "N"
+        } else {
+            direction = coordinate < 0 ? "W" : "E"
+        }
+        return String(format: "%d,%.7f%@", locale: Locale(identifier: "en_US_POSIX"), degrees, minutes, String(direction))
+    }
+
+    private static func parseXMPCoordinate(_ value: String?, isLatitude: Bool) -> Double? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard let direction = normalized.last,
+              (isLatitude ? "NS" : "EW").contains(direction) else { return nil }
+        let components = normalized.dropLast().split(separator: ",")
+        guard components.count == 2,
+              let degrees = Double(components[0]),
+              let minutes = Double(components[1]),
+              degrees >= 0,
+              minutes >= 0,
+              minutes < 60 else { return nil }
+        let sign = direction == "S" || direction == "W" ? -1.0 : 1.0
+        let coordinate = sign * (degrees + minutes / 60)
+        let limit = isLatitude ? 90.0 : 180.0
+        return abs(coordinate) <= limit ? coordinate : nil
+    }
+
+    private static func parseRational(_ value: String?) -> Double? {
+        guard let value else { return nil }
+        let components = value.split(separator: "/")
+        if components.count == 1 {
+            return Double(components[0])
+        }
+        guard components.count == 2,
+              let numerator = Double(components[0]),
+              let denominator = Double(components[1]),
+              denominator != 0 else { return nil }
+        return numerator / denominator
+    }
+
+    private static func positionsMatch(
+        _ lhs: ScheduledGPSPosition,
+        _ rhs: ScheduledGPSPosition
+    ) -> Bool {
+        let coordinateTolerance = 0.000_001
+        let altitudeTolerance = 0.01
+        guard abs(lhs.latitude - rhs.latitude) <= coordinateTolerance,
+              abs(lhs.longitude - rhs.longitude) <= coordinateTolerance else {
+            return false
+        }
+        switch (lhs.altitudeMeters, rhs.altitudeMeters) {
+        case (nil, nil):
+            return true
+        case (let lhs?, let rhs?):
+            return abs(lhs - rhs) <= altitudeTolerance
+        default:
+            return false
         }
     }
 

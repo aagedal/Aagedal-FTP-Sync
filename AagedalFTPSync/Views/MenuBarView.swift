@@ -197,6 +197,16 @@ private struct MenuJobRow: View {
             .buttonStyle(.plain)
             .help("Metadata Programming")
             Button {
+                store.selectedJobID = job.id
+                store.metadataMapRequestedDate = Date()
+                RegularWindowController.shared.prepareForOpening(windowID: "photographer-map")
+                openWindow(id: "photographer-map")
+            } label: {
+                Image(systemName: "map")
+            }
+            .buttonStyle(.plain)
+            .help("Photographer Map")
+            Button {
                 store.setEnabled(!job.isEnabled, for: job.id)
             } label: {
                 Label(

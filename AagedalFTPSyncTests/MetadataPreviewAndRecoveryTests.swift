@@ -578,6 +578,101 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         XCTAssertEqual(heicMetadata.xmp?.rights, "© Fixture Desk")
     }
 
+    func testScheduledGPSHonorsFillEmptyAndOverwriteForEmbeddedImage() throws {
+        let folder = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let imageURL = folder.appendingPathComponent("JAD_GPS.tiff")
+        try XCTUnwrap(makeImageData(type: .tiff)).write(to: imageURL)
+
+        var originalMetadata = try ImageMetadata.read(from: imageURL)
+        originalMetadata.setGPS(latitude: 60.3913, longitude: 5.3221, altitude: 12)
+        try originalMetadata.write(to: imageURL)
+
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Oslo",
+            startsAt: .distantPast,
+            endsAt: .distantFuture,
+            gpsPosition: ScheduledGPSPosition(
+                latitude: 59.9139,
+                longitude: 10.7522,
+                altitudeMeters: 24,
+                label: "Oslo"
+            )
+        )
+
+        try MetadataWriter.apply(
+            MetadataAssignment(
+                photographer: photographer,
+                clip: clip,
+                existingFieldPolicy: .fillEmpty
+            ),
+            to: imageURL
+        )
+        var result = try ImageMetadata.read(from: imageURL)
+        XCTAssertEqual(try XCTUnwrap(result.exif?.gpsLatitude), 60.3913, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(result.exif?.gpsLongitude), 5.3221, accuracy: 0.000_001)
+
+        try MetadataWriter.apply(
+            MetadataAssignment(
+                photographer: photographer,
+                clip: clip,
+                existingFieldPolicy: .overwrite
+            ),
+            to: imageURL
+        )
+        result = try ImageMetadata.read(from: imageURL)
+        XCTAssertEqual(try XCTUnwrap(result.exif?.gpsLatitude), 59.9139, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(result.exif?.gpsLongitude), 10.7522, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(result.exif?.gpsAltitude), 24, accuracy: 0.01)
+        XCTAssertNil(result.exif?.gpsIFD?.entry(for: ExifTag.gpsTimeStamp))
+        XCTAssertNil(result.exif?.gpsIFD?.entry(for: ExifTag.gpsDateStamp))
+    }
+
+    func testScheduledGPSWritesRawXMPSidecar() throws {
+        let folder = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let rawURL = folder.appendingPathComponent("JAD_GPS.cr3")
+        try Data("camera data".utf8).write(to: rawURL)
+        let photographer = PhotographerProfile(
+            name: "Jane Doe",
+            filenamePrefix: "JAD",
+            creator: "Jane Doe",
+            copyrightNotice: ""
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Oslo",
+            startsAt: .distantPast,
+            endsAt: .distantFuture,
+            gpsPosition: ScheduledGPSPosition(
+                latitude: 59.9139,
+                longitude: 10.7522,
+                altitudeMeters: -4
+            )
+        )
+        let assignment = MetadataAssignment(
+            photographer: photographer,
+            clip: clip,
+            existingFieldPolicy: .overwrite
+        )
+
+        _ = try MetadataWriter.apply(assignment, to: rawURL, relativePath: rawURL.lastPathComponent)
+
+        let xmp = try XMPSidecar.read(from: rawURL.deletingPathExtension().appendingPathExtension("xmp"))
+        XCTAssertEqual(xmp.exifGPSLatitude, "59,54.8340000N")
+        XCTAssertEqual(xmp.exifGPSLongitude, "10,45.1320000E")
+        XCTAssertEqual(xmp.exifGPSAltitude, "4000/1000")
+        XCTAssertEqual(xmp.simpleValue(namespace: XMPNamespace.exif, property: "GPSAltitudeRef"), "1")
+        XCTAssertNil(xmp.exifGPSTimeStamp)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("MetadataPreviewTests-\(UUID().uuidString)")

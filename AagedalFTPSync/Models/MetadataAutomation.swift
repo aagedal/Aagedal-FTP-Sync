@@ -274,6 +274,27 @@ struct ScheduledMetadataFields: Codable, Hashable, Sendable {
     }
 }
 
+struct ScheduledGPSPosition: Codable, Hashable, Sendable {
+    var latitude: Double
+    var longitude: Double
+    var altitudeMeters: Double? = nil
+    var label: String? = nil
+
+    var isValid: Bool {
+        latitude.isFinite
+            && longitude.isFinite
+            && (-90...90).contains(latitude)
+            && (-180...180).contains(longitude)
+            && (altitudeMeters?.isFinite ?? true)
+    }
+
+    var displayLabel: String? {
+        guard let label else { return nil }
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 struct MetadataScheduleClip: Codable, Identifiable, Hashable, Sendable {
     var id = UUID()
     var photographerID: UUID
@@ -281,6 +302,44 @@ struct MetadataScheduleClip: Codable, Identifiable, Hashable, Sendable {
     var startsAt: Date
     var endsAt: Date
     var fields = ScheduledMetadataFields()
+    var gpsPosition: ScheduledGPSPosition? = nil
+
+    init(
+        id: UUID = UUID(),
+        photographerID: UUID,
+        name: String,
+        startsAt: Date,
+        endsAt: Date,
+        fields: ScheduledMetadataFields = ScheduledMetadataFields()
+    ) {
+        self.init(
+            id: id,
+            photographerID: photographerID,
+            name: name,
+            startsAt: startsAt,
+            endsAt: endsAt,
+            fields: fields,
+            gpsPosition: nil
+        )
+    }
+
+    init(
+        id: UUID = UUID(),
+        photographerID: UUID,
+        name: String,
+        startsAt: Date,
+        endsAt: Date,
+        fields: ScheduledMetadataFields = ScheduledMetadataFields(),
+        gpsPosition: ScheduledGPSPosition?
+    ) {
+        self.id = id
+        self.photographerID = photographerID
+        self.name = name
+        self.startsAt = startsAt
+        self.endsAt = endsAt
+        self.fields = fields
+        self.gpsPosition = gpsPosition
+    }
 
     func contains(_ date: Date) -> Bool {
         startsAt <= date && date < endsAt
@@ -291,6 +350,14 @@ struct MetadataScheduleClip: Codable, Identifiable, Hashable, Sendable {
         guard let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return false }
         return startsAt < nextDay && endsAt > dayStart
     }
+}
+
+struct ScheduledPhotographerPosition: Identifiable, Hashable, Sendable {
+    let photographer: PhotographerProfile
+    let clip: MetadataScheduleClip
+    let position: ScheduledGPSPosition
+
+    var id: UUID { photographer.id }
 }
 
 enum MetadataClipResizeEdge: Sendable {
@@ -667,6 +734,40 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         return nil
     }
 
+    func activeClip(for photographerID: UUID, at date: Date) -> MetadataScheduleClip? {
+        clips
+            .filter { $0.photographerID == photographerID && $0.contains(date) }
+            .sorted(by: Self.preferredClip)
+            .first
+    }
+
+    func positionedPhotographers(at date: Date) -> [ScheduledPhotographerPosition] {
+        photographers.compactMap { photographer in
+            guard let clip = activeClip(for: photographer.id, at: date),
+                  let position = clip.gpsPosition,
+                  position.isValid else {
+                return nil
+            }
+            return ScheduledPhotographerPosition(
+                photographer: photographer,
+                clip: clip,
+                position: position
+            )
+        }
+    }
+
+    func mapChangePoints(on day: Date, calendar: Calendar = .current) -> [Date] {
+        let dayStart = calendar.startOfDay(for: day)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? dayStart.addingTimeInterval(86_400)
+        return Set(clips.compactMap { clip -> [Date]? in
+            guard clip.gpsPosition?.isValid == true,
+                  clip.startsAt < nextDay,
+                  clip.endsAt > dayStart else { return nil }
+            return [clip.startsAt, clip.endsAt].filter { $0 > dayStart && $0 < nextDay }
+        }.flatMap { $0 }).sorted()
+    }
+
     var validationMessage: String? {
         if isEnabled, photographers.isEmpty {
             return "Add at least one photographer before enabling automatic metadata."
@@ -709,6 +810,9 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
             $0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }) {
             return "Give every metadata clip a name."
+        }
+        if clips.contains(where: { $0.gpsPosition?.isValid == false }) {
+            return "Every clip location must use valid latitude and longitude coordinates."
         }
 
         for photographerID in photographerIDs {

@@ -144,6 +144,52 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(automation.existingFieldPolicy, .overwrite)
     }
 
+    func testLegacyClipJSONLoadsWithoutGPSPosition() throws {
+        let photographerID = UUID()
+        let clipID = UUID()
+        let data = Data(
+            """
+            {
+              "id":"\(clipID.uuidString)",
+              "photographerID":"\(photographerID.uuidString)",
+              "name":"Legacy clip",
+              "startsAt":0,
+              "endsAt":60,
+              "fields":{"headline":"","description":"","keywords":[]}
+            }
+            """.utf8
+        )
+
+        let clip = try JSONDecoder().decode(MetadataScheduleClip.self, from: data)
+
+        XCTAssertEqual(clip.id, clipID)
+        XCTAssertNil(clip.gpsPosition)
+    }
+
+    func testClipGPSPositionRoundTripsThroughJSON() throws {
+        let position = ScheduledGPSPosition(
+            latitude: 59.9139,
+            longitude: 10.7522,
+            altitudeMeters: 24,
+            label: "Oslo"
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: UUID(),
+            name: "Located clip",
+            startsAt: Date(timeIntervalSince1970: 1_700_000_000),
+            endsAt: Date(timeIntervalSince1970: 1_700_000_060),
+            gpsPosition: position
+        )
+
+        let decoded = try JSONDecoder().decode(
+            MetadataScheduleClip.self,
+            from: JSONEncoder().encode(clip)
+        )
+
+        XCTAssertEqual(decoded, clip)
+        XCTAssertEqual(decoded.gpsPosition, position)
+    }
+
     func testNewAutomationUsesConfirmedProductDefaults() {
         let automation = MetadataAutomation()
 
@@ -296,6 +342,98 @@ final class MetadataAutomationTests: XCTestCase {
         )
     }
 
+    func testValidationRejectsInvalidGPSPosition() {
+        let photographer = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD",
+            creator: "Jane",
+            copyrightNotice: ""
+        )
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Invalid location",
+            startsAt: Date(timeIntervalSince1970: 1_700_000_000),
+            endsAt: Date(timeIntervalSince1970: 1_700_000_060),
+            gpsPosition: ScheduledGPSPosition(latitude: 91, longitude: 10)
+        )
+        let automation = MetadataAutomation(
+            isEnabled: true,
+            photographers: [photographer],
+            clips: [clip]
+        )
+
+        XCTAssertEqual(
+            automation.validationMessage,
+            "Every clip location must use valid latitude and longitude coordinates."
+        )
+    }
+
+    func testPositionedPhotographersChangeAtHalfOpenClipBoundary() throws {
+        let boundary = Date(timeIntervalSince1970: 1_700_000_000)
+        let photographer = PhotographerProfile(
+            name: "Jane",
+            filenamePrefix: "JAD",
+            creator: "Jane",
+            copyrightNotice: ""
+        )
+        let firstPosition = ScheduledGPSPosition(latitude: 59.9139, longitude: 10.7522, label: "Oslo")
+        let secondPosition = ScheduledGPSPosition(latitude: 60.3913, longitude: 5.3221, label: "Bergen")
+        let automation = MetadataAutomation(
+            photographers: [photographer],
+            clips: [
+                MetadataScheduleClip(
+                    photographerID: photographer.id,
+                    name: "Oslo",
+                    startsAt: boundary.addingTimeInterval(-3_600),
+                    endsAt: boundary,
+                    gpsPosition: firstPosition
+                ),
+                MetadataScheduleClip(
+                    photographerID: photographer.id,
+                    name: "Bergen",
+                    startsAt: boundary,
+                    endsAt: boundary.addingTimeInterval(3_600),
+                    gpsPosition: secondPosition
+                ),
+            ]
+        )
+
+        XCTAssertEqual(
+            try XCTUnwrap(automation.positionedPhotographers(at: boundary.addingTimeInterval(-1)).first).position,
+            firstPosition
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(automation.positionedPhotographers(at: boundary).first).position,
+            secondPosition
+        )
+    }
+
+    func testMapChangePointsIncludeOnlyLocatedClipBoundariesInsideDay() {
+        let calendar = utcCalendar
+        let day = date(2026, 9, 3, 12, 0, calendar: calendar)
+        let photographerID = UUID()
+        let automation = MetadataAutomation(clips: [
+            MetadataScheduleClip(
+                photographerID: photographerID,
+                name: "Located",
+                startsAt: date(2026, 9, 3, 9, 0, calendar: calendar),
+                endsAt: date(2026, 9, 3, 11, 0, calendar: calendar),
+                gpsPosition: ScheduledGPSPosition(latitude: 59.9139, longitude: 10.7522)
+            ),
+            MetadataScheduleClip(
+                photographerID: photographerID,
+                name: "No location",
+                startsAt: date(2026, 9, 3, 12, 0, calendar: calendar),
+                endsAt: date(2026, 9, 3, 13, 0, calendar: calendar)
+            ),
+        ])
+
+        XCTAssertEqual(automation.mapChangePoints(on: day, calendar: calendar), [
+            date(2026, 9, 3, 9, 0, calendar: calendar),
+            date(2026, 9, 3, 11, 0, calendar: calendar),
+        ])
+    }
+
     func testKeywordsAreTrimmedAndDeduplicated() {
         let fields = ScheduledMetadataFields(
             keywords: [" politics ", "Oslo", "POLITICS", "", "oslo "]
@@ -337,7 +475,8 @@ final class MetadataAutomationTests: XCTestCase {
                 photographerID: sourcePhotographerID,
                 name: "First",
                 startsAt: firstStart,
-                endsAt: firstStart.addingTimeInterval(3_600)
+                endsAt: firstStart.addingTimeInterval(3_600),
+                gpsPosition: ScheduledGPSPosition(latitude: 59.9139, longitude: 10.7522)
             ),
             MetadataScheduleClip(
                 photographerID: sourcePhotographerID,
@@ -360,6 +499,7 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(copies[1].endsAt.timeIntervalSince(copies[1].startsAt), 1_800)
         XCTAssertNotEqual(copies[0].id, source[0].id)
         XCTAssertNotEqual(copies[1].id, source[1].id)
+        XCTAssertEqual(copies[0].gpsPosition, source[0].gpsPosition)
     }
 
     func testTimelineCreationUsesDraggedRangeAndSnapInterval() {

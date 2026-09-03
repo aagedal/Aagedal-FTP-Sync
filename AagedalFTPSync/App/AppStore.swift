@@ -23,6 +23,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var resettingJobs: Set<UUID> = []
     @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
     @Published var selectedJobID: UUID?
+    @Published var metadataMapRequestedDate: Date?
     @Published var alertMessage: String?
     @Published private(set) var newJobDraftRequestID: UUID?
 
