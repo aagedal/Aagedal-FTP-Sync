@@ -29,9 +29,9 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "33C93B57B9FBF25FBBBC2DDA"
-               BuildableName = "AagedalFTPSyncTests.xctest"
-               BlueprintName = "AagedalFTPSyncTests"
+               BlueprintIdentifier = "BFF1E9759FD31558E5CD83CF"
+               BuildableName = "AagedalFTPSyncUITests.xctest"
+               BlueprintName = "AagedalFTPSyncUITests"
                ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -58,9 +58,9 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "33C93B57B9FBF25FBBBC2DDA"
-               BuildableName = "AagedalFTPSyncTests.xctest"
-               BlueprintName = "AagedalFTPSyncTests"
+               BlueprintIdentifier = "BFF1E9759FD31558E5CD83CF"
+               BuildableName = "AagedalFTPSyncUITests.xctest"
+               BlueprintName = "AagedalFTPSyncUITests"
                ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
             </BuildableReference>
          </TestableReference>

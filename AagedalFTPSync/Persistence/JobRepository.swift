@@ -7,12 +7,16 @@ struct JobLoadResult: Sendable {
 
 struct JobRepository: Sendable {
     private let fileURL: URL
+    private let beforeSave: @Sendable () throws -> Void
 
     private var backupURL: URL {
         fileURL.appendingPathExtension("backup")
     }
 
-    init(fileURL: URL? = nil) {
+    init(
+        fileURL: URL? = nil,
+        beforeSave: @escaping @Sendable () throws -> Void = {}
+    ) {
         if let fileURL {
             self.fileURL = fileURL
         } else {
@@ -21,6 +25,7 @@ struct JobRepository: Sendable {
                 .appendingPathComponent("AagedalFTPSync", isDirectory: true)
                 .appendingPathComponent("jobs-v2.json")
         }
+        self.beforeSave = beforeSave
     }
 
     func load() throws -> [SyncJob] {
@@ -48,6 +53,7 @@ struct JobRepository: Sendable {
     }
 
     func save(_ jobs: [SyncJob]) throws {
+        try beforeSave()
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder.configured.encode(jobs)

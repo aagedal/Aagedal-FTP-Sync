@@ -11,6 +11,7 @@
 - Add an opt-in SHA-256 content-integrity check for equal-size, equal-timestamp files, repairing one-way mismatches and reporting two-way mismatches without overwriting either copy.
 - Add reusable FTP, FTPS, and SFTP server profiles and preserve their shared job references in portable configuration packages without exporting Keychain passwords.
 - Add automated CI release checks for the security baseline, vendored SSH signature regressions, and the application test suite.
+- Add an isolated macOS UI smoke suite and loopback FTP, trusted implicit-FTPS, and SFTP publication/rollback integration coverage.
 
 ## 2.6.0 — 2026-08-30
 

@@ -29,13 +29,14 @@ final class AppStore: ObservableObject {
     private let persistenceCoordinator: AppPersistenceCoordinator
     private let configurationTransferCoordinator = ConfigurationTransferCoordinator()
     private let metadataLibraryCoordinator: MetadataLibraryCoordinator
-    private let launchAtLoginCoordinator = LaunchAtLoginCoordinator()
+    private let launchAtLoginCoordinator: any LaunchAtLoginCoordinating
     private let sourceSignatureRepository: SourceSignatureRepository
     private let jobResetService: JobResetService
     private let engine: SyncEngine
     private let syncConcurrencyController: SyncConcurrencyController
     private let failureNotificationCoordinator: SyncFailureNotificationCoordinator
     private let scheduler: SyncScheduler
+    private let jobDraftTemplate: SyncJob?
     private var metadataReprocessTasks: [UUID: Task<Void, Never>] = [:]
     private var resetTasks: [UUID: Task<Void, Never>] = [:]
     private var sourceSignatureMaintenanceTasks: [UUID: Task<Void, Never>] = [:]
@@ -53,7 +54,9 @@ final class AppStore: ObservableObject {
         keychain: KeychainStore = KeychainStore(),
         engine: SyncEngine? = nil,
         syncConcurrencyController: SyncConcurrencyController = SyncConcurrencyController(),
-        failureNotificationCoordinator: SyncFailureNotificationCoordinator = SyncFailureNotificationCoordinator()
+        failureNotificationCoordinator: SyncFailureNotificationCoordinator = SyncFailureNotificationCoordinator(),
+        launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator(),
+        jobDraftTemplate: SyncJob? = nil
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -73,6 +76,8 @@ final class AppStore: ObservableObject {
         self.engine = engine ?? SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
         self.syncConcurrencyController = syncConcurrencyController
         self.failureNotificationCoordinator = failureNotificationCoordinator
+        self.launchAtLoginCoordinator = launchAtLoginCoordinator
+        self.jobDraftTemplate = jobDraftTemplate
         scheduler = SyncScheduler()
         let persistenceLoad = persistenceCoordinator.load()
         jobs = persistenceLoad.state.jobs
@@ -113,7 +118,9 @@ final class AppStore: ObservableObject {
     }
 
     func makeJobDraft() -> SyncJob {
-        var job = SyncJob(name: uniqueName())
+        var job = jobDraftTemplate ?? SyncJob()
+        job.id = UUID()
+        job.name = uniqueName()
         job.isEnabled = false
         job.startsOnAppLaunch = false
         return job

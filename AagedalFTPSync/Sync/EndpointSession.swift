@@ -420,10 +420,13 @@ enum EndpointConnectionTester {
 }
 
 enum EndpointSessionFactory {
+    /// `tlsTrustRootCertificate` is an internal integration-test seam. App call
+    /// sites leave it nil so FTPS always uses the system trust store.
     static func make(
         endpoint: Endpoint,
         password: String?,
-        managedFolder: ManagedOutputFolder? = nil
+        managedFolder: ManagedOutputFolder? = nil,
+        tlsTrustRootCertificate: Data? = nil
     ) throws -> any EndpointSession {
         switch endpoint.kind {
         case .local:
@@ -435,7 +438,11 @@ enum EndpointSessionFactory {
             guard let password else {
                 throw AppError.invalidConfiguration("No password is saved for \(endpoint.host).")
             }
-            return FTPEndpointSession(endpoint: endpoint, password: password)
+            return FTPEndpointSession(
+                endpoint: endpoint,
+                password: password,
+                tlsTrustRootCertificate: tlsTrustRootCertificate
+            )
         case .sftp:
             guard managedFolder == nil else {
                 throw AppError.invalidConfiguration("Managed output folders require a local destination.")

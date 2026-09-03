@@ -3,7 +3,11 @@ import SwiftUI
 
 @main
 struct AagedalFTPSyncApp: App {
-    @StateObject private var store = AppStore()
+    @StateObject private var store: AppStore
+
+    init() {
+        _store = StateObject(wrappedValue: UITestSupport.makeStore() ?? AppStore())
+    }
 
     var body: some Scene {
         MenuBarExtra {

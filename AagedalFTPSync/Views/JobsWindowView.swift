@@ -66,6 +66,7 @@ struct JobsWindowView: View {
                         Button(action: addJob) {
                             Label("Add Sync Job", systemImage: "plus")
                         }
+                        .accessibilityIdentifier("add-sync-job")
                         .buttonStyle(.borderless)
                         .keyboardShortcut("n", modifiers: .command)
                         Spacer()
@@ -77,8 +78,13 @@ struct JobsWindowView: View {
                             Divider()
 
                             Button("Import Configuration Package…", systemImage: "square.and.arrow.down") {
-                                showConfigurationImporter = true
+                                if let url = UITestSupport.configurationPackageURL {
+                                    loadConfigurationPackage(.success([url]))
+                                } else {
+                                    showConfigurationImporter = true
+                                }
                             }
+                            .accessibilityIdentifier("import-configuration")
 
                             Divider()
 
@@ -86,6 +92,7 @@ struct JobsWindowView: View {
                                 Button("Export \(scope.title)…", systemImage: "square.and.arrow.up") {
                                     pendingTransfer = PendingConfigurationTransfer(operation: .export(scope))
                                 }
+                                .accessibilityIdentifier("export-\(scope.rawValue)")
                                 .disabled(scope != .metadata && store.jobs.isEmpty)
                             }
 
@@ -97,6 +104,7 @@ struct JobsWindowView: View {
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
+                        .accessibilityIdentifier("configuration-transfer-menu")
                         .menuStyle(.borderlessButton)
                         .fixedSize()
                         .help("Import or export configuration packages")
@@ -121,12 +129,15 @@ struct JobsWindowView: View {
                 } actions: {
                     Button("Add Sync Job", action: addJob)
                         .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("add-sync-job-empty-state")
                 }
             } else {
                 ContentUnavailableView("Select a sync job", systemImage: "arrow.triangle.2.circlepath")
             }
         }
+        .accessibilityIdentifier("jobs-window-content")
         .onAppear {
+            UITestSupport.activateJobsWindow()
             store.refreshLaunchAtLoginStatus()
             selectFirstIfNeeded()
             handleNewJobDraftRequest()
@@ -363,6 +374,15 @@ struct JobsWindowView: View {
         _ password: String?
     ) -> Bool {
         guard let data = store.configurationExportData(scope: scope, password: password) else { return false }
+        if let url = UITestSupport.configurationPackageURL {
+            do {
+                try data.write(to: url, options: .atomic)
+                return true
+            } catch {
+                store.alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
+                return false
+            }
+        }
         exportDocument = ConfigurationTransferFile(data: data)
         exportFilename = scope.defaultFilename
         DispatchQueue.main.async { showConfigurationExporter = true }

@@ -1,7 +1,14 @@
 import ServiceManagement
 
 @MainActor
-final class LaunchAtLoginCoordinator {
+protocol LaunchAtLoginCoordinating: AnyObject {
+    var status: SMAppService.Status { get }
+    func setEnabled(_ enabled: Bool) throws
+    func openSettings()
+}
+
+@MainActor
+final class LaunchAtLoginCoordinator: LaunchAtLoginCoordinating {
     var status: SMAppService.Status { SMAppService.mainApp.status }
 
     func setEnabled(_ enabled: Bool) throws {

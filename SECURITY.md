@@ -20,7 +20,7 @@ The vendored copies retain their original license and attribution files. See `Ve
 
 ## Release checks
 
-Run the security baseline guard and both test suites before shipping:
+Run the security baseline guard and all test suites before shipping:
 
 ```sh
 Scripts/check-security-baseline.sh
@@ -34,6 +34,12 @@ xcodebuild test \
   -scheme AagedalFTPSync \
   -destination 'platform=macOS' \
   CODE_SIGNING_ALLOWED=NO
+
+# Requires a configured development signing identity.
+xcodebuild test \
+  -project 'Aagedal FTP Sync.xcodeproj' \
+  -scheme AagedalFTPSyncUISmokeTests \
+  -destination 'platform=macOS'
 ```
 
 The Citadel and SwiftNIO SSH baselines require manual comparison with their upstream repositories because automated package tooling cannot safely update locally modified source.

@@ -6,9 +6,13 @@ struct FTPEndpointSession: EndpointSession, Sendable {
 
     var supportsCompletedDirectoryListings: Bool { true }
 
-    init(endpoint: Endpoint, password: String) {
+    init(endpoint: Endpoint, password: String, tlsTrustRootCertificate: Data? = nil) {
         self.endpoint = endpoint
-        connection = FTPConnection(endpoint: endpoint, password: password)
+        connection = FTPConnection(
+            endpoint: endpoint,
+            password: password,
+            tlsTrustRootCertificate: tlsTrustRootCertificate
+        )
     }
 
     func testConnection() async throws {

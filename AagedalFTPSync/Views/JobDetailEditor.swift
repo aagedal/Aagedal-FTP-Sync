@@ -25,6 +25,7 @@ struct JobDetailEditor: View {
             Form {
                 Section("Job") {
                     TextField("Name", text: $session.draft.name)
+                        .accessibilityIdentifier("job-name")
                     Toggle("Two-way sync", isOn: twoWayBinding)
                     Toggle("Run automatically", isOn: $session.draft.isEnabled)
                     Toggle("Start this job when the app launches", isOn: startOnAppLaunchBinding)
@@ -227,6 +228,7 @@ struct JobDetailEditor: View {
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut("s", modifiers: .command)
                     .disabled(draft.validationMessage != nil || session.credentialLoadError != nil)
+                    .accessibilityIdentifier("save-job")
             }
             .padding(14)
         }

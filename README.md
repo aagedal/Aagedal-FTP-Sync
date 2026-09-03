@@ -61,7 +61,18 @@ xcodebuild test \
   CODE_SIGNING_ALLOWED=NO
 ```
 
-Opt-in loopback FTP and SFTP write/fault tests use the pinned Python packages in `Scripts/delivery-latency-requirements.txt`. Install them in an activated virtual environment, then run:
+Run the isolated macOS UI smoke suite with a configured development signing identity:
+
+```sh
+xcodebuild test \
+  -project 'Aagedal FTP Sync.xcodeproj' \
+  -scheme AagedalFTPSyncUISmokeTests \
+  -destination 'platform=macOS'
+```
+
+UI automation requires a signed test runner, so do not add `CODE_SIGNING_ALLOWED=NO` to this command.
+
+Opt-in loopback FTP, trusted implicit-FTPS, and SFTP write/fault tests use OpenSSL plus the pinned Python packages in `Scripts/delivery-latency-requirements.txt`. Install the Python packages in an activated virtual environment, then run:
 
 ```sh
 Scripts/run-remote-transport-tests.py

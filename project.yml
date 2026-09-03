@@ -58,6 +58,18 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSyncTests
         DEAD_CODE_STRIPPING: YES
         GENERATE_INFOPLIST_FILE: YES
+  AagedalFTPSyncUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: AagedalFTPSyncUITests
+    dependencies:
+      - target: AagedalFTPSync
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSyncUITests
+        DEAD_CODE_STRIPPING: YES
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   AagedalFTPSync:
     build:
@@ -67,3 +79,11 @@ schemes:
     test:
       targets:
         - AagedalFTPSyncTests
+  AagedalFTPSyncUISmokeTests:
+    build:
+      targets:
+        AagedalFTPSync: all
+        AagedalFTPSyncUITests: [test]
+    test:
+      targets:
+        - AagedalFTPSyncUITests

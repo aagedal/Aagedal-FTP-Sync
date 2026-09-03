@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Security
 
 enum FTPNetworkLimits {
     static let connectionTimeout: TimeInterval = 20
@@ -47,25 +48,73 @@ struct FTPLineBuffer {
 }
 
 final class NetworkStream: @unchecked Sendable {
+    private static let tlsVerificationQueue = DispatchQueue(
+        label: "no.aagedal.ftpsync.network.tls-verification"
+    )
+
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "no.aagedal.ftpsync.network")
     private let address: String
     private var lineBuffer = FTPLineBuffer()
+    private let connectionTimeout: TimeInterval
     private let operationTimeout: TimeInterval
 
-    init(host: String, port: Int, tls: Bool, operationTimeout: TimeInterval = FTPNetworkLimits.operationTimeout) throws {
+    init(
+        host: String,
+        port: Int,
+        tls: Bool,
+        tlsTrustRootCertificate: Data? = nil,
+        connectionTimeout: TimeInterval = FTPNetworkLimits.connectionTimeout,
+        operationTimeout: TimeInterval = FTPNetworkLimits.operationTimeout
+    ) throws {
         guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
             throw AppError.invalidConfiguration("Invalid port \(port).")
         }
-        let parameters = tls ? NWParameters(tls: NWProtocolTLS.Options(), tcp: NWProtocolTCP.Options()) : .tcp
+        let parameters: NWParameters
+        if tls {
+            let tlsOptions = NWProtocolTLS.Options()
+            if let tlsTrustRootCertificate {
+                guard SecCertificateCreateWithData(nil, tlsTrustRootCertificate as CFData) != nil else {
+                    throw AppError.invalidConfiguration("The FTPS trust root is not a valid certificate.")
+                }
+                sec_protocol_options_set_verify_block(
+                    tlsOptions.securityProtocolOptions,
+                    { _, trust, complete in
+                        guard let certificate = SecCertificateCreateWithData(
+                            nil,
+                            tlsTrustRootCertificate as CFData
+                        ) else {
+                            complete(false)
+                            return
+                        }
+                        let trustReference = sec_trust_copy_ref(trust).takeRetainedValue()
+                        guard SecTrustSetAnchorCertificates(
+                            trustReference,
+                            [certificate] as CFArray
+                        ) == errSecSuccess,
+                        SecTrustSetAnchorCertificatesOnly(trustReference, true) == errSecSuccess else {
+                            complete(false)
+                            return
+                        }
+                        complete(SecTrustEvaluateWithError(trustReference, nil))
+                    },
+                    Self.tlsVerificationQueue
+                )
+            }
+            parameters = NWParameters(tls: tlsOptions, tcp: NWProtocolTCP.Options())
+        } else {
+            parameters = .tcp
+        }
         connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: parameters)
         address = "\(host):\(port)"
+        self.connectionTimeout = connectionTimeout
         self.operationTimeout = operationTimeout
     }
 
     func start() async throws {
         let connection = self.connection
         let address = self.address
+        let timeout = self.connectionTimeout
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 let gate = ContinuationGate()
@@ -87,7 +136,7 @@ final class NetworkStream: @unchecked Sendable {
                         break
                     }
                 }
-                queue.asyncAfter(deadline: .now() + FTPNetworkLimits.connectionTimeout) {
+                queue.asyncAfter(deadline: .now() + timeout) {
                     guard gate.claim() else { return }
                     connection.cancel()
                     continuation.resume(throwing: AppError.transferFailed("Timed out connecting to \(address)."))
@@ -226,11 +275,13 @@ private struct FTPReply {
 actor FTPConnection {
     private let endpoint: Endpoint
     private let password: String
+    private let tlsTrustRootCertificate: Data?
     private var control: NetworkStream?
 
-    init(endpoint: Endpoint, password: String) {
+    init(endpoint: Endpoint, password: String, tlsTrustRootCertificate: Data? = nil) {
         self.endpoint = endpoint
         self.password = password
+        self.tlsTrustRootCertificate = tlsTrustRootCertificate
     }
 
     deinit { control?.cancel() }
@@ -405,7 +456,12 @@ actor FTPConnection {
             }
             port = parsed
         }
-        let dataStream = try NetworkStream(host: endpoint.host, port: port, tls: endpoint.kind == .ftps)
+        let dataStream = try NetworkStream(
+            host: endpoint.host,
+            port: port,
+            tls: endpoint.kind == .ftps,
+            tlsTrustRootCertificate: tlsTrustRootCertificate
+        )
         try await dataStream.start()
         do {
             let opening = try await command(dataCommand, accepting: 100..<200)
@@ -425,7 +481,12 @@ actor FTPConnection {
 
     private func connectIfNeeded() async throws {
         guard control == nil else { return }
-        let stream = try NetworkStream(host: endpoint.host, port: endpoint.port, tls: endpoint.kind == .ftps)
+        let stream = try NetworkStream(
+            host: endpoint.host,
+            port: endpoint.port,
+            tls: endpoint.kind == .ftps,
+            tlsTrustRootCertificate: tlsTrustRootCertificate
+        )
         try await stream.start()
         control = stream
         _ = try await readReply(accepting: 200..<300)

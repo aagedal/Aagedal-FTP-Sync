@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve writable loopback FTP and SFTP roots with deterministic publish faults."""
+"""Serve writable loopback FTP, implicit FTPS, and SFTP roots with publish faults."""
 
 from __future__ import annotations
 
@@ -21,11 +21,12 @@ import threading
 try:
     import paramiko
     from pyftpdlib.authorizers import DummyAuthorizer
-    from pyftpdlib.handlers import FTPHandler
+    from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler
+    from pyftpdlib.ioloop import IOLoop
     from pyftpdlib.servers import FTPServer
 except ImportError as error:
     raise SystemExit(
-        "remote_transport_services.py requires pyftpdlib and paramiko; "
+        "remote_transport_services.py requires pyftpdlib[ssl] and paramiko; "
         "install the pinned versions from Scripts/delivery-latency-requirements.txt"
     ) from error
 
@@ -254,10 +255,14 @@ class SFTPService:
                 transport.close()
 
 
-def make_ftp_handler(root: Path, publication_failure_path: str):
+def make_ftp_handler(
+    root: Path,
+    publication_failure_path: str,
+    base_handler: type[FTPHandler] = FTPHandler,
+):
     failed_destination = (root / publication_failure_path).resolve()
 
-    class FaultInjectingFTPHandler(FTPHandler):
+    class FaultInjectingFTPHandler(base_handler):
         def ftp_RNTO(self, path: str):
             source_text = getattr(self, "_rnfr", None)
             if source_text is not None:
@@ -276,17 +281,51 @@ def make_ftp_handler(root: Path, publication_failure_path: str):
     return FaultInjectingFTPHandler
 
 
+def make_implicit_ftps_handler(
+    root: Path,
+    publication_failure_path: str,
+    certificate: Path,
+    private_key: Path,
+):
+    fault_handler = make_ftp_handler(
+        root,
+        publication_failure_path,
+        base_handler=TLS_FTPHandler,
+    )
+
+    class ImplicitTLSFTPHandler(fault_handler):
+        certfile = str(certificate)
+        keyfile = str(private_key)
+        tls_control_required = True
+        tls_data_required = True
+
+        def handle(self):
+            # Implicit FTPS negotiates TLS before the server sends its banner.
+            self.secure_connection(self.ssl_context)
+
+        def handle_ssl_established(self):
+            # Use the ordinary FTP greeting only after the TLS handshake.
+            FTPHandler.handle(self)
+
+    return ImplicitTLSFTPHandler
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ftp-root", required=True, type=Path)
+    parser.add_argument("--ftps-root", required=True, type=Path)
     parser.add_argument("--sftp-root", required=True, type=Path)
+    parser.add_argument("--ftps-certificate", required=True, type=Path)
+    parser.add_argument("--ftps-private-key", required=True, type=Path)
     parser.add_argument("--ready-file", required=True, type=Path)
     parser.add_argument("--host", choices=("127.0.0.1", "localhost"), default="127.0.0.1")
     parser.add_argument("--ftp-port", type=int, default=0)
+    parser.add_argument("--ftps-port", type=int, default=0)
     parser.add_argument("--sftp-port", type=int, default=0)
     parser.add_argument("--username", default="integration")
     parser.add_argument("--password", default="integration")
     parser.add_argument("--ftp-failure-path", default="FTP-ROLLBACK.JPG")
+    parser.add_argument("--ftps-failure-path", default="FTPS-ROLLBACK.JPG")
     parser.add_argument("--sftp-failure-path", default="SFTP-ROLLBACK.JPG")
     return parser.parse_args()
 
@@ -294,24 +333,47 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     arguments = parse_arguments()
     ftp_root = arguments.ftp_root.resolve()
+    ftps_root = arguments.ftps_root.resolve()
     sftp_root = arguments.sftp_root.resolve()
-    if not ftp_root.is_dir() or not sftp_root.is_dir():
-        raise SystemExit("FTP and SFTP integration roots must already exist")
+    if not ftp_root.is_dir() or not ftps_root.is_dir() or not sftp_root.is_dir():
+        raise SystemExit("FTP, FTPS, and SFTP integration roots must already exist")
+    if not arguments.ftps_certificate.is_file() or not arguments.ftps_private_key.is_file():
+        raise SystemExit("The FTPS certificate and private key must already exist")
 
     stop = threading.Event()
     failures: queue.Queue[BaseException] = queue.Queue()
     host_key = paramiko.ECDSAKey.generate()
 
-    authorizer = DummyAuthorizer()
-    authorizer.add_user(
-        arguments.username,
-        arguments.password,
-        str(ftp_root),
-        perm="elradfmwMT",
-    )
+    def make_authorizer(root: Path) -> DummyAuthorizer:
+        authorizer = DummyAuthorizer()
+        authorizer.add_user(
+            arguments.username,
+            arguments.password,
+            str(root),
+            perm="elradfmwMT",
+        )
+        return authorizer
+
     ftp_handler = make_ftp_handler(ftp_root, arguments.ftp_failure_path)
-    ftp_handler.authorizer = authorizer
-    ftp_server = FTPServer((arguments.host, arguments.ftp_port), ftp_handler)
+    ftp_handler.authorizer = make_authorizer(ftp_root)
+    ftp_server = FTPServer(
+        (arguments.host, arguments.ftp_port),
+        ftp_handler,
+        ioloop=IOLoop(),
+    )
+
+    ftps_handler = make_implicit_ftps_handler(
+        ftps_root,
+        arguments.ftps_failure_path,
+        arguments.ftps_certificate,
+        arguments.ftps_private_key,
+    )
+    ftps_handler.authorizer = make_authorizer(ftps_root)
+    ftps_server = FTPServer(
+        (arguments.host, arguments.ftps_port),
+        ftps_handler,
+        ioloop=IOLoop(),
+    )
 
     sftp_service = SFTPService(
         arguments.host,
@@ -325,16 +387,27 @@ def main() -> int:
         failures,
     )
 
-    def serve_ftp() -> None:
+    def serve_ftp(server: FTPServer) -> None:
         try:
-            ftp_server.serve_forever(timeout=0.5, blocking=True, handle_exit=False)
+            server.serve_forever(timeout=0.5, blocking=True, handle_exit=False)
         except BaseException as error:
             if not stop.is_set():
                 failures.put(error)
                 stop.set()
 
     threads = [
-        threading.Thread(target=serve_ftp, name="ftp-integration-server", daemon=True),
+        threading.Thread(
+            target=serve_ftp,
+            args=(ftp_server,),
+            name="ftp-integration-server",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=serve_ftp,
+            args=(ftps_server,),
+            name="ftps-integration-server",
+            daemon=True,
+        ),
         threading.Thread(target=sftp_service.serve, name="sftp-integration-server", daemon=True),
     ]
     for thread in threads:
@@ -346,6 +419,7 @@ def main() -> int:
     ready = {
         "host": arguments.host,
         "ftp_port": ftp_server.socket.getsockname()[1],
+        "ftps_port": ftps_server.socket.getsockname()[1],
         "sftp_port": sftp_service.port,
         "username": arguments.username,
         "sftp_host_key_sha256": fingerprint,
@@ -370,6 +444,7 @@ def main() -> int:
         stop.set()
 
     ftp_server.close_all()
+    ftps_server.close_all()
     sftp_service.close()
     for thread in threads:
         thread.join(timeout=3)

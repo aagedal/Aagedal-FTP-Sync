@@ -81,6 +81,7 @@ struct MenuBarView: View {
                 .disabled(store.jobs.isEmpty)
             Button("Jobs…") { openJobsWindow(adding: false) }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("open-jobs-window")
             Button("Settings…") { openSettingsWindow() }
                 .buttonStyle(.plain)
             Button("About") {

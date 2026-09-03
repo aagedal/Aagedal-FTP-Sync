@@ -84,6 +84,7 @@ struct ConfigurationTransferOptionsView: View {
             if isExport {
                 Toggle("Encrypt package with a password", isOn: $encryptPackage)
                     .toggleStyle(.switch)
+                    .accessibilityIdentifier("encrypt-configuration")
             }
 
             if requiresPassword {
@@ -122,6 +123,7 @@ struct ConfigurationTransferOptionsView: View {
                 Button(actionTitle, action: submit)
                     .buttonStyle(.borderedProminent)
                     .disabled(requiresPassword && password.isEmpty)
+                    .accessibilityIdentifier("configuration-transfer-submit")
             }
         }
         .padding(24)
