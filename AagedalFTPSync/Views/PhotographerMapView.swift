@@ -11,7 +11,8 @@ struct PhotographerMapView: View {
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var selectedPhotographerID: UUID?
     @State private var draggedClipID: UUID?
-    @State private var draggedCoordinate: CLLocationCoordinate2D?
+    @State private var draggedTranslation: CGSize = .zero
+    @State private var currentMapCamera: MapCamera?
 
     private let calendar = Calendar.current
     private let mapCoordinateSpaceName = "photographer-map"
@@ -139,6 +140,7 @@ struct PhotographerMapView: View {
                             color: color(for: item.photographer),
                             isSelected: selectedPhotographerID == item.photographer.id
                         )
+                        .offset(markerOffset(for: item))
                         .tag(item.photographer.id)
                         .accessibilityLabel(markerAccessibilityLabel(item))
                         .gesture(markerGesture(for: item, proxy: proxy))
@@ -147,6 +149,9 @@ struct PhotographerMapView: View {
             }
             .coordinateSpace(name: mapCoordinateSpaceName)
             .mapStyle(mapStyle)
+            .onMapCameraChange(frequency: .continuous) { context in
+                currentMapCamera = context.camera
+            }
             .mapControls {
                 MapCompass()
                 MapScaleView()
@@ -340,13 +345,14 @@ struct PhotographerMapView: View {
     }
 
     private func coordinate(for item: ScheduledPhotographerPosition) -> CLLocationCoordinate2D {
-        if draggedClipID == item.clip.id, let draggedCoordinate {
-            return draggedCoordinate
-        }
         return CLLocationCoordinate2D(
             latitude: item.position.latitude,
             longitude: item.position.longitude
         )
+    }
+
+    private func markerOffset(for item: ScheduledPhotographerPosition) -> CGSize {
+        draggedClipID == item.clip.id ? draggedTranslation : .zero
     }
 
     private func markerGesture(
@@ -355,13 +361,15 @@ struct PhotographerMapView: View {
     ) -> some Gesture {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(mapCoordinateSpaceName))
             .onChanged { value in
-                guard gestureDistance(value.translation) >= 3,
-                      let coordinate = movedCoordinate(for: item, translation: value.translation, proxy: proxy) else {
-                    return
+                guard gestureDistance(value.translation) >= 3 else { return }
+                if draggedClipID == nil, let currentMapCamera {
+                    // Automatic framing follows changing annotations. Freeze the
+                    // rendered camera before the eventual coordinate update.
+                    cameraPosition = .camera(currentMapCamera)
                 }
                 selectedPhotographerID = item.photographer.id
                 draggedClipID = item.clip.id
-                draggedCoordinate = coordinate
+                draggedTranslation = value.translation
             }
             .onEnded { value in
                 if gestureDistance(value.translation) < 3 {
@@ -374,7 +382,7 @@ struct PhotographerMapView: View {
                     saveMovedCoordinate(coordinate, for: item)
                 }
                 draggedClipID = nil
-                draggedCoordinate = nil
+                draggedTranslation = .zero
             }
             .simultaneously(with: TapGesture(count: 2).onEnded {
                 openMetadataProgramming(for: item)
