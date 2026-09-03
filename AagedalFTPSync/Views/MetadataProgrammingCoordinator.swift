@@ -22,6 +22,11 @@ struct TimelinePlayhead: Equatable {
     let date: Date
 }
 
+struct CopiedMetadataDay: Equatable {
+    let sourceDay: Date
+    let clips: [MetadataScheduleClip]
+}
+
 @MainActor
 final class MetadataProgrammingCoordinator: ObservableObject {
     @Published var selectedDate: Date
@@ -36,6 +41,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     @Published var lastSavedDraft: MetadataAutomation?
     @Published var selectedClipIDs: Set<UUID> = []
     @Published var copiedClips: [MetadataScheduleClip] = []
+    @Published private(set) var copiedDayProgramming: CopiedMetadataDay?
     @Published var playhead: TimelinePlayhead?
     @Published var snapMinutes = 15
     @Published var pendingClipChange: PendingClipChange?
@@ -305,6 +311,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         previewRequestID = nil
         isPreviewingMetadata = false
         saveConfirmation = false
+        copiedDayProgramming = nil
         guard let job = selectedJob(in: store) else {
             loadedJobID = nil
             draft = MetadataAutomation()
@@ -483,6 +490,35 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         selectedClipIDs = Set(draft.clips.filter {
             $0.overlaps(dayContaining: selectedDate, calendar: calendar)
         }.map(\.id))
+    }
+
+    func copyAllProgramming(on day: Date) {
+        let sourceDay = calendar.startOfDay(for: day)
+        let clips = MetadataTimelineEditing.clips(
+            from: draft.clips,
+            restrictedTo: sourceDay,
+            calendar: calendar
+        )
+        copiedDayProgramming = clips.isEmpty
+            ? nil
+            : CopiedMetadataDay(sourceDay: sourceDay, clips: clips)
+    }
+
+    func pasteDayProgramming(to day: Date) {
+        guard let copiedDayProgramming else { return }
+        let targetDay = calendar.startOfDay(for: day)
+        let pasted = MetadataTimelineEditing.copies(
+            of: copiedDayProgramming.clips,
+            fromDay: copiedDayProgramming.sourceDay,
+            toDay: targetDay,
+            calendar: calendar
+        )
+        guard !pasted.isEmpty else { return }
+        draft.clips.append(contentsOf: pasted)
+        selectedDate = targetDay
+        selectedClipIDs = Set(pasted.map(\.id))
+        selectedPhotographerID = pasted.first?.photographerID
+        playhead = nil
     }
 
     func moveClip(_ clip: MetadataScheduleClip, by interval: TimeInterval, duplicating: Bool) {

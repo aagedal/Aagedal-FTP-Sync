@@ -44,6 +44,67 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         ))
     }
 
+    func testCopyAndPasteDayProgrammingPreservesTracksAndVisibleTimes() throws {
+        let calendar = utcCalendar
+        let firstPhotographerID = UUID()
+        let secondPhotographerID = UUID()
+        let sourceDay = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let targetDay = date(2026, 9, 1, 0, 0, calendar: calendar)
+        let sourceClips = [
+            MetadataScheduleClip(
+                photographerID: firstPhotographerID,
+                name: "Morning",
+                startsAt: date(2026, 8, 29, 9, 0, calendar: calendar),
+                endsAt: date(2026, 8, 29, 10, 0, calendar: calendar)
+            ),
+            MetadataScheduleClip(
+                photographerID: secondPhotographerID,
+                name: "From previous day",
+                startsAt: date(2026, 8, 28, 23, 0, calendar: calendar),
+                endsAt: date(2026, 8, 29, 1, 0, calendar: calendar)
+            ),
+            MetadataScheduleClip(
+                photographerID: secondPhotographerID,
+                name: "Into next day",
+                startsAt: date(2026, 8, 29, 23, 30, calendar: calendar),
+                endsAt: date(2026, 8, 30, 1, 0, calendar: calendar)
+            ),
+            MetadataScheduleClip(
+                photographerID: firstPhotographerID,
+                name: "Different day",
+                startsAt: date(2026, 8, 30, 12, 0, calendar: calendar),
+                endsAt: date(2026, 8, 30, 13, 0, calendar: calendar)
+            ),
+            MetadataScheduleClip(
+                photographerID: firstPhotographerID,
+                name: "Existing destination programming",
+                startsAt: date(2026, 9, 1, 15, 0, calendar: calendar),
+                endsAt: date(2026, 9, 1, 16, 0, calendar: calendar)
+            ),
+        ]
+        let coordinator = MetadataProgrammingCoordinator(calendar: calendar)
+        coordinator.draft.clips = sourceClips
+
+        coordinator.copyAllProgramming(on: sourceDay)
+        coordinator.pasteDayProgramming(to: targetDay)
+
+        XCTAssertEqual(Array(coordinator.draft.clips.prefix(sourceClips.count)), sourceClips)
+        let pasted = coordinator.draft.clips.filter { coordinator.selectedClipIDs.contains($0.id) }
+            .sorted { $0.startsAt < $1.startsAt }
+        XCTAssertEqual(pasted.count, 3)
+        XCTAssertEqual(pasted.map(\.photographerID), [secondPhotographerID, firstPhotographerID, secondPhotographerID])
+        XCTAssertEqual(pasted[0].startsAt, date(2026, 9, 1, 0, 0, calendar: calendar))
+        XCTAssertEqual(pasted[0].endsAt, date(2026, 9, 1, 1, 0, calendar: calendar))
+        XCTAssertEqual(pasted[1].startsAt, date(2026, 9, 1, 9, 0, calendar: calendar))
+        XCTAssertEqual(pasted[1].endsAt, date(2026, 9, 1, 10, 0, calendar: calendar))
+        XCTAssertEqual(pasted[2].startsAt, date(2026, 9, 1, 23, 30, calendar: calendar))
+        XCTAssertEqual(pasted[2].endsAt, date(2026, 9, 2, 0, 0, calendar: calendar))
+        XCTAssertTrue(Set(pasted.map(\.id)).isDisjoint(with: Set(sourceClips.map(\.id))))
+        XCTAssertEqual(coordinator.selectedDate, targetDay)
+        XCTAssertTrue(coordinator.programmedDays.contains(targetDay))
+        XCTAssertNil(coordinator.playhead)
+    }
+
     func testResizeCrossingMidnightWaitsForConfirmation() {
         let calendar = utcCalendar
         let photographerID = UUID()
@@ -68,6 +129,30 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(coordinator.draft.clips.first?.endsAt, pending?.endsAt)
         XCTAssertEqual(coordinator.selectedClipIDs, [clip.id])
+    }
+
+    func testOptionMoveDuplicatesClipAndKeepsOriginal() throws {
+        let calendar = utcCalendar
+        let photographerID = UUID()
+        let clip = MetadataScheduleClip(
+            photographerID: photographerID,
+            name: "Original",
+            startsAt: date(2026, 8, 29, 9, 0, calendar: calendar),
+            endsAt: date(2026, 8, 29, 10, 0, calendar: calendar)
+        )
+        let coordinator = MetadataProgrammingCoordinator(calendar: calendar)
+        coordinator.draft.clips = [clip]
+        coordinator.snapMinutes = 15
+
+        coordinator.moveClip(clip, by: 90 * 60, duplicating: true)
+
+        XCTAssertEqual(coordinator.draft.clips.count, 2)
+        XCTAssertEqual(coordinator.draft.clips.first, clip)
+        let duplicate = try XCTUnwrap(coordinator.draft.clips.last)
+        XCTAssertNotEqual(duplicate.id, clip.id)
+        XCTAssertEqual(duplicate.startsAt, date(2026, 8, 29, 10, 30, calendar: calendar))
+        XCTAssertEqual(duplicate.endsAt, date(2026, 8, 29, 11, 30, calendar: calendar))
+        XCTAssertEqual(coordinator.selectedClipIDs, [duplicate.id])
     }
 
     func testPreviewPublishesInjectedResultAndClearsLoadingState() async {

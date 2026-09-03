@@ -335,6 +335,9 @@ struct MetadataProgrammingView: View {
                 selection: $coordinator.selectedDate,
                 programmedDays: programmedDays,
                 calendar: calendar,
+                canPasteProgramming: coordinator.copiedDayProgramming != nil,
+                onCopyProgramming: coordinator.copyAllProgramming,
+                onPasteProgramming: coordinator.pasteDayProgramming,
                 onExport: beginMetadataExport
             )
             .padding(12)

@@ -394,6 +394,61 @@ enum MetadataTimelineEditing {
         }
     }
 
+    static func clips(
+        from clips: [MetadataScheduleClip],
+        restrictedTo day: Date,
+        calendar: Calendar = .current
+    ) -> [MetadataScheduleClip] {
+        let dayStart = calendar.startOfDay(for: day)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? dayStart.addingTimeInterval(24 * 60 * 60)
+        return clips.compactMap { clip in
+            let start = max(clip.startsAt, dayStart)
+            let end = min(clip.endsAt, nextDay)
+            guard start < end else { return nil }
+            var restricted = clip
+            restricted.startsAt = start
+            restricted.endsAt = end
+            return restricted
+        }
+        .sorted { lhs, rhs in
+            if lhs.startsAt != rhs.startsAt { return lhs.startsAt < rhs.startsAt }
+            return lhs.photographerID.uuidString < rhs.photographerID.uuidString
+        }
+    }
+
+    static func copies(
+        of clips: [MetadataScheduleClip],
+        fromDay sourceDay: Date,
+        toDay targetDay: Date,
+        calendar: Calendar = .current
+    ) -> [MetadataScheduleClip] {
+        let sourceStart = calendar.startOfDay(for: sourceDay)
+        let targetStart = calendar.startOfDay(for: targetDay)
+        return clips.compactMap { source in
+            let startOffset = calendar.dateComponents(
+                [.day, .hour, .minute, .second, .nanosecond],
+                from: sourceStart,
+                to: source.startsAt
+            )
+            let endOffset = calendar.dateComponents(
+                [.day, .hour, .minute, .second, .nanosecond],
+                from: sourceStart,
+                to: source.endsAt
+            )
+            guard let startsAt = calendar.date(byAdding: startOffset, to: targetStart),
+                  let endsAt = calendar.date(byAdding: endOffset, to: targetStart),
+                  startsAt < endsAt else {
+                return nil
+            }
+            var copy = source
+            copy.id = UUID()
+            copy.startsAt = startsAt
+            copy.endsAt = endsAt
+            return copy
+        }
+    }
+
     static func resizing(
         _ clip: MetadataScheduleClip,
         edge: MetadataClipResizeEdge,

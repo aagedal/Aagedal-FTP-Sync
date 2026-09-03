@@ -418,11 +418,63 @@ private struct TimelineClipView: View {
     let onMove: (TimeInterval, Bool) -> Void
     let onResize: (MetadataClipResizeEdge, TimeInterval) -> Void
 
-    @GestureState private var moveTranslation: CGFloat = 0
+    @GestureState private var moveState = TimelineClipMoveState()
     @GestureState private var startTranslation: CGFloat = 0
     @GestureState private var endTranslation: CGFloat = 0
 
     var body: some View {
+        ZStack {
+            if isPreviewingDuplicate {
+                clipBody(showsResizeHandles: false)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(isSelected ? color : color.opacity(0.7), lineWidth: isSelected ? 2.5 : 1)
+                    }
+                    .allowsHitTesting(false)
+            }
+
+            clipBody(showsResizeHandles: true)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(
+                            isPreviewingDuplicate ? color.opacity(0.9) : (isSelected ? color : color.opacity(0.7)),
+                            style: StrokeStyle(
+                                lineWidth: isSelected ? 2.5 : 1,
+                                dash: isPreviewingDuplicate ? [5, 3] : []
+                            )
+                        )
+                }
+                .overlay(alignment: .topTrailing) {
+                    if isPreviewingDuplicate {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, color)
+                            .padding(4)
+                    }
+                }
+                .offset(x: moveState.translation)
+        }
+        .foregroundStyle(color)
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .gesture(interactionGesture)
+        .contextMenu {
+            Button(action: onEdit) {
+                Label("Edit Clip…", systemImage: "slider.horizontal.3")
+            }
+            Button(action: onReprocess) {
+                Label("Reprocess This Clip’s Files…", systemImage: "arrow.clockwise")
+            }
+            .disabled(!canReprocess)
+        }
+        .help("Click to select, double-click to edit, drag to move, Option-drag to duplicate, or drag an edge to resize.")
+    }
+
+    private var isPreviewingDuplicate: Bool {
+        moveState.isDuplicating && abs(moveState.translation) >= 3
+    }
+
+    private func clipBody(showsResizeHandles: Bool) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 6)
                 .fill(color.opacity(0.22))
@@ -444,30 +496,14 @@ private struct TimelineClipView: View {
             }
             .padding(.horizontal, 9)
 
-            HStack(spacing: 0) {
-                resizeHandle(edge: .start)
-                Spacer(minLength: 0)
-                resizeHandle(edge: .end)
+            if showsResizeHandles {
+                HStack(spacing: 0) {
+                    resizeHandle(edge: .start)
+                    Spacer(minLength: 0)
+                    resizeHandle(edge: .end)
+                }
             }
         }
-        .foregroundStyle(color)
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(isSelected ? color : color.opacity(0.7), lineWidth: isSelected ? 2.5 : 1)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 6))
-        .offset(x: moveTranslation)
-        .gesture(interactionGesture)
-        .contextMenu {
-            Button(action: onEdit) {
-                Label("Edit Clip…", systemImage: "slider.horizontal.3")
-            }
-            Button(action: onReprocess) {
-                Label("Reprocess This Clip’s Files…", systemImage: "arrow.clockwise")
-            }
-            .disabled(!canReprocess)
-        }
-        .help("Click to select, double-click to edit, drag to move, Option-drag to duplicate, or drag an edge to resize.")
     }
 
     private var interactionGesture: some Gesture {
@@ -481,9 +517,12 @@ private struct TimelineClipView: View {
         // Treat a zero-distance drag as an immediate click while retaining the
         // same movement threshold for dragging clips.
         DragGesture(minimumDistance: 0)
-            .updating($moveTranslation) { value, state, _ in
+            .updating($moveState) { value, state, _ in
                 guard gestureDistance(value.translation) >= 3 else { return }
-                state = value.translation.width
+                state = TimelineClipMoveState(
+                    translation: value.translation.width,
+                    isDuplicating: NSEvent.modifierFlags.contains(.option)
+                )
             }
             .onEnded { value in
                 guard gestureDistance(value.translation) >= 3 else {
@@ -522,6 +561,11 @@ private struct TimelineClipView: View {
                     .onEnded { value in onResize(edge, value.translation.width * secondsPerPoint) }
             )
     }
+}
+
+private struct TimelineClipMoveState {
+    var translation: CGFloat = 0
+    var isDuplicating = false
 }
 
 struct MetadataClipEditor: View {

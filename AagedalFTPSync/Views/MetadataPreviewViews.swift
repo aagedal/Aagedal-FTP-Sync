@@ -87,6 +87,9 @@ struct ProgrammingMonthCalendar: View {
     @Binding var selection: Date
     let programmedDays: Set<Date>
     let calendar: Calendar
+    let canPasteProgramming: Bool
+    let onCopyProgramming: (Date) -> Void
+    let onPasteProgramming: (Date) -> Void
     let onExport: (Set<Date>) -> Void
     @State private var displayedMonth: Date
     @State private var daySelection: ProgrammingDaySelection
@@ -95,11 +98,17 @@ struct ProgrammingMonthCalendar: View {
         selection: Binding<Date>,
         programmedDays: Set<Date>,
         calendar: Calendar = .current,
+        canPasteProgramming: Bool,
+        onCopyProgramming: @escaping (Date) -> Void,
+        onPasteProgramming: @escaping (Date) -> Void,
         onExport: @escaping (Set<Date>) -> Void
     ) {
         _selection = selection
         self.programmedDays = programmedDays
         self.calendar = calendar
+        self.canPasteProgramming = canPasteProgramming
+        self.onCopyProgramming = onCopyProgramming
+        self.onPasteProgramming = onPasteProgramming
         self.onExport = onExport
         _displayedMonth = State(initialValue: Self.monthStart(for: selection.wrappedValue, calendar: calendar))
         _daySelection = State(initialValue: ProgrammingDaySelection(
@@ -240,6 +249,24 @@ struct ProgrammingMonthCalendar: View {
         .accessibilityValue(dayAccessibilityValue(isSelected: isSelected, isProgrammed: isProgrammed))
         .contextMenu {
             Button {
+                selectContextDay(date)
+                onCopyProgramming(date)
+            } label: {
+                Label("Copy All Programming for Day", systemImage: "doc.on.doc")
+            }
+            .disabled(!isProgrammed)
+
+            Button {
+                selectContextDay(date)
+                onPasteProgramming(date)
+            } label: {
+                Label("Paste Programming into Day", systemImage: "doc.on.clipboard")
+            }
+            .disabled(!canPasteProgramming)
+
+            Divider()
+
+            Button {
                 let exportDays = daySelection.contextSelection(for: date)
                 if !daySelection.contains(date) {
                     daySelection.select(date, extending: false)
@@ -251,6 +278,11 @@ struct ProgrammingMonthCalendar: View {
             }
             .disabled(programmedDays.isDisjoint(with: daySelection.contextSelection(for: date)))
         }
+    }
+
+    private func selectContextDay(_ date: Date) {
+        daySelection.select(date, extending: false)
+        selection = date
     }
 
     private func dayBackground(isActive: Bool, isSelected: Bool, isProgrammed: Bool) -> Color {
