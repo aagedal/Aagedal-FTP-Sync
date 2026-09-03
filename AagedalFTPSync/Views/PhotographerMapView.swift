@@ -131,7 +131,7 @@ struct PhotographerMapView: View {
             Map(position: $cameraPosition, selection: $selectedPhotographerID) {
                 ForEach(positions) { item in
                     Annotation(
-                        item.photographer.photographerName,
+                        "",
                         coordinate: coordinate(for: item),
                         anchor: .bottom
                     ) {
