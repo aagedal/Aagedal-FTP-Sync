@@ -24,6 +24,7 @@ struct TimelinePlayhead: Equatable {
 
 struct CopiedMetadataDay: Equatable {
     let sourceDay: Date
+    let photographers: [PhotographerProfile]
     let clips: [MetadataScheduleClip]
 }
 
@@ -311,7 +312,6 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         previewRequestID = nil
         isPreviewingMetadata = false
         saveConfirmation = false
-        copiedDayProgramming = nil
         guard let job = selectedJob(in: store) else {
             loadedJobID = nil
             draft = MetadataAutomation()
@@ -499,9 +499,17 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             restrictedTo: sourceDay,
             calendar: calendar
         )
+        let referencedPhotographerIDs = Set(clips.map(\.photographerID))
+        let photographers = draft.photographers.filter {
+            referencedPhotographerIDs.contains($0.id)
+        }
         copiedDayProgramming = clips.isEmpty
             ? nil
-            : CopiedMetadataDay(sourceDay: sourceDay, clips: clips)
+            : CopiedMetadataDay(
+                sourceDay: sourceDay,
+                photographers: photographers,
+                clips: clips
+            )
     }
 
     func pasteDayProgramming(to day: Date) {
@@ -514,6 +522,10 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             calendar: calendar
         )
         guard !pasted.isEmpty else { return }
+        let existingPhotographerIDs = Set(draft.photographers.map(\.id))
+        draft.photographers.append(contentsOf: copiedDayProgramming.photographers.filter {
+            !existingPhotographerIDs.contains($0.id)
+        })
         draft.clips.append(contentsOf: pasted)
         selectedDate = targetDay
         selectedClipIDs = Set(pasted.map(\.id))

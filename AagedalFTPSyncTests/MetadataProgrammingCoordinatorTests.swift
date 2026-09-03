@@ -105,6 +105,76 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.playhead)
     }
 
+    func testCopiedDaySurvivesJobSwitchAndAddsItsMissingPhotographerTrack() throws {
+        let calendar = utcCalendar
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-day-job-switch-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let photographer = PhotographerProfile(
+            name: "News desk",
+            filenamePrefix: "ND",
+            creator: "News desk",
+            copyrightNotice: "Newsroom"
+        )
+        let sourceDay = date(2026, 9, 3, 0, 0, calendar: calendar)
+        let targetDay = date(2026, 9, 4, 0, 0, calendar: calendar)
+        let sourceClip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Morning assignment",
+            startsAt: date(2026, 9, 3, 8, 30, calendar: calendar),
+            endsAt: date(2026, 9, 3, 10, 0, calendar: calendar)
+        )
+        var sourceJob = SyncJob(name: "Source job")
+        sourceJob.metadataAutomation = MetadataAutomation(
+            photographers: [photographer],
+            clips: [sourceClip]
+        )
+        let targetJob = SyncJob(name: "Target job")
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        try repository.save([sourceJob, targetJob])
+        let store = AppStore(
+            repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(
+                fileURL: root.appendingPathComponent("presets.json")
+            ),
+            photographerProfileRepository: PhotographerProfileRepository(
+                fileURL: root.appendingPathComponent("photographers.json")
+            ),
+            serverProfileRepository: ServerProfileRepository(
+                fileURL: root.appendingPathComponent("servers.json")
+            ),
+            metadataAuditRepository: MetadataAuditRepository(
+                fileURL: root.appendingPathComponent("audit.json")
+            ),
+            syncFailureRepository: SyncFailureRepository(
+                fileURL: root.appendingPathComponent("failures.json")
+            ),
+            sourceSignatureRepository: SourceSignatureRepository(
+                fileURL: root.appendingPathComponent("signatures.json")
+            )
+        )
+        let coordinator = MetadataProgrammingCoordinator(calendar: calendar)
+
+        store.selectedJobID = sourceJob.id
+        coordinator.loadSelectedJob(from: store)
+        coordinator.copyAllProgramming(on: sourceDay)
+
+        store.selectedJobID = targetJob.id
+        coordinator.loadSelectedJob(from: store)
+
+        XCTAssertNotNil(coordinator.copiedDayProgramming)
+        coordinator.pasteDayProgramming(to: targetDay)
+
+        XCTAssertEqual(coordinator.draft.photographers, [photographer])
+        let pasted = try XCTUnwrap(coordinator.draft.clips.first)
+        XCTAssertEqual(pasted.photographerID, photographer.id)
+        XCTAssertEqual(pasted.name, sourceClip.name)
+        XCTAssertEqual(pasted.startsAt, date(2026, 9, 4, 8, 30, calendar: calendar))
+        XCTAssertEqual(pasted.endsAt, date(2026, 9, 4, 10, 0, calendar: calendar))
+        XCTAssertNil(coordinator.draft.validationMessage)
+    }
+
     func testResizeCrossingMidnightWaitsForConfirmation() {
         let calendar = utcCalendar
         let photographerID = UUID()
