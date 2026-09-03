@@ -219,17 +219,6 @@ struct MetadataProgrammingView: View {
                 .font(.title2.weight(.semibold))
                 .fixedSize()
 
-            Picker(selection: selectedJobBinding) {
-                ForEach(store.jobs) { job in
-                    Text(job.name).tag(Optional(job.id))
-                }
-            } label: {
-                Image(systemName: "arrow.triangle.2.circlepath")
-                    .accessibilityLabel("Sync Job")
-            }
-            .frame(minWidth: 240, idealWidth: 270, maxWidth: 270)
-            .help("Sync Job")
-
             Picker(selection: $coordinator.draft.timestampPolicy) {
                 ForEach(MetadataTimestampPolicy.allCases) { policy in
                     Text(policy.title).tag(policy)
@@ -275,11 +264,22 @@ struct MetadataProgrammingView: View {
             )
             .padding(12)
 
-            Spacer(minLength: 12)
+            Divider()
+
+            List(selection: selectedJobBinding) {
+                Section("Sync Jobs") {
+                    ForEach(store.jobs) { job in
+                        metadataJobRow(for: job)
+                            .tag(job.id)
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+
             Divider()
 
             Button {
-                RegularWindowController.shared.prepareForOpening()
+                RegularWindowController.shared.prepareForOpening(windowID: "photographers")
                 openWindow(id: "photographers")
             } label: {
                 Label("Manage All Photographers…", systemImage: "person.2")
@@ -289,6 +289,41 @@ struct MetadataProgrammingView: View {
             .padding(12)
             .help("Open the shared photographer library in a separate window")
         }
+    }
+
+    private func metadataJobRow(for job: SyncJob) -> some View {
+        let automation = job.id == coordinator.loadedJobID
+            ? draft
+            : job.metadataAutomation ?? MetadataAutomation()
+
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: job.direction.symbol)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14)
+                Text(job.name)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+            }
+
+            Text(metadataJobSummary(for: automation))
+                .font(.caption)
+                .foregroundStyle(automation.isEnabled ? Color.green : Color.secondary)
+                .lineLimit(1)
+        }
+        .padding(.vertical, 3)
+        .help("Program metadata for \(job.name)")
+    }
+
+    private func metadataJobSummary(for automation: MetadataAutomation) -> String {
+        let status = automation.isEnabled ? "Active" : "Inactive"
+        let photographerCount = automation.photographers.count
+        let clipCount = automation.clips.count
+        let photographers = photographerCount == 1
+            ? "1 photographer"
+            : "\(photographerCount) photographers"
+        let clips = clipCount == 1 ? "1 clip" : "\(clipCount) clips"
+        return "\(status) · \(photographers) · \(clips)"
     }
 
     private var dayTimeline: some View {

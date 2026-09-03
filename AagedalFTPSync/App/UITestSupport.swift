@@ -75,7 +75,7 @@ enum UITestSupport {
     @MainActor
     static func activateJobsWindow() {
         guard enabled else { return }
-        RegularWindowController.shared.prepareForOpening()
+        RegularWindowController.shared.prepareForOpening(windowID: "jobs")
         NSApplication.shared.activate(ignoringOtherApps: true)
         NSApplication.shared.windows
             .first(where: { $0.title == "Aagedal FTP Sync" })?

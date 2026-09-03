@@ -263,7 +263,7 @@ struct JobsWindowView: View {
     }
 
     private func openServersWindow() {
-        RegularWindowController.shared.prepareForOpening()
+        RegularWindowController.shared.prepareForOpening(windowID: "servers")
         openWindow(id: "servers")
     }
 

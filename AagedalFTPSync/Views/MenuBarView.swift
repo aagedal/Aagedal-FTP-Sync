@@ -94,7 +94,7 @@ struct MenuBarView: View {
                 .help("Settings")
                 .accessibilityLabel("Settings")
             Button {
-                RegularWindowController.shared.prepareForOpening()
+                RegularWindowController.shared.prepareForOpening(windowID: "about")
                 openWindow(id: "about")
             } label: {
                 Image(systemName: "info.circle")
@@ -115,7 +115,7 @@ struct MenuBarView: View {
 
     private func openJobsWindow(adding: Bool) {
         if adding { store.requestNewJobDraft() }
-        RegularWindowController.shared.prepareForOpening()
+        RegularWindowController.shared.prepareForOpening(windowID: "jobs")
         openWindow(id: "jobs")
     }
 
@@ -189,7 +189,7 @@ private struct MenuJobRow: View {
             }
             Button {
                 store.selectedJobID = job.id
-                RegularWindowController.shared.prepareForOpening()
+                RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
                 openWindow(id: "metadata-programming")
             } label: {
                 Image(systemName: "tag")
@@ -216,7 +216,7 @@ private struct MenuJobRow: View {
 
     private func openJobSettings() {
         store.selectedJobID = job.id
-        RegularWindowController.shared.prepareForOpening()
+        RegularWindowController.shared.prepareForOpening(windowID: "jobs")
         openWindow(id: "jobs")
     }
 
@@ -421,7 +421,7 @@ private struct JobQuickControls: View {
 
     private func openJobSettings() {
         store.selectedJobID = job.id
-        RegularWindowController.shared.prepareForOpening()
+        RegularWindowController.shared.prepareForOpening(windowID: "jobs")
         openWindow(id: "jobs")
     }
 

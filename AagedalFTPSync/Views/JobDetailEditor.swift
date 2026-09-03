@@ -94,7 +94,7 @@ struct JobDetailEditor: View {
                     }
                     Button("Open Metadata Programming…") {
                         store.selectedJobID = draft.id
-                        RegularWindowController.shared.prepareForOpening()
+                        RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
                         openWindow(id: "metadata-programming")
                     }
                     .disabled(session.isNewJob)

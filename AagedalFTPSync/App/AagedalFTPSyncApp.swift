@@ -22,35 +22,35 @@ struct AagedalFTPSyncApp: App {
             JobsWindowView()
                 .environmentObject(store)
                 .frame(minWidth: 820, minHeight: 580)
-                .background(RegularWindowTracker())
+                .background(RegularWindowTracker(windowID: "jobs"))
         }
         .defaultSize(width: 920, height: 650)
 
         Window("About Aagedal FTP Sync", id: "about") {
             AboutView()
                 .frame(width: 430, height: 330)
-                .background(RegularWindowTracker())
+                .background(RegularWindowTracker(windowID: "about"))
         }
         .windowResizability(.contentSize)
 
         Window("Metadata Programming", id: "metadata-programming") {
             MetadataProgrammingView()
                 .environmentObject(store)
-                .background(RegularWindowTracker())
+                .background(RegularWindowTracker(windowID: "metadata-programming"))
         }
         .defaultSize(width: 1180, height: 760)
 
         Window("Photographers", id: "photographers") {
             PhotographerSettingsView()
                 .environmentObject(store)
-                .background(RegularWindowTracker())
+                .background(RegularWindowTracker(windowID: "photographers"))
         }
         .defaultSize(width: 700, height: 450)
 
         Window("Servers", id: "servers") {
             ServerSettingsView()
                 .environmentObject(store)
-                .background(RegularWindowTracker())
+                .background(RegularWindowTracker(windowID: "servers"))
         }
         .defaultSize(width: 780, height: 560)
 
@@ -72,36 +72,54 @@ final class RegularWindowController {
     static let shared = RegularWindowController()
 
     private var visibleWindowIDs = Set<UUID>()
+    private var windowsByID: [String: NSWindow] = [:]
 
-    func prepareForOpening() {
+    func prepareForOpening(windowID: String? = nil) {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
-    }
 
-    func windowDidOpen(id: UUID, window: NSWindow) {
-        visibleWindowIDs.insert(id)
-        prepareForOpening()
+        guard let windowID else { return }
+        bringToFront(windowID)
 
-        // SwiftUI creates a Window scene asynchronously. Activating only when
-        // openWindow is called can therefore happen before there is a regular
-        // window to make key, leaving it behind the previously active app.
-        DispatchQueue.main.async { [weak window] in
-            guard let window else { return }
-            NSApplication.shared.activate(ignoringOtherApps: true)
-            window.makeKeyAndOrderFront(nil)
+        // SwiftUI may finish opening or restoring a Window scene on the next
+        // run-loop pass, so repeat the targeted ordering once it has settled.
+        DispatchQueue.main.async { [weak self] in
+            self?.bringToFront(windowID)
         }
     }
 
-    func windowDidClose(id: UUID) {
+    func windowDidOpen(id: UUID, windowID: String?, window: NSWindow) {
+        visibleWindowIDs.insert(id)
+        if let windowID {
+            windowsByID[windowID] = window
+        }
+        prepareForOpening(windowID: windowID)
+    }
+
+    func windowDidClose(id: UUID, windowID: String?, window: NSWindow?) {
         visibleWindowIDs.remove(id)
+        if let windowID, windowsByID[windowID] === window {
+            windowsByID.removeValue(forKey: windowID)
+        }
         guard visibleWindowIDs.isEmpty else { return }
         NSApplication.shared.setActivationPolicy(.accessory)
+    }
+
+    private func bringToFront(_ windowID: String) {
+        guard let window = windowsByID[windowID] else { return }
+        window.makeKeyAndOrderFront(nil)
     }
 }
 
 private struct RegularWindowTracker: NSViewRepresentable {
+    let windowID: String?
+
+    init(windowID: String? = nil) {
+        self.windowID = windowID
+    }
+
     func makeNSView(context: Context) -> TrackingView {
-        TrackingView()
+        TrackingView(windowID: windowID)
     }
 
     func updateNSView(_ nsView: TrackingView, context: Context) {}
@@ -109,7 +127,18 @@ private struct RegularWindowTracker: NSViewRepresentable {
     @MainActor
     final class TrackingView: NSView {
         private let trackingID = UUID()
+        private let windowID: String?
         private weak var trackedWindow: NSWindow?
+
+        init(windowID: String?) {
+            self.windowID = windowID
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -122,7 +151,11 @@ private struct RegularWindowTracker: NSViewRepresentable {
                 name: NSWindow.willCloseNotification,
                 object: window
             )
-            RegularWindowController.shared.windowDidOpen(id: trackingID, window: window)
+            RegularWindowController.shared.windowDidOpen(
+                id: trackingID,
+                windowID: windowID,
+                window: window
+            )
         }
 
         @objc private func windowWillClose(_ notification: Notification) {
@@ -131,8 +164,13 @@ private struct RegularWindowTracker: NSViewRepresentable {
                 name: NSWindow.willCloseNotification,
                 object: trackedWindow
             )
+            let closingWindow = trackedWindow
             trackedWindow = nil
-            RegularWindowController.shared.windowDidClose(id: trackingID)
+            RegularWindowController.shared.windowDidClose(
+                id: trackingID,
+                windowID: windowID,
+                window: closingWindow
+            )
         }
     }
 }
