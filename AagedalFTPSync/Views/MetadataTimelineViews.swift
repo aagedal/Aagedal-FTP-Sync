@@ -561,19 +561,15 @@ struct MetadataClipEditor: View {
                     Picker("Photographer", selection: $draft.photographerID) {
                         ForEach(photographers) { Text($0.name).tag($0.id) }
                     }
-                    Text("Set the start, end, and duration directly on the timeline.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 Section("IPTC Metadata") {
                     TextField("Headline", text: $draft.fields.headline)
-                    Text("The headline is also used as the clip name on the timeline.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    LabeledContent("Description") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Description")
                         TextEditor(text: $draft.fields.description)
                             .font(.body)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             .frame(minHeight: 90)
                             .overlay {
                                 RoundedRectangle(cornerRadius: 5)
@@ -581,9 +577,6 @@ struct MetadataClipEditor: View {
                             }
                     }
                     TextField("Keywords", text: $keywordsText, prompt: Text("politics, conference, Oslo"))
-                    Text("Separate keywords with commas. Creator and copyright come from the photographer profile.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
                 Section("Reusable Presets") {
@@ -705,4 +698,3 @@ struct MetadataClipEditor: View {
         _ = store.saveMetadataPreset(preset)
     }
 }
-
