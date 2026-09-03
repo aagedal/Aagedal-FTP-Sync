@@ -219,34 +219,44 @@ struct MetadataProgrammingView: View {
                 .font(.title2.weight(.semibold))
                 .fixedSize()
 
-            Picker("Sync job", selection: selectedJobBinding) {
+            Picker(selection: selectedJobBinding) {
                 ForEach(store.jobs) { job in
                     Text(job.name).tag(Optional(job.id))
                 }
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .accessibilityLabel("Sync Job")
             }
             .frame(minWidth: 240, idealWidth: 270, maxWidth: 270)
+            .help("Sync Job")
 
-            Picker("Schedule time", selection: $coordinator.draft.timestampPolicy) {
+            Picker(selection: $coordinator.draft.timestampPolicy) {
                 ForEach(MetadataTimestampPolicy.allCases) { policy in
                     Text(policy.title).tag(policy)
                 }
+            } label: {
+                Image(systemName: "clock")
+                    .accessibilityLabel("Schedule Time")
             }
             .frame(minWidth: 245, idealWidth: 320, maxWidth: 320)
             .layoutPriority(1)
-            .help(draft.timestampPolicy.explanation)
+            .help("Schedule Time: \(draft.timestampPolicy.explanation)")
 
-            Picker("Existing fields", selection: $coordinator.draft.existingFieldPolicy) {
+            Picker(selection: $coordinator.draft.existingFieldPolicy) {
                 ForEach(MetadataExistingFieldPolicy.allCases) { policy in
                     Text(policy.title).tag(policy)
                 }
+            } label: {
+                Image(systemName: "text.badge.checkmark")
+                    .accessibilityLabel("Existing Fields")
             }
             .frame(minWidth: 190, idealWidth: 235, maxWidth: 235)
             .layoutPriority(1)
-            .help(draft.existingFieldPolicy.explanation)
+            .help("Existing Fields: \(draft.existingFieldPolicy.explanation)")
 
             Spacer(minLength: 0)
 
-            Toggle("Automatic metadata", isOn: $coordinator.draft.isEnabled)
+            Toggle("Activate", isOn: $coordinator.draft.isEnabled)
                 .toggleStyle(.switch)
                 .disabled(!canEnableMetadata)
                 .help(canEnableMetadata
