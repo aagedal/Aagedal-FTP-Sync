@@ -197,15 +197,18 @@ private struct MenuJobRow: View {
             .buttonStyle(.plain)
             .help("Metadata Programming")
             Button {
-                store.selectedJobID = job.id
-                store.metadataMapRequestedDate = Date()
-                RegularWindowController.shared.prepareForOpening(windowID: "photographer-map")
-                openWindow(id: "photographer-map")
+                store.revealDownloadFolder(for: job)
             } label: {
-                Image(systemName: "map")
+                Image(systemName: "folder")
             }
             .buttonStyle(.plain)
-            .help("Photographer Map")
+            .disabled(job.localDestinationDisplayPath == nil)
+            .help(
+                job.localDestinationDisplayPath == nil
+                    ? "No Local Download Folder"
+                    : "Reveal Download Folder in Finder"
+            )
+            .accessibilityLabel("Reveal Download Folder in Finder")
             Button {
                 store.setEnabled(!job.isEnabled, for: job.id)
             } label: {

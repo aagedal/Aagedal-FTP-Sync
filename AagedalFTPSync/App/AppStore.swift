@@ -687,6 +687,28 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func revealDownloadFolder(for job: SyncJob) {
+        guard let destination = job.destinationEndpoint, destination.kind == .local else {
+            alertMessage = "This job does not have a local download folder."
+            return
+        }
+
+        do {
+            let access = try BookmarkAccess(endpoint: destination)
+            let downloadURL = if job.usesManagedFolderStructure {
+                try ManagedOutputFolder.syncedFiles.url(
+                    inside: access.url,
+                    createIfNeeded: false
+                )
+            } else {
+                access.url
+            }
+            NSWorkspace.shared.activateFileViewerSelecting([downloadURL])
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
     private func scheduleSourceSignatureMaintenance(jobID: UUID) {
         sourceSignatureMaintenanceTasks[jobID]?.cancel()
         sourceSignatureMaintenanceTasks[jobID] = Task { [weak self] in
