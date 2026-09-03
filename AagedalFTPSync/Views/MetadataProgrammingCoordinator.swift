@@ -485,6 +485,29 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         editingClipID = clip.id
     }
 
+    @discardableResult
+    func openClip(_ clipID: UUID, at date: Date) -> Bool {
+        guard let clip = draft.clips.first(where: { $0.id == clipID }) else { return false }
+        selectedDate = calendar.startOfDay(for: date)
+        editClip(clip)
+        playhead = TimelinePlayhead(photographerID: clip.photographerID, date: date)
+        return true
+    }
+
+    func applyExternalGPSPosition(
+        _ position: ScheduledGPSPosition,
+        to clipID: UUID,
+        jobID: UUID
+    ) {
+        guard loadedJobID == jobID,
+              let clipIndex = draft.clips.firstIndex(where: { $0.id == clipID }) else { return }
+        let wasClean = draft == lastSavedDraft
+        draft.clips[clipIndex].gpsPosition = position
+        if wasClean {
+            lastSavedDraft = draft
+        }
+    }
+
     func createClip(for photographer: PhotographerProfile, from start: Date, to end: Date) {
         let clip = MetadataScheduleClip(
             photographerID: photographer.id,

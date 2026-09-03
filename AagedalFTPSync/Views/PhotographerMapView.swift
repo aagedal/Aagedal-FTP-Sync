@@ -3,14 +3,18 @@ import SwiftUI
 
 struct PhotographerMapView: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.openWindow) private var openWindow
     @AppStorage("photographerMapRenderingMode") private var renderingMode: PhotographerMapRenderingMode = .standard
     @AppStorage("photographerMapShows3DBuildings") private var shows3DBuildings = false
     @State private var selectedDate = Date()
     @State private var secondsIntoDay: Double = 12 * 60 * 60
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var selectedPhotographerID: UUID?
+    @State private var draggedClipID: UUID?
+    @State private var draggedCoordinate: CLLocationCoordinate2D?
 
     private let calendar = Calendar.current
+    private let mapCoordinateSpaceName = "photographer-map"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -122,35 +126,36 @@ struct PhotographerMapView: View {
     }
 
     private var map: some View {
-        Map(position: $cameraPosition, selection: $selectedPhotographerID) {
-            ForEach(positions) { item in
-                Annotation(
-                    item.photographer.photographerName,
-                    coordinate: CLLocationCoordinate2D(
-                        latitude: item.position.latitude,
-                        longitude: item.position.longitude
-                    ),
-                    anchor: .bottom
-                ) {
-                    PhotographerMapMarker(
-                        item: item,
-                        color: color(for: item.photographer),
-                        isSelected: selectedPhotographerID == item.photographer.id
-                    )
-                    .tag(item.photographer.id)
-                    .accessibilityLabel(markerAccessibilityLabel(item))
+        MapReader { proxy in
+            Map(position: $cameraPosition, selection: $selectedPhotographerID) {
+                ForEach(positions) { item in
+                    Annotation(
+                        item.photographer.photographerName,
+                        coordinate: coordinate(for: item),
+                        anchor: .bottom
+                    ) {
+                        PhotographerMapMarker(
+                            item: item,
+                            color: color(for: item.photographer),
+                            isSelected: selectedPhotographerID == item.photographer.id
+                        )
+                        .tag(item.photographer.id)
+                        .accessibilityLabel(markerAccessibilityLabel(item))
+                        .gesture(markerGesture(for: item, proxy: proxy))
+                    }
                 }
             }
-        }
-        .mapStyle(mapStyle)
-        .mapControls {
-            MapCompass()
-            MapScaleView()
-            MapPitchToggle()
-        }
-        .overlay(alignment: .topLeading) {
-            mapSummary
-                .padding(12)
+            .coordinateSpace(name: mapCoordinateSpaceName)
+            .mapStyle(mapStyle)
+            .mapControls {
+                MapCompass()
+                MapScaleView()
+                MapPitchToggle()
+            }
+            .overlay(alignment: .topLeading) {
+                mapSummary
+                    .padding(12)
+            }
         }
     }
 
@@ -160,6 +165,11 @@ struct PhotographerMapView: View {
         switch renderingMode {
         case .standard:
             return .standard(elevation: elevation)
+        case .standardWithoutPointsOfInterest:
+            return .standard(
+                elevation: elevation,
+                pointsOfInterest: .excludingAll
+            )
         case .satellite:
             return .hybrid(elevation: elevation)
         case .satelliteWithoutLabels:
@@ -329,6 +339,100 @@ struct PhotographerMapView: View {
         return colors[index % colors.count]
     }
 
+    private func coordinate(for item: ScheduledPhotographerPosition) -> CLLocationCoordinate2D {
+        if draggedClipID == item.clip.id, let draggedCoordinate {
+            return draggedCoordinate
+        }
+        return CLLocationCoordinate2D(
+            latitude: item.position.latitude,
+            longitude: item.position.longitude
+        )
+    }
+
+    private func markerGesture(
+        for item: ScheduledPhotographerPosition,
+        proxy: MapProxy
+    ) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(mapCoordinateSpaceName))
+            .onChanged { value in
+                guard gestureDistance(value.translation) >= 3,
+                      let coordinate = movedCoordinate(for: item, translation: value.translation, proxy: proxy) else {
+                    return
+                }
+                selectedPhotographerID = item.photographer.id
+                draggedClipID = item.clip.id
+                draggedCoordinate = coordinate
+            }
+            .onEnded { value in
+                if gestureDistance(value.translation) < 3 {
+                    selectedPhotographerID = item.photographer.id
+                } else if let coordinate = movedCoordinate(
+                    for: item,
+                    translation: value.translation,
+                    proxy: proxy
+                ) {
+                    saveMovedCoordinate(coordinate, for: item)
+                }
+                draggedClipID = nil
+                draggedCoordinate = nil
+            }
+            .simultaneously(with: TapGesture(count: 2).onEnded {
+                openMetadataProgramming(for: item)
+            })
+    }
+
+    private func movedCoordinate(
+        for item: ScheduledPhotographerPosition,
+        translation: CGSize,
+        proxy: MapProxy
+    ) -> CLLocationCoordinate2D? {
+        let originalCoordinate = CLLocationCoordinate2D(
+            latitude: item.position.latitude,
+            longitude: item.position.longitude
+        )
+        guard let originalPoint = proxy.convert(
+            originalCoordinate,
+            to: .named(mapCoordinateSpaceName)
+        ) else { return nil }
+        let movedPoint = CGPoint(
+            x: originalPoint.x + translation.width,
+            y: originalPoint.y + translation.height
+        )
+        return proxy.convert(movedPoint, from: .named(mapCoordinateSpaceName))
+    }
+
+    private func saveMovedCoordinate(
+        _ coordinate: CLLocationCoordinate2D,
+        for item: ScheduledPhotographerPosition
+    ) {
+        guard let selectedJob,
+              coordinate.latitude.isFinite,
+              coordinate.longitude.isFinite else { return }
+        var position = item.position
+        position.latitude = coordinate.latitude
+        position.longitude = coordinate.longitude
+        _ = store.updateMetadataClipPosition(
+            position,
+            clipID: item.clip.id,
+            jobID: selectedJob.id
+        )
+    }
+
+    private func openMetadataProgramming(for item: ScheduledPhotographerPosition) {
+        guard let selectedJob else { return }
+        store.requestMetadataProgramming(
+            for: item.clip.id,
+            jobID: selectedJob.id,
+            at: selectedInstant
+        )
+        RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
+        openWindow(id: "metadata-programming")
+    }
+
+    private func gestureDistance(_ translation: CGSize) -> CGFloat {
+        hypot(translation.width, translation.height)
+    }
+
     private func markerAccessibilityLabel(_ item: ScheduledPhotographerPosition) -> String {
         "\(item.photographer.photographerName), \(item.clip.name), \(locationDescription(item.position))"
     }
@@ -349,6 +453,7 @@ struct PhotographerMapView: View {
 
 private enum PhotographerMapRenderingMode: String, CaseIterable, Identifiable {
     case standard
+    case standardWithoutPointsOfInterest
     case satellite
     case satelliteWithoutLabels
 
@@ -358,6 +463,8 @@ private enum PhotographerMapRenderingMode: String, CaseIterable, Identifiable {
         switch self {
         case .standard:
             return "Standard"
+        case .standardWithoutPointsOfInterest:
+            return "Standard Without Points of Interest"
         case .satellite:
             return "Satellite"
         case .satelliteWithoutLabels:
@@ -368,6 +475,8 @@ private enum PhotographerMapRenderingMode: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .standard:
+            return "map"
+        case .standardWithoutPointsOfInterest:
             return "map"
         case .satellite:
             return "globe.americas.fill"
@@ -401,6 +510,7 @@ private struct PhotographerMapMarker: View {
                 .foregroundStyle(.white, color)
                 .shadow(radius: 2, y: 1)
         }
+        .help("Click to select, drag to update this clip’s GPS location, or double-click to edit the metadata clip.")
     }
 }
 

@@ -3,6 +3,60 @@ import XCTest
 
 @MainActor
 final class MetadataProgrammingCoordinatorTests: XCTestCase {
+    func testOpenClipSelectsItsDayTrackAndEditor() {
+        let calendar = utcCalendar
+        let photographerID = UUID()
+        let instant = date(2026, 9, 3, 14, 15, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: photographerID,
+            name: "Assignment",
+            startsAt: instant.addingTimeInterval(-1_800),
+            endsAt: instant.addingTimeInterval(1_800)
+        )
+        let coordinator = MetadataProgrammingCoordinator(calendar: calendar)
+        coordinator.draft.clips = [clip]
+
+        XCTAssertTrue(coordinator.openClip(clip.id, at: instant))
+
+        XCTAssertEqual(coordinator.selectedDate, calendar.startOfDay(for: instant))
+        XCTAssertEqual(coordinator.selectedPhotographerID, photographerID)
+        XCTAssertEqual(coordinator.selectedPhotographerIDs, [photographerID])
+        XCTAssertEqual(coordinator.selectedClipIDs, [clip.id])
+        XCTAssertEqual(coordinator.editingClipID, clip.id)
+        XCTAssertEqual(coordinator.playhead, TimelinePlayhead(photographerID: photographerID, date: instant))
+    }
+
+    func testExternalGPSPositionMergesWithoutMakingCleanDraftDirty() throws {
+        let jobID = UUID()
+        let clip = MetadataScheduleClip(
+            photographerID: UUID(),
+            name: "Assignment",
+            startsAt: Date(),
+            endsAt: Date().addingTimeInterval(3_600),
+            gpsPosition: ScheduledGPSPosition(latitude: 59.91, longitude: 10.75)
+        )
+        let coordinator = MetadataProgrammingCoordinator()
+        coordinator.loadedJobID = jobID
+        coordinator.draft.clips = [clip]
+        coordinator.lastSavedDraft = coordinator.draft
+        let moved = ScheduledGPSPosition(latitude: 60.39, longitude: 5.32)
+
+        coordinator.applyExternalGPSPosition(moved, to: clip.id, jobID: jobID)
+
+        XCTAssertEqual(coordinator.draft.clips.first?.gpsPosition, moved)
+        XCTAssertEqual(coordinator.lastSavedDraft, coordinator.draft)
+
+        coordinator.draft.clips[0].name = "Unsaved name"
+        coordinator.applyExternalGPSPosition(
+            ScheduledGPSPosition(latitude: 63.43, longitude: 10.39),
+            to: clip.id,
+            jobID: jobID
+        )
+
+        XCTAssertEqual(coordinator.draft.clips.first?.name, "Unsaved name")
+        XCTAssertNotEqual(coordinator.lastSavedDraft, coordinator.draft)
+    }
+
     func testCopyAndPasteCoordinatesSelectionAndTargetTrack() {
         let calendar = utcCalendar
         let sourcePhotographerID = UUID()

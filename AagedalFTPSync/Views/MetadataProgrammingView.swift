@@ -124,6 +124,17 @@ struct MetadataProgrammingView: View {
         .onChange(of: store.photographerLibrary) { _, _ in
             refreshDraftPhotographersFromLibrary()
         }
+        .onChange(of: store.metadataProgrammingClipRequest) { _, _ in
+            openRequestedClip()
+        }
+        .onChange(of: store.metadataClipPositionUpdate) { _, update in
+            guard let update else { return }
+            coordinator.applyExternalGPSPosition(
+                update.position,
+                to: update.clipID,
+                jobID: update.jobID
+            )
+        }
         .onChange(of: selectedDate) { _, _ in
             coordinator.clearPlayheadIfOutsideSelectedDay()
         }
@@ -901,6 +912,14 @@ struct MetadataProgrammingView: View {
 
     private func loadSelectedJob() {
         coordinator.loadSelectedJob(from: store)
+        openRequestedClip()
+    }
+
+    private func openRequestedClip() {
+        guard let request = store.metadataProgrammingClipRequest,
+              request.jobID == coordinator.loadedJobID,
+              coordinator.openClip(request.clipID, at: request.date) else { return }
+        store.consumeMetadataProgrammingClipRequest(request.id)
     }
 
     private func scheduleAutosave() {

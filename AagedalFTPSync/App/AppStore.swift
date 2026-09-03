@@ -10,6 +10,20 @@ enum MetadataReprocessPhase: Equatable, Sendable {
     case failed(String)
 }
 
+struct MetadataProgrammingClipRequest: Equatable, Sendable {
+    let id = UUID()
+    let jobID: UUID
+    let clipID: UUID
+    let date: Date
+}
+
+struct MetadataClipPositionUpdate: Equatable, Sendable {
+    let id = UUID()
+    let jobID: UUID
+    let clipID: UUID
+    let position: ScheduledGPSPosition
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var jobs: [SyncJob]
@@ -24,6 +38,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var launchAtLoginStatus: SMAppService.Status = .notRegistered
     @Published var selectedJobID: UUID?
     @Published var metadataMapRequestedDate: Date?
+    @Published private(set) var metadataProgrammingClipRequest: MetadataProgrammingClipRequest?
+    @Published private(set) var metadataClipPositionUpdate: MetadataClipPositionUpdate?
     @Published var alertMessage: String?
     @Published private(set) var newJobDraftRequestID: UUID?
 
@@ -291,6 +307,41 @@ final class AppStore: ObservableObject {
             alertMessage = error.localizedDescription
             return false
         }
+    }
+
+    @discardableResult
+    func updateMetadataClipPosition(
+        _ position: ScheduledGPSPosition,
+        clipID: UUID,
+        jobID: UUID
+    ) -> Bool {
+        guard let job = jobs.first(where: { $0.id == jobID }),
+              var automation = job.metadataAutomation,
+              let clipIndex = automation.clips.firstIndex(where: { $0.id == clipID }) else {
+            return false
+        }
+        automation.clips[clipIndex].gpsPosition = position
+        guard saveMetadataAutomation(automation, for: jobID) else { return false }
+        metadataClipPositionUpdate = MetadataClipPositionUpdate(
+            jobID: jobID,
+            clipID: clipID,
+            position: position
+        )
+        return true
+    }
+
+    func requestMetadataProgramming(for clipID: UUID, jobID: UUID, at date: Date) {
+        selectedJobID = jobID
+        metadataProgrammingClipRequest = MetadataProgrammingClipRequest(
+            jobID: jobID,
+            clipID: clipID,
+            date: date
+        )
+    }
+
+    func consumeMetadataProgrammingClipRequest(_ requestID: UUID) {
+        guard metadataProgrammingClipRequest?.id == requestID else { return }
+        metadataProgrammingClipRequest = nil
     }
 
     func photographerUsageCount(_ photographerID: UUID) -> Int {
