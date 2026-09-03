@@ -271,7 +271,6 @@ struct MetadataProgrammingView: View {
             Button {
                 RegularWindowController.shared.prepareForOpening()
                 openWindow(id: "photographers")
-                NSApplication.shared.activate(ignoringOtherApps: true)
             } label: {
                 Label("Manage All Photographers…", systemImage: "person.2")
                     .frame(maxWidth: .infinity, alignment: .leading)

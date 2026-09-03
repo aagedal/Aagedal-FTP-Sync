@@ -96,7 +96,6 @@ struct JobDetailEditor: View {
                         store.selectedJobID = draft.id
                         RegularWindowController.shared.prepareForOpening()
                         openWindow(id: "metadata-programming")
-                        NSApplication.shared.activate(ignoringOtherApps: true)
                     }
                     .disabled(session.isNewJob)
                     .help(session.isNewJob ? "Save this job before programming metadata." : "Open metadata programming for this job.")

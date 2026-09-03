@@ -265,7 +265,6 @@ struct JobsWindowView: View {
     private func openServersWindow() {
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "servers")
-        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private func handleNewJobDraftRequest() {

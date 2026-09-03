@@ -96,7 +96,6 @@ struct MenuBarView: View {
             Button {
                 RegularWindowController.shared.prepareForOpening()
                 openWindow(id: "about")
-                NSApplication.shared.activate(ignoringOtherApps: true)
             } label: {
                 Image(systemName: "info.circle")
             }
@@ -118,13 +117,11 @@ struct MenuBarView: View {
         if adding { store.requestNewJobDraft() }
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
-        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private func openSettingsWindow() {
         RegularWindowController.shared.prepareForOpening()
         openSettings()
-        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private func confirmQuit() {
@@ -194,7 +191,6 @@ private struct MenuJobRow: View {
                 store.selectedJobID = job.id
                 RegularWindowController.shared.prepareForOpening()
                 openWindow(id: "metadata-programming")
-                NSApplication.shared.activate(ignoringOtherApps: true)
             } label: {
                 Image(systemName: "tag")
             }
@@ -222,7 +218,6 @@ private struct MenuJobRow: View {
         store.selectedJobID = job.id
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
-        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private var statusColor: Color {
@@ -428,7 +423,6 @@ private struct JobQuickControls: View {
         store.selectedJobID = job.id
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
-        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private var currentJob: SyncJob {

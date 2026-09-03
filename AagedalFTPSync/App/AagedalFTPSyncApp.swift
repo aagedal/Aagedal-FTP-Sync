@@ -75,11 +75,21 @@ final class RegularWindowController {
 
     func prepareForOpening() {
         NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    func windowDidOpen(id: UUID) {
+    func windowDidOpen(id: UUID, window: NSWindow) {
         visibleWindowIDs.insert(id)
         prepareForOpening()
+
+        // SwiftUI creates a Window scene asynchronously. Activating only when
+        // openWindow is called can therefore happen before there is a regular
+        // window to make key, leaving it behind the previously active app.
+        DispatchQueue.main.async { [weak window] in
+            guard let window else { return }
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        }
     }
 
     func windowDidClose(id: UUID) {
@@ -112,7 +122,7 @@ private struct RegularWindowTracker: NSViewRepresentable {
                 name: NSWindow.willCloseNotification,
                 object: window
             )
-            RegularWindowController.shared.windowDidOpen(id: trackingID)
+            RegularWindowController.shared.windowDidOpen(id: trackingID, window: window)
         }
 
         @objc private func windowWillClose(_ notification: Notification) {
