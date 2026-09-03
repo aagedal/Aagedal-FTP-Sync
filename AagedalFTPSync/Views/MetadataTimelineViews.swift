@@ -140,6 +140,10 @@ struct TimelineTrack: View {
             .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
             .contentShape(Rectangle())
             .onTapGesture(perform: onSelectPhotographer)
+            .help(isSelected
+                ? "Selected as a paste target. Shift-click another track to add or remove targets."
+                : "Select this track. Shift-click to add it as another paste target.")
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
 
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
@@ -148,7 +152,7 @@ struct TimelineTrack: View {
                         .contentShape(Rectangle())
                         .gesture(creationGesture(totalWidth: proxy.size.width))
                         .simultaneousGesture(playheadGesture(totalWidth: proxy.size.width))
-                        .help("Click to place the playhead or drag to create a metadata clip")
+                        .help("Click to place the playhead, drag to create a metadata clip, or use the arrow keys to move by track and snap interval")
                     workHoursBackground(totalWidth: proxy.size.width)
                     hourGrid
                     overlapHighlights(totalWidth: proxy.size.width)

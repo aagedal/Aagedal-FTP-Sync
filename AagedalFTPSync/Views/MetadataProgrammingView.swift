@@ -25,10 +25,8 @@ struct MetadataProgrammingView: View {
         get { coordinator.draft }
         nonmutating set { coordinator.draft = newValue }
     }
-    private var selectedPhotographerID: UUID? {
-        get { coordinator.selectedPhotographerID }
-        nonmutating set { coordinator.selectedPhotographerID = newValue }
-    }
+    private var selectedPhotographerID: UUID? { coordinator.selectedPhotographerID }
+    private var selectedPhotographerIDs: Set<UUID> { coordinator.selectedPhotographerIDs }
     private var editingPhotographerID: UUID? {
         get { coordinator.editingPhotographerID }
         nonmutating set { coordinator.editingPhotographerID = newValue }
@@ -639,22 +637,24 @@ struct MetadataProgrammingView: View {
                                 snapMinutes: snapMinutes,
                                 selectedClipIDs: selectedClipIDs,
                                 playheadDate: playhead?.date,
-                                showsPlayhead: playhead?.photographerID == photographer.id,
+                                showsPlayhead: playhead != nil && selectedPhotographerIDs.contains(photographer.id),
                                 canPaste: !copiedClips.isEmpty && playhead != nil,
-                                isSelected: selectedPhotographerID == photographer.id,
+                                isSelected: selectedPhotographerIDs.contains(photographer.id),
                                 processedFileCount: processedFileCount(for: photographer),
                                 canReprocess: canReprocessMetadata,
                                 onSelectPhotographer: {
-                                    selectedPhotographerID = photographer.id
-                                    selectedClipIDs = []
+                                    coordinator.selectPhotographer(
+                                        photographer.id,
+                                        extendingSelection: NSEvent.modifierFlags.contains(.shift)
+                                    )
                                     timelineFocused = true
                                 },
                                 onEditPhotographer: {
-                                    selectedPhotographerID = photographer.id
+                                    coordinator.selectPhotographer(photographer.id, extendingSelection: false)
                                     editingPhotographerID = photographer.id
                                 },
                                 onRequestRemove: {
-                                    selectedPhotographerID = photographer.id
+                                    coordinator.selectPhotographer(photographer.id, extendingSelection: false)
                                     photographerPendingDeletion = photographer
                                 },
                                 onReprocessPhotographer: {
@@ -699,11 +699,11 @@ struct MetadataProgrammingView: View {
                 .focusable()
                 .focused($timelineFocused)
                 .onKeyPress(.leftArrow) {
-                    selectAdjacentClip(horizontalOffset: -1)
+                    movePlayhead(bySnapIntervals: -1)
                     return .handled
                 }
                 .onKeyPress(.rightArrow) {
-                    selectAdjacentClip(horizontalOffset: 1)
+                    movePlayhead(bySnapIntervals: 1)
                     return .handled
                 }
                 .onKeyPress(.upArrow) {
@@ -970,7 +970,13 @@ struct MetadataProgrammingView: View {
     }
 
     private func pasteClips(to date: Date, on photographerID: UUID) {
-        coordinator.pasteClips(to: date, on: photographerID)
+        if playhead?.date == date,
+           selectedPhotographerIDs.count > 1,
+           selectedPhotographerIDs.contains(photographerID) {
+            coordinator.pasteClips()
+        } else {
+            coordinator.pasteClips(to: date, on: photographerID)
+        }
         timelineFocused = true
     }
 
@@ -1004,8 +1010,8 @@ struct MetadataProgrammingView: View {
         coordinator.applyClipChange(clip)
     }
 
-    private func selectAdjacentClip(horizontalOffset: Int) {
-        coordinator.selectAdjacentClip(horizontalOffset: horizontalOffset)
+    private func movePlayhead(bySnapIntervals intervalCount: Int) {
+        coordinator.movePlayhead(bySnapIntervals: intervalCount)
         timelineFocused = true
     }
 

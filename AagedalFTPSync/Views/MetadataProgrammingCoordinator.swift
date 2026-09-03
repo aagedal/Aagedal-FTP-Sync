@@ -34,6 +34,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     @Published var draft = MetadataAutomation()
     @Published var loadedJobID: UUID?
     @Published var selectedPhotographerID: UUID?
+    @Published var selectedPhotographerIDs: Set<UUID> = []
     @Published var editingPhotographerID: UUID?
     @Published var draggedPhotographerID: UUID?
     @Published var editingClipID: UUID?
@@ -247,6 +248,15 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         return draft.photographers.first(where: { $0.id == selectedPhotographerID })
     }
 
+    var selectedPasteTargetIDs: [UUID] {
+        let selected = selectedPhotographerIDs.isEmpty
+            ? Set([playhead?.photographerID, selectedPhotographerID].compactMap { $0 })
+            : selectedPhotographerIDs
+        return draft.photographers.compactMap { photographer in
+            selected.contains(photographer.id) ? photographer.id : nil
+        }
+    }
+
     var playheadSummary: String? {
         guard let playhead,
               let photographer = draft.photographers.first(where: { $0.id == playhead.photographerID }) else {
@@ -256,7 +266,10 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     var pasteHelp: String {
-        if let playheadSummary {
+        if let playheadSummary, let playhead {
+            if selectedPasteTargetIDs.count > 1, Set(copiedClips.map(\.photographerID)).count == 1 {
+                return "Paste at \(playhead.date.formatted(date: .omitted, time: .shortened)) on \(selectedPasteTargetIDs.count) tracks (Command-V)"
+            }
             return "Paste at \(playheadSummary) (Command-V)"
         }
         return "Click a track to place the playhead, then paste (Command-V)"
@@ -317,6 +330,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             draft = MetadataAutomation()
             lastSavedDraft = nil
             selectedPhotographerID = nil
+            selectedPhotographerIDs = []
             editingPhotographerID = nil
             selectedClipIDs = []
             copiedClips = []
@@ -327,6 +341,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         draft = job.metadataAutomation ?? MetadataAutomation()
         lastSavedDraft = draft
         selectedPhotographerID = draft.photographers.first?.id
+        selectedPhotographerIDs = Set([selectedPhotographerID].compactMap { $0 })
         editingPhotographerID = nil
         selectedClipIDs = []
         copiedClips = []
@@ -370,16 +385,39 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             copyrightNotice: ""
         )
         draft.photographers.append(photographer)
-        selectedPhotographerID = photographer.id
+        setSingleSelectedPhotographer(photographer.id)
     }
 
     func addKnownPhotographer(_ photographer: PhotographerProfile) {
         guard !draft.photographers.contains(where: { $0.id == photographer.id }) else {
-            selectedPhotographerID = photographer.id
+            setSingleSelectedPhotographer(photographer.id)
             return
         }
         draft.photographers.append(photographer)
-        selectedPhotographerID = photographer.id
+        setSingleSelectedPhotographer(photographer.id)
+    }
+
+    func selectPhotographer(_ photographerID: UUID, extendingSelection: Bool) {
+        guard draft.photographers.contains(where: { $0.id == photographerID }) else { return }
+        if extendingSelection {
+            if selectedPhotographerIDs.contains(photographerID), selectedPhotographerIDs.count > 1 {
+                selectedPhotographerIDs.remove(photographerID)
+                if selectedPhotographerID == photographerID {
+                    selectedPhotographerID = draft.photographers.first {
+                        selectedPhotographerIDs.contains($0.id)
+                    }?.id
+                }
+            } else {
+                selectedPhotographerIDs.insert(photographerID)
+                selectedPhotographerID = photographerID
+            }
+        } else {
+            setSingleSelectedPhotographer(photographerID)
+        }
+        selectedClipIDs = []
+        if let playhead, let selectedPhotographerID {
+            self.playhead = TimelinePlayhead(photographerID: selectedPhotographerID, date: playhead.date)
+        }
     }
 
     func removePhotographer(_ photographer: PhotographerProfile) {
@@ -387,6 +425,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         draft.clips.removeAll { $0.photographerID == photographer.id }
         selectedClipIDs = selectedClipIDs.filter { id in draft.clips.contains(where: { $0.id == id }) }
         selectedPhotographerID = draft.photographers.first?.id
+        selectedPhotographerIDs = Set([selectedPhotographerID].compactMap { $0 })
         if playhead?.photographerID == photographer.id { playhead = nil }
         photographerPendingDeletion = nil
     }
@@ -429,6 +468,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             selectedClipIDs = [clip.id]
         }
         selectedPhotographerID = clip.photographerID
+        selectedPhotographerIDs = [clip.photographerID]
+        retargetPlayhead(to: clip.photographerID)
     }
 
     func editSelectedClip() {
@@ -439,6 +480,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func editClip(_ clip: MetadataScheduleClip) {
         selectedClipIDs = [clip.id]
         selectedPhotographerID = clip.photographerID
+        selectedPhotographerIDs = [clip.photographerID]
+        retargetPlayhead(to: clip.photographerID)
         editingClipID = clip.id
     }
 
@@ -453,6 +496,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         draft.clips.append(clip)
         selectedClipIDs = [clip.id]
         selectedPhotographerID = photographer.id
+        selectedPhotographerIDs = [photographer.id]
         playhead = TimelinePlayhead(photographerID: photographer.id, date: start)
     }
 
@@ -467,7 +511,20 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     func pasteClips() {
         guard let playhead else { return }
-        pasteClips(to: playhead.date, on: playhead.photographerID)
+        let sourcePhotographerIDs = Set(copiedClips.map(\.photographerID))
+        let targetIDs = selectedPasteTargetIDs
+        guard sourcePhotographerIDs.count == 1, targetIDs.count > 1 else {
+            pasteClips(to: playhead.date, on: targetIDs.first ?? playhead.photographerID)
+            return
+        }
+        let pasted = targetIDs.flatMap { photographerID in
+            MetadataTimelineEditing.copies(
+                of: copiedClips,
+                anchoredAt: playhead.date,
+                on: photographerID
+            )
+        }
+        finishPasting(pasted)
     }
 
     func pasteClips(to date: Date, on photographerID: UUID) {
@@ -530,6 +587,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         selectedDate = targetDay
         selectedClipIDs = Set(pasted.map(\.id))
         selectedPhotographerID = pasted.first?.photographerID
+        selectedPhotographerIDs = Set(pasted.map(\.photographerID))
         playhead = nil
     }
 
@@ -545,6 +603,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             draft.clips.append(changed)
             selectedClipIDs = [changed.id]
             selectedPhotographerID = changed.photographerID
+            selectedPhotographerIDs = [changed.photographerID]
+            retargetPlayhead(to: changed.photographerID)
         } else {
             applyClipChange(changed)
         }
@@ -552,7 +612,11 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     func placePlayhead(on photographerID: UUID, at date: Date) {
         playhead = TimelinePlayhead(photographerID: photographerID, date: date)
-        selectedPhotographerID = photographerID
+        if selectedPhotographerIDs.contains(photographerID) {
+            selectedPhotographerID = photographerID
+        } else {
+            setSingleSelectedPhotographer(photographerID)
+        }
         selectedClipIDs = []
     }
 
@@ -578,23 +642,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         draft.clips[index] = clip
         selectedClipIDs = [clip.id]
         selectedPhotographerID = clip.photographerID
-    }
-
-    func selectAdjacentClip(horizontalOffset: Int) {
-        let visible = draft.clips
-            .filter { $0.overlaps(dayContaining: selectedDate, calendar: calendar) }
-            .sorted { $0.startsAt < $1.startsAt }
-        guard !visible.isEmpty else { return }
-        guard selectedClipIDs.count == 1,
-              let selectedID = selectedClipIDs.first,
-              let selected = visible.first(where: { $0.id == selectedID }) else {
-            selectClip(visible[horizontalOffset < 0 ? visible.count - 1 : 0], extendingSelection: false)
-            return
-        }
-        let sameTrack = visible.filter { $0.photographerID == selected.photographerID }
-        guard let index = sameTrack.firstIndex(where: { $0.id == selected.id }) else { return }
-        let target = min(max(index + horizontalOffset, 0), sameTrack.count - 1)
-        selectClip(sameTrack[target], extendingSelection: false)
+        selectedPhotographerIDs = [clip.photographerID]
+        retargetPlayhead(to: clip.photographerID)
     }
 
     func selectAdjacentTrack(offset: Int) {
@@ -607,16 +656,40 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         let targetIndex = min(max(currentIndex + offset, 0), timelinePhotographers.count - 1)
         let targetPhotographer = timelinePhotographers[targetIndex]
         let trackClips = clips(for: targetPhotographer)
-        selectedPhotographerID = targetPhotographer.id
+        let referenceDate = playhead?.date ?? selected?.startsAt
+        setSingleSelectedPhotographer(targetPhotographer.id)
+        if let referenceDate {
+            playhead = TimelinePlayhead(photographerID: targetPhotographer.id, date: referenceDate)
+        }
         guard !trackClips.isEmpty else {
             selectedClipIDs = []
             return
         }
-        let referenceDate = selected?.startsAt ?? calendar.startOfDay(for: selectedDate)
+        let nearestDate = referenceDate ?? calendar.startOfDay(for: selectedDate)
         let nearest = trackClips.min {
-            abs($0.startsAt.timeIntervalSince(referenceDate)) < abs($1.startsAt.timeIntervalSince(referenceDate))
+            abs($0.startsAt.timeIntervalSince(nearestDate)) < abs($1.startsAt.timeIntervalSince(nearestDate))
         }
         if let nearest { selectedClipIDs = [nearest.id] }
+    }
+
+    func movePlayhead(bySnapIntervals intervalCount: Int) {
+        guard intervalCount != 0,
+              let photographerID = selectedPhotographerID ?? timelinePhotographers.first?.id else { return }
+        let dayStart = calendar.startOfDay(for: selectedDate)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? dayStart.addingTimeInterval(86_400)
+        let step = TimeInterval(max(snapMinutes, 1) * 60)
+        let latest = nextDay.addingTimeInterval(-step)
+        let origin = playhead?.date
+            ?? selectedClipIDs.compactMap { id in draft.clips.first(where: { $0.id == id })?.startsAt }.min()
+            ?? dayStart
+        let snappedOrigin = MetadataTimelineEditing.snapped(origin, toMinutes: snapMinutes, calendar: calendar)
+        let target = snappedOrigin.addingTimeInterval(TimeInterval(intervalCount) * step)
+        let clamped = min(max(target, dayStart), latest)
+        playhead = TimelinePlayhead(photographerID: photographerID, date: clamped)
+        if selectedPhotographerIDs.isEmpty {
+            selectedPhotographerIDs = [photographerID]
+        }
     }
 
     func moveDay(by value: Int) {
@@ -656,6 +729,19 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         return "P\(number)"
     }
 
+    private func setSingleSelectedPhotographer(_ photographerID: UUID?) {
+        selectedPhotographerID = photographerID
+        selectedPhotographerIDs = Set([photographerID].compactMap { $0 })
+        if let photographerID {
+            retargetPlayhead(to: photographerID)
+        }
+    }
+
+    private func retargetPlayhead(to photographerID: UUID) {
+        guard let playhead else { return }
+        self.playhead = TimelinePlayhead(photographerID: photographerID, date: playhead.date)
+    }
+
     private func finishPasting(
         _ pasted: [MetadataScheduleClip],
         playhead newPlayhead: TimelinePlayhead? = nil
@@ -666,6 +752,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         if let newPlayhead {
             playhead = newPlayhead
             selectedPhotographerID = newPlayhead.photographerID
+            selectedPhotographerIDs = [newPlayhead.photographerID]
         }
     }
 }

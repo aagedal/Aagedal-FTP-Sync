@@ -44,6 +44,100 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         ))
     }
 
+    func testPasteCopiesSingleTrackProgrammingToEverySelectedTrack() {
+        let calendar = utcCalendar
+        let sourcePhotographer = PhotographerProfile(
+            name: "Source", filenamePrefix: "SRC", creator: "Source", copyrightNotice: ""
+        )
+        let firstTarget = PhotographerProfile(
+            name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: ""
+        )
+        let secondTarget = PhotographerProfile(
+            name: "Second", filenamePrefix: "TWO", creator: "Second", copyrightNotice: ""
+        )
+        let sourceStart = date(2026, 8, 29, 9, 0, calendar: calendar)
+        let targetStart = date(2026, 8, 29, 14, 15, calendar: calendar)
+        let sourceClips = [
+            MetadataScheduleClip(
+                photographerID: sourcePhotographer.id,
+                name: "First clip",
+                startsAt: sourceStart,
+                endsAt: sourceStart.addingTimeInterval(1_800)
+            ),
+            MetadataScheduleClip(
+                photographerID: sourcePhotographer.id,
+                name: "Second clip",
+                startsAt: sourceStart.addingTimeInterval(3_600),
+                endsAt: sourceStart.addingTimeInterval(5_400)
+            ),
+        ]
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: sourceStart, calendar: calendar)
+        coordinator.draft = MetadataAutomation(
+            photographers: [sourcePhotographer, firstTarget, secondTarget],
+            clips: sourceClips
+        )
+        coordinator.selectedClipIDs = Set(sourceClips.map(\.id))
+        coordinator.copySelectedClips()
+        coordinator.selectPhotographer(firstTarget.id, extendingSelection: false)
+        coordinator.selectPhotographer(secondTarget.id, extendingSelection: true)
+        coordinator.placePlayhead(on: firstTarget.id, at: targetStart)
+
+        coordinator.pasteClips()
+
+        let pasted = coordinator.draft.clips.filter { coordinator.selectedClipIDs.contains($0.id) }
+        XCTAssertEqual(pasted.count, 4)
+        XCTAssertEqual(Set(pasted.map(\.photographerID)), [firstTarget.id, secondTarget.id])
+        for targetID in [firstTarget.id, secondTarget.id] {
+            let targetClips = pasted.filter { $0.photographerID == targetID }.sorted { $0.startsAt < $1.startsAt }
+            XCTAssertEqual(targetClips.map(\.startsAt), [targetStart, targetStart.addingTimeInterval(3_600)])
+        }
+        XCTAssertEqual(coordinator.selectedPhotographerIDs, [firstTarget.id, secondTarget.id])
+        XCTAssertEqual(coordinator.playhead, TimelinePlayhead(photographerID: firstTarget.id, date: targetStart))
+    }
+
+    func testVerticalTrackNavigationMovesPlayheadWithoutChangingItsTime() {
+        let calendar = utcCalendar
+        let first = PhotographerProfile(
+            name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: ""
+        )
+        let second = PhotographerProfile(
+            name: "Second", filenamePrefix: "TWO", creator: "Second", copyrightNotice: ""
+        )
+        let targetDate = date(2026, 8, 29, 14, 15, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: targetDate, calendar: calendar)
+        coordinator.draft.photographers = [first, second]
+        coordinator.placePlayhead(on: first.id, at: targetDate)
+
+        coordinator.selectAdjacentTrack(offset: 1)
+
+        XCTAssertEqual(coordinator.selectedPhotographerID, second.id)
+        XCTAssertEqual(coordinator.selectedPhotographerIDs, [second.id])
+        XCTAssertEqual(coordinator.playhead, TimelinePlayhead(photographerID: second.id, date: targetDate))
+    }
+
+    func testHorizontalNavigationMovesPlayheadBySnapIntervalAndClampsToDay() {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(
+            name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: ""
+        )
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft.photographers = [photographer]
+        coordinator.snapMinutes = 15
+        coordinator.placePlayhead(on: photographer.id, at: date(2026, 8, 29, 10, 0, calendar: calendar))
+
+        coordinator.movePlayhead(bySnapIntervals: 1)
+        XCTAssertEqual(coordinator.playhead?.date, date(2026, 8, 29, 10, 15, calendar: calendar))
+
+        coordinator.placePlayhead(on: photographer.id, at: day)
+        coordinator.movePlayhead(bySnapIntervals: -1)
+        XCTAssertEqual(coordinator.playhead?.date, day)
+
+        coordinator.placePlayhead(on: photographer.id, at: date(2026, 8, 29, 23, 45, calendar: calendar))
+        coordinator.movePlayhead(bySnapIntervals: 1)
+        XCTAssertEqual(coordinator.playhead?.date, date(2026, 8, 29, 23, 45, calendar: calendar))
+    }
+
     func testCopyAndPasteDayProgrammingPreservesTracksAndVisibleTimes() throws {
         let calendar = utcCalendar
         let firstPhotographerID = UUID()
