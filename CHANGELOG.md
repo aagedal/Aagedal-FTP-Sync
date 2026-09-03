@@ -1,18 +1,54 @@
 # Changelog
 
-## Unreleased
 
-- Keep photographer-sorted processed folders human-readable as `Photographer Name (INITIALS)` and add stable disambiguation for sanitized-name collisions.
-- Relink the renamed SwiftMediaMetadata package at 2.0.0 and migrate application and test imports from the former SwiftExif module name.
-- Add separate exports for sync jobs and metadata programming, plus a combined `.aftpsync` configuration package.
-- Offer password-derived AES-256-GCM authenticated encryption by default, with an explicit unencrypted option, while always excluding Keychain passwords and machine-bound folder bookmarks.
-- Import jobs as disabled copies with fresh IDs and require folder access and server passwords to be configured again.
-- Reprocess existing metadata for all matching files, one photographer, or one timeline clip from contextual timeline actions.
-- Treat camera RAW files and their generated or existing XMP sidecars as one recoverable cleanup group.
-- Add an opt-in SHA-256 content-integrity check for equal-size, equal-timestamp files, repairing one-way mismatches and reporting two-way mismatches without overwriting either copy.
-- Add reusable FTP, FTPS, and SFTP server profiles and preserve their shared job references in portable configuration packages without exporting Keychain passwords.
-- Add automated CI release checks for the security baseline, vendored SSH signature regressions, and the application test suite.
-- Add an isolated macOS UI smoke suite and loopback FTP, trusted implicit-FTPS, and SFTP publication/rollback integration coverage.
+## 2.7.1 — 2026-09-03
+
+- Remove the duplicate photographer name shown beneath each marker in the Photographer Map.
+
+## 2.7.0 – 2026-09-03
+### Faster, more dependable syncing
+- Eligible new files can begin transferring before a large remote folder has finished scanning.
+- Optional content verification detects changed files even when their size and modification date are identical.
+- Completed transfers remain visible if a later part of the sync fails.
+- Safer publishing and rollback prevent partially copied files or RAW/XMP pairs from being left behind.
+- Shared limits keep simultaneous jobs from overwhelming the same server.
+
+### Reusable server profiles
+- Save FTP, FTPS, and SFTP connections as named server profiles.
+- Reuse one server across multiple jobs while giving each job its own remote folder.
+- See which jobs use a server before editing or deleting it.
+- Duplicate a profile when you need separate credentials or trust settings.
+- Existing remote connections are migrated automatically while preserving Keychain credentials.
+
+### Improved metadata programming
+- Add an optional GPS location to timeline clips and write it to image metadata or RAW XMP sidecars.
+- View photographers’ scheduled positions in the new Photographer Map, with date selection and a time scrubber.
+- Copy and paste a day’s programming, or Option-drag clips to duplicate them.
+- Export programming for a specific day and import programming directly into a selected job.
+- Reprocess matching files for an entire job, one photographer, or a single timeline clip.
+- Photographer settings now autosave and provide clearer validation.
+- Improved timeline layout, keyboard accessibility, navigation, and window focus behavior.
+
+### Safer configuration transfer
+- Export sync jobs, metadata programming, or both in a single .aftpsync package.
+- Packages are password-protected by default.
+- Keychain passwords and machine-specific folder permissions are never exported.
+- Imported jobs receive new identities and start disabled, allowing folders and passwords to be reviewed before syncing.
+
+### Clearer failure reporting
+- The menu-bar icon now distinguishes failures and warnings.
+- Throttled macOS notifications highlight failures that need attention.
+- Sync failure history preserves useful partial-progress information.
+- Export a privacy-safe support bundle containing recent diagnostics without filenames, paths, server details, credentials, or raw error messages.
+
+### Additional improvements
+- RAW files and their XMP companions are treated as one recoverable group during cleanup.
+- Unsaved job changes are protected when switching jobs or closing the window.
+- New jobs remain drafts until successfully saved.
+- Photographer-sorted output folders use readable names such as Photographer Name (INITIALS), with safe disambiguation when names collide.
+- Refined menu-bar controls and quicker access to common job actions.
+- Expanded automated coverage for FTP, FTPS, SFTP, security checks, configuration transfer, and core user workflows.
+
 
 ## 2.6.0 — 2026-08-30
 
