@@ -69,31 +69,47 @@ struct MenuBarView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Menu("All Jobs") {
+        HStack(spacing: 14) {
+            Menu {
                 Button("Start All", systemImage: "play.fill") { store.startAll() }
                 Button("Stop All", systemImage: "stop.fill") { store.stopAll() }
+            } label: {
+                Image(systemName: "playpause.fill")
             }
             .menuStyle(.borderlessButton)
+            .help("All Jobs")
+            .accessibilityLabel("All Jobs")
             Spacer()
-            Button("Metadata…") { openMetadataWindow() }
+            Button { openJobsWindow(adding: false) } label: {
+                Image(systemName: "rectangle.stack")
+            }
                 .buttonStyle(.plain)
-                .disabled(store.jobs.isEmpty)
-            Button("Jobs…") { openJobsWindow(adding: false) }
-                .buttonStyle(.plain)
+                .help("Jobs")
+                .accessibilityLabel("Jobs")
                 .accessibilityIdentifier("open-jobs-window")
-            Button("Settings…") { openSettingsWindow() }
+            Button { openSettingsWindow() } label: {
+                Image(systemName: "gearshape")
+            }
                 .buttonStyle(.plain)
-            Button("About") {
+                .help("Settings")
+                .accessibilityLabel("Settings")
+            Button {
                 RegularWindowController.shared.prepareForOpening()
                 openWindow(id: "about")
                 NSApplication.shared.activate(ignoringOtherApps: true)
+            } label: {
+                Image(systemName: "info.circle")
             }
             .buttonStyle(.plain)
-            Button("Quit", action: confirmQuit)
-                .buttonStyle(.bordered)
-                .tint(.red)
-                .controlSize(.small)
+            .help("About")
+            .accessibilityLabel("About")
+            Button(action: confirmQuit) {
+                Image(systemName: "power")
+                    .foregroundStyle(.red)
+            }
+            .buttonStyle(.plain)
+            .help("Quit")
+            .accessibilityLabel("Quit")
         }
         .padding(12)
     }
@@ -102,13 +118,6 @@ struct MenuBarView: View {
         if adding { store.requestNewJobDraft() }
         RegularWindowController.shared.prepareForOpening()
         openWindow(id: "jobs")
-        NSApplication.shared.activate(ignoringOtherApps: true)
-    }
-
-    private func openMetadataWindow() {
-        if store.selectedJobID == nil { store.selectedJobID = store.jobs.last?.id }
-        RegularWindowController.shared.prepareForOpening()
-        openWindow(id: "metadata-programming")
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -182,6 +191,16 @@ private struct MenuJobRow: View {
                     .environmentObject(store)
             }
             Button {
+                store.selectedJobID = job.id
+                RegularWindowController.shared.prepareForOpening()
+                openWindow(id: "metadata-programming")
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            } label: {
+                Image(systemName: "tag")
+            }
+            .buttonStyle(.plain)
+            .help("Metadata Programming")
+            Button {
                 store.setEnabled(!job.isEnabled, for: job.id)
             } label: {
                 Label(
@@ -192,26 +211,8 @@ private struct MenuJobRow: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             .fixedSize()
-            .tint(job.isEnabled ? Color.secondary : Color.accentColor)
+            .tint(job.isEnabled ? Color.red : Color.green)
             .help(job.isEnabled ? "Stop Automatic Sync" : "Start Automatic Sync")
-            localFolderControl
-            Button {
-                openJobSettings()
-            } label: {
-                Image(systemName: "gearshape")
-            }
-            .buttonStyle(.plain)
-            .help("Job Settings")
-            Button {
-                store.selectedJobID = job.id
-                RegularWindowController.shared.prepareForOpening()
-                openWindow(id: "metadata-programming")
-                NSApplication.shared.activate(ignoringOtherApps: true)
-            } label: {
-                Image(systemName: "tag")
-            }
-            .buttonStyle(.plain)
-            .help("Metadata Programming")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
@@ -242,33 +243,6 @@ private struct MenuJobRow: View {
         return "\(files) synced since job started"
     }
 
-    @ViewBuilder
-    private var localFolderControl: some View {
-        let shortcuts = job.localFolderShortcuts
-        if shortcuts.count == 1, let shortcut = shortcuts.first {
-            Button {
-                store.openLocalFolder(shortcut.endpoint)
-            } label: {
-                Image(systemName: "folder")
-            }
-            .buttonStyle(.plain)
-            .help(shortcut.title)
-            .accessibilityLabel(shortcut.title)
-        } else if shortcuts.count > 1 {
-            Menu {
-                ForEach(shortcuts) { shortcut in
-                    Button(shortcut.title, systemImage: "folder") {
-                        store.openLocalFolder(shortcut.endpoint)
-                    }
-                }
-            } label: {
-                Image(systemName: "folder")
-            }
-            .menuStyle(.borderlessButton)
-            .help("Open Local Folder")
-            .accessibilityLabel("Open Local Folder")
-        }
-    }
 }
 
 private struct LocalFolderShortcut: Identifiable {
@@ -308,6 +282,7 @@ private extension SyncJob {
 
 private struct JobQuickControls: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.openWindow) private var openWindow
     let job: SyncJob
     @State private var intervalSeconds: Double
     @State private var ageIndex: Double
@@ -340,6 +315,14 @@ private struct JobQuickControls: View {
             }
 
             Divider()
+
+            HStack(spacing: 12) {
+                localFolderControl
+                Button(action: openJobSettings) {
+                    Label("Job Settings", systemImage: "gearshape")
+                }
+                .buttonStyle(.bordered)
+            }
 
             Picker("File type", selection: filterBinding) {
                 ForEach(FilterPreset.allCases) { preset in
@@ -412,6 +395,40 @@ private struct JobQuickControls: View {
             get: { currentJob.filter.preset },
             set: { store.updateFilter(jobID: job.id, preset: $0) }
         )
+    }
+
+    @ViewBuilder
+    private var localFolderControl: some View {
+        let shortcuts = currentJob.localFolderShortcuts
+        if shortcuts.count == 1, let shortcut = shortcuts.first {
+            Button {
+                store.openLocalFolder(shortcut.endpoint)
+            } label: {
+                Label("Open Folder", systemImage: "folder")
+            }
+            .buttonStyle(.bordered)
+            .help(shortcut.title)
+        } else if shortcuts.count > 1 {
+            Menu {
+                ForEach(shortcuts) { shortcut in
+                    Button(shortcut.title, systemImage: "folder") {
+                        store.openLocalFolder(shortcut.endpoint)
+                    }
+                }
+            } label: {
+                Label("Open Folder", systemImage: "folder")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Open Local Folder")
+        }
+    }
+
+    private func openJobSettings() {
+        store.selectedJobID = job.id
+        RegularWindowController.shared.prepareForOpening()
+        openWindow(id: "jobs")
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     private var currentJob: SyncJob {
