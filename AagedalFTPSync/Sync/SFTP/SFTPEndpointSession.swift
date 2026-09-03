@@ -26,7 +26,11 @@ struct SFTPEndpointSession: EndpointSession, Sendable {
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
-        try await transport.download(file: file, to: temporaryURL)
+        try await exportFile(file, to: temporaryURL, maximumSize: nil)
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL, maximumSize: Int64?) async throws {
+        try await transport.download(file: file, to: temporaryURL, maximumSize: maximumSize)
     }
 
     func importFile(

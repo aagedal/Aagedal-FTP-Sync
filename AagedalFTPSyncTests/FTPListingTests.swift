@@ -756,6 +756,58 @@ final class FTPListingTests: XCTestCase {
         XCTAssertFalse(NetworkStream.isEndOfStream(.posix(.ECONNRESET)))
     }
 
+    func testNetworkStreamRejectsPortsOutsideTransportRange() {
+        XCTAssertThrowsError(try NetworkStream(host: "localhost", port: -1, tls: false))
+        XCTAssertThrowsError(try NetworkStream(host: "localhost", port: 0, tls: false))
+        XCTAssertThrowsError(try NetworkStream(host: "localhost", port: 65_536, tls: false))
+    }
+
+    func testParsesOnlyValidExtendedPassivePorts() {
+        XCTAssertEqual(FTPConnection.parseExtendedPassivePort("229 Entering Extended Passive Mode (|||6446|)"), 6_446)
+        XCTAssertEqual(FTPConnection.parseExtendedPassivePort("229 Entering Extended Passive Mode (!!!2121!)"), 2_121)
+        XCTAssertNil(FTPConnection.parseExtendedPassivePort("229 Entering Extended Passive Mode (|||0|)"))
+        XCTAssertNil(FTPConnection.parseExtendedPassivePort("229 Entering Extended Passive Mode (|||65536|)"))
+        XCTAssertNil(FTPConnection.parseExtendedPassivePort("229 Entering Extended Passive Mode (|||invalid|)"))
+        XCTAssertNil(FTPConnection.parseExtendedPassivePort("229 Entering Extended Passive Mode (|||2121|trailing)"))
+    }
+
+    func testParsesOnlyValidPassivePortsAndOctets() {
+        XCTAssertEqual(FTPConnection.parsePassivePort("227 Entering Passive Mode (127,0,0,1,25,46)"), 6_446)
+        XCTAssertNil(FTPConnection.parsePassivePort("227 Entering Passive Mode (127,0,0,1,0,0)"))
+        XCTAssertNil(FTPConnection.parsePassivePort("227 Entering Passive Mode (127,0,0,1,256,1)"))
+        XCTAssertNil(FTPConnection.parsePassivePort("227 Entering Passive Mode (-1,0,0,1,25,46)"))
+    }
+
+    func testTransferSizeLimitRejectsDataBeyondAdvertisedSize() throws {
+        var limit = try TransferSizeLimit(maximumBytes: 5)
+        try limit.record(3)
+        try limit.record(2)
+
+        XCTAssertEqual(limit.receivedBytes, 5)
+        XCTAssertThrowsError(try limit.record(1))
+        XCTAssertThrowsError(try TransferSizeLimit(maximumBytes: -1))
+    }
+
+    func testRemoteFileSizeRejectsValuesAboveInt64Range() throws {
+        XCTAssertEqual(
+            try RemoteFileSize.checked(UInt64(Int64.max), protocolName: "SFTP", path: "valid.jpg"),
+            Int64.max
+        )
+        XCTAssertThrowsError(
+            try RemoteFileSize.checked(UInt64(Int64.max) + 1, protocolName: "SFTP", path: "invalid.jpg")
+        )
+    }
+
+    func testFTPReplyRedactionRemovesCredentials() {
+        XCTAssertEqual(
+            FTPConnection.redactingSecrets(
+                in: "530 Password hunter2 was rejected; hunter2 is invalid",
+                secrets: ["hunter2", ""]
+            ),
+            "530 Password <redacted> was rejected; <redacted> is invalid"
+        )
+    }
+
     func testDirectoryListingAccumulatorEnforcesMaximumSize() throws {
         var accumulator = BoundedDataAccumulator(maximumBytes: 5)
         try accumulator.append(Data("123".utf8), context: "test listing")

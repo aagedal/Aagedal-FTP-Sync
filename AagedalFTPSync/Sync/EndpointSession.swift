@@ -27,6 +27,41 @@ struct RemoteDirectoryEntry: Sendable {
     let hasAuthoritativeTimestamp: Bool
 }
 
+struct TransferSizeLimit: Sendable {
+    let maximumBytes: Int64
+    private(set) var receivedBytes: Int64 = 0
+
+    init(maximumBytes: Int64) throws {
+        guard maximumBytes >= 0 else {
+            throw AppError.transferFailed("The server reported an invalid negative file size.")
+        }
+        self.maximumBytes = maximumBytes
+    }
+
+    mutating func record(_ byteCount: Int) throws {
+        guard byteCount >= 0,
+              let count = Int64(exactly: byteCount),
+              count <= maximumBytes - receivedBytes else {
+            throw AppError.transferFailed(
+                "The downloaded file exceeded its advertised size of \(maximumBytes) bytes."
+            )
+        }
+        receivedBytes += count
+    }
+}
+
+enum RemoteFileSize {
+    static func checked(_ size: UInt64?, protocolName: String, path: String) throws -> Int64 {
+        let rawSize = size ?? 0
+        guard let result = Int64(exactly: rawSize) else {
+            throw AppError.transferFailed(
+                "The \(protocolName) server reported an unsupported file size for \(path)."
+            )
+        }
+        return result
+    }
+}
+
 enum RemoteTreeWalker {
     static func listFiles(
         root: String,
@@ -179,6 +214,7 @@ protocol EndpointSession: Sendable {
         onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
     ) async throws -> [String: SyncFile]
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws
+    func exportFile(_ file: SyncFile, to temporaryURL: URL, maximumSize: Int64?) async throws
     func importFile(
         from localURL: URL,
         as file: SyncFile,
@@ -240,6 +276,10 @@ extension EndpointSession {
 
     func testConnection() async throws {
         _ = try await listFiles()
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL, maximumSize: Int64?) async throws {
+        try await exportFile(file, to: temporaryURL)
     }
 
     func deleteFile(_ file: SyncFile, ifOlderThan cutoff: Date) async throws -> Bool {

@@ -68,7 +68,15 @@ struct FTPEndpointSession: EndpointSession, Sendable {
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
-        try await connection.download(path: remotePath(for: file.relativePath), to: temporaryURL)
+        try await exportFile(file, to: temporaryURL, maximumSize: nil)
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL, maximumSize: Int64?) async throws {
+        try await connection.download(
+            path: remotePath(for: file.relativePath),
+            to: temporaryURL,
+            maximumSize: maximumSize
+        )
         try FileManager.default.setAttributes([.modificationDate: file.modifiedAt], ofItemAtPath: temporaryURL.path)
     }
 

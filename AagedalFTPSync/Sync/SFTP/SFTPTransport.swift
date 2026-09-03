@@ -63,15 +63,22 @@ actor SFTPTransport {
             },
             listDirectory: { remoteDirectory in
                 let responses = try await sftp.listDirectory(atPath: remoteDirectory)
-                return responses.flatMap(\.components).compactMap { entry in
+                return try responses.flatMap(\.components).compactMap { entry in
                     guard PathSafety.isSafeServerName(entry.filename) else { return nil }
                     let kind = (entry.attributes.permissions ?? 0) & 0o170000
                     guard kind == 0o040000 || kind == 0o100000 else { return nil }
                     let modificationTime = entry.attributes.accessModificationTime?.modificationTime
+                    let size = kind == 0o040000
+                        ? 0
+                        : try RemoteFileSize.checked(
+                            entry.attributes.size,
+                            protocolName: "SFTP",
+                            path: entry.filename
+                        )
                     return RemoteDirectoryEntry(
                         name: entry.filename,
                         isDirectory: kind == 0o040000,
-                        size: Int64(entry.attributes.size ?? 0),
+                        size: size,
                         modifiedAt: modificationTime ?? .distantPast,
                         hasAuthoritativeTimestamp: kind == 0o040000 || modificationTime != nil
                     )
@@ -81,7 +88,8 @@ actor SFTPTransport {
         )
     }
 
-    func download(file: SyncFile, to temporaryURL: URL) async throws {
+    func download(file: SyncFile, to temporaryURL: URL, maximumSize: Int64? = nil) async throws {
+        let initialSizeLimit = try maximumSize.map(TransferSizeLimit.init(maximumBytes:))
         let sftp = try await connect()
         _ = FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: temporaryURL)
@@ -89,10 +97,12 @@ actor SFTPTransport {
         let sourcePath = try await remotePath(for: file.relativePath, sftp: sftp)
         try await sftp.withFile(filePath: sourcePath, flags: .read) { remoteFile in
             var offset: UInt64 = 0
+            var sizeLimit = initialSizeLimit
             while true {
                 try Task.checkCancellation()
                 let buffer = try await remoteFile.read(from: offset, length: 512 * 1_024)
                 guard buffer.readableBytes > 0 else { break }
+                try sizeLimit?.record(buffer.readableBytes)
                 try output.write(contentsOf: Data(buffer.readableBytesView))
                 offset += UInt64(buffer.readableBytes)
             }
@@ -125,7 +135,11 @@ actor SFTPTransport {
 
             if verifySize {
                 let attributes = try await sftp.getAttributes(at: temporaryPath)
-                let uploadedSize = Int64(attributes.size ?? 0)
+                let uploadedSize = try RemoteFileSize.checked(
+                    attributes.size,
+                    protocolName: "SFTP",
+                    path: file.relativePath
+                )
                 guard uploadedSize == file.size else {
                     throw AppError.transferFailed(
                         "Size verification failed for \(file.relativePath): expected \(file.size) bytes, uploaded \(uploadedSize) bytes."

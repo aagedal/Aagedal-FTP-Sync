@@ -682,10 +682,18 @@ struct SyncEngine: Sendable {
                 try? FileManager.default.removeItem(at: temporaryURL)
                 try? FileManager.default.removeItem(at: temporarySidecarURL)
             }
-            try await destination.exportFile(file, to: temporaryURL)
+            try await destination.exportFile(
+                file,
+                to: temporaryURL,
+                maximumSize: job.verifyFileSizes ? file.size : nil
+            )
             if MetadataWriter.usesXMPSidecar(for: file.relativePath),
                let existingSidecar = destinationFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
-                try await destination.exportFile(existingSidecar, to: temporarySidecarURL)
+                try await destination.exportFile(
+                    existingSidecar,
+                    to: temporarySidecarURL,
+                    maximumSize: job.verifyFileSizes ? existingSidecar.size : nil
+                )
             }
 
             guard let scheduledAt = MetadataWriter.schedulingDate(
@@ -1473,11 +1481,11 @@ struct SyncEngine: Sendable {
 
         do {
             try Task.checkCancellation()
-            try await firstSession.exportFile(first, to: firstURL)
+            try await firstSession.exportFile(first, to: firstURL, maximumSize: first.size)
             let firstDigest = try contentDigest(at: firstURL)
             try? FileManager.default.removeItem(at: firstURL)
             try Task.checkCancellation()
-            try await secondSession.exportFile(second, to: secondURL)
+            try await secondSession.exportFile(second, to: secondURL, maximumSize: second.size)
             let secondDigest = try contentDigest(at: secondURL)
             return firstDigest == secondDigest
         } catch is CancellationError {
@@ -1544,9 +1552,17 @@ struct SyncEngine: Sendable {
             itemCount: sourceItemCount
         ))
         do {
-            try await source.exportFile(file, to: temporaryURL)
+            try await source.exportFile(
+                file,
+                to: temporaryURL,
+                maximumSize: verifySize ? file.size : nil
+            )
             if let sourceSidecar {
-                try await source.exportFile(sourceSidecar, to: temporarySidecarURL)
+                try await source.exportFile(
+                    sourceSidecar,
+                    to: temporarySidecarURL,
+                    maximumSize: verifySize ? sourceSidecar.size : nil
+                )
             }
             eventLogger.record(SyncLogEvent(
                 runID: runID,
@@ -1965,7 +1981,11 @@ struct SyncEngine: Sendable {
                   existing.size == output.file.size else { return false }
             let comparisonURL = try makeTemporaryURL(for: existing)
             defer { try? FileManager.default.removeItem(at: comparisonURL) }
-            try await processedDestination.exportFile(existing, to: comparisonURL)
+            try await processedDestination.exportFile(
+                existing,
+                to: comparisonURL,
+                maximumSize: existing.size
+            )
             guard FileManager.default.contentsEqual(
                 atPath: output.localURL.path,
                 andPath: comparisonURL.path

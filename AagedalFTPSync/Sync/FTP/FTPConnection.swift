@@ -67,7 +67,9 @@ final class NetworkStream: @unchecked Sendable {
         connectionTimeout: TimeInterval = FTPNetworkLimits.connectionTimeout,
         operationTimeout: TimeInterval = FTPNetworkLimits.operationTimeout
     ) throws {
-        guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else {
+        guard let rawPort = UInt16(exactly: port),
+              rawPort > 0,
+              let endpointPort = NWEndpoint.Port(rawValue: rawPort) else {
             throw AppError.invalidConfiguration("Invalid port \(port).")
         }
         let parameters: NWParameters
@@ -322,13 +324,15 @@ actor FTPConnection {
         return ftpDateFormatter.date(from: String(response[timestampRange]))
     }
 
-    func download(path: String, to outputURL: URL) async throws {
+    func download(path: String, to outputURL: URL, maximumSize: Int64? = nil) async throws {
+        var sizeLimit = try maximumSize.map(TransferSizeLimit.init(maximumBytes:))
         _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: outputURL)
         defer { try? handle.close() }
         _ = try await withDataConnection(command: "RETR \(escaped(path))") { stream in
             while let data = try await stream.receiveChunk() {
                 try Task.checkCancellation()
+                try sizeLimit?.record(data.count)
                 try handle.write(contentsOf: data)
             }
         }
@@ -490,9 +494,15 @@ actor FTPConnection {
         try await stream.start()
         control = stream
         _ = try await readReply(accepting: 200..<300)
-        let userReply = try await command("USER \(escaped(endpoint.username))", accepting: 200..<400)
-        if userReply.code == 331 {
-            _ = try await command("PASS \(escaped(password))", accepting: 200..<300)
+        do {
+            let userReply = try await command("USER \(escaped(endpoint.username))", accepting: 200..<400)
+            if userReply.code == 331 {
+                _ = try await command("PASS \(escaped(password))", accepting: 200..<300)
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw AppError.transferFailed("FTP authentication failed.")
         }
         if endpoint.kind == .ftps {
             _ = try await command("PBSZ 0", accepting: 200..<300)
@@ -532,7 +542,9 @@ actor FTPConnection {
             }
         }
         guard range.contains(code) else {
-            throw AppError.transferFailed(lines.joined(separator: "\n"))
+            throw AppError.transferFailed(
+                Self.redactingSecrets(in: lines.joined(separator: "\n"), secrets: [password, escaped(password)])
+            )
         }
         return FTPReply(code: code, lines: lines)
     }
@@ -541,17 +553,35 @@ actor FTPConnection {
         value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
     }
 
-    private static func parseExtendedPassivePort(_ text: String) -> Int? {
+    static func parseExtendedPassivePort(_ text: String) -> Int? {
         guard let start = text.lastIndex(of: "("), let end = text[start...].firstIndex(of: ")") else { return nil }
         let payload = text[text.index(after: start)..<end]
-        return payload.split(separator: "|", omittingEmptySubsequences: true).last.flatMap { Int($0) }
+        guard let delimiter = payload.first else { return nil }
+        let components = payload.split(separator: delimiter, omittingEmptySubsequences: false)
+        guard components.count == 5,
+              components[0].isEmpty,
+              components[1].isEmpty,
+              components[2].isEmpty,
+              components[4].isEmpty,
+              let port = Int(components[3]),
+              (1...Int(UInt16.max)).contains(port) else { return nil }
+        return port
     }
 
-    private static func parsePassivePort(_ text: String) -> Int? {
+    static func parsePassivePort(_ text: String) -> Int? {
         guard let start = text.lastIndex(of: "("), let end = text[start...].firstIndex(of: ")") else { return nil }
         let numbers = text[text.index(after: start)..<end].split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-        guard numbers.count == 6 else { return nil }
-        return numbers[4] * 256 + numbers[5]
+        guard numbers.count == 6,
+              numbers.allSatisfy({ (0...255).contains($0) }) else { return nil }
+        let port = numbers[4] * 256 + numbers[5]
+        return port > 0 ? port : nil
+    }
+
+    static func redactingSecrets(in text: String, secrets: [String]) -> String {
+        secrets.reduce(text) { result, secret in
+            guard !secret.isEmpty else { return result }
+            return result.replacingOccurrences(of: secret, with: "<redacted>")
+        }
     }
 
     private static let ftpDateFormatter: DateFormatter = {
