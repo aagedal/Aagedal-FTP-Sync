@@ -1900,31 +1900,40 @@ struct SyncEngine: Sendable {
         for photographer: PhotographerProfile,
         photographers: [PhotographerProfile]
     ) -> String {
+        let readableName = readablePhotographerFolderName(for: photographer)
+        let comparisonKey = folderComparisonKey(readableName)
+        let matchingFolders = photographers.filter {
+            folderComparisonKey(readablePhotographerFolderName(for: $0)) == comparisonKey
+        }
+        guard matchingFolders.contains(where: { $0.id != photographer.id }) else {
+            return readableName
+        }
+
+        let shortIdentifier = String(photographer.id.uuidString.prefix(8)).lowercased()
+        let shortIdentifierIsUnique = !matchingFolders.contains {
+            $0.id != photographer.id
+                && $0.id.uuidString.prefix(8).lowercased() == shortIdentifier
+        }
+        let identifier = shortIdentifierIsUnique
+            ? shortIdentifier
+            : photographer.id.uuidString.lowercased()
+        return "\(readableName) [\(identifier)]"
+    }
+
+    private func readablePhotographerFolderName(for photographer: PhotographerProfile) -> String {
         let base = safeFolderComponent(
             photographer.photographerName,
             fallback: "Photographer",
-            maximumScalars: 44
+            maximumScalars: 36
         )
-        let comparisonKey = folderComparisonKey(base)
-        let hasDuplicateName = photographers.contains { candidate in
-            candidate.id != photographer.id
-                && folderComparisonKey(
-                    safeFolderComponent(
-                        candidate.photographerName,
-                        fallback: "Photographer",
-                        maximumScalars: 44
-                    )
-                ) == comparisonKey
-        }
-        guard hasDuplicateName else { return base }
-
-        let initials = photographer.normalizedPrefixes.first ?? String(photographer.id.uuidString.prefix(8))
-        let suffix = safeFolderComponent(
-            initials,
-            fallback: String(photographer.id.uuidString.prefix(8)),
-            maximumScalars: 10
+        let identifier = photographer.normalizedPrefixes.first
+            ?? "ID-\(photographer.id.uuidString.prefix(8))"
+        let readableIdentifier = safeFolderComponent(
+            identifier,
+            fallback: "ID-\(photographer.id.uuidString.prefix(8))",
+            maximumScalars: 12
         )
-        return safeFolderComponent("\(base) (\(suffix))", fallback: "Photographer")
+        return "\(base) (\(readableIdentifier))"
     }
 
     private func safeFolderComponent(

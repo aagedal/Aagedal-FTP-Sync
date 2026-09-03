@@ -386,7 +386,7 @@ final class LocalSyncIntegrationTests: XCTestCase {
         let syncedRoot = fixture.right.appendingPathComponent("Synced Files")
         let processedRoot = fixture.right
             .appendingPathComponent("Processed Files")
-            .appendingPathComponent("Jane News Desk")
+            .appendingPathComponent("Jane News Desk (JAD)")
         let syncedRaw = syncedRoot.appendingPathComponent(relativePath)
         let syncedSidecar = syncedRoot.appendingPathComponent(
             MetadataWriter.sidecarRelativePath(for: relativePath)
@@ -448,7 +448,7 @@ final class LocalSyncIntegrationTests: XCTestCase {
 
         let processedRoot = fixture.right
             .appendingPathComponent("Processed Files")
-            .appendingPathComponent("Jane Doe")
+            .appendingPathComponent("Jane Doe (JAD)")
         let processedRaw = processedRoot.appendingPathComponent(relativePath)
         let processedSidecar = processedRoot.appendingPathComponent(
             MetadataWriter.sidecarRelativePath(for: relativePath)
@@ -467,6 +467,80 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
         XCTAssertEqual(try Data(contentsOf: processedRaw), archivedRawData)
         XCTAssertEqual(try Data(contentsOf: processedSidecar), archivedSidecarData)
+    }
+
+    func testSortedProcessedFoldersDisambiguateCollidingReadableNamesAndInitials() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = PhotographerProfile(
+            name: "Alex/Smith",
+            filenamePrefix: "ABCDEFGHIJKL1",
+            creator: "Alex/Smith",
+            copyrightNotice: ""
+        )
+        let second = PhotographerProfile(
+            name: "Alex:Smith",
+            filenamePrefix: "ABCDEFGHIJKL2",
+            creator: "Alex:Smith",
+            copyrightNotice: ""
+        )
+        let sourceFiles = [
+            (photographer: first, relativePath: "incoming/ABCDEFGHIJKL1_ONE.CR3"),
+            (photographer: second, relativePath: "incoming/ABCDEFGHIJKL2_TWO.CR3"),
+        ]
+        for sourceFile in sourceFiles {
+            let source = fixture.left.appendingPathComponent(sourceFile.relativePath)
+            try FileManager.default.createDirectory(
+                at: source.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(sourceFile.relativePath.utf8).write(to: source)
+            try FileManager.default.setAttributes(
+                [.modificationDate: timestamp],
+                ofItemAtPath: source.path
+            )
+        }
+
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            photographers: [first, second],
+            clips: [first, second].map { photographer in
+                MetadataScheduleClip(
+                    photographerID: photographer.id,
+                    name: "Assignment",
+                    startsAt: timestamp.addingTimeInterval(-60),
+                    endsAt: timestamp.addingTimeInterval(60),
+                    fields: ScheduledMetadataFields(headline: "Sorted")
+                )
+            }
+        )
+        job.processedFolder = try fixture.endpoint(for: fixture.processed)
+        job.sortsProcessedFilesByPhotographer = true
+
+        let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result.processed, 2)
+        let processedRoot = fixture.processed
+        for sourceFile in sourceFiles {
+            let shortIdentifier = String(sourceFile.photographer.id.uuidString.prefix(8)).lowercased()
+            let folder = "Alex Smith (ABCDEFGHIJKL) [\(shortIdentifier)]"
+            XCTAssertTrue(
+                FileManager.default.fileExists(
+                    atPath: processedRoot
+                        .appendingPathComponent(folder)
+                        .appendingPathComponent(sourceFile.relativePath)
+                        .path
+                )
+            )
+            XCTAssertFalse(
+                FileManager.default.fileExists(
+                    atPath: fixture.left.appendingPathComponent(sourceFile.relativePath).path
+                )
+            )
+        }
     }
 
     func testManagedStructureReprocessingScansOnlySyncedFiles() async throws {

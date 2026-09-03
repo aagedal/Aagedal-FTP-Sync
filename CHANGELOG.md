@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Keep photographer-sorted processed folders human-readable as `Photographer Name (INITIALS)` and add stable disambiguation for sanitized-name collisions.
 - Relink the renamed SwiftMediaMetadata package at 2.0.0 and migrate application and test imports from the former SwiftExif module name.
 - Add separate exports for sync jobs and metadata programming, plus a combined `.aftpsync` configuration package.
 - Offer password-derived AES-256-GCM authenticated encryption by default, with an explicit unencrypted option, while always excluding Keychain passwords and machine-bound folder bookmarks.
