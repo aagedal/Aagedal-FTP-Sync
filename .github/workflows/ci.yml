@@ -22,6 +22,8 @@ jobs:
         run: command -v rg >/dev/null || brew install ripgrep
       - name: Verify dependency security baseline
         run: Scripts/check-security-baseline.sh
+      - name: Verify release identity
+        run: Scripts/check-release-identity.sh
 
   vendored-ssh-signatures:
     name: Vendored SSH signature tests
