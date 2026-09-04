@@ -4,7 +4,7 @@
 
 - Make photographer tracks specific to each programming day and automatically carry a track forward when a clip extends past midnight.
 - Move metadata clips directly between photographer tracks by dragging them vertically.
-- Replace the Photographer Map time slider with a compact per-photographer schedule overview that distinguishes clips with and without locations, supports direct selection, and opens clips in Metadata Programming on double-click.
+- Replace the Photographer Map time slider with a compact per-photographer schedule overview that distinguishes clips with and without locations, supports direct selection, opens clips in Metadata Programming on double-click, and repositions nearby name labels so they do not cover one another.
 - Pause jobs that use server profiles restored from backup until their connection settings have been reviewed.
 - Keep long-running metadata jobs responsive by storing original source signatures in an indexed, recoverable SQLite database and pruning history that is no longer relevant.
 
