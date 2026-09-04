@@ -72,11 +72,15 @@ xcodebuild test \
 
 UI automation requires a signed test runner, so do not add `CODE_SIGNING_ALLOWED=NO` to this command.
 
+The scheduled integration workflow runs this suite on a trusted self-hosted macOS runner with an Apple Development identity. Give that runner the custom `signed-ui-tests` label; pull-request events never automatically dispatch code to it.
+
 Opt-in loopback FTP, trusted implicit-FTPS, and SFTP write/fault tests use OpenSSL plus the pinned Python packages in `Scripts/delivery-latency-requirements.txt`. Install the Python packages in an activated virtual environment, then run:
 
 ```sh
 Scripts/run-remote-transport-tests.py
 ```
+
+The same loopback suite runs weekly in scheduled CI and can be started manually from the Actions page.
 
 ## First setup
 
