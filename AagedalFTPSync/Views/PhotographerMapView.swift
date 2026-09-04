@@ -1,6 +1,39 @@
 import MapKit
 import SwiftUI
 
+struct PhotographerMapTimelineRow: Identifiable, Equatable, Sendable {
+    let photographer: PhotographerProfile
+    let clips: [MetadataScheduleClip]
+
+    var id: UUID { photographer.id }
+}
+
+enum PhotographerMapTimeline {
+    static func rows(
+        for automation: MetadataAutomation,
+        on day: Date,
+        calendar: Calendar = .current
+    ) -> [PhotographerMapTimelineRow] {
+        let photographersByID = Dictionary(
+            uniqueKeysWithValues: automation.photographers.map { ($0.id, $0) }
+        )
+        let clips = MetadataTimelineEditing.clips(
+            from: automation.clips,
+            restrictedTo: day,
+            calendar: calendar
+        )
+        let clipsByPhotographer = Dictionary(grouping: clips, by: \.photographerID)
+
+        return automation.photographerIDs(on: day, calendar: calendar).compactMap { photographerID in
+            guard let photographer = photographersByID[photographerID] else { return nil }
+            return PhotographerMapTimelineRow(
+                photographer: photographer,
+                clips: clipsByPhotographer[photographerID, default: []]
+            )
+        }
+    }
+}
+
 struct PhotographerMapView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
@@ -233,25 +266,14 @@ struct PhotographerMapView: View {
                     .foregroundStyle(.secondary)
             }
 
-            MapTimeScrubber(
+            MapMiniTimeline(
                 seconds: $secondsIntoDay,
+                dayStart: dayStart,
                 dayDuration: dayDuration,
-                changePoints: changePointOffsets
+                rows: mapTimelineRows,
+                selectedPhotographerID: $selectedPhotographerID,
+                color: color(for:)
             )
-
-            HStack {
-                Text("00:00")
-                Spacer()
-                Text("06:00")
-                Spacer()
-                Text("12:00")
-                Spacer()
-                Text("18:00")
-                Spacer()
-                Text("24:00")
-            }
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
         }
         .padding(14)
         .background(.bar)
@@ -296,8 +318,12 @@ struct PhotographerMapView: View {
         automation.mapChangePoints(on: selectedDate, calendar: calendar)
     }
 
-    private var changePointOffsets: [Double] {
-        changePoints.map { $0.timeIntervalSince(dayStart) }
+    private var mapTimelineRows: [PhotographerMapTimelineRow] {
+        PhotographerMapTimeline.rows(
+            for: automation,
+            on: selectedDate,
+            calendar: calendar
+        )
     }
 
     private var previousChangePoint: Date? {
@@ -522,29 +548,164 @@ private struct PhotographerMapMarker: View {
     }
 }
 
-private struct MapTimeScrubber: View {
+private struct MapMiniTimeline: View {
     @Binding var seconds: Double
+    let dayStart: Date
     let dayDuration: Double
-    let changePoints: [Double]
+    let rows: [PhotographerMapTimelineRow]
+    @Binding var selectedPhotographerID: UUID?
+    let color: (PhotographerProfile) -> Color
+
+    private let labelWidth: CGFloat = 118
+    private let rowHeight: CGFloat = 20
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                ForEach(changePoints, id: \.self) { offset in
-                    Capsule()
-                        .fill(Color.accentColor.opacity(0.7))
-                        .frame(width: 3, height: 18)
-                        .position(
-                            x: proxy.size.width * offset / max(dayDuration, 1),
-                            y: proxy.size.height / 2
-                        )
-                        .allowsHitTesting(false)
+        VStack(spacing: 5) {
+            if rows.isEmpty {
+                Text("No photographer tracks on this day")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 3) {
+                        ForEach(rows) { row in
+                            timelineRow(row)
+                        }
+                    }
                 }
+                .scrollIndicators(rows.count > 4 ? .visible : .hidden)
+                .frame(height: min(CGFloat(rows.count) * (rowHeight + 3), 92))
+            }
 
-                Slider(value: $seconds, in: 0...max(dayDuration - 0.001, 0.001))
-                    .accessibilityLabel("Time")
+            HStack(spacing: 8) {
+                Color.clear.frame(width: labelWidth)
+                HStack {
+                    Text("00:00")
+                    Spacer()
+                    Text("06:00")
+                    Spacer()
+                    Text("12:00")
+                    Spacer()
+                    Text("18:00")
+                    Spacer()
+                    Text("24:00")
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
             }
         }
-        .frame(height: 24)
+    }
+
+    private func timelineRow(_ row: PhotographerMapTimelineRow) -> some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(color(row.photographer))
+                    .frame(width: 7, height: 7)
+                Text(row.photographer.photographerName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .font(.caption)
+            .frame(width: labelWidth, alignment: .leading)
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.12))
+
+                    ForEach(row.clips) { clip in
+                        clipBar(
+                            clip,
+                            photographer: row.photographer,
+                            totalWidth: proxy.size.width
+                        )
+                    }
+
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.9))
+                        .frame(width: 2)
+                        .offset(x: playheadOffset(totalWidth: proxy.size.width) - 1)
+                        .allowsHitTesting(false)
+                }
+                .contentShape(Rectangle())
+                .gesture(scrubGesture(
+                    totalWidth: proxy.size.width,
+                    photographerID: row.photographer.id
+                ))
+            }
+            .frame(height: 16)
+        }
+        .frame(height: rowHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Time on \(row.photographer.photographerName)’s schedule")
+        .accessibilityValue(accessibilityTime)
+        .accessibilityHint("Adjust to change the time shown on the map")
+        .accessibilityAdjustableAction { direction in
+            let step: Double = 5 * 60
+            switch direction {
+            case .increment:
+                seconds = min(seconds + step, maximumSeconds)
+            case .decrement:
+                seconds = max(seconds - step, 0)
+            @unknown default:
+                break
+            }
+            selectedPhotographerID = row.photographer.id
+        }
+    }
+
+    private func clipBar(
+        _ clip: MetadataScheduleClip,
+        photographer: PhotographerProfile,
+        totalWidth: CGFloat
+    ) -> some View {
+        let start = max(0, clip.startsAt.timeIntervalSince(dayStart))
+        let end = min(dayDuration, clip.endsAt.timeIntervalSince(dayStart))
+        let x = CGFloat(start / max(dayDuration, 1)) * totalWidth
+        let width = max(CGFloat((end - start) / max(dayDuration, 1)) * totalWidth, 2)
+        let hasLocation = clip.gpsPosition?.isValid == true
+        let isActive = clip.contains(dayStart.addingTimeInterval(seconds))
+        let clipColor = color(photographer)
+
+        return RoundedRectangle(cornerRadius: 3)
+            .fill(clipColor.opacity(hasLocation ? 0.78 : 0.2))
+            .overlay {
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(
+                        isActive ? Color.primary : clipColor.opacity(hasLocation ? 0.9 : 0.5),
+                        style: StrokeStyle(
+                            lineWidth: isActive ? 2 : 1,
+                            dash: hasLocation ? [] : [3, 2]
+                        )
+                    )
+            }
+            .frame(width: width, height: 14)
+            .offset(x: x)
+            .help("\(clip.name) · \(hasLocation ? "location set" : "no location")")
+            .allowsHitTesting(false)
+    }
+
+    private func scrubGesture(totalWidth: CGFloat, photographerID: UUID) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let fraction = min(max(value.location.x / max(totalWidth, 1), 0), 1)
+                seconds = min(Double(fraction) * dayDuration, maximumSeconds)
+                selectedPhotographerID = photographerID
+            }
+    }
+
+    private func playheadOffset(totalWidth: CGFloat) -> CGFloat {
+        CGFloat(min(max(seconds / max(dayDuration, 1), 0), 1)) * totalWidth
+    }
+
+    private var maximumSeconds: Double {
+        max(dayDuration - 0.001, 0)
+    }
+
+    private var accessibilityTime: String {
+        dayStart.addingTimeInterval(min(max(seconds, 0), maximumSeconds))
+            .formatted(date: .omitted, time: .shortened)
     }
 }

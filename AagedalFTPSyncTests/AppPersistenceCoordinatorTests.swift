@@ -48,6 +48,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         let result = fixture.coordinator.load()
 
         XCTAssertTrue(result.jobsRecoveredFromBackup)
+        XCTAssertFalse(result.serverProfilesRecoveredFromBackup)
         XCTAssertEqual(result.state.jobs, [job])
         XCTAssertEqual(result.state.metadataPresets, [preset])
         XCTAssertEqual(result.state.photographerLibrary, [photographer])
@@ -59,6 +60,28 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertTrue(result.warnings.contains { $0.contains("jobs file was damaged") })
         XCTAssertTrue(result.warnings.contains { $0.contains("metadata audit trail was damaged") })
         XCTAssertTrue(result.warnings.contains { $0.contains("sync error log was damaged") })
+    }
+
+    func testLoadReportsRecoveredServerProfilesSeparatelyFromJobs() throws {
+        let fixture = try PersistenceCoordinatorFixture(prefix: "server-profile-load-recovery")
+        defer { fixture.removeTemporaryFiles() }
+        let profile = ServerProfile(
+            name: "Recovered server",
+            kind: .ftps,
+            host: "recovered.example.test",
+            username: "desk"
+        )
+
+        try fixture.serverProfileRepository.save([profile])
+        try fixture.serverProfileRepository.save([])
+        try Data("not valid JSON".utf8).write(to: fixture.serverProfilesURL, options: .atomic)
+
+        let result = fixture.coordinator.load()
+
+        XCTAssertFalse(result.jobsRecoveredFromBackup)
+        XCTAssertTrue(result.serverProfilesRecoveredFromBackup)
+        XCTAssertEqual(result.state.serverProfiles, [profile])
+        XCTAssertTrue(result.warnings.contains { $0.contains("paused for review") })
     }
 
     func testSaveJobsAndPhotographersRollsBackPhotographersWhenUpdatedJobEncodingFails() throws {

@@ -1,9 +1,11 @@
 # Changelog
 
-## 2.7.2 — 2026-09-04
+## Unreleased
 
 - Make photographer tracks specific to each programming day and automatically carry a track forward when a clip extends past midnight.
 - Move metadata clips directly between photographer tracks by dragging them vertically.
+- Replace the Photographer Map time slider with a compact per-photographer schedule overview that distinguishes clips with and without locations.
+- Pause jobs that use server profiles restored from backup until their connection settings have been reviewed.
 
 ## 2.7.1 — 2026-09-03
 

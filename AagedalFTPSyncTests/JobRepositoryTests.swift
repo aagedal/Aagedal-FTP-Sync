@@ -4,6 +4,53 @@ import XCTest
 
 final class JobRepositoryTests: XCTestCase {
     @MainActor
+    func testRecoveredServerProfilePausesReferencedJobAtLaunch() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("recovered-profile-startup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let serverRepository = ServerProfileRepository(fileURL: root.appendingPathComponent("servers.json"))
+        let recoveredProfile = ServerProfile(
+            name: "Recovered picture desk",
+            kind: .ftps,
+            host: "recovered.example.test",
+            username: "desk"
+        )
+        try serverRepository.save([recoveredProfile])
+        try serverRepository.save([])
+        try Data("not valid JSON".utf8).write(
+            to: root.appendingPathComponent("servers.json"),
+            options: .atomic
+        )
+
+        var job = SyncJob(name: "Automatic delivery")
+        job.left = recoveredProfile.endpoint(remotePath: "/incoming")
+        job.right = Endpoint(kind: .local, localPath: "/downloads", bookmark: Data("bookmark".utf8))
+        job.direction = .leftToRight
+        job.isEnabled = true
+        job.startsOnAppLaunch = true
+        try jobRepository.save([job])
+
+        let store = AppStore(
+            repository: jobRepository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(
+                fileURL: root.appendingPathComponent("photographers.json")
+            ),
+            serverProfileRepository: serverRepository,
+            metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
+            syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json"))
+        )
+
+        XCTAssertEqual(store.serverProfiles, [recoveredProfile])
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(store.jobs.first).startsOnAppLaunch)
+        XCTAssertEqual(store.phases[job.id], .stopped)
+        XCTAssertTrue(store.alertMessage?.contains("paused for review") == true)
+    }
+
+    @MainActor
     func testScheduledJobsUseTheSharedGlobalConcurrencyLimit() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("scheduled-concurrency-\(UUID().uuidString)", isDirectory: true)

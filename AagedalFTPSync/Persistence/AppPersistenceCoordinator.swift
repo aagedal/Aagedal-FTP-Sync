@@ -28,6 +28,7 @@ struct AppPersistentState: Sendable {
 struct AppPersistenceLoadResult: Sendable {
     let state: AppPersistentState
     let jobsRecoveredFromBackup: Bool
+    let serverProfilesRecoveredFromBackup: Bool
     let warnings: [String]
 }
 
@@ -122,16 +123,22 @@ final class AppPersistenceCoordinator {
 
         var serverProfiles: [ServerProfile]
         let serverProfilesLoaded: Bool
+        let serverProfilesRecoveredFromBackup: Bool
         do {
             let result = try serverProfileRepository.loadResult()
             serverProfiles = result.profiles
             serverProfilesLoaded = true
+            serverProfilesRecoveredFromBackup = result.recoveredFromBackup
             if result.recoveredFromBackup {
-                warnings.append("The server profile library was damaged, so its most recent backup was restored.")
+                warnings.append(
+                    "The server profile library was damaged, so its most recent backup was restored. "
+                        + "Jobs using server profiles were paused for review."
+                )
             }
         } catch {
             serverProfiles = []
             serverProfilesLoaded = false
+            serverProfilesRecoveredFromBackup = false
             warnings.append("Saved server profiles could not be loaded: \(error.localizedDescription)")
         }
 
@@ -253,6 +260,7 @@ final class AppPersistenceCoordinator {
                 syncFailureEntries: syncFailureEntries
             ),
             jobsRecoveredFromBackup: jobsRecoveredFromBackup,
+            serverProfilesRecoveredFromBackup: serverProfilesRecoveredFromBackup,
             warnings: warnings
         )
     }

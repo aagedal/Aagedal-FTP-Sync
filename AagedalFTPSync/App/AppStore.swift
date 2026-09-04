@@ -110,7 +110,11 @@ final class AppStore: ObservableObject {
         selectedJobID = jobs.last?.id
         for index in jobs.indices {
             let configuredToStart = jobs[index].startsOnAppLaunch
-            let shouldStart = !persistenceLoad.jobsRecoveredFromBackup && configuredToStart
+            let usesServerProfile = jobs[index].left.serverProfileID != nil
+                || jobs[index].right.serverProfileID != nil
+            let requiresRecoveredConfigurationReview = persistenceLoad.jobsRecoveredFromBackup
+                || (persistenceLoad.serverProfilesRecoveredFromBackup && usesServerProfile)
+            let shouldStart = !requiresRecoveredConfigurationReview && configuredToStart
             jobs[index].startOnAppLaunch = configuredToStart
             jobs[index].isEnabled = shouldStart
             phases[jobs[index].id] = .stopped
