@@ -15,7 +15,8 @@
 
 - Make photographer tracks specific to each programming day and automatically carry a track forward when a clip extends past midnight.
 - Move metadata clips directly between photographer tracks by dragging them vertically.
-- Replace the Photographer Map time slider with a compact per-photographer schedule overview that distinguishes clips with and without locations, supports direct selection, opens clips in Metadata Programming on double-click, and repositions nearby name labels so they do not cover one another.
+- Replace the Photographer Map time slider with a responsive, compact per-photographer schedule overview that distinguishes clips with and without locations, supports direct selection, and opens clips in Metadata Programming on double-click.
+- Fit the map to every clip location for the selected day and show current WeatherKit conditions at the map center with Apple attribution.
 
 ### Accessibility and release confidence
 

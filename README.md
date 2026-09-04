@@ -1,8 +1,8 @@
-# Aagedal FTP Sync 2.7
+# Aagedal FTP Sync 2.8
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.7 adds reusable server profiles, safer configuration transfer, faster first-file delivery on large remote trees, and stronger unattended failure reporting. It has no hard-coded server and does not bundle rclone.
+Version 2.8 strengthens unattended operation with safer job recovery, bounded SFTP operations, manifest-backed download resets, and indexed source-signature storage. It also expands the Photographer Map with per-day tracks, a compact schedule overview, all-location framing, and current weather. The app has no hard-coded server and does not bundle rclone.
 
 ## What is new
 
@@ -18,18 +18,23 @@ Version 2.7 adds reusable server profiles, safer configuration transfer, faster 
 - Optional SHA-256 comparison detects changed contents even when file size and modification date still match
 - Passwords are kept in macOS Keychain, never in the jobs file
 - Named FTP, FTPS, and SFTP server profiles can be reused by jobs with independent remote paths
+- Automatic jobs that reference a recovered remote server profile remain paused until the connection settings are reviewed
 - Security-scoped folder bookmarks survive sandboxed app restarts
 - SFTP host keys require explicit SHA-256 fingerprint verification; unexpected changes are rejected
+- SFTP operations have inactivity deadlines and release stalled or cancelled channels promptly
 - FTPS certificates use normal system trust validation
 - New files are staged before atomic local replacement
 - Remote path traversal and symbolic-link traversal are rejected
 - Source deletions are never propagated
+- Download resets remove only files recorded in the job's durable ownership manifest
 - A shared photographer library and per-job timeline clips can apply Headline, Description, Keywords, Creator, and Copyright metadata automatically
+- Photographer tracks are specific to each programming day, and clips can be dragged between tracks
+- The Photographer Map includes a compact per-photographer schedule, frames every clip location for the selected day, and shows current WeatherKit conditions at the map center
 - Each photographer can have multiple comma-separated filename initials for assignments using more than one camera
 - Scheduling can use source modification, local arrival, or Exif camera-capture time
 - Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
 - A read-only local-folder preview, separate metadata outcome counts, and a per-file audit trail make automation decisions inspectable
-- Original source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
+- Indexed, recoverable source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
 - Successfully tagged files can use a custom processed folder or a managed main folder containing sibling `Synced Files` and `Processed Files` folders
 - Processed pictures can optionally be sorted into sanitized `Photographer Name (INITIALS)` sub-folders while preserving their source-relative paths
 - Sync jobs, their referenced server profiles, and metadata programming can be exported separately or together in `.aftpsync` packages, with password protection enabled by default
