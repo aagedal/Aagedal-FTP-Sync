@@ -62,6 +62,7 @@ struct PendingConfigurationTransfer: Identifiable {
 
 struct ConfigurationTransferOptionsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     let operation: ConfigurationTransferOperation
     let onExport: (ConfigurationTransferScope, String?) -> Bool
@@ -103,14 +104,14 @@ struct ConfigurationTransferOptionsView: View {
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.callout)
-                .foregroundStyle(.orange)
+                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                 .fixedSize(horizontal: false, vertical: true)
             }
 
             if let validationMessage {
                 Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(.red)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .red))
             }
 
             Text(securityNote)
@@ -127,7 +128,7 @@ struct ConfigurationTransferOptionsView: View {
             }
         }
         .padding(24)
-        .frame(width: 480)
+        .frame(width: dynamicTypeSize.isAccessibilitySize ? 640 : 480)
     }
 
     private var isExport: Bool {

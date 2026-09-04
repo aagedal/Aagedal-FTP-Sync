@@ -5,6 +5,7 @@ struct MenuBarView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,7 +16,7 @@ struct MenuBarView: View {
             Divider()
             footer
         }
-        .frame(width: 390)
+        .frame(width: dynamicTypeSize.isAccessibilitySize ? 520 : 390)
         .alert("Aagedal FTP Sync", isPresented: Binding(
             get: { store.alertMessage != nil },
             set: { if !$0 { store.alertMessage = nil } }
@@ -65,7 +66,10 @@ struct MenuBarView: View {
         }
         // MenuBarExtra windows do not propose an intrinsic height to ScrollView.
         // A max height alone therefore lets the list collapse to zero, hiding every job row.
-        .frame(height: min(CGFloat(store.jobs.count) * 82, 360))
+        .frame(height: min(
+            CGFloat(store.jobs.count) * (dynamicTypeSize.isAccessibilitySize ? 138 : 82),
+            dynamicTypeSize.isAccessibilitySize ? 510 : 360
+        ))
     }
 
     private var footer: some View {
@@ -147,96 +151,150 @@ struct MenuBarView: View {
 private struct MenuJobRow: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showQuickControls = false
     let job: SyncJob
     let phase: JobPhase
 
     var body: some View {
-        HStack(spacing: 10) {
-            Button { store.runNow(job.id) } label: {
-                Image(systemName: phase == .syncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.circle.fill")
-                    .font(.title2)
-            }
-            .buttonStyle(.plain)
-            .disabled(phase == .syncing)
-            .help("Sync Now")
-            .accessibilityLabel("Sync \(job.name) Now")
-            .accessibilityHint("Starts this sync job immediately")
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text(job.name).fontWeight(.medium).lineLimit(1)
-                    Image(systemName: job.direction.symbol).font(.caption).foregroundStyle(.secondary)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 10) {
+                        syncButton
+                        jobSummary
+                        Spacer(minLength: 8)
+                        automaticSyncButton
+                    }
+                    HStack(spacing: 18) {
+                        Spacer()
+                        quickControlsButton
+                        metadataButton
+                        folderButton
+                    }
                 }
-                Text(phase.label)
-                    .font(.caption)
-                    .foregroundStyle(statusColor)
-                    .lineLimit(1)
-                    .help(phase.label)
-                if case .failed = phase {
-                    Button("View error details…", action: openJobSettings)
-                        .buttonStyle(.plain)
-                        .font(.caption2)
-                        .foregroundStyle(.tint)
-                } else {
-                    Text(activityLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
+            } else {
+                HStack(spacing: 10) {
+                    syncButton
+                    jobSummary
+                    Spacer()
+                    quickControlsButton
+                    metadataButton
+                    folderButton
+                    automaticSyncButton
                 }
             }
-            Spacer()
-            Button { showQuickControls.toggle() } label: {
-                Image(systemName: "slider.horizontal.3")
-            }
-            .buttonStyle(.plain)
-            .help("Quick Controls")
-            .accessibilityLabel("Quick Controls for \(job.name)")
-            .accessibilityHint("Opens automatic-sync and scheduling controls")
-            .popover(isPresented: $showQuickControls, arrowEdge: .trailing) {
-                JobQuickControls(job: job)
-                    .environmentObject(store)
-            }
-            Button {
-                store.selectedJobID = job.id
-                RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
-                openWindow(id: "metadata-programming")
-            } label: {
-                Image(systemName: "tag")
-            }
-            .buttonStyle(.plain)
-            .help("Metadata Programming")
-            .accessibilityLabel("Metadata Programming for \(job.name)")
-            .accessibilityHint("Opens the metadata schedule for this job")
-            Button {
-                store.revealDownloadFolder(for: job)
-            } label: {
-                Image(systemName: "folder")
-            }
-            .buttonStyle(.plain)
-            .disabled(job.localDestinationDisplayPath == nil)
-            .help(
-                job.localDestinationDisplayPath == nil
-                    ? "No Local Download Folder"
-                    : "Reveal Download Folder in Finder"
-            )
-            .accessibilityLabel("Reveal Download Folder in Finder")
-            .accessibilityHint("Opens this job’s local download folder")
-            Button {
-                store.setEnabled(!job.isEnabled, for: job.id)
-            } label: {
-                Label(
-                    job.isEnabled ? "Stop" : "Start",
-                    systemImage: job.isEnabled ? "stop.fill" : "play.fill"
-                )
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .fixedSize()
-            .tint(job.isEnabled ? Color.red : Color.green)
-            .help(job.isEnabled ? "Stop Automatic Sync" : "Start Automatic Sync")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
+    }
+
+    private var syncButton: some View {
+        Button { store.runNow(job.id) } label: {
+            Image(systemName: phase == .syncing ? "arrow.triangle.2.circlepath" : "arrow.triangle.2.circlepath.circle.fill")
+                .font(.title2)
+        }
+        .buttonStyle(.plain)
+        .disabled(phase == .syncing)
+        .help("Sync Now")
+        .accessibilityLabel("Sync \(job.name) Now")
+        .accessibilityHint("Starts this sync job immediately")
+    }
+
+    private var jobSummary: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(job.name).fontWeight(.medium).lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                Image(systemName: job.direction.symbol).font(.caption).foregroundStyle(.secondary)
+            }
+            Label(phase.label, systemImage: statusSymbol)
+                .font(.caption)
+                .labelStyle(AccessibleStatusLabelStyle(symbolColor: statusColor))
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                .help(phase.label)
+            if case .failed = phase {
+                Button("View error details…", action: openJobSettings)
+                    .buttonStyle(.plain)
+                    .font(.caption2)
+                    .foregroundStyle(.tint)
+            } else {
+                Text(activityLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+            }
+        }
+    }
+
+    private var quickControlsButton: some View {
+        Button { showQuickControls.toggle() } label: {
+            Image(systemName: "slider.horizontal.3")
+        }
+        .buttonStyle(.plain)
+        .help("Quick Controls")
+        .accessibilityLabel("Quick Controls for \(job.name)")
+        .accessibilityHint("Opens automatic-sync and scheduling controls")
+        .popover(isPresented: $showQuickControls, arrowEdge: .trailing) {
+            JobQuickControls(job: job)
+                .environmentObject(store)
+        }
+    }
+
+    private var metadataButton: some View {
+        Button {
+            store.selectedJobID = job.id
+            RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
+            openWindow(id: "metadata-programming")
+        } label: {
+            Image(systemName: "tag")
+        }
+        .buttonStyle(.plain)
+        .help("Metadata Programming")
+        .accessibilityLabel("Metadata Programming for \(job.name)")
+        .accessibilityHint("Opens the metadata schedule for this job")
+    }
+
+    private var folderButton: some View {
+        Button {
+            store.revealDownloadFolder(for: job)
+        } label: {
+            Image(systemName: "folder")
+        }
+        .buttonStyle(.plain)
+        .disabled(job.localDestinationDisplayPath == nil)
+        .help(
+            job.localDestinationDisplayPath == nil
+                ? "No Local Download Folder"
+                : "Reveal Download Folder in Finder"
+        )
+        .accessibilityLabel("Reveal Download Folder in Finder")
+        .accessibilityHint("Opens this job’s local download folder")
+    }
+
+    private var automaticSyncButton: some View {
+        Button {
+            store.setEnabled(!job.isEnabled, for: job.id)
+        } label: {
+            Label(
+                job.isEnabled ? "Stop" : "Start",
+                systemImage: job.isEnabled ? "stop.fill" : "play.fill"
+            )
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .fixedSize()
+        .tint(job.isEnabled ? Color.red : Color.green)
+        .help(job.isEnabled ? "Stop Automatic Sync" : "Start Automatic Sync")
+    }
+
+    private var statusSymbol: String {
+        if case .failed = phase { return "xmark.octagon.fill" }
+        if case .succeeded(_, _, _, _, let conflicts, let metadataReport, _) = phase,
+           !conflicts.isEmpty || metadataReport.failed > 0 {
+            return "exclamationmark.triangle.fill"
+        }
+        if case .syncing = phase { return "arrow.triangle.2.circlepath" }
+        return "circle.fill"
     }
 
     private func openJobSettings() {
@@ -303,6 +361,7 @@ private extension SyncJob {
 private struct JobQuickControls: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let job: SyncJob
     @State private var intervalSeconds: Double
     @State private var ageIndex: Double
@@ -324,7 +383,7 @@ private struct JobQuickControls: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(currentJob.name)
                         .font(.headline)
-                        .lineLimit(1)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                     Text(currentJob.isEnabled ? "Automatic sync is running" : "Automatic sync is paused")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -374,7 +433,7 @@ private struct JobQuickControls: View {
                     Text("5 min")
                 }
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 7) {
@@ -399,11 +458,11 @@ private struct JobQuickControls: View {
                     Text("7 days")
                 }
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             }
         }
         .padding(16)
-        .frame(width: 300)
+        .frame(width: dynamicTypeSize.isAccessibilitySize ? 460 : 300)
         .onDisappear {
             commitInterval()
             commitFileAge()

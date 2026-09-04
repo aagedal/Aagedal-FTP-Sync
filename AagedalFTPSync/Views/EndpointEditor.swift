@@ -65,10 +65,10 @@ struct EndpointSummaryCard: View {
 
             if endpoint.validationMessage == nil {
                 Label("Configured", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
             } else {
                 Label("Needs setup", systemImage: "exclamationmark.circle.fill")
-                    .foregroundStyle(.orange)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
             }
         }
         .font(.caption)
@@ -243,7 +243,8 @@ private struct EndpointEditor: View {
                 connectionTestControls
                 if endpoint.kind == .ftp {
                     Label("FTP sends credentials and files without encryption. Prefer SFTP or FTPS.", systemImage: "exclamationmark.shield")
-                        .font(.caption).foregroundStyle(.orange)
+                        .font(.caption)
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                 } else if endpoint.kind == .ftps {
                     Text("FTPS uses implicit TLS (normally port 990) and validates the server certificate.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -332,14 +333,14 @@ private struct EndpointEditor: View {
 
             if connectionTestState == .succeeded {
                 Label("Connection successful", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
                     .font(.caption)
             }
         }
 
         if case .failed(let message) = connectionTestState {
             Label(message, systemImage: "xmark.circle.fill")
-                .foregroundStyle(.red)
+                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .red))
                 .font(.caption)
                 .textSelection(.enabled)
         }
@@ -347,7 +348,7 @@ private struct EndpointEditor: View {
         if case .awaitingHostKey(let hostID, let fingerprint) = connectionTestState {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Verify the SSH host key for \(hostID) before continuing.", systemImage: "key.horizontal")
-                    .foregroundStyle(.orange)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                 Text(fingerprint)
                     .font(.system(.caption, design: .monospaced))
                     .textSelection(.enabled)

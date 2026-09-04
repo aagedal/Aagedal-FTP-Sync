@@ -415,9 +415,14 @@ struct MetadataProgrammingView: View {
                     .lineLimit(1)
             }
 
-            Text(metadataJobSummary(for: automation))
+            Label(
+                metadataJobSummary(for: automation),
+                systemImage: automation.isEnabled ? "checkmark.circle.fill" : "pause.circle"
+            )
                 .font(.caption)
-                .foregroundStyle(automation.isEnabled ? Color.green : Color.secondary)
+                .labelStyle(AccessibleStatusLabelStyle(
+                    symbolColor: automation.isEnabled ? .green : .secondary
+                ))
                 .lineLimit(1)
         }
         .padding(.vertical, 3)
@@ -781,12 +786,12 @@ struct MetadataProgrammingView: View {
             if let message = draft.validationMessage {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                     .lineLimit(2)
             } else if let selectedJob, draft.isEnabled, !canEnableMetadata {
                 Label("\(selectedJob.name) needs a one-way local destination.", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
             } else {
                 Text("Matching uses the filename initials and \(draft.timestampPolicy.title.lowercased()).")
                     .font(.caption)
@@ -803,7 +808,7 @@ struct MetadataProgrammingView: View {
                     .foregroundStyle(.secondary)
             } else if saveConfirmation {
                 Label("Saved", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
             }
             if let reprocessStatusText {
                 Text(reprocessStatusText)

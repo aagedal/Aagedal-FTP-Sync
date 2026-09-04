@@ -6,6 +6,7 @@ struct JobsWindowView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var editingSession = JobEditingSession()
     @State private var showConfigurationImporter = false
     @State private var showConfigurationExporter = false
@@ -25,11 +26,13 @@ struct JobsWindowView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(job.name).fontWeight(.medium)
                         Text(job.endpointSummary)
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 1)
                         if editingSession.isNewJob, editingSession.jobID == job.id {
-                            Text("Unsaved draft")
+                            Label("Unsaved draft", systemImage: "pencil.circle.fill")
                                 .font(.caption2)
-                                .foregroundStyle(.orange)
+                                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                         }
                     }
                     .padding(.vertical, 4)
@@ -48,9 +51,9 @@ struct JobsWindowView: View {
                         .controlSize(.small)
 
                         if store.launchAtLoginRequiresApproval {
-                            Text("Approval required in System Settings.")
+                            Label("Approval required in System Settings.", systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
-                                .foregroundStyle(.orange)
+                                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                             Button("Open Login Items…") {
                                 store.openLoginItemsSettings()
                             }

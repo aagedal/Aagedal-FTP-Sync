@@ -122,10 +122,34 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertNotEqual(selectedTime.value as? String, initialTime)
     }
 
+    func testAccessibilityTextSizeKeepsCoreControlsOperable() {
+        launch(seedJob: true, seedMap: true, accessibilityText: true)
+
+        XCTAssertTrue(element("job-name").isHittable)
+        XCTAssertTrue(element("save-job").exists)
+
+        element("open-metadata-programming").click()
+        let metadataWindow = app.windows["Metadata Programming"]
+        XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
+        element("open-photographer-map").click()
+
+        let mapWindow = app.windows["Photographer Map"]
+        XCTAssertTrue(mapWindow.waitForExistence(timeout: 5))
+        let row = element("photographer-map-timeline-row-C542A26A-2872-42E5-B021-7AA3E599D3A8")
+        let clip = element("photographer-map-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(clip.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(row.frame.height, 24)
+        XCTAssertGreaterThanOrEqual(clip.frame.height, 20)
+        XCTAssertTrue(mapWindow.frame.intersects(row.frame))
+        XCTAssertTrue(mapWindow.frame.intersects(clip.frame))
+    }
+
     private func launch(
         seedJob: Bool = false,
         seedMap: Bool = false,
-        failFirstJobSave: Bool = false
+        failFirstJobSave: Bool = false,
+        accessibilityText: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -135,6 +159,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if seedJob { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_JOB"] = "1" }
         if seedMap { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_MAP"] = "1" }
         if failFirstJobSave { app.launchEnvironment["AAGEDAL_UI_TEST_FAIL_FIRST_JOB_SAVE"] = "1" }
+        if accessibilityText { app.launchEnvironment["AAGEDAL_UI_TEST_ACCESSIBILITY_TEXT"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 

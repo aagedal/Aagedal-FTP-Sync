@@ -25,9 +25,9 @@ struct MetadataFolderPreviewView: View {
             HStack(spacing: 18) {
                 Label("\(result.scanned) scanned", systemImage: "doc.text.magnifyingglass")
                 Label("\(result.willApply) will apply", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
                 Label("\(result.alreadyApplied) already applied", systemImage: "checkmark.seal.fill")
-                    .foregroundStyle(.blue)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .blue))
                 Label("\(result.skipped) skipped", systemImage: "minus.circle.fill")
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -53,7 +53,7 @@ struct MetadataFolderPreviewView: View {
 
                     TableColumn("Result") { item in
                         Label(item.status.title, systemImage: item.status.symbolName)
-                            .foregroundStyle(item.status.color)
+                            .labelStyle(AccessibleStatusLabelStyle(symbolColor: item.status.color))
                     }
                     .width(min: 150, ideal: 190)
 

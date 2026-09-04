@@ -9,15 +9,28 @@ struct TimelineGroupDragPreview: Equatable {
 }
 
 struct TimelineHourHeader: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let day: Date
     private let calendar = Calendar.current
+
+    private var photographerLabelWidth: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 240 : 165
+    }
+
+    private var nextDayWidth: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 104 : 68
+    }
+
+    private var headerHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 58 : 34
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             Text("Photographer")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 165, alignment: .leading)
+                .frame(width: photographerLabelWidth, alignment: .leading)
                 .padding(.leading, 12)
 
             GeometryReader { proxy in
@@ -45,7 +58,7 @@ struct TimelineHourHeader: View {
             }
             .font(.caption2.weight(.medium))
             .foregroundStyle(Color.accentColor)
-            .frame(width: 68)
+            .frame(width: nextDayWidth)
             .frame(maxHeight: .infinity)
             .background(Color.accentColor.opacity(0.1))
             .overlay(alignment: .leading) {
@@ -55,7 +68,7 @@ struct TimelineHourHeader: View {
             }
             .accessibilityLabel("Next day, \(nextDayLabel), starts at midnight")
         }
-        .frame(height: 34)
+        .frame(height: headerHeight)
         .background(.bar)
     }
 
@@ -72,6 +85,7 @@ struct TimelineHourHeader: View {
 }
 
 struct TimelineTrack: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let photographer: PhotographerProfile
     let clips: [MetadataScheduleClip]
     let allClips: [MetadataScheduleClip]
@@ -106,12 +120,32 @@ struct TimelineTrack: View {
     private let calendar = Calendar.current
     @GestureState private var creationDrag: DragGesture.Value?
 
+    private var photographerColumnWidth: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 252 : 177
+    }
+
+    private var nextDayWidth: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 104 : 68
+    }
+
+    private var trackHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 96 : 58
+    }
+
+    private var canvasHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 90 : 52
+    }
+
+    private var clipHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? 76 : 44
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "line.3.horizontal")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .frame(width: 14)
                     .contentShape(Rectangle().inset(by: -6))
                     .onDrag {
@@ -121,10 +155,12 @@ struct TimelineTrack: View {
                     .help("Drag to reorder this track")
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(photographer.photographerName).fontWeight(.medium).lineLimit(1)
+                    Text(photographer.photographerName)
+                        .fontWeight(.medium)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                     HStack(spacing: 5) {
                         Text(photographer.formattedFilenamePrefixes)
-                            .lineLimit(1)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                         Label(processedFileCount.formatted(), systemImage: "checkmark")
                             .font(.caption2.monospacedDigit().weight(.medium))
                             .padding(.horizontal, 5)
@@ -148,7 +184,7 @@ struct TimelineTrack: View {
                 .help("Edit photographer and work hours")
             }
             .padding(.horizontal, 8)
-            .frame(width: 177, alignment: .leading)
+            .frame(width: photographerColumnWidth, alignment: .leading)
             .background(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
             .contentShape(Rectangle())
             .onTapGesture(perform: onSelectPhotographer)
@@ -184,6 +220,7 @@ struct TimelineTrack: View {
                             continuesIntoNextDay: clip.endsAt > nextDay,
                             timeLabel: timeLabel(for: clip),
                             secondsPerPoint: dayDuration / max(proxy.size.width, 1),
+                            trackHeight: trackHeight,
                             canReprocess: canReprocess,
                             onSelect: { onSelect(clip) },
                             onEdit: { onEdit(clip) },
@@ -195,7 +232,7 @@ struct TimelineTrack: View {
                             onEndMovePreview: onEndMovePreview,
                             onResize: { edge, interval in onResize(clip, edge, interval) }
                         )
-                        .frame(width: clipWidth(clip, totalWidth: proxy.size.width), height: 44)
+                        .frame(width: clipWidth(clip, totalWidth: proxy.size.width), height: clipHeight)
                         .offset(x: clipOffset(clip, totalWidth: proxy.size.width))
                     }
                     ForEach(linkedBoundaries) { boundary in
@@ -212,7 +249,7 @@ struct TimelineTrack: View {
                         )
                         .offset(
                             x: boundaryOffset(boundary.leading.endsAt, totalWidth: proxy.size.width) - 15,
-                            y: 17
+                            y: (trackHeight - 24) / 2
                         )
                     }
                     playheadMarker(totalWidth: proxy.size.width)
@@ -222,7 +259,7 @@ struct TimelineTrack: View {
 
             Rectangle()
                 .fill(Color.accentColor.opacity(0.08))
-                .frame(width: 68)
+                .frame(width: nextDayWidth)
                 .overlay(alignment: .leading) {
                     Rectangle()
                         .fill(Color.accentColor.opacity(0.65))
@@ -231,7 +268,7 @@ struct TimelineTrack: View {
                 .allowsHitTesting(false)
                 .accessibilityLabel("Next day")
         }
-        .frame(height: 58)
+        .frame(height: trackHeight)
         .contentShape(Rectangle())
         .contextMenu {
             Button(action: onEditPhotographer) {
@@ -289,7 +326,7 @@ struct TimelineTrack: View {
         if let interval = photographer.workHours(on: day, calendar: calendar)?.interval(on: day, calendar: calendar) {
             Rectangle()
                 .fill(color.opacity(0.12))
-                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 52)
+                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: canvasHeight)
                 .offset(x: intervalOffset(interval, totalWidth: totalWidth))
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
@@ -325,7 +362,7 @@ struct TimelineTrack: View {
                         .padding(.horizontal, 8)
                         .lineLimit(1)
                 }
-                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 44)
+                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: clipHeight)
                 .offset(x: intervalOffset(interval, totalWidth: totalWidth))
                 .allowsHitTesting(false)
         }
@@ -387,7 +424,7 @@ struct TimelineTrack: View {
         ), id: \.self) { interval in
             Rectangle()
                 .fill(.red.opacity(0.2))
-                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: 52)
+                .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: canvasHeight)
                 .offset(x: intervalOffset(interval, totalWidth: totalWidth))
                 .allowsHitTesting(false)
         }
@@ -398,7 +435,7 @@ struct TimelineTrack: View {
         if calendar.isDateInToday(day) {
             Rectangle()
                 .fill(.red.opacity(0.75))
-                .frame(width: 1, height: 52)
+                .frame(width: 1, height: canvasHeight)
                 .offset(x: CGFloat(Date().timeIntervalSince(dayStart) / dayDuration) * totalWidth)
                 .allowsHitTesting(false)
         }
@@ -411,7 +448,7 @@ struct TimelineTrack: View {
             ZStack(alignment: .top) {
                 Rectangle()
                     .fill(Color.accentColor)
-                    .frame(width: 2, height: 52)
+                    .frame(width: 2, height: canvasHeight)
                 Image(systemName: "arrowtriangle.down.fill")
                     .font(.caption2)
                     .foregroundStyle(Color.accentColor)
@@ -475,6 +512,7 @@ struct TimelineTrack: View {
 }
 
 private struct TimelineClipView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let clip: MetadataScheduleClip
     let color: Color
     let isSelected: Bool
@@ -484,6 +522,7 @@ private struct TimelineClipView: View {
     let continuesIntoNextDay: Bool
     let timeLabel: String
     let secondsPerPoint: TimeInterval
+    let trackHeight: CGFloat
     let canReprocess: Bool
     let onSelect: () -> Void
     let onEdit: () -> Void
@@ -639,7 +678,7 @@ private struct TimelineClipView: View {
                 }
                 onMove(
                     value.translation.width * secondsPerPoint,
-                    Int((value.translation.height / 58).rounded()),
+                    Int((value.translation.height / trackHeight).rounded()),
                     NSEvent.modifierFlags.contains(.option)
                 )
             }
@@ -658,7 +697,7 @@ private struct TimelineClipView: View {
         let translation = edge == .start ? startTranslation : endTranslation
         return Capsule()
             .fill(isSelected ? color : color.opacity(0.7))
-            .frame(width: 5, height: 20)
+            .frame(width: 5, height: dynamicTypeSize.isAccessibilitySize ? 34 : 20)
             .padding(.horizontal, 2)
             .offset(x: translation)
             .contentShape(Rectangle().inset(by: -4))
@@ -835,7 +874,7 @@ struct MetadataClipEditor: View {
                 if let validationMessage {
                     Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                 }
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -1175,7 +1214,7 @@ private struct ClipLocationEditor: View {
         if let lookupError {
             Label(lookupError, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
-                .foregroundStyle(.orange)
+                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
         }
     }
 

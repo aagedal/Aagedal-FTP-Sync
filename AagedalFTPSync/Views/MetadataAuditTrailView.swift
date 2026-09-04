@@ -17,9 +17,9 @@ struct MetadataAuditTrailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 16) {
-                auditCount("Applied", count: report.applied, color: .green)
-                auditCount("Skipped", count: report.skipped, color: .secondary)
-                auditCount("Failed", count: report.failed, color: .red)
+                auditCount("Applied", count: report.applied)
+                auditCount("Skipped", count: report.skipped)
+                auditCount("Failed", count: report.failed)
                 Spacer()
             }
 
@@ -40,10 +40,10 @@ struct MetadataAuditTrailView: View {
         .accessibilityLabel("Metadata audit trail")
     }
 
-    private func auditCount(_ title: String, count: Int, color: Color) -> some View {
+    private func auditCount(_ title: String, count: Int) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(count.formatted()).font(.title3.monospacedDigit()).fontWeight(.semibold)
-            Text(title).font(.caption).foregroundStyle(color)
+            Text(title).font(.caption).foregroundStyle(.primary)
         }
         .accessibilityElement(children: .combine)
     }
@@ -71,13 +71,13 @@ private struct MetadataAuditRow: View {
                     .foregroundStyle(.secondary)
 
                 if let detail = entry.detail, !detail.isEmpty {
-                    Text(detail).font(.caption).foregroundStyle(statusColor)
+                    Text(detail).font(.caption).foregroundStyle(.primary)
                 }
 
                 ForEach(Array(entry.swiftExifWarnings.enumerated()), id: \.offset) { _, warning in
                     Label(warning, systemImage: "exclamationmark.triangle")
                         .font(.caption2)
-                        .foregroundStyle(.orange)
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                 }
             }
         }
@@ -115,4 +115,3 @@ private struct MetadataAuditRow: View {
         }
     }
 }
-

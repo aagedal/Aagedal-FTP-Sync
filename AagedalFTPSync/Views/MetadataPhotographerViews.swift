@@ -422,7 +422,7 @@ struct TimelineAddPhotographerRow: View {
                 .overlay(alignment: .leading) {
                     Text("Tracks are matched using filename initials")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .padding(.leading, 12)
                 }
         }

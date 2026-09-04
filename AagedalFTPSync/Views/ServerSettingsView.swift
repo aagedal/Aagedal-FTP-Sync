@@ -116,7 +116,7 @@ struct ServerSettingsView: View {
                             if let credentialLoadError {
                                 Label(credentialLoadError, systemImage: "exclamationmark.triangle.fill")
                                     .font(.caption)
-                                    .foregroundStyle(.orange)
+                                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                                     .textSelection(.enabled)
                             }
 

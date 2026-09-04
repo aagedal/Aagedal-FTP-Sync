@@ -91,8 +91,15 @@ struct JobDetailEditor: View {
 
                 Section("Metadata") {
                     LabeledContent("Automatic metadata") {
-                        Text(metadataStatus)
-                            .foregroundStyle(currentMetadataAutomation?.isEnabled == true ? .green : .secondary)
+                        Label(
+                            metadataStatus,
+                            systemImage: currentMetadataAutomation?.isEnabled == true
+                                ? "checkmark.circle.fill"
+                                : "pause.circle"
+                        )
+                        .labelStyle(AccessibleStatusLabelStyle(
+                            symbolColor: currentMetadataAutomation?.isEnabled == true ? .green : .secondary
+                        ))
                     }
                     Button("Open Metadata Programming…") {
                         store.selectedJobID = draft.id
@@ -225,9 +232,12 @@ struct JobDetailEditor: View {
                 Spacer()
                 if let validationMessage = draft.validationMessage {
                     Label(validationMessage, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                        .font(.caption)
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                        .lineLimit(3)
                 } else if saveConfirmation {
-                    Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Label("Saved", systemImage: "checkmark.circle.fill")
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
                 }
                 Button("Sync Now") {
                     if save() { store.runNow(draft.id) }
@@ -325,7 +335,7 @@ struct JobDetailEditor: View {
         Section("Sync status") {
             if case .failed(let message, let retryAt) = currentPhase {
                 Label("Sync failed", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .red))
                 Text(message)
                     .font(.callout)
                     .textSelection(.enabled)
@@ -357,7 +367,7 @@ struct JobDetailEditor: View {
             } else if !syncFailureHistory.isEmpty {
                 if case .succeeded = currentPhase {
                     Label("The latest sync completed.", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
                 } else {
                     Label("Previous sync errors are available below.", systemImage: "clock.arrow.circlepath")
                         .foregroundStyle(.secondary)

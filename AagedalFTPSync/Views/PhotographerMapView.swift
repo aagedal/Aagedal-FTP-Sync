@@ -791,6 +791,7 @@ private struct PhotographerMapMarker: View {
 }
 
 private struct MapMiniTimeline: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Binding var seconds: Double
     let dayStart: Date
     let dayDuration: Double
@@ -800,8 +801,14 @@ private struct MapMiniTimeline: View {
     let color: (PhotographerProfile) -> Color
     let onOpenClip: (MetadataScheduleClip, Date) -> Void
 
-    private let labelWidth: CGFloat = 118
-    private let rowHeight: CGFloat = 20
+    private var usesAccessibilityLayout: Bool { dynamicTypeSize.isAccessibilitySize }
+    private var labelWidth: CGFloat { usesAccessibilityLayout ? 176 : 118 }
+    private var rowHeight: CGFloat { usesAccessibilityLayout ? 36 : 20 }
+    private var clipHeight: CGFloat { usesAccessibilityLayout ? 24 : 14 }
+    private var visibleRowsHeight: CGFloat {
+        let maximum = usesAccessibilityLayout ? 153.0 : 92.0
+        return min(CGFloat(rows.count) * (rowHeight + 3), maximum)
+    }
 
     var body: some View {
         VStack(spacing: 5) {
@@ -819,7 +826,7 @@ private struct MapMiniTimeline: View {
                     }
                 }
                 .scrollIndicators(rows.count > 4 ? .visible : .hidden)
-                .frame(height: min(CGFloat(rows.count) * (rowHeight + 3), 92))
+                .frame(height: visibleRowsHeight)
             }
 
             HStack(spacing: 8) {
@@ -879,7 +886,7 @@ private struct MapMiniTimeline: View {
                     row: row
                 ))
             }
-            .frame(height: 16)
+            .frame(height: clipHeight + 2)
         }
         .frame(height: rowHeight)
         .focusable()
@@ -946,7 +953,7 @@ private struct MapMiniTimeline: View {
                 }
         }
             .buttonStyle(.plain)
-            .frame(width: width, height: 14)
+            .frame(width: width, height: clipHeight)
             .offset(x: x)
             .simultaneousGesture(TapGesture(count: 2).onEnded {
                 let date = select(

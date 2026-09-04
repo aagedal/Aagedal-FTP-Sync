@@ -8,6 +8,7 @@
 - Pause jobs that use server profiles restored from backup until their connection settings have been reviewed.
 - Keep long-running metadata jobs responsive by storing original source signatures in an indexed, recoverable SQLite database and pruning history that is no longer relevant.
 - Improve VoiceOver and keyboard access with explicit descriptions for image-only actions, arrow-key Photographer Map timeline scrubbing, and an English localization catalog.
+- Keep timelines, menu-bar controls, configuration sheets, and status messages legible and operable at accessibility text sizes without relying on color alone.
 
 ## 2.7.1 — 2026-09-03
 

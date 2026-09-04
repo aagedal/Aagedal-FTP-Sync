@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import ServiceManagement
+import SwiftUI
 
 /// Launch plumbing used only by the isolated UI-test target. The opt-in marker
 /// and per-run session identifier keep test persistence away from the user's
@@ -20,6 +21,14 @@ enum UITestSupport {
 
     static var configurationPackageURL: URL? {
         rootURL?.appendingPathComponent("round-trip.aftpsync", isDirectory: false)
+    }
+
+    static var dynamicTypeSizeOverride: DynamicTypeSize? {
+        guard enabled,
+              ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_ACCESSIBILITY_TEXT"] == "1" else {
+            return nil
+        }
+        return .accessibility3
     }
 
     @MainActor
@@ -146,6 +155,17 @@ enum UITestSupport {
         }
         let fault = OneShotSaveFault()
         return { try fault.check() }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func applyingUITestDynamicTypeSize() -> some View {
+        if let size = UITestSupport.dynamicTypeSizeOverride {
+            dynamicTypeSize(size)
+        } else {
+            self
+        }
     }
 }
 

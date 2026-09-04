@@ -126,7 +126,7 @@ struct PhotographerSettingsView: View {
                         if let draftValidationMessage {
                             Label(draftValidationMessage, systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
-                                .foregroundStyle(.orange)
+                                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                         } else if hasUnsavedChanges {
                             HStack(spacing: 8) {
                                 ProgressView()
@@ -138,7 +138,7 @@ struct PhotographerSettingsView: View {
                         } else if saveConfirmation {
                             Label("Saved", systemImage: "checkmark.circle.fill")
                                 .font(.caption)
-                                .foregroundStyle(.green)
+                                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
                         }
                     }
                     .padding(20)

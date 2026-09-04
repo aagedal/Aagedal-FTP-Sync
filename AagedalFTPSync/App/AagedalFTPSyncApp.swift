@@ -13,6 +13,7 @@ struct AagedalFTPSyncApp: App {
         MenuBarExtra {
             MenuBarView()
                 .environmentObject(store)
+                .applyingUITestDynamicTypeSize()
         } label: {
             MenuBarActivityLabel(store: store)
         }
@@ -21,6 +22,7 @@ struct AagedalFTPSyncApp: App {
         Window("Aagedal FTP Sync", id: "jobs") {
             JobsWindowView()
                 .environmentObject(store)
+                .applyingUITestDynamicTypeSize()
                 .frame(minWidth: 820, minHeight: 580)
                 .background(RegularWindowTracker(windowID: "jobs"))
         }
@@ -28,6 +30,7 @@ struct AagedalFTPSyncApp: App {
 
         Window("About Aagedal FTP Sync", id: "about") {
             AboutView()
+                .applyingUITestDynamicTypeSize()
                 .frame(width: 430, height: 330)
                 .background(RegularWindowTracker(windowID: "about"))
         }
@@ -36,6 +39,7 @@ struct AagedalFTPSyncApp: App {
         Window("Metadata Programming", id: "metadata-programming") {
             MetadataProgrammingView()
                 .environmentObject(store)
+                .applyingUITestDynamicTypeSize()
                 .background(RegularWindowTracker(windowID: "metadata-programming"))
         }
         .defaultSize(width: 1180, height: 760)
@@ -43,6 +47,7 @@ struct AagedalFTPSyncApp: App {
         Window("Photographers", id: "photographers") {
             PhotographerSettingsView()
                 .environmentObject(store)
+                .applyingUITestDynamicTypeSize()
                 .background(RegularWindowTracker(windowID: "photographers"))
         }
         .defaultSize(width: 700, height: 450)
@@ -50,6 +55,7 @@ struct AagedalFTPSyncApp: App {
         Window("Photographer Map", id: "photographer-map") {
             PhotographerMapView()
                 .environmentObject(store)
+                .applyingUITestDynamicTypeSize()
                 .background(RegularWindowTracker(windowID: "photographer-map"))
         }
         .defaultSize(width: 1120, height: 760)
@@ -57,6 +63,7 @@ struct AagedalFTPSyncApp: App {
         Window("Servers", id: "servers") {
             ServerSettingsView()
                 .environmentObject(store)
+                .applyingUITestDynamicTypeSize()
                 .background(RegularWindowTracker(windowID: "servers"))
         }
         .defaultSize(width: 780, height: 560)
@@ -69,7 +76,24 @@ struct AagedalFTPSyncApp: App {
                     .tabItem { Label("Photographers", systemImage: "person.2") }
             }
             .environmentObject(store)
+            .applyingUITestDynamicTypeSize()
             .background(RegularWindowTracker())
+        }
+    }
+}
+
+/// Status colors remain useful as a quick visual cue, but the readable words
+/// use the platform's primary text color so meaning never depends on a
+/// low-contrast red, orange, or green foreground.
+struct AccessibleStatusLabelStyle: LabelStyle {
+    let symbolColor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            configuration.icon
+                .foregroundStyle(symbolColor)
+            configuration.title
+                .foregroundStyle(.primary)
         }
     }
 }
