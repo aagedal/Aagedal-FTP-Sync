@@ -207,8 +207,16 @@ final class LocalSyncIntegrationTests: XCTestCase {
         let signatureRepository = SourceSignatureRepository(
             fileURL: persistenceRoot.appendingPathComponent("signatures.json")
         )
+        let manifestRepository = DownloadManifestRepository(
+            fileURL: persistenceRoot.appendingPathComponent("downloads.json")
+        )
         let job = try fixture.job(direction: .leftToRight)
         try jobRepository.save([job])
+        try await manifestRepository.record(
+            relativePaths: ["incoming/JAD_HISTORY.jpg"],
+            jobID: job.id,
+            destinationEndpoint: job.right
+        )
 
         let auditEntry = MetadataAuditEntry(
             runID: UUID(),
@@ -241,7 +249,8 @@ final class LocalSyncIntegrationTests: XCTestCase {
             ),
             metadataAuditRepository: auditRepository,
             syncFailureRepository: failureRepository,
-            sourceSignatureRepository: signatureRepository
+            sourceSignatureRepository: signatureRepository,
+            downloadManifestRepository: manifestRepository
         )
         XCTAssertEqual(store.metadataAuditTrail(for: job.id).map(\.relativePath), [auditEntry.relativePath])
         XCTAssertEqual(store.syncFailureHistory(for: job.id).count, 1)
@@ -298,7 +307,7 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sourceFile.path))
     }
 
-    func testResetJobClearsEntireOrdinaryDestinationButKeepsFolder() async throws {
+    func testResetJobDeletesOnlyManifestOwnedFilesFromOrdinaryDestination() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
         let downloadedFile = fixture.right.appendingPathComponent("incoming/JAD_0001.jpg")
@@ -312,15 +321,216 @@ final class LocalSyncIntegrationTests: XCTestCase {
         }
 
         let job = try fixture.job(direction: .leftToRight)
-        let result = try await JobResetService().resetDownloads(for: job)
-
-        XCTAssertEqual(result.deletedFiles, 2)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.right.path))
-        XCTAssertEqual(
-            try FileManager.default.contentsOfDirectory(atPath: fixture.right.path),
-            []
+        let manifest = DownloadManifestRepository(
+            fileURL: fixture.root.appendingPathComponent("downloads.json")
         )
+        try await manifest.record(
+            relativePaths: ["incoming/JAD_0001.jpg"],
+            jobID: job.id,
+            destinationEndpoint: job.right
+        )
+        let service = JobResetService(downloadManifestRepository: manifest)
+        let preview = try await service.preview(for: job)
+        let result = try await service.resetDownloads(for: job)
+
+        XCTAssertEqual(
+            preview,
+            JobResetPreview(
+                filesToDelete: 1,
+                downloadFolderPath: fixture.right.path,
+                deletesWholeManagedFolder: false
+            )
+        )
+        XCTAssertEqual(result.deletedFiles, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.right.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: downloadedFile.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedFile.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.left.path))
+        let remainingManifestPaths = try await manifest.relativePaths(
+            jobID: job.id,
+            destinationEndpoint: job.right
+        )
+        XCTAssertEqual(remainingManifestPaths, [])
+    }
+
+    func testResetJobRejectsLegacyOrdinaryDestinationWithoutManifest() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let unrelatedFile = fixture.right.appendingPathComponent("notes.txt")
+        try Data("keep".utf8).write(to: unrelatedFile)
+
+        let job = try fixture.job(direction: .leftToRight)
+        do {
+            _ = try await JobResetService().preview(for: job)
+            XCTFail("An ordinary non-empty destination without a manifest must not be reset.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("no ownership manifest"))
+        }
+        XCTAssertEqual(try Data(contentsOf: unrelatedFile), Data("keep".utf8))
+    }
+
+    func testSuccessfulLocalPublicationCreatesDurableResetManifest() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "incoming/JAD_MANIFEST.jpg"
+        let sourceFile = fixture.left.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: sourceFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("published".utf8).write(to: sourceFile)
+
+        let job = try fixture.job(direction: .leftToRight)
+        let manifestURL = fixture.root.appendingPathComponent("downloads.json")
+        let writer = DownloadManifestRepository(fileURL: manifestURL)
+        let result = try await SyncEngine(downloadManifestRepository: writer).run(
+            job: job,
+            leftPassword: nil,
+            rightPassword: nil
+        )
+        XCTAssertEqual(result.transferred, 1)
+
+        let unrelatedFile = fixture.right.appendingPathComponent("notes.txt")
+        try Data("keep".utf8).write(to: unrelatedFile)
+        let reader = DownloadManifestRepository(fileURL: manifestURL)
+        let service = JobResetService(downloadManifestRepository: reader)
+        let preview = try await service.preview(for: job)
+        XCTAssertEqual(preview.filesToDelete, 1)
+        _ = try await service.resetDownloads(for: job)
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.right.appendingPathComponent(relativePath).path
+            )
+        )
+        XCTAssertEqual(try Data(contentsOf: unrelatedFile), Data("keep".utf8))
+    }
+
+    func testResetStagingFailureRestoresOwnedFilesAndKeepsManifest() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let paths = ["incoming/JAD_0001.jpg", "incoming/JAD_0002.jpg"]
+        for path in paths {
+            let url = fixture.right.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(path.utf8).write(to: url)
+        }
+        let job = try fixture.job(direction: .leftToRight)
+        let manifest = DownloadManifestRepository(
+            fileURL: fixture.root.appendingPathComponent("downloads.json")
+        )
+        try await manifest.record(
+            relativePaths: paths,
+            jobID: job.id,
+            destinationEndpoint: job.right
+        )
+        let operations = JobResetFileOperations(
+            createDirectory: { url, intermediate in
+                try FileManager.default.createDirectory(
+                    at: url,
+                    withIntermediateDirectories: intermediate
+                )
+            },
+            moveItem: { source, destination in
+                if source.lastPathComponent == "JAD_0002.jpg" {
+                    throw NSError(domain: "ResetTest", code: 1)
+                }
+                try FileManager.default.moveItem(at: source, to: destination)
+            },
+            removeItem: { try FileManager.default.removeItem(at: $0) }
+        )
+
+        do {
+            _ = try await JobResetService(
+                downloadManifestRepository: manifest,
+                fileOperations: operations
+            ).resetDownloads(for: job)
+            XCTFail("The injected staging failure should stop reset.")
+        } catch {}
+
+        for path in paths {
+            XCTAssertTrue(
+                FileManager.default.fileExists(atPath: fixture.right.appendingPathComponent(path).path)
+            )
+        }
+        let retainedPaths = try await manifest.relativePaths(
+            jobID: job.id,
+            destinationEndpoint: job.right
+        )
+        XCTAssertEqual(retainedPaths, Set(paths))
+    }
+
+    func testResetFinalDeletionFailureLeavesRecoverableTreeAndKeepsManifest() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let relativePath = "incoming/JAD_RECOVER.jpg"
+        let downloadedFile = fixture.right.appendingPathComponent(relativePath)
+        try FileManager.default.createDirectory(
+            at: downloadedFile.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("recover".utf8).write(to: downloadedFile)
+        let job = try fixture.job(direction: .leftToRight)
+        let manifest = DownloadManifestRepository(
+            fileURL: fixture.root.appendingPathComponent("downloads.json")
+        )
+        try await manifest.record(
+            relativePaths: [relativePath],
+            jobID: job.id,
+            destinationEndpoint: job.right
+        )
+        let operations = JobResetFileOperations(
+            createDirectory: { url, intermediate in
+                try FileManager.default.createDirectory(
+                    at: url,
+                    withIntermediateDirectories: intermediate
+                )
+            },
+            moveItem: { try FileManager.default.moveItem(at: $0, to: $1) },
+            removeItem: { url in
+                if url.lastPathComponent.hasPrefix(".aagedal-sync-reset-") {
+                    throw NSError(domain: "ResetTest", code: 2)
+                }
+                try FileManager.default.removeItem(at: url)
+            }
+        )
+
+        do {
+            _ = try await JobResetService(
+                downloadManifestRepository: manifest,
+                fileOperations: operations
+            ).resetDownloads(for: job)
+            XCTFail("The injected final deletion failure should stop reset.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("hidden reset folder remains"))
+        }
+
+        let hiddenFolder = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: fixture.right,
+                includingPropertiesForKeys: nil
+            ).first { $0.lastPathComponent.hasPrefix(".aagedal-sync-reset-") }
+        )
+        XCTAssertEqual(
+            try Data(contentsOf: hiddenFolder.appendingPathComponent(relativePath)),
+            Data("recover".utf8)
+        )
+        let retainedPaths = try await manifest.relativePaths(
+            jobID: job.id,
+            destinationEndpoint: job.right
+        )
+        XCTAssertEqual(retainedPaths, [relativePath])
+        do {
+            _ = try await JobResetService(
+                downloadManifestRepository: manifest
+            ).preview(for: job)
+            XCTFail("A retry must not clear history while the recovery tree remains.")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("recovery folder"))
+        }
     }
 
     func testResetJobRejectsOverlappingLocalSourceAndDestination() throws {

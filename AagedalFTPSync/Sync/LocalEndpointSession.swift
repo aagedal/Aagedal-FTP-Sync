@@ -480,7 +480,52 @@ struct JobResetResult: Equatable, Sendable {
     let downloadFolderPath: String
 }
 
+struct JobResetPreview: Equatable, Sendable {
+    let filesToDelete: Int
+    let downloadFolderPath: String
+    let deletesWholeManagedFolder: Bool
+}
+
+struct JobResetFileOperations: Sendable {
+    let createDirectory: @Sendable (URL, Bool) throws -> Void
+    let moveItem: @Sendable (URL, URL) throws -> Void
+    let removeItem: @Sendable (URL) throws -> Void
+
+    static let live = JobResetFileOperations(
+        createDirectory: { url, intermediate in
+            try FileManager.default.createDirectory(
+                at: url,
+                withIntermediateDirectories: intermediate
+            )
+        },
+        moveItem: { source, destination in
+            try FileManager.default.moveItem(at: source, to: destination)
+        },
+        removeItem: { url in
+            try FileManager.default.removeItem(at: url)
+        }
+    )
+}
+
 actor JobResetService {
+    private struct ResetPlan {
+        let rootURL: URL
+        let items: [URL]
+        let fileCount: Int
+        let manifestPaths: Set<String>
+    }
+
+    private let downloadManifestRepository: DownloadManifestRepository
+    private let fileOperations: JobResetFileOperations
+
+    init(
+        downloadManifestRepository: DownloadManifestRepository = DownloadManifestRepository(),
+        fileOperations: JobResetFileOperations = .live
+    ) {
+        self.downloadManifestRepository = downloadManifestRepository
+        self.fileOperations = fileOperations
+    }
+
     static func validationMessage(for job: SyncJob) -> String? {
         guard job.direction != .bidirectional else {
             return "Reset Job is unavailable for two-way jobs because there is no single download folder."
@@ -510,7 +555,78 @@ actor JobResetService {
         return nil
     }
 
-    func resetDownloads(for job: SyncJob) throws -> JobResetResult {
+    func preview(for job: SyncJob) async throws -> JobResetPreview {
+        let plan = try await makeResetPlan(for: job)
+        return JobResetPreview(
+            filesToDelete: plan.fileCount,
+            downloadFolderPath: plan.rootURL.path,
+            deletesWholeManagedFolder: job.usesManagedFolderStructure
+        )
+    }
+
+    func resetDownloads(for job: SyncJob) async throws -> JobResetResult {
+        let plan = try await makeResetPlan(for: job)
+        let rootURL = plan.rootURL
+        guard let destinationEndpoint = job.destinationEndpoint else {
+            throw AppError.invalidConfiguration("Reset Job requires a one-way job.")
+        }
+        guard !plan.items.isEmpty else {
+            try await downloadManifestRepository.remove(
+                relativePaths: plan.manifestPaths,
+                jobID: job.id,
+                destinationEndpoint: destinationEndpoint
+            )
+            return JobResetResult(deletedFiles: 0, downloadFolderPath: rootURL.path)
+        }
+
+        let holdingURL = rootURL.appendingPathComponent(
+            ".aagedal-sync-reset-\(UUID().uuidString).trash",
+            isDirectory: true
+        )
+        try fileOperations.createDirectory(holdingURL, false)
+        var movedItems: [(original: URL, held: URL)] = []
+        do {
+            for item in plan.items {
+                let relativePath = String(item.path.dropFirst(rootURL.path.count + 1))
+                let held = holdingURL.appendingPathComponent(relativePath)
+                try fileOperations.createDirectory(held.deletingLastPathComponent(), true)
+                try fileOperations.moveItem(item, held)
+                movedItems.append((item, held))
+            }
+        } catch {
+            var rollbackFailures: [String] = []
+            for item in movedItems.reversed() {
+                do {
+                    try fileOperations.moveItem(item.held, item.original)
+                } catch {
+                    rollbackFailures.append(item.original.lastPathComponent)
+                }
+            }
+            try? fileOperations.removeItem(holdingURL)
+            if !rollbackFailures.isEmpty {
+                throw AppError.transferFailed(
+                    "The download reset failed, and rollback could not restore: \(rollbackFailures.joined(separator: ", "))."
+                )
+            }
+            throw error
+        }
+
+        do {
+            try fileOperations.removeItem(holdingURL)
+        } catch {
+            throw AppError.transferFailed(
+                "The downloads were isolated but could not be fully deleted. A hidden reset folder remains inside \(rootURL.path). \(error.localizedDescription)"
+            )
+        }
+        try await downloadManifestRepository.remove(
+            relativePaths: plan.manifestPaths,
+            jobID: job.id,
+            destinationEndpoint: destinationEndpoint
+        )
+        return JobResetResult(deletedFiles: plan.fileCount, downloadFolderPath: rootURL.path)
+    }
+
+    private func makeResetPlan(for job: SyncJob) async throws -> ResetPlan {
         if let message = Self.validationMessage(for: job) {
             throw AppError.invalidConfiguration(message)
         }
@@ -521,7 +637,15 @@ actor JobResetService {
         let access = try BookmarkAccess(endpoint: destination)
         let rootURL: URL
         if job.usesManagedFolderStructure {
-            rootURL = try ManagedOutputFolder.syncedFiles.url(inside: access.url, createIfNeeded: true)
+            let candidate = access.url.appendingPathComponent(
+                ManagedOutputFolder.syncedFiles.directoryName,
+                isDirectory: true
+            )
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                rootURL = try ManagedOutputFolder.syncedFiles.url(inside: access.url, createIfNeeded: false)
+            } else {
+                rootURL = candidate.standardizedFileURL
+            }
         } else {
             rootURL = access.url.standardizedFileURL.resolvingSymlinksInPath()
         }
@@ -532,56 +656,90 @@ actor JobResetService {
         }
 
         let fileManager = FileManager.default
-        let children = try fileManager.contentsOfDirectory(
-            at: rootURL,
-            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-            options: []
+        let manifestPaths = try await downloadManifestRepository.relativePaths(
+            jobID: job.id,
+            destinationEndpoint: destination
         )
-        guard !children.isEmpty else {
-            return JobResetResult(deletedFiles: 0, downloadFolderPath: rootURL.path)
-        }
-
-        let deletedFiles = children.reduce(into: 0) { count, child in
-            count += Self.fileCount(at: child, fileManager: fileManager)
-        }
-        let holdingURL = rootURL.appendingPathComponent(
-            ".aagedal-sync-reset-\(UUID().uuidString).trash",
-            isDirectory: true
-        )
-        try fileManager.createDirectory(at: holdingURL, withIntermediateDirectories: false)
-        var movedItems: [(original: URL, held: URL)] = []
-        do {
-            for child in children {
-                let held = holdingURL.appendingPathComponent(child.lastPathComponent)
-                try fileManager.moveItem(at: child, to: held)
-                movedItems.append((child, held))
+        if job.usesManagedFolderStructure {
+            guard fileManager.fileExists(atPath: rootURL.path) else {
+                return ResetPlan(rootURL: rootURL, items: [], fileCount: 0, manifestPaths: manifestPaths)
             }
-        } catch {
-            var rollbackFailures: [String] = []
-            for item in movedItems.reversed() {
-                do {
-                    try fileManager.moveItem(at: item.held, to: item.original)
-                } catch {
-                    rollbackFailures.append(item.original.lastPathComponent)
-                }
+            let children = try fileManager.contentsOfDirectory(
+                at: rootURL,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+                options: []
+            )
+            let fileCount = children.reduce(into: 0) { count, child in
+                count += Self.fileCount(at: child, fileManager: fileManager)
             }
-            try? fileManager.removeItem(at: holdingURL)
-            if !rollbackFailures.isEmpty {
-                throw AppError.transferFailed(
-                    "The download-folder reset failed, and rollback could not restore: \(rollbackFailures.joined(separator: ", "))."
-                )
-            }
-            throw error
-        }
-
-        do {
-            try fileManager.removeItem(at: holdingURL)
-        } catch {
-            throw AppError.transferFailed(
-                "The downloads were isolated but could not be fully deleted. A hidden reset folder remains inside \(rootURL.path). \(error.localizedDescription)"
+            return ResetPlan(
+                rootURL: rootURL,
+                items: children,
+                fileCount: fileCount,
+                manifestPaths: manifestPaths
             )
         }
-        return JobResetResult(deletedFiles: deletedFiles, downloadFolderPath: rootURL.path)
+
+        let children = try fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: nil,
+            options: []
+        )
+        if children.contains(where: {
+            $0.lastPathComponent.hasPrefix(".aagedal-sync-reset-")
+                && $0.lastPathComponent.hasSuffix(".trash")
+        }) {
+            throw AppError.transferFailed(
+                "A recovery folder from an earlier Reset Job attempt remains inside \(rootURL.path). Recover or remove that hidden folder before retrying so download history is not cleared prematurely."
+            )
+        }
+        guard !manifestPaths.isEmpty || children.isEmpty else {
+            throw AppError.invalidConfiguration(
+                "This ordinary download folder has no ownership manifest. Reset Job will not delete its contents. Move the job to the managed Synced Files structure, or remove the files manually."
+            )
+        }
+        let items = try manifestPaths.sorted().compactMap { relativePath -> URL? in
+            let url = try Self.safeManifestURL(for: relativePath, rootURL: rootURL, fileManager: fileManager)
+            guard fileManager.fileExists(atPath: url.path) else { return nil }
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey])
+            guard values.isRegularFile == true, values.isSymbolicLink != true, values.isDirectory != true else {
+                throw AppError.transferFailed(
+                    "The owned download path is no longer a regular file and was not deleted: \(relativePath)"
+                )
+            }
+            return url
+        }
+        return ResetPlan(
+            rootURL: rootURL,
+            items: items,
+            fileCount: items.count,
+            manifestPaths: manifestPaths
+        )
+    }
+
+    private static func safeManifestURL(
+        for relativePath: String,
+        rootURL: URL,
+        fileManager: FileManager
+    ) throws -> URL {
+        guard PathSafety.isSafeRelativePath(relativePath) else {
+            throw AppError.transferFailed("The download manifest contained an unsafe path.")
+        }
+        let candidate = rootURL.appendingPathComponent(relativePath).standardizedFileURL
+        guard candidate.path.hasPrefix(rootURL.path + "/") else {
+            throw AppError.transferFailed("The download manifest attempted to leave its selected folder.")
+        }
+        var componentURL = rootURL
+        for component in relativePath.split(separator: "/") {
+            componentURL.appendPathComponent(String(component))
+            if (try? fileManager.destinationOfSymbolicLink(atPath: componentURL.path)) != nil {
+                throw AppError.transferFailed(
+                    "The owned download path now contains a symbolic link and was not deleted: \(relativePath)"
+                )
+            }
+            if !fileManager.fileExists(atPath: componentURL.path) { break }
+        }
+        return candidate
     }
 
     private static func isAcceptableResetRoot(_ url: URL) -> Bool {

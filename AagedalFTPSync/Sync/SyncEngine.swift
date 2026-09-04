@@ -121,6 +121,7 @@ private actor EarlyTransferState {
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
     private let sourceSignatureRepository: SourceSignatureRepository
+    private let downloadManifestRepository: DownloadManifestRepository
     private let eventLogger: any SyncEventLogging
     private let sessionFactory: @Sendable (
         Endpoint,
@@ -130,6 +131,7 @@ struct SyncEngine: Sendable {
 
     init(
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
+        downloadManifestRepository: DownloadManifestRepository = DownloadManifestRepository(),
         eventLogger: any SyncEventLogging = SystemSyncEventLogger(),
         sessionFactory: @escaping @Sendable (
             Endpoint,
@@ -144,6 +146,7 @@ struct SyncEngine: Sendable {
         }
     ) {
         self.sourceSignatureRepository = sourceSignatureRepository
+        self.downloadManifestRepository = downloadManifestRepository
         self.eventLogger = eventLogger
         self.sessionFactory = sessionFactory
     }
@@ -799,16 +802,27 @@ struct SyncEngine: Sendable {
                     preserveDate: true,
                     verifySize: true
                 )
+                try await downloadManifestRepository.record(
+                    relativePaths: [file.relativePath],
+                    jobID: job.id,
+                    destinationEndpoint: destinationEndpoint
+                )
             case .sidecar(let localURL, let sidecarSize, _):
+                let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
                 try await destination.importFile(
                     from: localURL,
                     as: SyncFile(
-                        relativePath: MetadataWriter.sidecarRelativePath(for: file.relativePath),
+                        relativePath: sidecarPath,
                         size: sidecarSize,
                         modifiedAt: file.modifiedAt
                     ),
                     preserveDate: true,
                     verifySize: true
+                )
+                try await downloadManifestRepository.record(
+                    relativePaths: [sidecarPath],
+                    jobID: job.id,
+                    destinationEndpoint: destinationEndpoint
                 )
             }
             applied += 1
@@ -1109,6 +1123,7 @@ struct SyncEngine: Sendable {
                     runID: runID,
                     publishOnlyIfAbsent: true
                 )
+                try await recordPublishedLocalDownloads(outcome, job: job)
                 await state.record(file, outcome: outcome)
             } catch is CancellationError {
                 throw CancellationError()
@@ -1290,6 +1305,7 @@ struct SyncEngine: Sendable {
                     )
                 )
             }
+            try await recordPublishedLocalDownloads(outcome, job: job)
             if let auditEntry = outcome.auditEntry {
                 metadataReport.append(auditEntry)
             }
@@ -1349,6 +1365,19 @@ struct SyncEngine: Sendable {
             )
         }
         return (transferred, processed, metadataReport)
+    }
+
+    private func recordPublishedLocalDownloads(
+        _ outcome: TransferMetadataOutcome,
+        job: SyncJob
+    ) async throws {
+        guard let destinationEndpoint = job.destinationEndpoint,
+              destinationEndpoint.kind == .local else { return }
+        try await downloadManifestRepository.record(
+            relativePaths: outcome.publishedDestinationFiles.keys,
+            jobID: job.id,
+            destinationEndpoint: destinationEndpoint
+        )
     }
 
     private func transferBothWays(

@@ -8,6 +8,8 @@ struct JobDetailEditor: View {
     let onDiscardNewJob: () -> Void
     @State private var showDeleteConfirmation = false
     @State private var showResetConfirmation = false
+    @State private var resetPreview: JobResetPreview?
+    @State private var isPreparingReset = false
     @State private var saveConfirmation = false
     @State private var showMetadataAudit = false
     @State private var showSyncFailureHistory = false
@@ -210,7 +212,14 @@ struct JobDetailEditor: View {
                 }
                     .disabled(store.isJobBusy(draft.id))
                     .help(store.isJobBusy(draft.id) ? "Wait for the current job operation to finish." : "Delete this job.")
-                Button("Reset Job…", role: .destructive) { showResetConfirmation = true }
+                Button("Reset Job…", role: .destructive) {
+                    Task {
+                        isPreparingReset = true
+                        defer { isPreparingReset = false }
+                        resetPreview = await store.resetPreview(for: draft.id)
+                        showResetConfirmation = resetPreview != nil
+                    }
+                }
                     .disabled(resetUnavailableReason != nil)
                     .help(resetUnavailableReason ?? "Delete downloaded files and clear this job's download history.")
                 Spacer()
@@ -297,6 +306,7 @@ struct JobDetailEditor: View {
                 draft.isEnabled = false
                 draft.startsOnAppLaunch = false
                 store.resetJob(draft.id)
+                resetPreview = nil
             }
         } message: {
             Text(resetConfirmationMessage)
@@ -452,18 +462,23 @@ struct JobDetailEditor: View {
     private var resetUnavailableReason: String? {
         guard let savedJob else { return "Save this job before resetting it." }
         guard draft == savedJob else { return "Save or discard the current changes before resetting this job." }
+        if isPreparingReset { return "Preparing the reset preview." }
         if store.isJobBusy(draft.id) { return "Wait for the current job operation to finish." }
         return JobResetService.validationMessage(for: savedJob)
     }
 
     private var resetConfirmationMessage: String {
         guard let savedJob else { return "This job has not been saved." }
-        let path = savedJob.localDestinationDisplayPath ?? "the local download folder"
+        let path = resetPreview?.downloadFolderPath
+            ?? savedJob.localDestinationDisplayPath
+            ?? "the local download folder"
+        let fileCount = resetPreview?.filesToDelete ?? 0
+        let fileDescription = fileCount == 1 ? "1 file" : "\(fileCount) files"
         let folderWarning: String
-        if savedJob.usesManagedFolderStructure {
-            folderWarning = "Every item inside \(path) will be permanently deleted. Processed Files and the source will not be changed."
+        if resetPreview?.deletesWholeManagedFolder == true {
+            folderWarning = "Reset will permanently delete \(fileDescription) currently inside \(path). Processed Files and the source will not be changed."
         } else {
-            folderWarning = "Every item inside \(path) will be permanently deleted, including files not created by this app. The source will not be changed."
+            folderWarning = "Reset will permanently delete \(fileDescription) recorded as downloads created by this job in \(path). Other files and the source will not be changed."
         }
         return "\(folderWarning) Transfer counts, metadata audit entries, error history, and saved source signatures will also be cleared. The job will be stopped and disabled at login. This cannot be undone."
     }

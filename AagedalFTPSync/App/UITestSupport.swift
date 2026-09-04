@@ -40,6 +40,9 @@ enum UITestSupport {
         let sourceSignatures = SourceSignatureRepository(
             fileURL: fileURL("original-source-signatures-v1.json", rootURL: rootURL)
         )
+        let downloadManifest = DownloadManifestRepository(
+            fileURL: fileURL("download-manifest-v1.json", rootURL: rootURL)
+        )
         return AppStore(
             repository: jobRepository,
             metadataPresetRepository: MetadataPresetRepository(
@@ -58,12 +61,16 @@ enum UITestSupport {
                 fileURL: fileURL("sync-errors-v1.json", rootURL: rootURL)
             ),
             sourceSignatureRepository: sourceSignatures,
+            downloadManifestRepository: downloadManifest,
             keychain: KeychainStore(
                 passwordReader: { _ in nil },
                 passwordWriter: { _, _ in },
                 passwordRemover: { _ in }
             ),
-            engine: SyncEngine(sourceSignatureRepository: sourceSignatures),
+            engine: SyncEngine(
+                sourceSignatureRepository: sourceSignatures,
+                downloadManifestRepository: downloadManifest
+            ),
             failureNotificationCoordinator: SyncFailureNotificationCoordinator(
                 delivery: UITestNotificationDelivery()
             ),

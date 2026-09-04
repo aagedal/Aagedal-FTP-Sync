@@ -48,6 +48,7 @@ final class AppStore: ObservableObject {
     private let metadataLibraryCoordinator: MetadataLibraryCoordinator
     private let launchAtLoginCoordinator: any LaunchAtLoginCoordinating
     private let sourceSignatureRepository: SourceSignatureRepository
+    private let downloadManifestRepository: DownloadManifestRepository
     private let jobResetService: JobResetService
     private let engine: SyncEngine
     private let syncConcurrencyController: SyncConcurrencyController
@@ -67,7 +68,8 @@ final class AppStore: ObservableObject {
         metadataAuditRepository: MetadataAuditRepository = MetadataAuditRepository(),
         syncFailureRepository: SyncFailureRepository = SyncFailureRepository(),
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
-        jobResetService: JobResetService = JobResetService(),
+        downloadManifestRepository: DownloadManifestRepository = DownloadManifestRepository(),
+        jobResetService: JobResetService? = nil,
         keychain: KeychainStore = KeychainStore(),
         engine: SyncEngine? = nil,
         syncConcurrencyController: SyncConcurrencyController = SyncConcurrencyController(),
@@ -89,8 +91,14 @@ final class AppStore: ObservableObject {
             persistenceCoordinator: persistenceCoordinator
         )
         self.sourceSignatureRepository = sourceSignatureRepository
-        self.jobResetService = jobResetService
-        self.engine = engine ?? SyncEngine(sourceSignatureRepository: sourceSignatureRepository)
+        self.downloadManifestRepository = downloadManifestRepository
+        self.jobResetService = jobResetService ?? JobResetService(
+            downloadManifestRepository: downloadManifestRepository
+        )
+        self.engine = engine ?? SyncEngine(
+            sourceSignatureRepository: sourceSignatureRepository,
+            downloadManifestRepository: downloadManifestRepository
+        )
         self.syncConcurrencyController = syncConcurrencyController
         self.failureNotificationCoordinator = failureNotificationCoordinator
         self.launchAtLoginCoordinator = launchAtLoginCoordinator
@@ -584,6 +592,14 @@ final class AppStore: ObservableObject {
 
         scheduler.cancel(jobID)
         scheduleSourceSignatureMaintenance(jobID: jobID)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await downloadManifestRepository.removeAll(jobID: jobID)
+            } catch {
+                appendAlert("The deleted job's download manifest could not be cleaned up: \(error.localizedDescription)")
+            }
+        }
         for warning in persistenceCoordinator.removeCredentials(for: job, retainedJobs: updatedJobs) {
             appendAlert("A saved password for the deleted job could not be removed: \(warning)")
         }
@@ -677,6 +693,17 @@ final class AppStore: ObservableObject {
             resetTasks[jobID] = nil
         }
         resetTasks[jobID] = task
+    }
+
+    func resetPreview(for jobID: UUID) async -> JobResetPreview? {
+        guard !isJobBusy(jobID),
+              let job = jobs.first(where: { $0.id == jobID }) else { return nil }
+        do {
+            return try await jobResetService.preview(for: job)
+        } catch {
+            alertMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func openLocalFolder(_ endpoint: Endpoint) {
