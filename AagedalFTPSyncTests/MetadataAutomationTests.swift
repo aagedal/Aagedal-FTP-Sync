@@ -600,6 +600,37 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(resized.endsAt, clip.endsAt)
     }
 
+    func testTimelineLinkedBoundaryResizeSnapsAndPreservesContinuity() {
+        let calendar = utcCalendar
+        let photographerID = UUID()
+        let leading = MetadataScheduleClip(
+            photographerID: photographerID,
+            name: "Morning",
+            startsAt: date(2026, 8, 29, 9, 0, calendar: calendar),
+            endsAt: date(2026, 8, 29, 10, 0, calendar: calendar)
+        )
+        let trailing = MetadataScheduleClip(
+            photographerID: photographerID,
+            name: "Afternoon",
+            startsAt: leading.endsAt,
+            endsAt: date(2026, 8, 29, 11, 0, calendar: calendar)
+        )
+
+        let resized = MetadataTimelineEditing.resizingBoundary(
+            between: leading,
+            and: trailing,
+            by: 20 * 60,
+            snapMinutes: 15,
+            calendar: calendar
+        )
+
+        let expectedBoundary = date(2026, 8, 29, 10, 15, calendar: calendar)
+        XCTAssertEqual(resized.leading.endsAt, expectedBoundary)
+        XCTAssertEqual(resized.trailing.startsAt, expectedBoundary)
+        XCTAssertEqual(resized.leading.startsAt, leading.startsAt)
+        XCTAssertEqual(resized.trailing.endsAt, trailing.endsAt)
+    }
+
     func testTimelineAnalysisFindsGapsAndOverlapsAtDayBoundaries() {
         let calendar = utcCalendar
         let photographerID = UUID()
@@ -750,6 +781,44 @@ final class MetadataAutomationTests: XCTestCase {
             selection.contextSelection(for: unselected),
             [calendar.startOfDay(for: unselected)]
         )
+    }
+
+    func testLocationPlaceNamingPrefersPointOfInterest() {
+        let name = LocationPlaceNaming.preferredName(
+            areasOfInterest: ["Oslo City Hall"],
+            name: "Rådhusplassen 1",
+            locality: "Oslo",
+            administrativeArea: "Oslo",
+            country: "Norway",
+            fallback: "59.91110, 10.73340"
+        )
+
+        XCTAssertEqual(name, "Oslo City Hall")
+    }
+
+    func testLocationPlaceNamingBuildsReadableDistinctDescription() {
+        let name = LocationPlaceNaming.displayName(
+            name: "Karl Johans gate 22",
+            thoroughfare: "Karl Johans gate",
+            locality: "Oslo",
+            administrativeArea: "Oslo",
+            country: "Norway"
+        )
+
+        XCTAssertEqual(name, "Karl Johans gate 22, Oslo, Norway")
+    }
+
+    func testLocationPlaceNamingFallsBackToCoordinates() {
+        let name = LocationPlaceNaming.preferredName(
+            areasOfInterest: [],
+            name: nil,
+            locality: nil,
+            administrativeArea: nil,
+            country: nil,
+            fallback: "59.91390, 10.75220"
+        )
+
+        XCTAssertEqual(name, "59.91390, 10.75220")
     }
 
     private var utcCalendar: Calendar {

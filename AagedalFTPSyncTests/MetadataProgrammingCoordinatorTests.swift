@@ -406,6 +406,87 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.selectedPhotographerID, second.id)
     }
 
+    func testDraggingSelectedClipMovesWholeGroupAndClampsTrackOffset() throws {
+        let calendar = utcCalendar
+        let first = PhotographerProfile(
+            name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: ""
+        )
+        let second = PhotographerProfile(
+            name: "Second", filenamePrefix: "TWO", creator: "Second", copyrightNotice: ""
+        )
+        let third = PhotographerProfile(
+            name: "Third", filenamePrefix: "THR", creator: "Third", copyrightNotice: ""
+        )
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let firstClip = MetadataScheduleClip(
+            photographerID: first.id,
+            name: "First assignment",
+            startsAt: date(2026, 8, 29, 9, 0, calendar: calendar),
+            endsAt: date(2026, 8, 29, 10, 0, calendar: calendar)
+        )
+        let secondClip = MetadataScheduleClip(
+            photographerID: second.id,
+            name: "Second assignment",
+            startsAt: date(2026, 8, 29, 11, 30, calendar: calendar),
+            endsAt: date(2026, 8, 29, 12, 0, calendar: calendar)
+        )
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft = MetadataAutomation(
+            photographers: [first, second, third],
+            clips: [firstClip, secondClip]
+        )
+        coordinator.draft.addPhotographerTrack(third.id, on: day, calendar: calendar)
+        coordinator.selectedClipIDs = [firstClip.id, secondClip.id]
+        coordinator.snapMinutes = 15
+
+        coordinator.moveClip(firstClip, by: 22 * 60, trackOffset: 2, duplicating: false)
+
+        let movedFirst = try XCTUnwrap(coordinator.draft.clips.first(where: { $0.id == firstClip.id }))
+        let movedSecond = try XCTUnwrap(coordinator.draft.clips.first(where: { $0.id == secondClip.id }))
+        XCTAssertEqual(movedFirst.startsAt, date(2026, 8, 29, 9, 15, calendar: calendar))
+        XCTAssertEqual(movedSecond.startsAt, date(2026, 8, 29, 11, 45, calendar: calendar))
+        XCTAssertEqual(movedFirst.photographerID, second.id)
+        XCTAssertEqual(movedSecond.photographerID, third.id)
+        XCTAssertEqual(coordinator.selectedClipIDs, [firstClip.id, secondClip.id])
+        XCTAssertEqual(coordinator.selectedPhotographerID, second.id)
+        XCTAssertEqual(coordinator.selectedPhotographerIDs, [second.id, third.id])
+    }
+
+    func testLinkedBoundaryResizeUpdatesBothClipsAtomically() throws {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(
+            name: "Photographer", filenamePrefix: "PHT", creator: "Photographer", copyrightNotice: ""
+        )
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let leading = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Leading",
+            startsAt: date(2026, 8, 29, 9, 0, calendar: calendar),
+            endsAt: date(2026, 8, 29, 10, 0, calendar: calendar)
+        )
+        let trailing = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Trailing",
+            startsAt: leading.endsAt,
+            endsAt: date(2026, 8, 29, 11, 0, calendar: calendar)
+        )
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft = MetadataAutomation(
+            photographers: [photographer],
+            clips: [leading, trailing]
+        )
+        coordinator.snapMinutes = 15
+
+        coordinator.resizeBoundary(between: leading, and: trailing, by: -18 * 60)
+
+        let changedLeading = try XCTUnwrap(coordinator.draft.clips.first(where: { $0.id == leading.id }))
+        let changedTrailing = try XCTUnwrap(coordinator.draft.clips.first(where: { $0.id == trailing.id }))
+        let expectedBoundary = date(2026, 8, 29, 9, 45, calendar: calendar)
+        XCTAssertEqual(changedLeading.endsAt, expectedBoundary)
+        XCTAssertEqual(changedTrailing.startsAt, expectedBoundary)
+        XCTAssertEqual(coordinator.selectedClipIDs, [leading.id])
+    }
+
     func testRemovingTrackFromOneDayPreservesSpanningClipOnOtherDays() {
         let calendar = utcCalendar
         let photographer = PhotographerProfile(

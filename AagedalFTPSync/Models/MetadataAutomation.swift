@@ -550,6 +550,34 @@ enum MetadataTimelineEditing {
         }
         return result
     }
+
+    static func resizingBoundary(
+        between leading: MetadataScheduleClip,
+        and trailing: MetadataScheduleClip,
+        by interval: TimeInterval,
+        snapMinutes: Int,
+        calendar: Calendar = .current
+    ) -> (leading: MetadataScheduleClip, trailing: MetadataScheduleClip) {
+        guard leading.photographerID == trailing.photographerID,
+              leading.endsAt == trailing.startsAt else {
+            return (leading, trailing)
+        }
+
+        let proposed = snapped(
+            leading.endsAt.addingTimeInterval(interval),
+            toMinutes: snapMinutes,
+            calendar: calendar
+        )
+        let earliest = leading.startsAt.addingTimeInterval(minimumClipDuration)
+        let latest = trailing.endsAt.addingTimeInterval(-minimumClipDuration)
+        let boundary = min(max(proposed, earliest), latest)
+
+        var changedLeading = leading
+        var changedTrailing = trailing
+        changedLeading.endsAt = boundary
+        changedTrailing.startsAt = boundary
+        return (changedLeading, changedTrailing)
+    }
 }
 
 enum MetadataTimelineAnalysis {

@@ -674,6 +674,11 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         trackOffset: Int = 0,
         duplicating: Bool
     ) {
+        if selectedClipIDs.contains(clip.id), selectedClipIDs.count > 1 {
+            moveSelectedClips(anchoredBy: clip, by: interval, trackOffset: trackOffset)
+            return
+        }
+
         var changed = MetadataTimelineEditing.moving(
             clip,
             by: interval,
@@ -696,6 +701,56 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         } else {
             applyClipChange(changed)
         }
+    }
+
+    private func moveSelectedClips(
+        anchoredBy anchor: MetadataScheduleClip,
+        by interval: TimeInterval,
+        trackOffset requestedTrackOffset: Int
+    ) {
+        let selected = draft.clips.filter { selectedClipIDs.contains($0.id) }
+        guard selected.count > 1 else { return }
+
+        let movedAnchor = MetadataTimelineEditing.moving(
+            anchor,
+            by: interval,
+            snapMinutes: snapMinutes,
+            calendar: calendar
+        )
+        let snappedInterval = movedAnchor.startsAt.timeIntervalSince(anchor.startsAt)
+        let photographers = timelinePhotographers
+        let trackIndices = selected.compactMap { clip in
+            photographers.firstIndex(where: { $0.id == clip.photographerID })
+        }
+        let trackOffset: Int
+        if trackIndices.count == selected.count,
+           let firstTrackIndex = trackIndices.min(),
+           let lastTrackIndex = trackIndices.max() {
+            trackOffset = min(
+                max(requestedTrackOffset, -firstTrackIndex),
+                photographers.count - 1 - lastTrackIndex
+            )
+        } else {
+            trackOffset = 0
+        }
+
+        let changed = selected.map { clip in
+            var moved = clip
+            moved.startsAt = clip.startsAt.addingTimeInterval(snappedInterval)
+            moved.endsAt = clip.endsAt.addingTimeInterval(snappedInterval)
+            if trackOffset != 0,
+               let sourceIndex = photographers.firstIndex(where: { $0.id == clip.photographerID }) {
+                moved.photographerID = photographers[sourceIndex + trackOffset].id
+            }
+            return moved
+        }
+        let anchorPhotographerID = changed.first(where: { $0.id == anchor.id })?.photographerID
+            ?? anchor.photographerID
+        applyClipChanges(
+            changed,
+            selecting: Set(changed.map(\.id)),
+            primaryPhotographerID: anchorPhotographerID
+        )
     }
 
     func placePlayhead(on photographerID: UUID, at date: Date) {
@@ -725,14 +780,56 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         }
     }
 
+    func resizeBoundary(
+        between leading: MetadataScheduleClip,
+        and trailing: MetadataScheduleClip,
+        by interval: TimeInterval
+    ) {
+        let changed = MetadataTimelineEditing.resizingBoundary(
+            between: leading,
+            and: trailing,
+            by: interval,
+            snapMinutes: snapMinutes,
+            calendar: calendar
+        )
+        guard changed.leading != leading || changed.trailing != trailing else { return }
+        applyClipChanges(
+            [changed.leading, changed.trailing],
+            selecting: [leading.id],
+            primaryPhotographerID: leading.photographerID
+        )
+    }
+
     func applyClipChange(_ clip: MetadataScheduleClip) {
-        guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
-        draft.clips[index] = clip
-        draft.ensurePhotographerTracks(for: clip, calendar: calendar)
-        selectedClipIDs = [clip.id]
-        selectedPhotographerID = clip.photographerID
-        selectedPhotographerIDs = [clip.photographerID]
-        retargetPlayhead(to: clip.photographerID)
+        applyClipChanges(
+            [clip],
+            selecting: [clip.id],
+            primaryPhotographerID: clip.photographerID
+        )
+    }
+
+    private func applyClipChanges(
+        _ clips: [MetadataScheduleClip],
+        selecting selectedIDs: Set<UUID>,
+        primaryPhotographerID: UUID
+    ) {
+        let clipsByID = Dictionary(uniqueKeysWithValues: clips.map { ($0.id, $0) })
+        let existingIDs = Set(draft.clips.map(\.id))
+        guard Set(clipsByID.keys).isSubset(of: existingIDs) else { return }
+
+        var changedDraft = draft
+        for index in changedDraft.clips.indices {
+            guard let changed = clipsByID[changedDraft.clips[index].id] else { continue }
+            changedDraft.clips[index] = changed
+        }
+        for clip in clips {
+            changedDraft.ensurePhotographerTracks(for: clip, calendar: calendar)
+        }
+        draft = changedDraft
+        selectedClipIDs = selectedIDs
+        selectedPhotographerID = primaryPhotographerID
+        selectedPhotographerIDs = Set(clips.map(\.photographerID))
+        retargetPlayhead(to: primaryPhotographerID)
     }
 
     func selectAdjacentTrack(offset: Int) {

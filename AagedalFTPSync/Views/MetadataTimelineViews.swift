@@ -1,6 +1,12 @@
 import AppKit
+import CoreLocation
 import MapKit
 import SwiftUI
+
+struct TimelineGroupDragPreview: Equatable {
+    let anchorID: UUID
+    let interval: TimeInterval
+}
 
 struct TimelineHourHeader: View {
     let day: Date
@@ -73,6 +79,7 @@ struct TimelineTrack: View {
     let color: Color
     let snapMinutes: Int
     let selectedClipIDs: Set<UUID>
+    let groupDragPreview: TimelineGroupDragPreview?
     let playheadDate: Date?
     let showsPlayhead: Bool
     let canPaste: Bool
@@ -88,7 +95,10 @@ struct TimelineTrack: View {
     let onEdit: (MetadataScheduleClip) -> Void
     let onCreate: (PhotographerProfile, Date, Date) -> Void
     let onMove: (MetadataScheduleClip, TimeInterval, Int, Bool) -> Void
+    let onPreviewMove: (MetadataScheduleClip, TimeInterval) -> Void
+    let onEndMovePreview: () -> Void
     let onResize: (MetadataScheduleClip, MetadataClipResizeEdge, TimeInterval) -> Void
+    let onResizeBoundary: (MetadataScheduleClip, MetadataScheduleClip, TimeInterval) -> Void
     let onReprocessClip: (MetadataScheduleClip) -> Void
     let onPlacePlayhead: (UUID, Date) -> Void
     let onPasteAtPlayhead: (Date, UUID) -> Void
@@ -163,6 +173,11 @@ struct TimelineTrack: View {
                             clip: clip,
                             color: color,
                             isSelected: selectedClipIDs.contains(clip.id),
+                            selectedClipCount: selectedClipIDs.count,
+                            groupPreviewOffset: groupPreviewOffset(
+                                for: clip,
+                                secondsPerPoint: dayDuration / max(proxy.size.width, 1)
+                            ),
                             continuesFromPreviousDay: clip.startsAt < dayStart,
                             continuesIntoNextDay: clip.endsAt > nextDay,
                             timeLabel: timeLabel(for: clip),
@@ -174,10 +189,29 @@ struct TimelineTrack: View {
                             onMove: { interval, trackOffset, duplicating in
                                 onMove(clip, interval, trackOffset, duplicating)
                             },
+                            onPreviewMove: { interval in onPreviewMove(clip, interval) },
+                            onEndMovePreview: onEndMovePreview,
                             onResize: { edge, interval in onResize(clip, edge, interval) }
                         )
                         .frame(width: clipWidth(clip, totalWidth: proxy.size.width), height: 44)
                         .offset(x: clipOffset(clip, totalWidth: proxy.size.width))
+                    }
+                    ForEach(linkedBoundaries) { boundary in
+                        TimelineLinkedBoundaryHandle(
+                            leading: boundary.leading,
+                            trailing: boundary.trailing,
+                            color: color,
+                            secondsPerPoint: dayDuration / max(proxy.size.width, 1),
+                            snapMinutes: snapMinutes,
+                            onSelect: { onSelect(boundary.leading) },
+                            onResize: { interval in
+                                onResizeBoundary(boundary.leading, boundary.trailing, interval)
+                            }
+                        )
+                        .offset(
+                            x: boundaryOffset(boundary.leading.endsAt, totalWidth: proxy.size.width) - 15,
+                            y: 17
+                        )
                     }
                     playheadMarker(totalWidth: proxy.size.width)
                 }
@@ -230,6 +264,18 @@ struct TimelineTrack: View {
     }
 
     private var dayDuration: TimeInterval { nextDay.timeIntervalSince(dayStart) }
+
+    private var linkedBoundaries: [TimelineLinkedBoundary] {
+        zip(clips, clips.dropFirst()).compactMap { leading, trailing in
+            guard leading.photographerID == trailing.photographerID,
+                  leading.endsAt == trailing.startsAt,
+                  leading.endsAt > dayStart,
+                  leading.endsAt < nextDay else {
+                return nil
+            }
+            return TimelineLinkedBoundary(leading: leading, trailing: trailing)
+        }
+    }
 
     private var contextMenuPasteTitle: String {
         guard let playheadDate else { return "Place Playhead to Paste" }
@@ -395,6 +441,22 @@ struct TimelineTrack: View {
         return max(42, CGFloat((interval.end - interval.start) / interval.dayDuration) * totalWidth)
     }
 
+    private func boundaryOffset(_ boundary: Date, totalWidth: CGFloat) -> CGFloat {
+        CGFloat(boundary.timeIntervalSince(dayStart) / dayDuration) * totalWidth
+    }
+
+    private func groupPreviewOffset(
+        for clip: MetadataScheduleClip,
+        secondsPerPoint: TimeInterval
+    ) -> CGFloat {
+        guard let groupDragPreview,
+              groupDragPreview.anchorID != clip.id,
+              selectedClipIDs.contains(clip.id) else {
+            return 0
+        }
+        return CGFloat(groupDragPreview.interval / max(secondsPerPoint, 0.001))
+    }
+
     private func timeLabel(for clip: MetadataScheduleClip) -> String {
         let start = clip.startsAt.formatted(date: .omitted, time: .shortened)
         let end = clip.endsAt.formatted(date: .omitted, time: .shortened)
@@ -414,6 +476,8 @@ private struct TimelineClipView: View {
     let clip: MetadataScheduleClip
     let color: Color
     let isSelected: Bool
+    let selectedClipCount: Int
+    let groupPreviewOffset: CGFloat
     let continuesFromPreviousDay: Bool
     let continuesIntoNextDay: Bool
     let timeLabel: String
@@ -423,6 +487,8 @@ private struct TimelineClipView: View {
     let onEdit: () -> Void
     let onReprocess: () -> Void
     let onMove: (TimeInterval, Int, Bool) -> Void
+    let onPreviewMove: (TimeInterval) -> Void
+    let onEndMovePreview: () -> Void
     let onResize: (MetadataClipResizeEdge, TimeInterval) -> Void
 
     @GestureState private var moveState = TimelineClipMoveState()
@@ -460,11 +526,19 @@ private struct TimelineClipView: View {
                             .padding(4)
                     }
                 }
-                .offset(moveState.translation)
+                .offset(
+                    x: moveState.translation.width + groupPreviewOffset,
+                    y: moveState.translation.height
+                )
         }
         .foregroundStyle(color)
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .gesture(interactionGesture)
+        .onChange(of: moveState.translation) { oldValue, newValue in
+            if oldValue != .zero, newValue == .zero {
+                onEndMovePreview()
+            }
+        }
         .contextMenu {
             Button(action: onEdit) {
                 Label("Edit Clip…", systemImage: "slider.horizontal.3")
@@ -474,11 +548,20 @@ private struct TimelineClipView: View {
             }
             .disabled(!canReprocess)
         }
-        .help("Click to select, double-click to edit, drag horizontally in time or vertically to another track, Option-drag to duplicate, or drag an edge to resize.")
+        .help(interactionHelp)
     }
 
     private var isPreviewingDuplicate: Bool {
-        moveState.isDuplicating && gestureDistance(moveState.translation) >= 3
+        !(isSelected && selectedClipCount > 1)
+            && moveState.isDuplicating
+            && gestureDistance(moveState.translation) >= 3
+    }
+
+    private var interactionHelp: String {
+        if isSelected, selectedClipCount > 1 {
+            return "Drag to move all \(selectedClipCount) selected clips while preserving their relative times and tracks."
+        }
+        return "Click to select, double-click to edit, drag horizontally in time or vertically to another track, Option-drag to duplicate, or drag an edge to resize."
     }
 
     private func clipBody(showsResizeHandles: Bool) -> some View {
@@ -516,6 +599,8 @@ private struct TimelineClipView: View {
                     Spacer(minLength: 0)
                     resizeHandle(edge: .end)
                 }
+                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.top, 3)
             }
         }
     }
@@ -538,7 +623,14 @@ private struct TimelineClipView: View {
                     isDuplicating: NSEvent.modifierFlags.contains(.option)
                 )
             }
+            .onChanged { value in
+                guard isSelected,
+                      selectedClipCount > 1,
+                      gestureDistance(value.translation) >= 3 else { return }
+                onPreviewMove(value.translation.width * secondsPerPoint)
+            }
             .onEnded { value in
+                onEndMovePreview()
                 guard gestureDistance(value.translation) >= 3 else {
                     onSelect()
                     return
@@ -564,7 +656,7 @@ private struct TimelineClipView: View {
         let translation = edge == .start ? startTranslation : endTranslation
         return Capsule()
             .fill(isSelected ? color : color.opacity(0.7))
-            .frame(width: 5, height: 27)
+            .frame(width: 5, height: 20)
             .padding(.horizontal, 2)
             .offset(x: translation)
             .contentShape(Rectangle().inset(by: -4))
@@ -575,6 +667,67 @@ private struct TimelineClipView: View {
                     }
                     .onEnded { value in onResize(edge, value.translation.width * secondsPerPoint) }
             )
+    }
+}
+
+private struct TimelineLinkedBoundary: Identifiable {
+    let leading: MetadataScheduleClip
+    let trailing: MetadataScheduleClip
+
+    var id: String { "\(leading.id.uuidString)-\(trailing.id.uuidString)" }
+}
+
+private struct TimelineLinkedBoundaryHandle: View {
+    let leading: MetadataScheduleClip
+    let trailing: MetadataScheduleClip
+    let color: Color
+    let secondsPerPoint: TimeInterval
+    let snapMinutes: Int
+    let onSelect: () -> Void
+    let onResize: (TimeInterval) -> Void
+
+    @GestureState private var translation: CGFloat = 0
+
+    var body: some View {
+        Button(action: onSelect) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.regularMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(color.opacity(0.9), lineWidth: 1)
+                    }
+                Image(systemName: "arrow.left.and.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(color)
+            }
+            .frame(width: 30, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .offset(x: translation)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 1)
+                .updating($translation) { value, state, _ in
+                    state = value.translation.width
+                }
+                .onEnded { value in
+                    onSelect()
+                    onResize(value.translation.width * secondsPerPoint)
+                }
+        )
+        .onKeyPress(.leftArrow) {
+            onSelect()
+            onResize(-TimeInterval(max(snapMinutes, 1) * 60))
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            onSelect()
+            onResize(TimeInterval(max(snapMinutes, 1) * 60))
+            return .handled
+        }
+        .accessibilityLabel("Adjust boundary between \(leading.name) and \(trailing.name)")
+        .help("Drag to resize both adjacent clips together, or use the left and right arrow keys.")
     }
 }
 
@@ -767,9 +920,104 @@ struct MetadataClipEditor: View {
     }
 }
 
+struct LocationPlaceNaming {
+    static func coordinateLabel(_ coordinate: CLLocationCoordinate2D) -> String {
+        String(format: "%.5f, %.5f", coordinate.latitude, coordinate.longitude)
+    }
+
+    static func preferredName(
+        areasOfInterest: [String],
+        name: String?,
+        locality: String?,
+        administrativeArea: String?,
+        country: String?,
+        fallback: String
+    ) -> String {
+        firstNonempty(areasOfInterest.map(Optional.some) + [name, locality, administrativeArea, country]) ?? fallback
+    }
+
+    static func displayName(
+        name: String?,
+        thoroughfare: String?,
+        locality: String?,
+        administrativeArea: String?,
+        country: String?
+    ) -> String? {
+        let streetAndNumber = [name, thoroughfare]
+            .compactMap(trimmed)
+            .first
+        return distinct([streetAndNumber, locality, administrativeArea, country]).joined(separator: ", ").nilIfEmpty
+    }
+
+    private static func firstNonempty(_ values: [String?]) -> String? {
+        values.compactMap(trimmed).first
+    }
+
+    private static func distinct(_ values: [String?]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap(trimmed).filter { value in
+            seen.insert(value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)).inserted
+        }
+    }
+
+    private static func trimmed(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
+private struct ClipLocationSearchResult: Identifiable {
+    let id: String
+    let name: String
+    let details: String?
+    let coordinate: CLLocationCoordinate2D
+
+    init?(mapItem: MKMapItem, index: Int) {
+        let coordinate = mapItem.placemark.coordinate
+        guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+        let fallback = LocationPlaceNaming.coordinateLabel(coordinate)
+        let placemark = mapItem.placemark
+        let name = LocationPlaceNaming.preferredName(
+            areasOfInterest: placemark.areasOfInterest ?? [],
+            name: mapItem.name ?? placemark.name,
+            locality: placemark.locality,
+            administrativeArea: placemark.administrativeArea,
+            country: placemark.country,
+            fallback: fallback
+        )
+        self.id = "\(coordinate.latitude),\(coordinate.longitude),\(index)"
+        self.name = name
+        self.details = LocationPlaceNaming.displayName(
+            name: placemark.name,
+            thoroughfare: placemark.thoroughfare,
+            locality: placemark.locality,
+            administrativeArea: placemark.administrativeArea,
+            country: placemark.country
+        )
+        self.coordinate = coordinate
+    }
+}
+
+private enum ClipLocationLookupActivity: Equatable {
+    case idle
+    case searching
+    case resolvingName
+}
+
 private struct ClipLocationEditor: View {
     @Binding var position: ScheduledGPSPosition?
     @State private var mapPosition: MapCameraPosition
+    @State private var searchText: String
+    @State private var searchResults: [ClipLocationSearchResult] = []
+    @State private var lookupActivity = ClipLocationLookupActivity.idle
+    @State private var lookupError: String?
+    @State private var searchTask: Task<Void, Never>?
+    @State private var reverseGeocodingTask: Task<Void, Never>?
 
     private static let defaultCoordinate = CLLocationCoordinate2D(latitude: 59.9139, longitude: 10.7522)
 
@@ -782,6 +1030,7 @@ private struct ClipLocationEditor: View {
             center: coordinate,
             span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
         )))
+        _searchText = State(initialValue: position.wrappedValue?.displayLabel ?? "")
     }
 
     var body: some View {
@@ -789,6 +1038,8 @@ private struct ClipLocationEditor: View {
             Toggle("Add a GPS position to files matched by this clip", isOn: hasPositionBinding)
 
             if position != nil {
+                locationSearch
+
                 MapReader { proxy in
                     Map(position: $mapPosition) {
                         if let coordinate {
@@ -801,9 +1052,19 @@ private struct ClipLocationEditor: View {
                         SpatialTapGesture()
                             .onEnded { value in
                                 guard let coordinate = proxy.convert(value.location, from: .local) else { return }
-                                updateCoordinate(coordinate)
+                                updateCoordinateAndResolveName(coordinate)
                             }
                     )
+                    .overlay(alignment: .topLeading) {
+                        if lookupActivity == .resolvingName {
+                            Label("Finding place name…", systemImage: "mappin.and.ellipse")
+                                .font(.caption.weight(.medium))
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                                .padding(8)
+                        }
+                    }
                 }
                 .frame(height: 190)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -812,15 +1073,32 @@ private struct ClipLocationEditor: View {
                         .stroke(.separator, lineWidth: 1)
                 }
 
-                Text("Click the map to place the marker, or enter exact coordinates below.")
+                Text("Search for a place, click the map to place the marker, or enter exact coordinates below. Place names are filled in automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                TextField("Location name", text: labelBinding, prompt: Text("Optional, for example Oslo City Hall"))
+                HStack(spacing: 8) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(position?.displayLabel ?? coordinate.map(LocationPlaceNaming.coordinateLabel) ?? "Selected location")
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        if let coordinate {
+                            Text(LocationPlaceNaming.coordinateLabel(coordinate))
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                TextField("Location name", text: labelBinding, prompt: Text("Automatic, or enter a custom name"))
 
                 HStack {
                     TextField("Latitude", value: latitudeBinding, format: coordinateFormat)
+                        .onSubmit { resolveCurrentCoordinate() }
                     TextField("Longitude", value: longitudeBinding, format: coordinateFormat)
+                        .onSubmit { resolveCurrentCoordinate() }
                 }
 
                 HStack {
@@ -834,6 +1112,68 @@ private struct ClipLocationEditor: View {
                     }
                 }
             }
+        }
+        .onDisappear {
+            searchTask?.cancel()
+            reverseGeocodingTask?.cancel()
+        }
+    }
+
+    @ViewBuilder
+    private var locationSearch: some View {
+        HStack(spacing: 8) {
+            TextField("Search for an address or place", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(searchPlaces)
+            Button(action: searchPlaces) {
+                if lookupActivity == .searching {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Label("Search", systemImage: "magnifyingglass")
+                }
+            }
+            .disabled(lookupActivity == .searching)
+        }
+
+        if !searchResults.isEmpty {
+            VStack(spacing: 2) {
+                ForEach(searchResults) { result in
+                    Button {
+                        selectSearchResult(result)
+                    } label: {
+                        HStack(spacing: 9) {
+                            Image(systemName: "mappin")
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 18)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(result.name)
+                                    .font(.callout.weight(.medium))
+                                    .lineLimit(1)
+                                if let details = result.details, details != result.name {
+                                    Text(details)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+        }
+
+        if let lookupError {
+            Label(lookupError, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 
@@ -851,11 +1191,21 @@ private struct ClipLocationEditor: View {
             get: { position != nil },
             set: { enabled in
                 if enabled, position == nil {
-                    position = ScheduledGPSPosition(
+                    let newPosition = ScheduledGPSPosition(
                         latitude: Self.defaultCoordinate.latitude,
-                        longitude: Self.defaultCoordinate.longitude
+                        longitude: Self.defaultCoordinate.longitude,
+                        label: LocationPlaceNaming.coordinateLabel(Self.defaultCoordinate)
                     )
+                    position = newPosition
+                    searchText = newPosition.label ?? ""
+                    centerMap(on: Self.defaultCoordinate)
+                    scheduleReverseGeocoding(for: Self.defaultCoordinate, delay: .milliseconds(150))
                 } else if !enabled {
+                    reverseGeocodingTask?.cancel()
+                    searchTask?.cancel()
+                    lookupActivity = .idle
+                    lookupError = nil
+                    searchResults = []
                     position = nil
                 }
             }
@@ -865,21 +1215,31 @@ private struct ClipLocationEditor: View {
     private var labelBinding: Binding<String> {
         Binding(
             get: { position?.label ?? "" },
-            set: { value in mutatePosition { $0.label = value } }
+            set: { value in
+                reverseGeocodingTask?.cancel()
+                if lookupActivity == .resolvingName { lookupActivity = .idle }
+                mutatePosition { $0.label = value }
+            }
         )
     }
 
     private var latitudeBinding: Binding<Double> {
         Binding(
             get: { position?.latitude ?? Self.defaultCoordinate.latitude },
-            set: { value in mutatePosition { $0.latitude = value } }
+            set: { value in
+                mutatePosition { $0.latitude = value }
+                scheduleCurrentCoordinateLookup()
+            }
         )
     }
 
     private var longitudeBinding: Binding<Double> {
         Binding(
             get: { position?.longitude ?? Self.defaultCoordinate.longitude },
-            set: { value in mutatePosition { $0.longitude = value } }
+            set: { value in
+                mutatePosition { $0.longitude = value }
+                scheduleCurrentCoordinateLookup()
+            }
         )
     }
 
@@ -899,11 +1259,152 @@ private struct ClipLocationEditor: View {
         )
     }
 
-    private func updateCoordinate(_ coordinate: CLLocationCoordinate2D) {
+    private func updateCoordinateAndResolveName(_ coordinate: CLLocationCoordinate2D) {
+        guard CLLocationCoordinate2DIsValid(coordinate) else { return }
         mutatePosition {
             $0.latitude = coordinate.latitude
             $0.longitude = coordinate.longitude
+            $0.label = LocationPlaceNaming.coordinateLabel(coordinate)
         }
+        searchText = LocationPlaceNaming.coordinateLabel(coordinate)
+        searchResults = []
+        lookupError = nil
+        scheduleReverseGeocoding(for: coordinate, delay: .zero)
+    }
+
+    private func searchPlaces() {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard query.count >= 2 else {
+            lookupError = "Enter at least two characters."
+            searchResults = []
+            return
+        }
+
+        searchTask?.cancel()
+        reverseGeocodingTask?.cancel()
+        lookupActivity = .searching
+        lookupError = nil
+        searchResults = []
+        let searchRegion = coordinate.map {
+            MKCoordinateRegion(
+                center: $0,
+                span: MKCoordinateSpan(latitudeDelta: 2, longitudeDelta: 2)
+            )
+        }
+        searchTask = Task { @MainActor in
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = query
+            request.resultTypes = [.address, .pointOfInterest]
+            if let searchRegion { request.region = searchRegion }
+
+            do {
+                let response = try await MKLocalSearch(request: request).start()
+                try Task.checkCancellation()
+                let results = response.mapItems.prefix(5).enumerated().compactMap {
+                    ClipLocationSearchResult(mapItem: $0.element, index: $0.offset)
+                }
+                searchResults = results
+                lookupActivity = .idle
+                if results.isEmpty { lookupError = "No matching places found." }
+            } catch is CancellationError {
+                if lookupActivity == .searching { lookupActivity = .idle }
+            } catch {
+                lookupActivity = .idle
+                lookupError = "Location search is unavailable. Check your connection and try again."
+            }
+        }
+    }
+
+    private func selectSearchResult(_ result: ClipLocationSearchResult) {
+        reverseGeocodingTask?.cancel()
+        searchTask?.cancel()
+        lookupActivity = .idle
+        lookupError = nil
+        searchResults = []
+        searchText = result.details ?? result.name
+        mutatePosition {
+            $0.latitude = result.coordinate.latitude
+            $0.longitude = result.coordinate.longitude
+            $0.label = result.name
+        }
+        centerMap(on: result.coordinate)
+    }
+
+    private func resolveCurrentCoordinate() {
+        guard let coordinate, CLLocationCoordinate2DIsValid(coordinate) else { return }
+        centerMap(on: coordinate)
+        scheduleReverseGeocoding(for: coordinate, delay: .zero)
+    }
+
+    private func scheduleCurrentCoordinateLookup() {
+        guard let coordinate, CLLocationCoordinate2DIsValid(coordinate) else { return }
+        mutatePosition { $0.label = LocationPlaceNaming.coordinateLabel(coordinate) }
+        searchText = LocationPlaceNaming.coordinateLabel(coordinate)
+        scheduleReverseGeocoding(for: coordinate, delay: .milliseconds(650))
+    }
+
+    private func scheduleReverseGeocoding(
+        for coordinate: CLLocationCoordinate2D,
+        delay: Duration
+    ) {
+        reverseGeocodingTask?.cancel()
+        searchTask?.cancel()
+        lookupError = nil
+        reverseGeocodingTask = Task { @MainActor in
+            do {
+                if delay != .zero { try await Task.sleep(for: delay) }
+                try Task.checkCancellation()
+                guard currentPositionMatches(coordinate) else { return }
+                lookupActivity = .resolvingName
+                let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                let placemarks = try await CLGeocoder().reverseGeocodeLocation(location, preferredLocale: .current)
+                try Task.checkCancellation()
+                guard currentPositionMatches(coordinate) else { return }
+                let fallback = LocationPlaceNaming.coordinateLabel(coordinate)
+                guard let placemark = placemarks.first else {
+                    lookupActivity = .idle
+                    lookupError = "The point was saved, but its place name could not be found."
+                    return
+                }
+                let name = LocationPlaceNaming.preferredName(
+                    areasOfInterest: placemark.areasOfInterest ?? [],
+                    name: placemark.name,
+                    locality: placemark.locality,
+                    administrativeArea: placemark.administrativeArea,
+                    country: placemark.country,
+                    fallback: fallback
+                )
+                let details = LocationPlaceNaming.displayName(
+                    name: placemark.name,
+                    thoroughfare: placemark.thoroughfare,
+                    locality: placemark.locality,
+                    administrativeArea: placemark.administrativeArea,
+                    country: placemark.country
+                )
+                mutatePosition { $0.label = name }
+                searchText = details ?? name
+                lookupActivity = .idle
+            } catch is CancellationError {
+                if lookupActivity == .resolvingName { lookupActivity = .idle }
+            } catch {
+                guard currentPositionMatches(coordinate) else { return }
+                lookupActivity = .idle
+                lookupError = "The point was saved, but its place name could not be found."
+            }
+        }
+    }
+
+    private func currentPositionMatches(_ coordinate: CLLocationCoordinate2D) -> Bool {
+        guard let position else { return false }
+        return abs(position.latitude - coordinate.latitude) < 0.000_000_1
+            && abs(position.longitude - coordinate.longitude) < 0.000_000_1
+    }
+
+    private func centerMap(on coordinate: CLLocationCoordinate2D) {
+        mapPosition = .region(MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.08, longitudeDelta: 0.08)
+        ))
     }
 
     private func mutatePosition(_ mutation: (inout ScheduledGPSPosition) -> Void) {

@@ -15,6 +15,7 @@ struct MetadataProgrammingView: View {
     @State private var showConfigurationExporter = false
     @State private var exportDocument = ConfigurationTransferFile()
     @State private var exportFilename = ConfigurationTransferScope.metadata.defaultFilename
+    @State private var groupDragPreview: TimelineGroupDragPreview?
 
     private var calendar: Calendar { coordinator.calendar }
     private var selectedDate: Date {
@@ -648,6 +649,7 @@ struct MetadataProgrammingView: View {
                                 color: color(for: photographer),
                                 snapMinutes: snapMinutes,
                                 selectedClipIDs: selectedClipIDs,
+                                groupDragPreview: groupDragPreview,
                                 playheadDate: playhead?.date,
                                 showsPlayhead: playhead != nil && selectedPhotographerIDs.contains(photographer.id),
                                 canPaste: !copiedClips.isEmpty && playhead != nil,
@@ -679,7 +681,10 @@ struct MetadataProgrammingView: View {
                                 onEdit: editClip,
                                 onCreate: createClip,
                                 onMove: moveClip,
+                                onPreviewMove: previewMove,
+                                onEndMovePreview: { groupDragPreview = nil },
                                 onResize: resizeClip,
+                                onResizeBoundary: resizeBoundary,
                                 onReprocessClip: { clip in
                                     pendingReprocessScope = .clip(clip.id)
                                 },
@@ -1023,6 +1028,14 @@ struct MetadataProgrammingView: View {
         )
     }
 
+    private func previewMove(_ clip: MetadataScheduleClip, by interval: TimeInterval) {
+        guard selectedClipIDs.contains(clip.id), selectedClipIDs.count > 1 else {
+            groupDragPreview = nil
+            return
+        }
+        groupDragPreview = TimelineGroupDragPreview(anchorID: clip.id, interval: interval)
+    }
+
     private func placePlayhead(on photographerID: UUID, at date: Date) {
         coordinator.placePlayhead(on: photographerID, at: date)
         timelineFocused = true
@@ -1034,6 +1047,14 @@ struct MetadataProgrammingView: View {
         by interval: TimeInterval
     ) {
         coordinator.resizeClip(clip, edge: edge, by: interval)
+    }
+
+    private func resizeBoundary(
+        _ leading: MetadataScheduleClip,
+        _ trailing: MetadataScheduleClip,
+        by interval: TimeInterval
+    ) {
+        coordinator.resizeBoundary(between: leading, and: trailing, by: interval)
     }
 
     private func applyClipChange(_ clip: MetadataScheduleClip) {
