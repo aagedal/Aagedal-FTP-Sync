@@ -33,6 +33,7 @@ enum SyncLogFailureCategory: String, Sendable {
     case transfer
     case hostKeyTrust = "host-key-trust"
     case network
+    case timeout
     case unexpected
 
     static func classify(_ error: any Error) -> Self {
@@ -47,6 +48,8 @@ enum SyncLogFailureCategory: String, Sendable {
             return .folderAccess
         case .transferFailed:
             return .transfer
+        case .remoteOperationTimedOut:
+            return .timeout
         case .untrustedSSHHostKey, .changedSSHHostKey:
             return .hostKeyTrust
         }

@@ -3,6 +3,17 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class SyncEventLoggerTests: XCTestCase {
+    func testTimeoutFailureHasDedicatedStructuredLogCategory() {
+        let error = AppError.remoteOperationTimedOut(
+            protocolName: "SFTP",
+            operation: "listing",
+            seconds: 30
+        )
+
+        XCTAssertEqual(SyncLogFailureCategory.classify(error), .timeout)
+        XCTAssertTrue(error.localizedDescription.contains("connection was closed"))
+    }
+
     func testFormattedEventContainsOnlyTypedDiagnosticFields() throws {
         let runID = try XCTUnwrap(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
         let jobID = try XCTUnwrap(UUID(uuidString: "11111111-2222-3333-4444-555555555555"))

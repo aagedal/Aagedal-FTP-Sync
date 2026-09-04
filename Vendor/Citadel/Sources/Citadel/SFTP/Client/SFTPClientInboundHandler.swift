@@ -25,7 +25,7 @@ final class SFTPClientInboundHandler: ChannelInboundHandler {
                 responses.sftpVersion.succeed(version)
             }
         } else if let response = SFTPResponse(message: message) {
-            if let promise = responses.responses.removeValue(forKey: response.requestId) {
+            if let promise = responses.removeResponse(for: response.requestId) {
                 if case .status(let status) = response {
                     switch status.errorCode {
                     case .eof, .ok:

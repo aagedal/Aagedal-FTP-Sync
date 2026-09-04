@@ -28,28 +28,36 @@ enum SFTPPathContainment {
 actor SFTPTransport {
     private let endpoint: Endpoint
     private let password: String
+    private let inactivityTimeoutSeconds: Int64
     private var sshClient: SSHClientBox?
     private var sftpClient: SFTPClient?
     private var canonicalRoot: String?
 
-    init(endpoint: Endpoint, password: String) {
+    init(endpoint: Endpoint, password: String, inactivityTimeoutSeconds: Int64 = 30) {
         self.endpoint = endpoint
         self.password = password
+        self.inactivityTimeoutSeconds = max(inactivityTimeoutSeconds, 1)
     }
 
     func testConnection() async throws {
-        let sftp = try await connect()
-        _ = try await sftp.listDirectory(atPath: try await resolvedRoot(using: sftp))
+        try await perform(operation: "connection test") {
+            let sftp = try await self.connect()
+            _ = try await sftp.listDirectory(atPath: try await self.resolvedRoot(using: sftp))
+        }
     }
 
     func listFiles() async throws -> [String: SyncFile] {
-        try await walkFiles(onCompletedDirectory: nil)
+        try await perform(operation: "listing") {
+            try await self.walkFiles(onCompletedDirectory: nil)
+        }
     }
 
     func listFilesIncrementally(
         onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
     ) async throws -> [String: SyncFile] {
-        try await walkFiles(onCompletedDirectory: onCompletedDirectory)
+        try await perform(operation: "listing") {
+            try await self.walkFiles(onCompletedDirectory: onCompletedDirectory)
+        }
     }
 
     private func walkFiles(
@@ -89,6 +97,20 @@ actor SFTPTransport {
     }
 
     func download(file: SyncFile, to temporaryURL: URL, maximumSize: Int64? = nil) async throws {
+        try await perform(operation: "read") {
+            try await self.downloadWithoutDeadlineMapping(
+                file: file,
+                to: temporaryURL,
+                maximumSize: maximumSize
+            )
+        }
+    }
+
+    private func downloadWithoutDeadlineMapping(
+        file: SyncFile,
+        to temporaryURL: URL,
+        maximumSize: Int64?
+    ) async throws {
         let initialSizeLimit = try maximumSize.map(TransferSizeLimit.init(maximumBytes:))
         let sftp = try await connect()
         _ = FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
@@ -111,6 +133,22 @@ actor SFTPTransport {
     }
 
     func upload(localURL: URL, file: SyncFile, preserveDate: Bool, verifySize: Bool) async throws {
+        try await perform(operation: "write") {
+            try await self.uploadWithoutDeadlineMapping(
+                localURL: localURL,
+                file: file,
+                preserveDate: preserveDate,
+                verifySize: verifySize
+            )
+        }
+    }
+
+    private func uploadWithoutDeadlineMapping(
+        localURL: URL,
+        file: SyncFile,
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
         let sftp = try await connect()
         let remotePath = try await remotePath(for: file.relativePath, sftp: sftp)
         try await ensureSafeUploadParent(
@@ -161,11 +199,19 @@ actor SFTPTransport {
     }
 
     func remove(file: SyncFile) async throws {
-        let sftp = try await connect()
-        try await sftp.remove(at: try await remotePath(for: file.relativePath, sftp: sftp))
+        try await perform(operation: "removal") {
+            let sftp = try await self.connect()
+            try await sftp.remove(at: try await self.remotePath(for: file.relativePath, sftp: sftp))
+        }
     }
 
     func removeTransactionally(files: [SyncFile]) async throws {
+        try await perform(operation: "transactional removal") {
+            try await self.removeTransactionallyWithoutDeadlineMapping(files: files)
+        }
+    }
+
+    private func removeTransactionallyWithoutDeadlineMapping(files: [SyncFile]) async throws {
         let sftp = try await connect()
         var sources: [String] = []
         for file in files {
@@ -184,11 +230,13 @@ actor SFTPTransport {
     }
 
     func close() async {
-        if let sftpClient { try? await sftpClient.close() }
-        if let sshClient { await sshClient.close() }
+        let sftp = sftpClient
+        let ssh = sshClient
         sftpClient = nil
         sshClient = nil
         canonicalRoot = nil
+        if let sftp { try? await sftp.close() }
+        if let ssh { await ssh.close() }
     }
 
     private func connect() async throws -> SFTPClient {
@@ -207,10 +255,48 @@ actor SFTPTransport {
             hostKeyValidator: validator
         )
         let ssh = try await SSHClient.connect(to: settings)
-        let sftp = try await ssh.openSFTP()
+        let sftp = try await ssh.openSFTP(
+            requestTimeout: .seconds(inactivityTimeoutSeconds)
+        )
         sshClient = SSHClientBox(ssh)
         sftpClient = sftp
         return sftp
+    }
+
+    private func perform<T: Sendable>(
+        operation: String,
+        body: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await withTaskCancellationHandler {
+                try await body()
+            } onCancel: {
+                Task { await self.close() }
+            }
+        } catch is CancellationError {
+            await close()
+            throw CancellationError()
+        } catch SFTPError.requestTimedOut {
+            await close()
+            throw AppError.remoteOperationTimedOut(
+                protocolName: "SFTP",
+                operation: operation,
+                seconds: inactivityTimeoutSeconds
+            )
+        } catch SFTPError.missingResponse {
+            await close()
+            throw AppError.remoteOperationTimedOut(
+                protocolName: "SFTP",
+                operation: operation,
+                seconds: inactivityTimeoutSeconds
+            )
+        } catch {
+            if Task.isCancelled {
+                await close()
+                throw CancellationError()
+            }
+            throw error
+        }
     }
 
     private func ensureSafeUploadParent(_ path: String, sftp: SFTPClient) async throws {

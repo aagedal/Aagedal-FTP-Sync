@@ -4,17 +4,35 @@ import XCTest
 
 final class JobRepositoryTests: XCTestCase {
     @MainActor
-    func testRecoveredServerProfilePausesReferencedJobAtLaunch() throws {
+    func testRecoveredFTPProfilePausesReferencedJobAtLaunch() throws {
+        try assertRecoveredServerProfilePausesReferencedJobAtLaunch(kind: .ftp)
+    }
+
+    @MainActor
+    func testRecoveredFTPSProfilePausesReferencedJobAtLaunch() throws {
+        try assertRecoveredServerProfilePausesReferencedJobAtLaunch(kind: .ftps)
+    }
+
+    @MainActor
+    func testRecoveredSFTPProfilePausesReferencedJobAtLaunch() throws {
+        try assertRecoveredServerProfilePausesReferencedJobAtLaunch(kind: .sftp)
+    }
+
+    @MainActor
+    private func assertRecoveredServerProfilePausesReferencedJobAtLaunch(kind: EndpointKind) throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("recovered-profile-startup-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("recovered-\(kind.rawValue)-profile-startup-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let jobRepository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
         let serverRepository = ServerProfileRepository(fileURL: root.appendingPathComponent("servers.json"))
         let recoveredProfile = ServerProfile(
             name: "Recovered picture desk",
-            kind: .ftps,
+            kind: kind,
             host: "recovered.example.test",
-            username: "desk"
+            username: "desk",
+            hostKeyFingerprint: kind == .sftp
+                ? "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                : ""
         )
         try serverRepository.save([recoveredProfile])
         try serverRepository.save([])

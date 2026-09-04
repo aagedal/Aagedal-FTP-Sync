@@ -10,6 +10,11 @@ import Logging
 public final class SFTPClient: Sendable {
     /// The SSH child channel created for this connection.
     fileprivate let channel: Channel
+
+    /// Maximum time an individual SFTP request may remain unanswered. Since
+    /// multi-part reads, writes, and listings issue a request for every chunk,
+    /// this is an inactivity deadline rather than a total transfer deadline.
+    private let requestTimeout: TimeAmount
     
     /// A monotonically increasing counter for gneerating request IDs.
     private let _nextRequestId = NIOLockedValueBox<UInt32>(0)
@@ -27,17 +32,27 @@ public final class SFTPClient: Sendable {
     /// What it says on the tin.
     public let logger: Logger
     
-    fileprivate init(channel: Channel, responses: SFTPResponses, logger: Logger) {
+    fileprivate init(
+        channel: Channel,
+        responses: SFTPResponses,
+        logger: Logger,
+        requestTimeout: TimeAmount
+    ) {
         self.channel = channel
         self.responses = responses
         self.logger = logger
+        self.requestTimeout = requestTimeout
     }
 
     public func close() async throws {
         try await self.channel.close()
     }
     
-    fileprivate static func setupChannelHanders(channel: Channel, logger: Logger) -> EventLoopFuture<SFTPClient> {
+    static func setupChannelHanders(
+        channel: Channel,
+        logger: Logger,
+        requestTimeout: TimeAmount
+    ) -> EventLoopFuture<SFTPClient> {
         let responses = SFTPResponses(sftpVersion: channel.eventLoop.makePromise())
         
         let deserializeHandler = ByteToMessageHandler(SFTPMessageParser())
@@ -52,7 +67,12 @@ public final class SFTPClient: Sendable {
             sftpInboundHandler,
             CloseErrorHandler(logger: logger)
         ).map {
-            let client = SFTPClient(channel: channel, responses: responses, logger: logger)
+            let client = SFTPClient(
+                channel: channel,
+                responses: responses,
+                logger: logger,
+                requestTimeout: requestTimeout
+            )
 
             client.channel.closeFuture.whenComplete { _ in
                 logger.info("SFTP channel closed")
@@ -85,23 +105,37 @@ public final class SFTPClient: Sendable {
     ///   ID is in flight at any given time; multiple reponses to the same ID are likely to cause
     ///   unpredictable behavior.
     internal func sendRequest(_ request: SFTPRequest) async throws -> SFTPResponse {
-        try await self.eventLoop.flatSubmit {
-            let requestId = request.requestId
-            let promise = self.channel.eventLoop.makePromise(of: SFTPResponse.self)
-            
-            // In release builds, silently accept overlapping request IDs, since it can accidentally work correctly.
-            assert(self.responses.responses[requestId] == nil, "Attempt to send request with request ID \(requestId) already in flight.")
+        try await withTaskCancellationHandler {
+            try await self.eventLoop.flatSubmit {
+                let requestId = request.requestId
+                let promise = self.channel.eventLoop.makePromise(of: SFTPResponse.self)
 
-            let message = request.makeMessage()
-            
-            self.logger.trace("SFTP OUT: \(message.debugDescription)")
-            //logger.trace("SFTP OUT: \(message.debugRawBytesRepresentation)")
+                // In release builds, silently accept overlapping request IDs, since it can accidentally work correctly.
+                assert(self.responses.responses[requestId] == nil, "Attempt to send request with request ID \(requestId) already in flight.")
 
-            self.responses.responses[requestId] = promise
-            return self.channel.writeAndFlush(request.makeMessage()).flatMap {
-                promise.futureResult
-            }
-        }.get()
+                let message = request.makeMessage()
+
+                self.logger.trace("SFTP OUT: \(message.debugDescription)")
+                //logger.trace("SFTP OUT: \(message.debugRawBytesRepresentation)")
+
+                self.responses.register(promise, for: requestId)
+                let timeout = self.channel.eventLoop.scheduleTask(in: self.requestTimeout) {
+                    guard let pending = self.responses.removeResponse(for: requestId) else { return }
+                    let closePromise = self.channel.eventLoop.makePromise(of: Void.self)
+                    closePromise.futureResult.whenComplete { _ in
+                        pending.fail(SFTPError.requestTimedOut)
+                    }
+                    self.channel.close(promise: closePromise)
+                }
+                promise.futureResult.whenComplete { _ in timeout.cancel() }
+                self.channel.writeAndFlush(message).whenFailure { error in
+                    self.responses.removeResponse(for: requestId)?.fail(error)
+                }
+                return promise.futureResult
+            }.get()
+        } onCancel: {
+            self.channel.close(promise: nil)
+        }
     }
 
     /// Set the attributes of a file on the SFTP server.
@@ -332,7 +366,7 @@ public final class SFTPClient: Sendable {
             try await file.close() // should we ignore errors from this? always been a question for the close(2) syscall too
             return result
         } catch {
-            try await file.close() // if this errors, should we throw it as an underlying error? or just ignore?
+            try? await file.close()
             throw error
         }
     }
@@ -534,7 +568,8 @@ extension SSHClient {
     /// try await sftp.close()
     /// ```
     public func openSFTP(
-        logger: Logger = .init(label: "nl.orlandos.citadel.sftp")
+        logger: Logger = .init(label: "nl.orlandos.citadel.sftp"),
+        requestTimeout: TimeAmount = .seconds(30)
     ) async throws -> SFTPClient {
         try await eventLoop.flatSubmit { [eventLoop, sshHandler = session.sshHandler] in
             let createChannel = eventLoop.makePromise(of: Channel.self)
@@ -542,17 +577,21 @@ extension SSHClient {
             let timeoutCheck = eventLoop.makePromise(of: Void.self)
             
             sshHandler.value.createChannel(createChannel) { channel, _ in
-                SFTPClient.setupChannelHanders(channel: channel, logger: logger)
+                SFTPClient.setupChannelHanders(
+                    channel: channel,
+                    logger: logger,
+                    requestTimeout: requestTimeout
+                )
                     .map { client in
                         createClient.succeed(client)
                     }
             }
             
             timeoutCheck.futureResult.whenFailure { _ in
-                logger.warning("SFTP subsystem request or initialize message received no reply after 15 seconds. Likely the result of opening too many SFTPClient handles.")
+                logger.warning("SFTP subsystem request or initialize message exceeded the configured request deadline. Likely the result of opening too many SFTPClient handles.")
             }
             
-            eventLoop.scheduleTask(in: .seconds(15)) {
+            eventLoop.scheduleTask(in: requestTimeout) {
                 timeoutCheck.fail(SFTPError.missingResponse)
                 createChannel.fail(SFTPError.missingResponse)
                 createClient.fail(SFTPError.missingResponse)
@@ -620,12 +659,24 @@ final class SFTPResponses: Sendable {
             self?.isInitialized = true
         }
     }
+
+    func register(_ promise: EventLoopPromise<SFTPResponse>, for requestID: UInt32) {
+        _responses.withLockedValue { $0[requestID] = promise }
+    }
+
+    func removeResponse(for requestID: UInt32) -> EventLoopPromise<SFTPResponse>? {
+        _responses.withLockedValue { $0.removeValue(forKey: requestID) }
+    }
     
     func close() {
         self.isInitialized = false
         self.sftpVersion.fail(SFTPError.connectionClosed)
-        
-        for promise in self.responses.values {
+
+        let pending = _responses.withLockedValue { responses -> [EventLoopPromise<SFTPResponse>] in
+            defer { responses.removeAll() }
+            return Array(responses.values)
+        }
+        for promise in pending {
             promise.fail(SFTPError.connectionClosed)
         }
     }
