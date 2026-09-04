@@ -94,6 +94,28 @@ final class PhotographerMapTimelineTests: XCTestCase {
         XCTAssertEqual(endSelection.timeIntervalSince(clip.endsAt), -0.001, accuracy: 0.000_1)
     }
 
+    func testClipFrameUsesAbsoluteTimeWithinTheDay() {
+        let calendar = utcCalendar
+        let dayStart = date(2026, 9, 4, 0, 0, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: UUID(),
+            name: "Morning",
+            startsAt: date(2026, 9, 4, 9, 0, calendar: calendar),
+            endsAt: date(2026, 9, 4, 10, 30, calendar: calendar)
+        )
+
+        let frame = PhotographerMapTimeline.clipFrame(
+            for: clip,
+            dayStart: dayStart,
+            dayDuration: 24 * 60 * 60,
+            totalWidth: 240
+        )
+
+        XCTAssertEqual(frame.minX, 90, accuracy: 0.001)
+        XCTAssertEqual(frame.width, 15, accuracy: 0.001)
+        XCTAssertEqual(frame.midX, 97.5, accuracy: 0.001)
+    }
+
     func testNearbyPhotographerLabelsReceiveNonOverlappingOffsets() throws {
         let first = PhotographerMapLabelAnchor(
             id: UUID(),

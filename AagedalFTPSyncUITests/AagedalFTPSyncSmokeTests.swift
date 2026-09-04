@@ -110,14 +110,14 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
         let mapWindow = app.windows["Photographer Map"]
         XCTAssertTrue(mapWindow.waitForExistence(timeout: 5))
-        let row = element("photographer-map-timeline-row-C542A26A-2872-42E5-B021-7AA3E599D3A8")
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let timeline = element("photographer-map-timeline")
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5))
         let selectedTime = element("photographer-map-selected-time")
         XCTAssertTrue(selectedTime.waitForExistence(timeout: 3))
 
-        row.click()
+        timeline.click()
         let initialTime = selectedTime.value as? String
-        row.typeKey(.rightArrow, modifierFlags: [])
+        timeline.typeKey(.rightArrow, modifierFlags: [])
 
         XCTAssertNotEqual(selectedTime.value as? String, initialTime)
     }
@@ -135,13 +135,13 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
         let mapWindow = app.windows["Photographer Map"]
         XCTAssertTrue(mapWindow.waitForExistence(timeout: 5))
-        let row = element("photographer-map-timeline-row-C542A26A-2872-42E5-B021-7AA3E599D3A8")
+        let timeline = element("photographer-map-timeline")
         let clip = element("photographer-map-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
-        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5))
         XCTAssertTrue(clip.waitForExistence(timeout: 5))
-        XCTAssertGreaterThanOrEqual(row.frame.height, 24)
-        XCTAssertGreaterThanOrEqual(clip.frame.height, 20)
-        XCTAssertTrue(mapWindow.frame.intersects(row.frame))
+        XCTAssertLessThanOrEqual(timeline.frame.height, 44)
+        XCTAssertLessThan(timeline.frame.height, mapWindow.frame.height * 0.15)
+        XCTAssertTrue(mapWindow.frame.intersects(timeline.frame))
         XCTAssertTrue(mapWindow.frame.intersects(clip.frame))
     }
 

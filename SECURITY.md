@@ -2,13 +2,13 @@
 
 ## Supported release
 
-Security fixes are currently developed for the 2.7 release line and the next feature release. Older builds should be upgraded to the latest available 2.7.x version.
+Security fixes are currently developed for the 2.8 release line and the next feature release. Older builds should be upgraded to the latest available 2.8.x version.
 
 Please report a suspected vulnerability privately to the repository owner rather than opening a public issue with exploit details. Include the affected version, protocol, reproduction steps, and any crash report that does not contain credentials or private file contents.
 
 ## Dependency security baseline
 
-The 2.7 source tree deliberately vendors the SSH packages under `Vendor/` because Citadel 0.12.1 requires APIs from the Wellz26 SwiftNIO SSH fork that are not available in Apple's upstream package.
+The 2.8 source tree deliberately vendors the SSH packages under `Vendor/` because Citadel 0.12.1 requires APIs from the Wellz26 SwiftNIO SSH fork that are not available in Apple's upstream package.
 
 | Component | Baseline | Local security treatment |
 | --- | --- | --- |

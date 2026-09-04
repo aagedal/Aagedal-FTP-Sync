@@ -13,6 +13,7 @@
 		0837FDF547FB63BE4AE4953C /* LaunchAtLoginCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D1BE257268E13A9E61907D /* LaunchAtLoginCoordinator.swift */; };
 		0AAA481F3C385626316506D1 /* SFTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A410C80EF820D8FCA6B3000 /* SFTPTransport.swift */; };
 		0AC37DE8ECE3F49643FBBA65 /* SyncJobValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95047C158288E644416B7E05 /* SyncJobValidationTests.swift */; };
+		0C318FACD47BB1ECC0C86E37 /* DownloadManifestRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */; };
 		0F49E4F6EC05AB6395A4F2FA /* ConfigurationTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0EAD657F152BADDBE31F18A /* ConfigurationTransferTests.swift */; };
 		192D43F2E6579A284084377B /* SyncRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E93E3863E7CE51C640F3CCF /* SyncRuntimeSupport.swift */; };
 		199442414D584BE62BC63D41 /* ServerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D340066C59960A94C5981FE /* ServerSettingsView.swift */; };
@@ -88,7 +89,6 @@
 		EB2EE8A97813CC0D300FE9C3 /* SyncEventLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5335018C1256A3299113AB0 /* SyncEventLoggerTests.swift */; };
 		ED4367626D92A99789B81C35 /* SFTPEndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1230146607A0960638643931 /* SFTPEndpointSession.swift */; };
 		EF49DF30560E2C2A87147711 /* SourceSignatureRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 679AE22A6DA5596AB0D08913 /* SourceSignatureRepository.swift */; };
-		F0D000000000000000000001 /* DownloadManifestRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0D000000000000000000002 /* DownloadManifestRepository.swift */; };
 		F740FAA73212115FCB852FAE /* SyncScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C577F4C00B53FEE0AEAEC4 /* SyncScheduler.swift */; };
 		F9587CBD6566871E67AB6A61 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288034277BC7727C71C3304 /* ServerProfileRepository.swift */; };
 		FD6B4E4D3B7906C933964D9C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2745B822AD45CDF06BB3463 /* Assets.xcassets */; };
@@ -150,7 +150,6 @@
 		61206E0435FCE509729F69A0 /* ConfigurationTransferCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferCoordinatorTests.swift; sourceTree = "<group>"; };
 		619AB2C07F959ECA6F57E2BD /* FTPConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPConnection.swift; sourceTree = "<group>"; };
 		679AE22A6DA5596AB0D08913 /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
-		F0D000000000000000000002 /* DownloadManifestRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManifestRepository.swift; sourceTree = "<group>"; };
 		6BEF64F5094273F5CED52D82 /* PhotographerProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerProfileRepository.swift; sourceTree = "<group>"; };
 		6D08A4DCF03FB39971112D2D /* PhotographerMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerMapView.swift; sourceTree = "<group>"; };
 		6D1E4B1B6D1EC921FAB3E2C5 /* MetadataProgrammingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinator.swift; sourceTree = "<group>"; };
@@ -176,6 +175,7 @@
 		A76827BE4BCD54BAAE42FE36 /* JobDetailEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobDetailEditor.swift; sourceTree = "<group>"; };
 		A7D1E5EDE9A608C2C40F07A4 /* MetadataPreviewViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreviewViews.swift; sourceTree = "<group>"; };
 		A83544A59B9CCAA0045D0C01 /* AagedalFTPSyncUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AagedalFTPSyncUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManifestRepository.swift; sourceTree = "<group>"; };
 		AED8A942C6CBC2911165A52D /* JobsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobsWindowView.swift; sourceTree = "<group>"; };
 		B2745B822AD45CDF06BB3463 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B6F8355FC14D367480034FA8 /* EndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointSession.swift; sourceTree = "<group>"; };
@@ -287,7 +287,7 @@
 				5447B2211E64F445CD7DE075 /* BookmarkAccess.swift */,
 				73E4E8584F7A5AFA53BC9190 /* ConfigurationTransfer.swift */,
 				BA9524A5EE736DEEEC94976B /* ConfigurationTransferCoordinator.swift */,
-				F0D000000000000000000002 /* DownloadManifestRepository.swift */,
+				AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */,
 				5EDD38DA7C2A9FF12C640FA1 /* FolderBookmark.swift */,
 				DBC455448901CCC142FAFA0C /* JobRepository.swift */,
 				052561673651EFAEC20483A2 /* KeychainStore.swift */,
@@ -619,6 +619,7 @@
 				C66E4381C7CA8F6FBE290F3B /* ConfigurationTransfer.swift in Sources */,
 				DA9400038E9517D826EB6884 /* ConfigurationTransferCoordinator.swift in Sources */,
 				FFE30C3E978D3DA849C1A90A /* ConfigurationTransferView.swift in Sources */,
+				0C318FACD47BB1ECC0C86E37 /* DownloadManifestRepository.swift in Sources */,
 				9BE974E35F14A02DD16B33DC /* Endpoint.swift in Sources */,
 				CA34F3079F56DC562248F942 /* EndpointEditor.swift in Sources */,
 				232530E47CDEBD0A8D35EA9D /* EndpointSession.swift in Sources */,
@@ -658,7 +659,6 @@
 				F9587CBD6566871E67AB6A61 /* ServerProfileRepository.swift in Sources */,
 				199442414D584BE62BC63D41 /* ServerSettingsView.swift in Sources */,
 				EF49DF30560E2C2A87147711 /* SourceSignatureRepository.swift in Sources */,
-				F0D000000000000000000001 /* DownloadManifestRepository.swift in Sources */,
 				D1D2DA2739749BFBAE1118A4 /* SupportBundle.swift in Sources */,
 				49FF023ECBFBE4B27037A37D /* SyncEngine.swift in Sources */,
 				1BDDAFDC5384482ED3F2DC81 /* SyncEventLogger.swift in Sources */,
@@ -722,7 +722,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
@@ -744,7 +744,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.7.1;
+				MARKETING_VERSION = 2.8.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -865,7 +865,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 3R5QGG9DW6;
@@ -881,7 +881,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.7.1;
+				MARKETING_VERSION = 2.8.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

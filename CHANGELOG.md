@@ -2,13 +2,26 @@
 
 ## Unreleased
 
+## 2.8.0 — 2026-09-04
+
+### Safer unattended operation
+
+- Pause automatic jobs whose FTP, FTPS, or SFTP profile was recovered from backup until its connection settings have been reviewed.
+- Bound SFTP file operations with inactivity deadlines and promptly close stalled or cancelled channels while retaining actionable timeout history.
+- Reset ordinary download destinations using a durable ownership manifest, preserving unrelated files and recoverable state when deletion fails.
+- Move source-signature history into an indexed, recoverable SQLite database with conservative retention and pruning.
+
+### Improved Photographer Map
+
 - Make photographer tracks specific to each programming day and automatically carry a track forward when a clip extends past midnight.
 - Move metadata clips directly between photographer tracks by dragging them vertically.
 - Replace the Photographer Map time slider with a compact per-photographer schedule overview that distinguishes clips with and without locations, supports direct selection, opens clips in Metadata Programming on double-click, and repositions nearby name labels so they do not cover one another.
-- Pause jobs that use server profiles restored from backup until their connection settings have been reviewed.
-- Keep long-running metadata jobs responsive by storing original source signatures in an indexed, recoverable SQLite database and pruning history that is no longer relevant.
+
+### Accessibility and release confidence
+
 - Improve VoiceOver and keyboard access with explicit descriptions for image-only actions, arrow-key Photographer Map timeline scrubbing, and an English localization catalog.
 - Keep timelines, menu-bar controls, configuration sheets, and status messages legible and operable at accessibility text sizes without relying on color alone.
+- Add release-identity validation, scheduled FTP/FTPS/SFTP integration tests, and signed UI smoke coverage on a trusted runner.
 
 ## 2.7.1 — 2026-09-03
 
