@@ -7,6 +7,7 @@
 - Replace the Photographer Map time slider with a compact per-photographer schedule overview that distinguishes clips with and without locations, supports direct selection, opens clips in Metadata Programming on double-click, and repositions nearby name labels so they do not cover one another.
 - Pause jobs that use server profiles restored from backup until their connection settings have been reviewed.
 - Keep long-running metadata jobs responsive by storing original source signatures in an indexed, recoverable SQLite database and pruning history that is no longer relevant.
+- Improve VoiceOver and keyboard access with explicit descriptions for image-only actions, arrow-key Photographer Map timeline scrubbing, and an English localization catalog.
 
 ## 2.7.1 — 2026-09-03
 

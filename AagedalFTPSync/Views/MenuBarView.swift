@@ -79,6 +79,7 @@ struct MenuBarView: View {
             .menuStyle(.borderlessButton)
             .help("All Jobs")
             .accessibilityLabel("All Jobs")
+            .accessibilityHint("Starts or stops every sync job")
             Spacer()
             Button { openJobsWindow(adding: false) } label: {
                 Image(systemName: "rectangle.stack")
@@ -86,6 +87,7 @@ struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .help("Jobs")
                 .accessibilityLabel("Jobs")
+                .accessibilityHint("Opens the sync jobs window")
                 .accessibilityIdentifier("open-jobs-window")
             Button { openSettingsWindow() } label: {
                 Image(systemName: "gearshape")
@@ -93,6 +95,7 @@ struct MenuBarView: View {
                 .buttonStyle(.plain)
                 .help("Settings")
                 .accessibilityLabel("Settings")
+                .accessibilityHint("Opens server and photographer settings")
             Button {
                 RegularWindowController.shared.prepareForOpening(windowID: "about")
                 openWindow(id: "about")
@@ -102,6 +105,7 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
             .help("About")
             .accessibilityLabel("About")
+            .accessibilityHint("Opens information about Aagedal FTP Sync")
             Button(action: confirmQuit) {
                 Image(systemName: "power")
                     .foregroundStyle(.red)
@@ -109,6 +113,7 @@ struct MenuBarView: View {
             .buttonStyle(.plain)
             .help("Quit")
             .accessibilityLabel("Quit")
+            .accessibilityHint("Asks for confirmation before quitting")
         }
         .padding(12)
     }
@@ -155,6 +160,8 @@ private struct MenuJobRow: View {
             .buttonStyle(.plain)
             .disabled(phase == .syncing)
             .help("Sync Now")
+            .accessibilityLabel("Sync \(job.name) Now")
+            .accessibilityHint("Starts this sync job immediately")
             VStack(alignment: .leading, spacing: 3) {
                 HStack {
                     Text(job.name).fontWeight(.medium).lineLimit(1)
@@ -183,6 +190,8 @@ private struct MenuJobRow: View {
             }
             .buttonStyle(.plain)
             .help("Quick Controls")
+            .accessibilityLabel("Quick Controls for \(job.name)")
+            .accessibilityHint("Opens automatic-sync and scheduling controls")
             .popover(isPresented: $showQuickControls, arrowEdge: .trailing) {
                 JobQuickControls(job: job)
                     .environmentObject(store)
@@ -196,6 +205,8 @@ private struct MenuJobRow: View {
             }
             .buttonStyle(.plain)
             .help("Metadata Programming")
+            .accessibilityLabel("Metadata Programming for \(job.name)")
+            .accessibilityHint("Opens the metadata schedule for this job")
             Button {
                 store.revealDownloadFolder(for: job)
             } label: {
@@ -209,6 +220,7 @@ private struct MenuJobRow: View {
                     : "Reveal Download Folder in Finder"
             )
             .accessibilityLabel("Reveal Download Folder in Finder")
+            .accessibilityHint("Opens this job’s local download folder")
             Button {
                 store.setEnabled(!job.isEnabled, for: job.id)
             } label: {

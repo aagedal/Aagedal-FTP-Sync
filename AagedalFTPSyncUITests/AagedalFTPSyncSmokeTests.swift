@@ -100,6 +100,28 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
     }
 
+    func testPhotographerMapTimelineSupportsKeyboardAdjustment() {
+        launch(seedJob: true, seedMap: true)
+
+        element("open-metadata-programming").click()
+        let metadataWindow = app.windows["Metadata Programming"]
+        XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
+        element("open-photographer-map").click()
+
+        let mapWindow = app.windows["Photographer Map"]
+        XCTAssertTrue(mapWindow.waitForExistence(timeout: 5))
+        let row = element("photographer-map-timeline-row-C542A26A-2872-42E5-B021-7AA3E599D3A8")
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        let selectedTime = element("photographer-map-selected-time")
+        XCTAssertTrue(selectedTime.waitForExistence(timeout: 3))
+
+        row.click()
+        let initialTime = selectedTime.value as? String
+        row.typeKey(.rightArrow, modifierFlags: [])
+
+        XCTAssertNotEqual(selectedTime.value as? String, initialTime)
+    }
+
     private func launch(
         seedJob: Bool = false,
         seedMap: Bool = false,

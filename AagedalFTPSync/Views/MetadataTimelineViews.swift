@@ -143,6 +143,8 @@ struct TimelineTrack: View {
                         .font(.caption)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("Edit Photographer")
+                .accessibilityHint("Opens this photographer’s profile and work hours")
                 .help("Edit photographer and work hours")
             }
             .padding(.horizontal, 8)

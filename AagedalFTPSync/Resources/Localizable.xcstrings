@@ -1,0 +1,81 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "About" : {
+      "comment" : "Accessibility label for the button that opens the About window."
+    },
+    "Add Metadata Clip" : {
+      "comment" : "Accessibility label for the button that adds a metadata schedule clip."
+    },
+    "Add Photographer" : {
+      "comment" : "Accessibility label for the button that creates a photographer profile."
+    },
+    "Add Server" : {
+      "comment" : "Accessibility label for the button that creates a shared server profile."
+    },
+    "All Jobs" : {
+      "comment" : "Accessibility label for the menu that starts or stops all sync jobs."
+    },
+    "Configuration Actions" : {
+      "comment" : "Accessibility label for the configuration import and export menu."
+    },
+    "Copy Selected Clips" : {
+      "comment" : "Accessibility label for the metadata timeline copy button."
+    },
+    "Delete Photographer" : {
+      "comment" : "Accessibility label for the button that deletes a photographer profile."
+    },
+    "Delete Selected Clips" : {
+      "comment" : "Accessibility label for the metadata timeline delete button."
+    },
+    "Delete Server" : {
+      "comment" : "Accessibility label for the button that deletes a shared server profile."
+    },
+    "Duplicate Server" : {
+      "comment" : "Accessibility label for the button that duplicates a shared server profile."
+    },
+    "Edit Photographer" : {
+      "comment" : "Accessibility label for the photographer track edit button."
+    },
+    "Edit Selected Clip" : {
+      "comment" : "Accessibility label for the metadata timeline edit button."
+    },
+    "Jobs" : {
+      "comment" : "Accessibility label for the button that opens the sync jobs window."
+    },
+    "Next Day" : {
+      "comment" : "Accessibility label for a button that shows the next schedule day."
+    },
+    "Next Month" : {
+      "comment" : "Accessibility label for the button that advances the programming calendar."
+    },
+    "Paste Metadata Clips" : {
+      "comment" : "Accessibility label for the metadata timeline paste button."
+    },
+    "Photographer Library Actions" : {
+      "comment" : "Accessibility label for the photographer library menu."
+    },
+    "Previous Day" : {
+      "comment" : "Accessibility label for a button that shows the previous schedule day."
+    },
+    "Previous Month" : {
+      "comment" : "Accessibility label for the button that moves the programming calendar backward."
+    },
+    "Quit" : {
+      "comment" : "Accessibility label for the button that quits the application."
+    },
+    "Reveal Download Folder in Finder" : {
+      "comment" : "Accessibility label for the button that opens a job's download folder."
+    },
+    "Settings" : {
+      "comment" : "Accessibility label for the button that opens application settings."
+    },
+    "Selected Map Time" : {
+      "comment" : "Accessibility label for the current time displayed above the photographer map timeline."
+    },
+    "Swap Source and Destination" : {
+      "comment" : "Accessibility label for the button that exchanges a job's endpoints."
+    }
+  },
+  "version" : "1.0"
+}

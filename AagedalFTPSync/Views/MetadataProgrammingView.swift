@@ -561,6 +561,8 @@ struct MetadataProgrammingView: View {
                 Button { moveDay(by: -1) } label: {
                     Image(systemName: "chevron.left")
                 }
+                .accessibilityLabel("Previous Day")
+                .accessibilityHint("Shows the previous day’s metadata programming")
                 .help("Previous Day")
 
                 Text(selectedDate.formatted(date: .complete, time: .omitted))
@@ -570,6 +572,8 @@ struct MetadataProgrammingView: View {
                 Button { moveDay(by: 1) } label: {
                     Image(systemName: "chevron.right")
                 }
+                .accessibilityLabel("Next Day")
+                .accessibilityHint("Shows the next day’s metadata programming")
                 .help("Next Day")
 
                 Button("Today") { selectedDate = Date() }
@@ -590,6 +594,8 @@ struct MetadataProgrammingView: View {
                         .frame(width: 16, height: 16)
                 }
                 .disabled(selectedClipIDs.count != 1)
+                .accessibilityLabel("Edit Selected Clip")
+                .accessibilityHint("Opens the selected metadata clip for editing")
                 .help("Edit Selected Clip (Return)")
 
                 Button(action: copySelectedClips) {
@@ -597,6 +603,8 @@ struct MetadataProgrammingView: View {
                         .frame(width: 16, height: 16)
                 }
                 .disabled(selectedClipIDs.isEmpty)
+                .accessibilityLabel("Copy Selected Clips")
+                .accessibilityHint("Copies the selected metadata clips")
                 .help("Copy Selected Clips (Command-C)")
 
                 Button(action: pasteClips) {
@@ -604,6 +612,8 @@ struct MetadataProgrammingView: View {
                         .frame(width: 16, height: 16)
                 }
                 .disabled(copiedClips.isEmpty || playhead == nil)
+                .accessibilityLabel("Paste Metadata Clips")
+                .accessibilityHint("Pastes copied clips at the playhead on the selected photographer tracks")
                 .help(pasteHelp)
 
                 Button(role: .destructive, action: deleteSelectedClips) {
@@ -611,6 +621,8 @@ struct MetadataProgrammingView: View {
                         .frame(width: 16, height: 16)
                 }
                 .disabled(selectedClipIDs.isEmpty)
+                .accessibilityLabel("Delete Selected Clips")
+                .accessibilityHint("Deletes the selected metadata clips")
                 .help("Delete Selected Clips")
 
                 Button(action: addClip) {
@@ -619,6 +631,7 @@ struct MetadataProgrammingView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityLabel("Add Metadata Clip")
+                .accessibilityHint("Adds a clip to the selected photographer track")
                 .disabled(selectedPhotographer == nil)
                 .help(selectedPhotographer == nil ? "Select a photographer first" : "Add a clip to the selected photographer")
             }

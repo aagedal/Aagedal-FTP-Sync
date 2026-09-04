@@ -303,6 +303,8 @@ struct PhotographerMapView: View {
             } label: {
                 Image(systemName: "chevron.left")
             }
+            .accessibilityLabel("Previous Day")
+            .accessibilityHint("Shows the previous day’s photographer schedule")
             .help("Previous Day")
 
             DatePicker(
@@ -317,6 +319,8 @@ struct PhotographerMapView: View {
             } label: {
                 Image(systemName: "chevron.right")
             }
+            .accessibilityLabel("Next Day")
+            .accessibilityHint("Shows the next day’s photographer schedule")
             .help("Next Day")
 
             Button("Today") {
@@ -433,6 +437,9 @@ struct PhotographerMapView: View {
                 Text(selectedInstant.formatted(date: .omitted, time: .standard))
                     .font(.title3.monospacedDigit().weight(.semibold))
                     .frame(minWidth: 105)
+                    .accessibilityIdentifier("photographer-map-selected-time")
+                    .accessibilityLabel("Selected Map Time")
+                    .accessibilityValue(selectedInstant.formatted(date: .omitted, time: .standard))
 
                 Button(action: nextChange) {
                     Label("Next Change", systemImage: "forward.end.fill")
@@ -875,21 +882,29 @@ private struct MapMiniTimeline: View {
             .frame(height: 16)
         }
         .frame(height: rowHeight)
+        .focusable()
+        .onKeyPress(.leftArrow) {
+            adjustTime(by: -5 * 60, for: row)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            adjustTime(by: 5 * 60, for: row)
+            return .handled
+        }
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("photographer-map-timeline-row-\(row.id.uuidString)")
         .accessibilityLabel("Time on \(row.photographer.photographerName)’s schedule")
         .accessibilityValue(accessibilityTime)
-        .accessibilityHint("Adjust to change the time shown on the map")
+        .accessibilityHint("Adjust, or use the left and right arrow keys, to change the map time by five minutes")
         .accessibilityAdjustableAction { direction in
-            let step: Double = 5 * 60
             switch direction {
             case .increment:
-                seconds = min(seconds + step, maximumSeconds)
+                adjustTime(by: 5 * 60, for: row)
             case .decrement:
-                seconds = max(seconds - step, 0)
+                adjustTime(by: -5 * 60, for: row)
             @unknown default:
                 break
             }
-            selectedPhotographerID = row.photographer.id
         }
     }
 
@@ -1011,6 +1026,15 @@ private struct MapMiniTimeline: View {
 
     private func playheadOffset(totalWidth: CGFloat) -> CGFloat {
         CGFloat(min(max(seconds / max(dayDuration, 1), 0), 1)) * totalWidth
+    }
+
+    private func adjustTime(by interval: Double, for row: PhotographerMapTimelineRow) {
+        seconds = min(max(seconds + interval, 0), maximumSeconds)
+        selectedPhotographerID = row.photographer.id
+        selectedClipID = clip(
+            at: dayStart.addingTimeInterval(seconds),
+            in: row
+        )?.id
     }
 
     private var maximumSeconds: Double {

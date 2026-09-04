@@ -20,18 +20,24 @@ struct ServerSettingsView: View {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel("Add Server")
+                    .accessibilityHint("Creates a new shared server profile")
                     .help("Add Server")
                     Button(action: duplicateProfile) {
                         Image(systemName: "plus.square.on.square")
                     }
                     .buttonStyle(.borderless)
                     .disabled(selectedProfile == nil || hasUnsavedChanges || credentialLoadError != nil)
+                    .accessibilityLabel("Duplicate Server")
+                    .accessibilityHint("Creates a copy of the selected server profile")
                     .help("Duplicate Server")
                     Button(action: requestDeletion) {
                         Image(systemName: "minus")
                     }
                     .buttonStyle(.borderless)
                     .disabled(selectedProfile == nil)
+                    .accessibilityLabel("Delete Server")
+                    .accessibilityHint("Deletes the selected server profile")
                     .help("Delete Server")
                 }
                 .padding(12)

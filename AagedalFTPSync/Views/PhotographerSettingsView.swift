@@ -49,17 +49,23 @@ struct PhotographerSettingsView: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
+                    .accessibilityLabel("Photographer Library Actions")
+                    .accessibilityHint("Sorts, imports, or exports photographer profiles")
                     .help("Sort, import, or export photographers")
                     Button(action: addPhotographer) {
                         Image(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel("Add Photographer")
+                    .accessibilityHint("Creates a new photographer profile")
                     .help("Add Photographer")
                     Button(action: requestDeletion) {
                         Image(systemName: "minus")
                     }
                     .buttonStyle(.borderless)
                     .disabled(selectedProfile == nil)
+                    .accessibilityLabel("Delete Photographer")
+                    .accessibilityHint("Deletes the selected photographer profile")
                     .help("Delete Photographer")
                 }
                 .padding(12)

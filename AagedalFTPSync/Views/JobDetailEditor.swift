@@ -575,6 +575,7 @@ struct JobDetailEditor: View {
                 .buttonStyle(.borderless)
                 .help("Swap Source and Destination")
                 .accessibilityLabel("Swap Source and Destination")
+                .accessibilityHint("Exchanges the source and destination endpoints")
             }
             Spacer()
         }

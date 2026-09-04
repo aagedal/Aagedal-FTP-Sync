@@ -319,6 +319,8 @@ struct ProgrammingMonthCalendar: View {
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(offset < 0 ? "Previous Month" : "Next Month")
+        .accessibilityHint("Changes the programming calendar by one month")
         .help(offset < 0 ? "Previous Month" : "Next Month")
     }
 

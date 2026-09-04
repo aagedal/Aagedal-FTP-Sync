@@ -92,6 +92,7 @@
 		F740FAA73212115FCB852FAE /* SyncScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C577F4C00B53FEE0AEAEC4 /* SyncScheduler.swift */; };
 		F9587CBD6566871E67AB6A61 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288034277BC7727C71C3304 /* ServerProfileRepository.swift */; };
 		FD6B4E4D3B7906C933964D9C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2745B822AD45CDF06BB3463 /* Assets.xcassets */; };
+		FFAAC76304EE632FFD35DC19 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */; };
 		FFE30C3E978D3DA849C1A90A /* ConfigurationTransferView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44DC5631E8E1F2C557CA626F /* ConfigurationTransferView.swift */; };
 /* End PBXBuildFile section */
 
@@ -156,6 +157,7 @@
 		6F05D3285F6038B42E80EF63 /* AagedalFTPSync.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AagedalFTPSync.entitlements; sourceTree = "<group>"; };
 		73E4E8584F7A5AFA53BC9190 /* ConfigurationTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransfer.swift; sourceTree = "<group>"; };
 		78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSchedulerTests.swift; sourceTree = "<group>"; };
+		7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		821EDDD4C943D4CCD4CB022D /* MetadataProgrammingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingView.swift; sourceTree = "<group>"; };
 		890826A7102C45494742574C /* MetadataLibraryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataLibraryCoordinator.swift; sourceTree = "<group>"; };
 		8DF972CA42278237F9D4F9F1 /* MetadataAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAudit.swift; sourceTree = "<group>"; };
@@ -231,6 +233,7 @@
 				6F05D3285F6038B42E80EF63 /* AagedalFTPSync.entitlements */,
 				B2745B822AD45CDF06BB3463 /* Assets.xcassets */,
 				9C550265145C1840CA4CAF18 /* Info.plist */,
+				7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -557,6 +560,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FD6B4E4D3B7906C933964D9C /* Assets.xcassets in Resources */,
+				FFAAC76304EE632FFD35DC19 /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

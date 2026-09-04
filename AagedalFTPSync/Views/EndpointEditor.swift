@@ -38,6 +38,8 @@ struct EndpointSummaryCard: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+                .accessibilityLabel("\(title) Settings")
+                .accessibilityHint("Edits this endpoint’s connection type and settings")
                 .help("\(title) settings")
             }
 

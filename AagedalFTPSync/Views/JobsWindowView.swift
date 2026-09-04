@@ -105,6 +105,8 @@ struct JobsWindowView: View {
                             Image(systemName: "ellipsis.circle")
                         }
                         .accessibilityIdentifier("configuration-transfer-menu")
+                        .accessibilityLabel("Configuration Actions")
+                        .accessibilityHint("Imports or exports configuration packages and support data")
                         .menuStyle(.borderlessButton)
                         .fixedSize()
                         .help("Import or export configuration packages")
