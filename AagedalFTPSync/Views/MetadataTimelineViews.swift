@@ -691,6 +691,7 @@ struct MetadataClipEditor: View {
             .padding(14)
         }
         .frame(width: 680, height: 780)
+        .accessibilityIdentifier("metadata-clip-editor")
         .confirmationDialog(
             "Delete reusable preset?",
             isPresented: Binding(

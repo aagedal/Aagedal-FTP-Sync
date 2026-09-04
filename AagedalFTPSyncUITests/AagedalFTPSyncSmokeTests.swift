@@ -80,13 +80,38 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
-    private func launch(seedJob: Bool = false, failFirstJobSave: Bool = false) {
+    func testPhotographerMapClipSelectionAndEditing() {
+        launch(seedJob: true, seedMap: true)
+
+        element("open-metadata-programming").click()
+        let metadataWindow = app.windows["Metadata Programming"]
+        XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
+        element("open-photographer-map").click()
+
+        let mapWindow = app.windows["Photographer Map"]
+        XCTAssertTrue(mapWindow.waitForExistence(timeout: 5))
+        let clip = element("photographer-map-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
+        XCTAssertTrue(clip.waitForExistence(timeout: 5))
+
+        clip.click()
+        XCTAssertEqual(clip.value as? String, "Selected, location set")
+
+        clip.doubleClick()
+        XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
+    }
+
+    private func launch(
+        seedJob: Bool = false,
+        seedMap: Bool = false,
+        failFirstJobSave: Bool = false
+    ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
         app = cleanApp
         app.launchEnvironment["AAGEDAL_UI_TESTING"] = "1"
         app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"] = UUID().uuidString
         if seedJob { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_JOB"] = "1" }
+        if seedMap { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_MAP"] = "1" }
         if failFirstJobSave { app.launchEnvironment["AAGEDAL_UI_TEST_FAIL_FIRST_JOB_SAVE"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()

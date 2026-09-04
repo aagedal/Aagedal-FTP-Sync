@@ -70,6 +70,30 @@ final class PhotographerMapTimelineTests: XCTestCase {
         XCTAssertNil(row.clips[1].gpsPosition)
     }
 
+    func testClipSelectionInstantUsesClickedPositionAndStaysInsideClip() {
+        let calendar = utcCalendar
+        let person = photographer("Selection")
+        let clip = MetadataScheduleClip(
+            photographerID: person.id,
+            name: "Assignment",
+            startsAt: date(2026, 9, 4, 9, 0, calendar: calendar),
+            endsAt: date(2026, 9, 4, 10, 0, calendar: calendar)
+        )
+
+        XCTAssertEqual(
+            PhotographerMapTimeline.selectionInstant(in: clip, at: 0.25),
+            date(2026, 9, 4, 9, 15, calendar: calendar)
+        )
+        XCTAssertEqual(
+            PhotographerMapTimeline.selectionInstant(in: clip, at: -1),
+            clip.startsAt
+        )
+
+        let endSelection = PhotographerMapTimeline.selectionInstant(in: clip, at: 2)
+        XCTAssertLessThan(endSelection, clip.endsAt)
+        XCTAssertEqual(endSelection.timeIntervalSince(clip.endsAt), -0.001, accuracy: 0.000_1)
+    }
+
     private func photographer(_ name: String) -> PhotographerProfile {
         PhotographerProfile(
             name: name,

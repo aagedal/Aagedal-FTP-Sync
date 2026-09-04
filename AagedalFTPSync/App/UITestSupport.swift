@@ -102,6 +102,34 @@ enum UITestSupport {
         job.right = Endpoint(kind: .local, localPath: destinationPath, bookmark: placeholderBookmark)
         job.isEnabled = false
         job.startsOnAppLaunch = false
+        if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_SEED_MAP"] == "1" {
+            let calendar = Calendar.current
+            let dayStart = calendar.startOfDay(for: Date())
+            let photographer = PhotographerProfile(
+                id: UUID(uuidString: "C542A26A-2872-42E5-B021-7AA3E599D3A8")!,
+                name: "Map Photographer",
+                filenamePrefix: "MAP",
+                creator: "Map Photographer",
+                copyrightNotice: ""
+            )
+            let clip = MetadataScheduleClip(
+                id: UUID(uuidString: "D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")!,
+                photographerID: photographer.id,
+                name: "Map Assignment",
+                startsAt: dayStart.addingTimeInterval(9 * 60 * 60),
+                endsAt: dayStart.addingTimeInterval(10 * 60 * 60),
+                gpsPosition: ScheduledGPSPosition(
+                    latitude: 59.9139,
+                    longitude: 10.7522,
+                    label: "Oslo"
+                )
+            )
+            job.metadataAutomation = MetadataAutomation(
+                isEnabled: true,
+                photographers: [photographer],
+                clips: [clip]
+            )
+        }
         return job
     }
 

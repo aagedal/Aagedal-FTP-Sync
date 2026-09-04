@@ -320,6 +320,7 @@ struct MetadataProgrammingView: View {
             Button(action: openPhotographerMap) {
                 Label("Map", systemImage: "map")
             }
+            .accessibilityIdentifier("open-photographer-map")
             .disabled(selectedJob == nil)
             .help("Show scheduled photographer locations on a map")
 
