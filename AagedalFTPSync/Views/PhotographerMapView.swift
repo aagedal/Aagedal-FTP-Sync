@@ -129,165 +129,6 @@ private struct PhotographerMapWeatherSnapshot {
     }
 }
 
-struct PhotographerMapLabelAnchor: Equatable {
-    let id: UUID
-    let point: CGPoint
-    let labelWidth: CGFloat
-    let isSelected: Bool
-}
-
-enum PhotographerMapLabelLayout {
-    static let labelHeight: CGFloat = 23
-    static let pinHeight: CGFloat = 31
-    private static let labelGap: CGFloat = 3
-    private static let mapInset: CGFloat = 7
-    private static let verticalStep: CGFloat = labelHeight + 7
-
-    static func offsets(
-        for anchors: [PhotographerMapLabelAnchor],
-        in bounds: CGRect
-    ) -> [UUID: CGSize] {
-        guard bounds.width > 0, bounds.height > 0 else { return [:] }
-        let safeBounds = bounds.insetBy(dx: mapInset, dy: mapInset)
-        let orderedAnchors = anchors.enumerated().sorted { first, second in
-            if first.element.isSelected != second.element.isSelected {
-                return first.element.isSelected
-            }
-            if first.element.point.y != second.element.point.y {
-                return first.element.point.y < second.element.point.y
-            }
-            if first.element.point.x != second.element.point.x {
-                return first.element.point.x < second.element.point.x
-            }
-            return first.offset < second.offset
-        }.map(\.element)
-
-        var occupiedLabels: [CGRect] = []
-        var result: [UUID: CGSize] = [:]
-        for anchor in orderedAnchors {
-            let candidates = candidateOffsets(for: anchor, in: safeBounds)
-            let otherPins = anchors
-                .filter { $0.id != anchor.id }
-                .map { pinFrame(at: $0.point) }
-            let chosen = candidates.first { candidate in
-                let frame = labelFrame(for: anchor, offset: candidate)
-                return !occupiedLabels.contains(where: { $0.intersects(frame) })
-                    && !otherPins.contains(where: { $0.intersects(frame) })
-            } ?? candidates.min { first, second in
-                collisionScore(
-                    labelFrame(for: anchor, offset: first),
-                    offset: first,
-                    occupiedLabels: occupiedLabels,
-                    otherPins: otherPins
-                ) < collisionScore(
-                    labelFrame(for: anchor, offset: second),
-                    offset: second,
-                    occupiedLabels: occupiedLabels,
-                    otherPins: otherPins
-                )
-            } ?? .zero
-            result[anchor.id] = chosen
-            occupiedLabels.append(labelFrame(for: anchor, offset: chosen))
-        }
-        return result
-    }
-
-    static func labelFrame(
-        for anchor: PhotographerMapLabelAnchor,
-        offset: CGSize
-    ) -> CGRect {
-        CGRect(
-            x: anchor.point.x - (anchor.labelWidth / 2) + offset.width,
-            y: anchor.point.y - pinHeight - labelGap - labelHeight + offset.height,
-            width: anchor.labelWidth,
-            height: labelHeight
-        )
-    }
-
-    private static func candidateOffsets(
-        for anchor: PhotographerMapLabelAnchor,
-        in bounds: CGRect
-    ) -> [CGSize] {
-        let horizontalStep = max(anchor.labelWidth * 0.62 + 28, 80)
-        let belowPin = pinHeight + (2 * labelGap) + (2 * labelHeight)
-        let rawCandidates: [CGSize] = [
-            .zero,
-            CGSize(width: 0, height: -verticalStep),
-            CGSize(width: 0, height: -2 * verticalStep),
-            CGSize(width: -horizontalStep, height: 0),
-            CGSize(width: horizontalStep, height: 0),
-            CGSize(width: -horizontalStep, height: -verticalStep),
-            CGSize(width: horizontalStep, height: -verticalStep),
-            CGSize(width: -horizontalStep, height: -2 * verticalStep),
-            CGSize(width: horizontalStep, height: -2 * verticalStep),
-            CGSize(width: 0, height: -3 * verticalStep),
-            CGSize(width: 0, height: belowPin),
-            CGSize(width: -horizontalStep, height: belowPin),
-            CGSize(width: horizontalStep, height: belowPin),
-        ]
-        var candidates: [CGSize] = []
-        for rawCandidate in rawCandidates {
-            let constrained = constrainedOffset(rawCandidate, for: anchor, in: bounds)
-            guard !candidates.contains(where: {
-                abs($0.width - constrained.width) < 0.5
-                    && abs($0.height - constrained.height) < 0.5
-            }) else { continue }
-            candidates.append(constrained)
-        }
-        return candidates
-    }
-
-    private static func constrainedOffset(
-        _ offset: CGSize,
-        for anchor: PhotographerMapLabelAnchor,
-        in bounds: CGRect
-    ) -> CGSize {
-        var constrained = offset
-        let frame = labelFrame(for: anchor, offset: offset)
-        if frame.minX < bounds.minX {
-            constrained.width += bounds.minX - frame.minX
-        } else if frame.maxX > bounds.maxX {
-            constrained.width -= frame.maxX - bounds.maxX
-        }
-        if frame.minY < bounds.minY {
-            constrained.height += bounds.minY - frame.minY
-        } else if frame.maxY > bounds.maxY {
-            constrained.height -= frame.maxY - bounds.maxY
-        }
-        return constrained
-    }
-
-    private static func pinFrame(at point: CGPoint) -> CGRect {
-        CGRect(
-            x: point.x - (pinHeight / 2),
-            y: point.y - pinHeight,
-            width: pinHeight,
-            height: pinHeight
-        )
-    }
-
-    private static func collisionScore(
-        _ frame: CGRect,
-        offset: CGSize,
-        occupiedLabels: [CGRect],
-        otherPins: [CGRect]
-    ) -> CGFloat {
-        let labelOverlap = occupiedLabels.reduce(CGFloat.zero) { result, occupied in
-            result + intersectionArea(frame, occupied)
-        }
-        let pinOverlap = otherPins.reduce(CGFloat.zero) { result, pin in
-            result + intersectionArea(frame, pin)
-        }
-        return (labelOverlap * 10) + (pinOverlap * 4) + hypot(offset.width, offset.height)
-    }
-
-    private static func intersectionArea(_ first: CGRect, _ second: CGRect) -> CGFloat {
-        let intersection = first.intersection(second)
-        guard !intersection.isNull else { return 0 }
-        return intersection.width * intersection.height
-    }
-}
-
 struct PhotographerMapView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
@@ -438,47 +279,43 @@ struct PhotographerMapView: View {
 
     private var map: some View {
         MapReader { proxy in
-            GeometryReader { geometry in
-                let labelOffsets = labelOffsets(proxy: proxy, mapSize: geometry.size)
-                Map(position: $cameraPosition, selection: $selectedPhotographerID) {
-                    ForEach(positions) { item in
-                        Annotation(
-                            "",
-                            coordinate: coordinate(for: item),
-                            anchor: .bottom
-                        ) {
-                            PhotographerMapMarker(
-                                item: item,
-                                color: color(for: item.photographer),
-                                isSelected: selectedPhotographerID == item.photographer.id,
-                                labelOffset: labelOffsets[item.photographer.id, default: .zero]
-                            )
-                            .offset(markerOffset(for: item))
-                            .tag(item.photographer.id)
-                            .accessibilityLabel(markerAccessibilityLabel(item))
-                            .gesture(markerGesture(for: item, proxy: proxy))
-                        }
+            Map(position: $cameraPosition, selection: $selectedPhotographerID) {
+                ForEach(positions) { item in
+                    Annotation(
+                        "",
+                        coordinate: coordinate(for: item),
+                        anchor: .bottom
+                    ) {
+                        PhotographerMapMarker(
+                            item: item,
+                            color: color(for: item.photographer),
+                            isSelected: selectedPhotographerID == item.photographer.id
+                        )
+                        .offset(markerOffset(for: item))
+                        .tag(item.photographer.id)
+                        .accessibilityLabel(markerAccessibilityLabel(item))
+                        .gesture(markerGesture(for: item, proxy: proxy))
                     }
                 }
-                .coordinateSpace(name: mapCoordinateSpaceName)
-                .mapStyle(mapStyle)
-                .onMapCameraChange(frequency: .onEnd) { context in
-                    updateWeatherTarget(context.camera.centerCoordinate)
-                }
-                .mapControls {
-                    MapCompass()
-                    MapScaleView()
-                    MapPitchToggle()
-                }
-                .overlay(alignment: .topLeading) {
-                    mapSummary
-                        .padding(12)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    weatherIndicator
-                        .padding(.leading, 12)
-                        .padding(.bottom, 36)
-                }
+            }
+            .coordinateSpace(name: mapCoordinateSpaceName)
+            .mapStyle(mapStyle)
+            .onMapCameraChange(frequency: .onEnd) { context in
+                updateWeatherTarget(context.camera.centerCoordinate)
+            }
+            .mapControls {
+                MapCompass()
+                MapScaleView()
+                MapPitchToggle()
+            }
+            .overlay(alignment: .topLeading) {
+                mapSummary
+                    .padding(12)
+            }
+            .overlay(alignment: .bottomLeading) {
+                weatherIndicator
+                    .padding(.leading, 12)
+                    .padding(.bottom, 36)
             }
         }
     }
@@ -624,7 +461,7 @@ struct PhotographerMapView: View {
                 .background(.regularMaterial, in: Circle())
                 .accessibilityLabel("Loading weather at map center")
         } else if let weatherErrorMessage {
-            Image(systemName: "cloud.slash")
+            Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 15, weight: .medium))
                 .padding(9)
                 .background(.regularMaterial, in: Circle())
@@ -803,34 +640,6 @@ struct PhotographerMapView: View {
 
     private func markerOffset(for item: ScheduledPhotographerPosition) -> CGSize {
         draggedClipID == item.clip.id ? draggedTranslation : .zero
-    }
-
-    private func labelOffsets(proxy: MapProxy, mapSize: CGSize) -> [UUID: CGSize] {
-        let anchors = positions.compactMap { item -> PhotographerMapLabelAnchor? in
-            guard let convertedPoint = proxy.convert(
-                coordinate(for: item),
-                to: .named(mapCoordinateSpaceName)
-            ) else { return nil }
-            let dragOffset = markerOffset(for: item)
-            let point = CGPoint(
-                x: convertedPoint.x + dragOffset.width,
-                y: convertedPoint.y + dragOffset.height
-            )
-            return PhotographerMapLabelAnchor(
-                id: item.photographer.id,
-                point: point,
-                labelWidth: estimatedLabelWidth(item.photographer.photographerName),
-                isSelected: selectedPhotographerID == item.photographer.id
-            )
-        }
-        return PhotographerMapLabelLayout.offsets(
-            for: anchors,
-            in: CGRect(origin: .zero, size: mapSize)
-        )
-    }
-
-    private func estimatedLabelWidth(_ name: String) -> CGFloat {
-        min(max(CGFloat(name.count) * 9 + 18, 64), 240)
     }
 
     private func markerGesture(
@@ -1019,7 +828,6 @@ private struct PhotographerMapMarker: View {
     let item: ScheduledPhotographerPosition
     let color: Color
     let isSelected: Bool
-    let labelOffset: CGSize
 
     var body: some View {
         VStack(spacing: 2) {
@@ -1035,29 +843,12 @@ private struct PhotographerMapMarker: View {
                 .overlay {
                     Capsule().stroke(color, lineWidth: isSelected ? 3 : 1)
                 }
-                .offset(labelOffset)
 
             Image(systemName: "mappin.circle.fill")
                 .font(.system(size: isSelected ? 31 : 27))
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, color)
                 .shadow(radius: 2, y: 1)
-        }
-        .overlay {
-            if labelOffset != .zero {
-                GeometryReader { geometry in
-                    Path { path in
-                        let pinTop = geometry.size.height - PhotographerMapLabelLayout.pinHeight
-                        path.move(to: CGPoint(x: geometry.size.width / 2, y: pinTop))
-                        path.addLine(to: CGPoint(
-                            x: (geometry.size.width / 2) + labelOffset.width,
-                            y: pinTop - 2 + labelOffset.height
-                        ))
-                    }
-                    .stroke(color.opacity(0.8), style: StrokeStyle(lineWidth: 1.5, dash: [3, 2]))
-                }
-                .allowsHitTesting(false)
-            }
         }
         .help("Click to select, drag to update this clip’s GPS location, or double-click to edit the metadata clip.")
     }

@@ -122,6 +122,33 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertNotEqual(selectedTime.value as? String, initialTime)
     }
 
+    func testPhotographerMapTimelineRepeatedScrubbingKeepsWindowResponsive() {
+        launch(seedJob: true, seedMap: true)
+
+        element("open-metadata-programming").click()
+        let metadataWindow = app.windows["Metadata Programming"]
+        XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
+        element("open-photographer-map").click()
+
+        let mapWindow = app.windows["Photographer Map"]
+        XCTAssertTrue(mapWindow.waitForExistence(timeout: 5))
+        let timeline = element("photographer-map-timeline")
+        XCTAssertTrue(timeline.waitForExistence(timeout: 5))
+
+        let morning = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.32, dy: 0.5))
+        let afternoon = timeline.coordinate(withNormalizedOffset: CGVector(dx: 0.68, dy: 0.5))
+        for _ in 0..<4 {
+            morning.press(forDuration: 0.05, thenDragTo: afternoon)
+            afternoon.press(forDuration: 0.05, thenDragTo: morning)
+        }
+
+        let today = mapWindow.buttons["Today"]
+        XCTAssertTrue(today.waitForExistence(timeout: 2))
+        XCTAssertTrue(today.isHittable)
+        today.click()
+        XCTAssertTrue(element("photographer-map-selected-time").isHittable)
+    }
+
     func testAccessibilityTextSizeKeepsCoreControlsOperable() {
         launch(seedJob: true, seedMap: true, accessibilityText: true)
 
