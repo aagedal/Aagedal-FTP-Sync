@@ -442,10 +442,33 @@ struct SyncEngine: Sendable {
                     partialResult: completedTransfers.adding(failure.partialResult)
                 )
             }
+            let completedResult = completedTransfers.adding(SyncResult(transferred: 0, deleted: deleted))
+            do {
+                switch job.direction {
+                case .leftToRight:
+                    try await sourceSignatureRepository.reconcile(
+                        jobID: job.id,
+                        sourceEndpoint: job.left,
+                        sourceRelativePaths: leftFiles.keys,
+                        destinationRelativePaths: rightFiles.keys
+                    )
+                case .rightToLeft:
+                    try await sourceSignatureRepository.reconcile(
+                        jobID: job.id,
+                        sourceEndpoint: job.right,
+                        sourceRelativePaths: rightFiles.keys,
+                        destinationRelativePaths: leftFiles.keys
+                    )
+                case .bidirectional:
+                    break
+                }
+            } catch {
+                throw SyncRunFailure(error, partialResult: completedResult)
+            }
             await left.close()
             await right.close()
             await processedDestination?.close()
-            return completedTransfers.adding(SyncResult(transferred: 0, deleted: deleted))
+            return completedResult
         } catch is CancellationError {
             let earlySnapshot = await earlyTransferState.snapshot()
             try? await persistEarlySourceSignatures(earlySnapshot, job: job)
@@ -1162,7 +1185,8 @@ struct SyncEngine: Sendable {
     ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport) {
         let savedSignatures = try await sourceSignatureRepository.signatures(
             jobID: job.id,
-            sourceEndpoint: sourceEndpoint
+            sourceEndpoint: sourceEndpoint,
+            relativePaths: sourceFiles.keys
         )
         let effectiveDestinationFiles = destinationFiles.merging(earlySnapshot.destinationFiles) {
             _, earlyFile in earlyFile
