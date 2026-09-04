@@ -1,4 +1,5 @@
 import Foundation
+import MapKit
 import XCTest
 @testable import AagedalFTPSync
 
@@ -114,6 +115,30 @@ final class PhotographerMapTimelineTests: XCTestCase {
         XCTAssertEqual(frame.minX, 90, accuracy: 0.001)
         XCTAssertEqual(frame.width, 15, accuracy: 0.001)
         XCTAssertEqual(frame.midX, 97.5, accuracy: 0.001)
+    }
+
+    func testDayCameraFrameContainsEveryValidClipLocationWithPadding() throws {
+        let oslo = ScheduledGPSPosition(latitude: 59.9139, longitude: 10.7522)
+        let drammen = ScheduledGPSPosition(latitude: 59.7439, longitude: 10.2045)
+        let rect = try XCTUnwrap(PhotographerMapCameraFraming.mapRect(for: [
+            oslo,
+            ScheduledGPSPosition(latitude: 200, longitude: 10),
+            drammen,
+        ]))
+
+        XCTAssertTrue(rect.contains(MKMapPoint(CLLocationCoordinate2D(
+            latitude: oslo.latitude,
+            longitude: oslo.longitude
+        ))))
+        XCTAssertTrue(rect.contains(MKMapPoint(CLLocationCoordinate2D(
+            latitude: drammen.latitude,
+            longitude: drammen.longitude
+        ))))
+        XCTAssertGreaterThan(rect.width, abs(
+            MKMapPoint(CLLocationCoordinate2D(latitude: oslo.latitude, longitude: oslo.longitude)).x
+                - MKMapPoint(CLLocationCoordinate2D(latitude: drammen.latitude, longitude: drammen.longitude)).x
+        ))
+        XCTAssertNil(PhotographerMapCameraFraming.mapRect(for: []))
     }
 
     func testNearbyPhotographerLabelsReceiveNonOverlappingOffsets() throws {

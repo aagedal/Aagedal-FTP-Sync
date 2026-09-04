@@ -1,5 +1,6 @@
 import MapKit
 import SwiftUI
+import WeatherKit
 
 struct PhotographerMapTimelineRow: Identifiable, Equatable, Sendable {
     let photographer: PhotographerProfile
@@ -55,6 +56,76 @@ enum PhotographerMapTimeline {
         let x = CGFloat(start / safeDuration) * totalWidth
         let width = max(CGFloat((end - start) / safeDuration) * totalWidth, 2)
         return CGRect(x: x, y: 0, width: width, height: 0)
+    }
+}
+
+enum PhotographerMapCameraFraming {
+    static func mapRect(for positions: [ScheduledGPSPosition]) -> MKMapRect? {
+        let mapPoints = positions.compactMap { position -> MKMapPoint? in
+            guard position.isValid else { return nil }
+            return MKMapPoint(CLLocationCoordinate2D(
+                latitude: position.latitude,
+                longitude: position.longitude
+            ))
+        }
+        guard let firstPoint = mapPoints.first else { return nil }
+
+        var mapRect = MKMapRect(
+            x: firstPoint.x,
+            y: firstPoint.y,
+            width: 1,
+            height: 1
+        )
+        for point in mapPoints.dropFirst() {
+            mapRect = mapRect.union(MKMapRect(
+                x: point.x,
+                y: point.y,
+                width: 1,
+                height: 1
+            ))
+        }
+
+        let centerLatitude = MKMapPoint(
+            x: mapRect.midX,
+            y: mapRect.midY
+        ).coordinate.latitude
+        let minimumSpan = MKMapPointsPerMeterAtLatitude(centerLatitude) * 2_500
+        let paddedWidth = max(mapRect.width * 1.3, minimumSpan)
+        let paddedHeight = max(mapRect.height * 1.3, minimumSpan)
+        return MKMapRect(
+            x: mapRect.midX - (paddedWidth / 2),
+            y: mapRect.midY - (paddedHeight / 2),
+            width: paddedWidth,
+            height: paddedHeight
+        )
+    }
+}
+
+private struct PhotographerMapWeatherTarget: Hashable {
+    let latitude: Double
+    let longitude: Double
+
+    init?(_ coordinate: CLLocationCoordinate2D) {
+        guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
+        latitude = coordinate.latitude
+        longitude = coordinate.longitude
+    }
+
+    var location: CLLocation {
+        CLLocation(latitude: latitude, longitude: longitude)
+    }
+}
+
+private struct PhotographerMapWeatherSnapshot {
+    let target: PhotographerMapWeatherTarget
+    let current: CurrentWeather
+
+    func isFresh(
+        for requestedTarget: PhotographerMapWeatherTarget,
+        at date: Date = Date()
+    ) -> Bool {
+        current.metadata.expirationDate > date
+            && target.location.distance(from: requestedTarget.location) < 3_000
     }
 }
 
@@ -220,6 +291,7 @@ enum PhotographerMapLabelLayout {
 struct PhotographerMapView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("photographerMapRenderingMode") private var renderingMode: PhotographerMapRenderingMode = .standard
     @AppStorage("photographerMapShows3DBuildings") private var shows3DBuildings = false
     @State private var selectedDate = Date()
@@ -229,7 +301,12 @@ struct PhotographerMapView: View {
     @State private var selectedClipID: UUID?
     @State private var draggedClipID: UUID?
     @State private var draggedTranslation: CGSize = .zero
-    @State private var currentMapCamera: MapCamera?
+    @State private var weatherTarget: PhotographerMapWeatherTarget?
+    @State private var weatherSnapshot: PhotographerMapWeatherSnapshot?
+    @State private var weatherAttribution: WeatherAttribution?
+    @State private var weatherLoadingTarget: PhotographerMapWeatherTarget?
+    @State private var weatherErrorMessage: String?
+    @State private var showsWeatherAttribution = false
 
     private let calendar = Calendar.current
     private let mapCoordinateSpaceName = "photographer-map"
@@ -268,18 +345,22 @@ struct PhotographerMapView: View {
             selectedDate = calendar.startOfDay(for: newDate)
             selectedPhotographerID = nil
             selectedClipID = nil
-            cameraPosition = .automatic
+            fitAllClipLocations()
         }
         .onChange(of: store.selectedJobID) { _, _ in
             selectedPhotographerID = nil
             selectedClipID = nil
-            cameraPosition = .automatic
+            fitAllClipLocations()
         }
         .onChange(of: selectedInstant) { _, _ in
             if let selectedPhotographerID,
                !positions.contains(where: { $0.photographer.id == selectedPhotographerID }) {
                 self.selectedPhotographerID = nil
             }
+        }
+        .task(id: weatherTarget) {
+            guard let weatherTarget else { return }
+            await loadWeather(for: weatherTarget)
         }
     }
 
@@ -345,12 +426,12 @@ struct PhotographerMapView: View {
             }
 
             Button {
-                cameraPosition = .automatic
+                fitAllClipLocations()
             } label: {
                 Label("Show All", systemImage: "scope")
             }
-            .disabled(positions.isEmpty)
-            .help("Fit all active photographers on the map")
+            .disabled(dayMapRect == nil)
+            .help("Fit every clip location for the selected day on the map")
         }
         .padding(14)
     }
@@ -381,8 +462,8 @@ struct PhotographerMapView: View {
                 }
                 .coordinateSpace(name: mapCoordinateSpaceName)
                 .mapStyle(mapStyle)
-                .onMapCameraChange(frequency: .continuous) { context in
-                    currentMapCamera = context.camera
+                .onMapCameraChange(frequency: .onEnd) { context in
+                    updateWeatherTarget(context.camera.centerCoordinate)
                 }
                 .mapControls {
                     MapCompass()
@@ -392,6 +473,11 @@ struct PhotographerMapView: View {
                 .overlay(alignment: .topLeading) {
                     mapSummary
                         .padding(12)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    weatherIndicator
+                        .padding(.leading, 12)
+                        .padding(.bottom, 36)
                 }
             }
         }
@@ -474,7 +560,6 @@ struct PhotographerMapView: View {
                 selectedPhotographerID: $selectedPhotographerID,
                 selectedClipID: $selectedClipID,
                 color: color(for:),
-                onScrubBegan: beginTimelineScrub,
                 onOpenClip: openMetadataProgramming(for:at:)
             )
             .help(changePointSummary)
@@ -484,6 +569,68 @@ struct PhotographerMapView: View {
         .padding(.vertical, 6)
         .frame(height: 60)
         .background(.bar)
+    }
+
+    @ViewBuilder
+    private var weatherIndicator: some View {
+        if let weatherSnapshot, let weatherAttribution {
+            Button {
+                showsWeatherAttribution.toggle()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: weatherSnapshot.current.symbolName)
+                        .symbolRenderingMode(.multicolor)
+                        .font(.system(size: 17))
+
+                    Text(weatherSnapshot.current.temperature.formatted(
+                        .measurement(width: .abbreviated)
+                    ))
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+
+                    Divider()
+                        .frame(height: 16)
+
+                    WeatherAttributionImage(
+                        url: colorScheme == .dark
+                            ? weatherAttribution.combinedMarkLightURL
+                            : weatherAttribution.combinedMarkDarkURL,
+                        size: CGSize(width: 74, height: 14)
+                    )
+
+                    if weatherLoadingTarget == weatherTarget {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 7)
+                .contentShape(Capsule())
+                .background(.regularMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .help("Current weather at the center of the map")
+            .accessibilityLabel("Current weather at map center")
+            .accessibilityValue(weatherSnapshot.current.temperature.formatted(
+                .measurement(width: .wide)
+            ))
+            .popover(isPresented: $showsWeatherAttribution) {
+                PhotographerMapWeatherAttributionView(attribution: weatherAttribution)
+            }
+        } else if weatherLoadingTarget == weatherTarget {
+            ProgressView()
+                .controlSize(.small)
+                .padding(9)
+                .background(.regularMaterial, in: Circle())
+                .accessibilityLabel("Loading weather at map center")
+        } else if let weatherErrorMessage {
+            Image(systemName: "cloud.slash")
+                .font(.system(size: 15, weight: .medium))
+                .padding(9)
+                .background(.regularMaterial, in: Circle())
+                .help("Weather unavailable: \(weatherErrorMessage)")
+                .accessibilityLabel("Weather unavailable")
+        }
     }
 
     private var selectedJob: SyncJob? {
@@ -533,6 +680,12 @@ struct PhotographerMapView: View {
         )
     }
 
+    private var dayMapRect: MKMapRect? {
+        PhotographerMapCameraFraming.mapRect(
+            for: mapTimelineRows.flatMap(\.clips).compactMap(\.gpsPosition)
+        )
+    }
+
     private var previousChangePoint: Date? {
         changePoints.last { $0 < selectedInstant.addingTimeInterval(-0.5) }
     }
@@ -556,9 +709,68 @@ struct PhotographerMapView: View {
         secondsIntoDay = nextChangePoint.timeIntervalSince(dayStart)
     }
 
-    private func beginTimelineScrub() {
-        guard let currentMapCamera else { return }
-        cameraPosition = .camera(currentMapCamera)
+    private func fitAllClipLocations() {
+        guard let dayMapRect else {
+            cameraPosition = .automatic
+            weatherTarget = nil
+            weatherSnapshot = nil
+            weatherErrorMessage = nil
+            return
+        }
+        cameraPosition = .rect(dayMapRect)
+        updateWeatherTarget(MKMapPoint(x: dayMapRect.midX, y: dayMapRect.midY).coordinate)
+    }
+
+    private func updateWeatherTarget(_ coordinate: CLLocationCoordinate2D) {
+        guard let target = PhotographerMapWeatherTarget(coordinate) else { return }
+        weatherTarget = target
+    }
+
+    @MainActor
+    private func loadWeather(for target: PhotographerMapWeatherTarget) async {
+        if let weatherSnapshot, weatherSnapshot.isFresh(for: target) {
+            weatherErrorMessage = nil
+            return
+        }
+
+        if let weatherSnapshot,
+           weatherSnapshot.target.location.distance(from: target.location) >= 3_000 {
+            self.weatherSnapshot = nil
+        }
+        weatherLoadingTarget = target
+        weatherErrorMessage = nil
+
+        defer {
+            if weatherTarget == target {
+                weatherLoadingTarget = nil
+            }
+        }
+
+        do {
+            try await Task.sleep(for: .milliseconds(250))
+            let current = try await WeatherService.shared.weather(
+                for: target.location,
+                including: .current
+            )
+            let attribution = if let weatherAttribution {
+                weatherAttribution
+            } else {
+                try await WeatherService.shared.attribution
+            }
+            try Task.checkCancellation()
+            guard weatherTarget == target else { return }
+
+            weatherAttribution = attribution
+            weatherSnapshot = PhotographerMapWeatherSnapshot(
+                target: target,
+                current: current
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard weatherTarget == target else { return }
+            weatherErrorMessage = error.localizedDescription
+        }
     }
 
     private func moveDay(by value: Int) {
@@ -569,7 +781,7 @@ struct PhotographerMapView: View {
         let requested = store.metadataMapRequestedDate ?? Date()
         selectedDate = calendar.startOfDay(for: requested)
         secondsIntoDay = seconds(on: requested)
-        cameraPosition = .automatic
+        fitAllClipLocations()
     }
 
     private func seconds(on date: Date) -> Double {
@@ -628,11 +840,6 @@ struct PhotographerMapView: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(mapCoordinateSpaceName))
             .onChanged { value in
                 guard gestureDistance(value.translation) >= 3 else { return }
-                if draggedClipID == nil, let currentMapCamera {
-                    // Automatic framing follows changing annotations. Freeze the
-                    // rendered camera before the eventual coordinate update.
-                    cameraPosition = .camera(currentMapCamera)
-                }
                 selectedPhotographerID = item.photographer.id
                 draggedClipID = item.clip.id
                 draggedTranslation = value.translation
@@ -730,6 +937,49 @@ struct PhotographerMapView: View {
     }
 }
 
+private struct WeatherAttributionImage: View {
+    let url: URL
+    let size: CGSize
+
+    var body: some View {
+        AsyncImage(url: url) { phase in
+            if let image = phase.image {
+                image
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                Text("Weather")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+    }
+}
+
+private struct PhotographerMapWeatherAttributionView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let attribution: WeatherAttribution
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            WeatherAttributionImage(
+                url: colorScheme == .dark
+                    ? attribution.combinedMarkLightURL
+                    : attribution.combinedMarkDarkURL,
+                size: CGSize(width: 126, height: 22)
+            )
+
+            Link(destination: attribution.legalPageURL) {
+                Label("Weather data sources", systemImage: "arrow.up.right.square")
+                    .font(.caption)
+            }
+        }
+        .padding(14)
+    }
+}
+
 private enum PhotographerMapRenderingMode: String, CaseIterable, Identifiable {
     case standard
     case standardWithoutPointsOfInterest
@@ -823,7 +1073,6 @@ private struct MapMiniTimeline: View {
     @Binding var selectedPhotographerID: UUID?
     @Binding var selectedClipID: UUID?
     let color: (PhotographerProfile) -> Color
-    let onScrubBegan: () -> Void
     let onOpenClip: (MetadataScheduleClip, Date) -> Void
 
     private let scrubCommitInterval: TimeInterval = 1.0 / 12.0
@@ -1015,7 +1264,6 @@ private struct MapMiniTimeline: View {
             .onChanged { value in
                 let scrubbedSeconds = seconds(at: value.location.x, totalWidth: totalWidth)
                 if scrubPreviewSeconds == nil {
-                    onScrubBegan()
                     lastScrubCommit = .distantPast
                 }
                 scrubPreviewSeconds = scrubbedSeconds
