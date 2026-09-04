@@ -2,7 +2,7 @@
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.8 strengthens unattended operation with safer job recovery, bounded SFTP operations, manifest-backed download resets, and indexed source-signature storage. It also expands the Photographer Map with per-day tracks, a compact schedule overview, all-location framing, and current weather. The app has no hard-coded server and does not bundle rclone.
+Version 2.8 strengthens unattended operation with safer job recovery, bounded SFTP operations, manifest-backed download resets, and indexed source-signature storage. It also expands the Photographer Map with per-day tracks, a compact schedule overview, and all-location framing. The app has no hard-coded server and does not bundle rclone.
 
 ## What is new
 
@@ -29,7 +29,7 @@ Version 2.8 strengthens unattended operation with safer job recovery, bounded SF
 - Download resets remove only files recorded in the job's durable ownership manifest
 - A shared photographer library and per-job timeline clips can apply Headline, Description, Keywords, Creator, and Copyright metadata automatically
 - Photographer tracks are specific to each programming day, and clips can be dragged between tracks
-- The Photographer Map includes a compact per-photographer schedule, frames every clip location for the selected day, and shows current WeatherKit conditions at the map center
+- The Photographer Map includes a compact per-photographer schedule and frames every clip location for the selected day
 - Each photographer can have multiple comma-separated filename initials for assignments using more than one camera
 - Scheduling can use source modification, local arrival, or Exif camera-capture time
 - Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
@@ -41,7 +41,7 @@ Version 2.8 strengthens unattended operation with safer job recovery, bounded SF
 
 ## Requirements
 
-- macOS 14 Sonoma or newer
+- An Apple silicon Mac running macOS 14 Sonoma or newer
 - Xcode 16 or newer to build
 - An FTP server with passive mode and `MLSD` or Unix-style `LIST` support
 - Implicit FTPS normally uses port 990. Use SFTP when available.

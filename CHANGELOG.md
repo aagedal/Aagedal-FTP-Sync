@@ -16,12 +16,13 @@
 - Make photographer tracks specific to each programming day and automatically carry a track forward when a clip extends past midnight.
 - Move metadata clips directly between photographer tracks by dragging them vertically.
 - Replace the Photographer Map time slider with a responsive, compact per-photographer schedule overview that distinguishes clips with and without locations, supports direct selection, and opens clips in Metadata Programming on double-click.
-- Fit the map to every clip location for the selected day and show current WeatherKit conditions at the map center with Apple attribution.
+- Fit the map to every clip location for the selected day.
 
 ### Accessibility and release confidence
 
 - Improve VoiceOver and keyboard access with explicit descriptions for image-only actions, arrow-key Photographer Map timeline scrubbing, and an English localization catalog.
 - Keep timelines, menu-bar controls, configuration sheets, and status messages legible and operable at accessibility text sizes without relying on color alone.
+- Target Apple silicon Macs with an arm64-only application build.
 - Add release-identity validation, scheduled FTP/FTPS/SFTP integration tests, and signed UI smoke coverage on a trusted runner.
 
 ## 2.7.1 — 2026-09-03

@@ -129,6 +129,8 @@ def run_xcodebuild(configuration_path: Path) -> None:
         "AagedalFTPSync",
         "-destination",
         "platform=macOS",
+        "-derivedDataPath",
+        str(configuration_path.parent / "DerivedData"),
         "CODE_SIGNING_ALLOWED=NO",
         "-only-testing:AagedalFTPSyncTests/RemoteTransportIntegrationTests",
     ]

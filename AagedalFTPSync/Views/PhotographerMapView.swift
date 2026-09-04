@@ -1,6 +1,5 @@
 import MapKit
 import SwiftUI
-import WeatherKit
 
 struct PhotographerMapTimelineRow: Identifiable, Equatable, Sendable {
     let photographer: PhotographerProfile
@@ -101,38 +100,9 @@ enum PhotographerMapCameraFraming {
     }
 }
 
-private struct PhotographerMapWeatherTarget: Hashable {
-    let latitude: Double
-    let longitude: Double
-
-    init?(_ coordinate: CLLocationCoordinate2D) {
-        guard CLLocationCoordinate2DIsValid(coordinate) else { return nil }
-        latitude = coordinate.latitude
-        longitude = coordinate.longitude
-    }
-
-    var location: CLLocation {
-        CLLocation(latitude: latitude, longitude: longitude)
-    }
-}
-
-private struct PhotographerMapWeatherSnapshot {
-    let target: PhotographerMapWeatherTarget
-    let current: CurrentWeather
-
-    func isFresh(
-        for requestedTarget: PhotographerMapWeatherTarget,
-        at date: Date = Date()
-    ) -> Bool {
-        current.metadata.expirationDate > date
-            && target.location.distance(from: requestedTarget.location) < 3_000
-    }
-}
-
 struct PhotographerMapView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("photographerMapRenderingMode") private var renderingMode: PhotographerMapRenderingMode = .standard
     @AppStorage("photographerMapShows3DBuildings") private var shows3DBuildings = false
     @State private var selectedDate = Date()
@@ -142,12 +112,6 @@ struct PhotographerMapView: View {
     @State private var selectedClipID: UUID?
     @State private var draggedClipID: UUID?
     @State private var draggedTranslation: CGSize = .zero
-    @State private var weatherTarget: PhotographerMapWeatherTarget?
-    @State private var weatherSnapshot: PhotographerMapWeatherSnapshot?
-    @State private var weatherAttribution: WeatherAttribution?
-    @State private var weatherLoadingTarget: PhotographerMapWeatherTarget?
-    @State private var weatherErrorMessage: String?
-    @State private var showsWeatherAttribution = false
 
     private let calendar = Calendar.current
     private let mapCoordinateSpaceName = "photographer-map"
@@ -198,10 +162,6 @@ struct PhotographerMapView: View {
                !positions.contains(where: { $0.photographer.id == selectedPhotographerID }) {
                 self.selectedPhotographerID = nil
             }
-        }
-        .task(id: weatherTarget) {
-            guard let weatherTarget else { return }
-            await loadWeather(for: weatherTarget)
         }
     }
 
@@ -300,9 +260,6 @@ struct PhotographerMapView: View {
             }
             .coordinateSpace(name: mapCoordinateSpaceName)
             .mapStyle(mapStyle)
-            .onMapCameraChange(frequency: .onEnd) { context in
-                updateWeatherTarget(context.camera.centerCoordinate)
-            }
             .mapControls {
                 MapCompass()
                 MapScaleView()
@@ -311,11 +268,6 @@ struct PhotographerMapView: View {
             .overlay(alignment: .topLeading) {
                 mapSummary
                     .padding(12)
-            }
-            .overlay(alignment: .bottomLeading) {
-                weatherIndicator
-                    .padding(.leading, 12)
-                    .padding(.bottom, 36)
             }
         }
     }
@@ -408,68 +360,6 @@ struct PhotographerMapView: View {
         .background(.bar)
     }
 
-    @ViewBuilder
-    private var weatherIndicator: some View {
-        if let weatherSnapshot, let weatherAttribution {
-            Button {
-                showsWeatherAttribution.toggle()
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: weatherSnapshot.current.symbolName)
-                        .symbolRenderingMode(.multicolor)
-                        .font(.system(size: 17))
-
-                    Text(weatherSnapshot.current.temperature.formatted(
-                        .measurement(width: .abbreviated)
-                    ))
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-
-                    Divider()
-                        .frame(height: 16)
-
-                    WeatherAttributionImage(
-                        url: colorScheme == .dark
-                            ? weatherAttribution.combinedMarkLightURL
-                            : weatherAttribution.combinedMarkDarkURL,
-                        size: CGSize(width: 74, height: 14)
-                    )
-
-                    if weatherLoadingTarget == weatherTarget {
-                        ProgressView()
-                            .controlSize(.mini)
-                    }
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .contentShape(Capsule())
-                .background(.regularMaterial, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .help("Current weather at the center of the map")
-            .accessibilityLabel("Current weather at map center")
-            .accessibilityValue(weatherSnapshot.current.temperature.formatted(
-                .measurement(width: .wide)
-            ))
-            .popover(isPresented: $showsWeatherAttribution) {
-                PhotographerMapWeatherAttributionView(attribution: weatherAttribution)
-            }
-        } else if weatherLoadingTarget == weatherTarget {
-            ProgressView()
-                .controlSize(.small)
-                .padding(9)
-                .background(.regularMaterial, in: Circle())
-                .accessibilityLabel("Loading weather at map center")
-        } else if let weatherErrorMessage {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 15, weight: .medium))
-                .padding(9)
-                .background(.regularMaterial, in: Circle())
-                .help("Weather unavailable: \(weatherErrorMessage)")
-                .accessibilityLabel("Weather unavailable")
-        }
-    }
-
     private var selectedJob: SyncJob? {
         guard let selectedJobID = store.selectedJobID else { return nil }
         return store.jobs.first { $0.id == selectedJobID }
@@ -549,65 +439,9 @@ struct PhotographerMapView: View {
     private func fitAllClipLocations() {
         guard let dayMapRect else {
             cameraPosition = .automatic
-            weatherTarget = nil
-            weatherSnapshot = nil
-            weatherErrorMessage = nil
             return
         }
         cameraPosition = .rect(dayMapRect)
-        updateWeatherTarget(MKMapPoint(x: dayMapRect.midX, y: dayMapRect.midY).coordinate)
-    }
-
-    private func updateWeatherTarget(_ coordinate: CLLocationCoordinate2D) {
-        guard let target = PhotographerMapWeatherTarget(coordinate) else { return }
-        weatherTarget = target
-    }
-
-    @MainActor
-    private func loadWeather(for target: PhotographerMapWeatherTarget) async {
-        if let weatherSnapshot, weatherSnapshot.isFresh(for: target) {
-            weatherErrorMessage = nil
-            return
-        }
-
-        if let weatherSnapshot,
-           weatherSnapshot.target.location.distance(from: target.location) >= 3_000 {
-            self.weatherSnapshot = nil
-        }
-        weatherLoadingTarget = target
-        weatherErrorMessage = nil
-
-        defer {
-            if weatherTarget == target {
-                weatherLoadingTarget = nil
-            }
-        }
-
-        do {
-            try await Task.sleep(for: .milliseconds(250))
-            let current = try await WeatherService.shared.weather(
-                for: target.location,
-                including: .current
-            )
-            let attribution = if let weatherAttribution {
-                weatherAttribution
-            } else {
-                try await WeatherService.shared.attribution
-            }
-            try Task.checkCancellation()
-            guard weatherTarget == target else { return }
-
-            weatherAttribution = attribution
-            weatherSnapshot = PhotographerMapWeatherSnapshot(
-                target: target,
-                current: current
-            )
-        } catch is CancellationError {
-            return
-        } catch {
-            guard weatherTarget == target else { return }
-            weatherErrorMessage = error.localizedDescription
-        }
     }
 
     private func moveDay(by value: Int) {
@@ -743,49 +577,6 @@ struct PhotographerMapView: View {
             return "\(label) · \(coordinates)"
         }
         return coordinates
-    }
-}
-
-private struct WeatherAttributionImage: View {
-    let url: URL
-    let size: CGSize
-
-    var body: some View {
-        AsyncImage(url: url) { phase in
-            if let image = phase.image {
-                image
-                    .resizable()
-                    .scaledToFit()
-            } else {
-                Text("Weather")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-    }
-}
-
-private struct PhotographerMapWeatherAttributionView: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let attribution: WeatherAttribution
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            WeatherAttributionImage(
-                url: colorScheme == .dark
-                    ? attribution.combinedMarkLightURL
-                    : attribution.combinedMarkDarkURL,
-                size: CGSize(width: 126, height: 22)
-            )
-
-            Link(destination: attribution.legalPageURL) {
-                Label("Weather data sources", systemImage: "arrow.up.right.square")
-                    .font(.caption)
-            }
-        }
-        .padding(14)
     }
 }
 
