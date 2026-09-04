@@ -130,6 +130,8 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
             photographers: [sourcePhotographer, firstTarget, secondTarget],
             clips: sourceClips
         )
+        coordinator.draft.addPhotographerTrack(firstTarget.id, on: sourceStart, calendar: calendar)
+        coordinator.draft.addPhotographerTrack(secondTarget.id, on: sourceStart, calendar: calendar)
         coordinator.selectedClipIDs = Set(sourceClips.map(\.id))
         coordinator.copySelectedClips()
         coordinator.selectPhotographer(firstTarget.id, extendingSelection: false)
@@ -160,6 +162,8 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         let targetDate = date(2026, 8, 29, 14, 15, calendar: calendar)
         let coordinator = MetadataProgrammingCoordinator(selectedDate: targetDate, calendar: calendar)
         coordinator.draft.photographers = [first, second]
+        coordinator.draft.addPhotographerTrack(first.id, on: targetDate, calendar: calendar)
+        coordinator.draft.addPhotographerTrack(second.id, on: targetDate, calendar: calendar)
         coordinator.placePlayhead(on: first.id, at: targetDate)
 
         coordinator.selectAdjacentTrack(offset: 1)
@@ -347,6 +351,89 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         }
         XCTAssertEqual(coordinator.draft.clips.first?.endsAt, pending?.endsAt)
         XCTAssertEqual(coordinator.selectedClipIDs, [clip.id])
+    }
+
+    func testApplyingResizeIntoNextDayAddsPhotographerTrackThere() throws {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(
+            name: "Night", filenamePrefix: "NGT", creator: "Night", copyrightNotice: ""
+        )
+        let firstDay = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let nextDay = date(2026, 8, 30, 0, 0, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Late",
+            startsAt: date(2026, 8, 29, 22, 0, calendar: calendar),
+            endsAt: date(2026, 8, 29, 23, 30, calendar: calendar)
+        )
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: firstDay, calendar: calendar)
+        coordinator.draft = MetadataAutomation(photographers: [photographer], clips: [clip])
+
+        coordinator.resizeClip(clip, edge: .end, by: 60 * 60)
+        coordinator.applyClipChange(try XCTUnwrap(coordinator.pendingClipChange?.clip))
+
+        XCTAssertEqual(coordinator.draft.photographerIDs(on: firstDay, calendar: calendar), [photographer.id])
+        XCTAssertEqual(coordinator.draft.photographerIDs(on: nextDay, calendar: calendar), [photographer.id])
+        coordinator.selectedDate = nextDay
+        XCTAssertEqual(coordinator.timelinePhotographers.map(\.id), [photographer.id])
+    }
+
+    func testVerticalClipMoveChangesTrackAndKeepsTime() throws {
+        let calendar = utcCalendar
+        let first = PhotographerProfile(
+            name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: ""
+        )
+        let second = PhotographerProfile(
+            name: "Second", filenamePrefix: "TWO", creator: "Second", copyrightNotice: ""
+        )
+        let start = date(2026, 8, 29, 9, 0, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: first.id,
+            name: "Assignment",
+            startsAt: start,
+            endsAt: start.addingTimeInterval(3_600)
+        )
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: start, calendar: calendar)
+        coordinator.draft = MetadataAutomation(photographers: [first, second], clips: [clip])
+        coordinator.draft.addPhotographerTrack(second.id, on: start, calendar: calendar)
+
+        coordinator.moveClip(clip, by: 0, trackOffset: 1, duplicating: false)
+
+        let moved = try XCTUnwrap(coordinator.draft.clips.first)
+        XCTAssertEqual(moved.photographerID, second.id)
+        XCTAssertEqual(moved.startsAt, clip.startsAt)
+        XCTAssertEqual(moved.endsAt, clip.endsAt)
+        XCTAssertEqual(coordinator.selectedPhotographerID, second.id)
+    }
+
+    func testRemovingTrackFromOneDayPreservesSpanningClipOnOtherDays() {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(
+            name: "Travel", filenamePrefix: "TRV", creator: "Travel", copyrightNotice: ""
+        )
+        let selectedDay = date(2026, 8, 30, 0, 0, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Multi-day",
+            startsAt: date(2026, 8, 29, 23, 0, calendar: calendar),
+            endsAt: date(2026, 8, 31, 1, 0, calendar: calendar)
+        )
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: selectedDay, calendar: calendar)
+        coordinator.draft = MetadataAutomation(photographers: [photographer], clips: [clip])
+
+        coordinator.removePhotographer(photographer)
+
+        let remaining = coordinator.draft.clips.sorted { $0.startsAt < $1.startsAt }
+        XCTAssertEqual(remaining.count, 2)
+        XCTAssertEqual(remaining[0].startsAt, clip.startsAt)
+        XCTAssertEqual(remaining[0].endsAt, selectedDay)
+        XCTAssertEqual(remaining[1].startsAt, date(2026, 8, 31, 0, 0, calendar: calendar))
+        XCTAssertEqual(remaining[1].endsAt, clip.endsAt)
+        XCTAssertTrue(coordinator.draft.photographerIDs(on: selectedDay, calendar: calendar).isEmpty)
+        XCTAssertEqual(
+            coordinator.draft.photographerIDs(on: clip.startsAt, calendar: calendar),
+            [photographer.id]
+        )
     }
 
     func testOptionMoveDuplicatesClipAndKeepsOriginal() throws {

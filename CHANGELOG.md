@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.7.2 — 2026-09-04
+
+- Make photographer tracks specific to each programming day and automatically carry a track forward when a clip extends past midnight.
+- Move metadata clips directly between photographer tracks by dragging them vertically.
 
 ## 2.7.1 — 2026-09-03
 

@@ -432,22 +432,17 @@ struct TimelineAddPhotographerRow: View {
 
 struct PhotographerTrackDropDelegate: DropDelegate {
     let destinationID: UUID
-    @Binding var photographers: [PhotographerProfile]
     @Binding var draggedPhotographerID: UUID?
+    let onMove: (UUID, UUID) -> Void
 
     func dropEntered(info: DropInfo) {
         guard let draggedPhotographerID,
-              draggedPhotographerID != destinationID,
-              let sourceIndex = photographers.firstIndex(where: { $0.id == draggedPhotographerID }),
-              let destinationIndex = photographers.firstIndex(where: { $0.id == destinationID }) else {
+              draggedPhotographerID != destinationID else {
             return
         }
 
         withAnimation(.snappy(duration: 0.18)) {
-            photographers.move(
-                fromOffsets: IndexSet(integer: sourceIndex),
-                toOffset: destinationIndex > sourceIndex ? destinationIndex + 1 : destinationIndex
-            )
+            onMove(draggedPhotographerID, destinationID)
         }
     }
 
@@ -460,4 +455,3 @@ struct PhotographerTrackDropDelegate: DropDelegate {
         return true
     }
 }
-

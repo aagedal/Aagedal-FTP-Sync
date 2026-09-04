@@ -144,6 +144,50 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(automation.existingFieldPolicy, .overwrite)
     }
 
+    func testPhotographerTracksAreAssignedPerDayInTheirOwnOrder() {
+        let calendar = utcCalendar
+        let firstID = UUID()
+        let secondID = UUID()
+        let firstDay = date(2026, 9, 3, 12, 0, calendar: calendar)
+        let secondDay = date(2026, 9, 4, 12, 0, calendar: calendar)
+        var automation = MetadataAutomation()
+
+        automation.addPhotographerTrack(firstID, on: firstDay, calendar: calendar)
+        automation.addPhotographerTrack(secondID, on: firstDay, calendar: calendar)
+        automation.addPhotographerTrack(secondID, on: secondDay, calendar: calendar)
+
+        XCTAssertEqual(automation.photographerIDs(on: firstDay, calendar: calendar), [firstID, secondID])
+        XCTAssertEqual(automation.photographerIDs(on: secondDay, calendar: calendar), [secondID])
+    }
+
+    func testLegacyAutomationInfersTracksForEveryDayTouchedByClip() throws {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(
+            name: "Night", filenamePrefix: "NGT", creator: "Night", copyrightNotice: ""
+        )
+        let firstDay = date(2026, 9, 3, 12, 0, calendar: calendar)
+        let secondDay = date(2026, 9, 4, 12, 0, calendar: calendar)
+        let clip = MetadataScheduleClip(
+            photographerID: photographer.id,
+            name: "Overnight",
+            startsAt: date(2026, 9, 3, 23, 0, calendar: calendar),
+            endsAt: date(2026, 9, 4, 1, 0, calendar: calendar)
+        )
+        let current = MetadataAutomation(photographers: [photographer], clips: [clip])
+        var json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(current)) as? [String: Any]
+        )
+        json.removeValue(forKey: "photographerTracks")
+
+        let decoded = try JSONDecoder().decode(
+            MetadataAutomation.self,
+            from: JSONSerialization.data(withJSONObject: json)
+        )
+
+        XCTAssertEqual(decoded.photographerIDs(on: firstDay, calendar: calendar), [photographer.id])
+        XCTAssertEqual(decoded.photographerIDs(on: secondDay, calendar: calendar), [photographer.id])
+    }
+
     func testLegacyClipJSONLoadsWithoutGPSPosition() throws {
         let photographerID = UUID()
         let clipID = UUID()

@@ -87,7 +87,7 @@ struct TimelineTrack: View {
     let onSelect: (MetadataScheduleClip) -> Void
     let onEdit: (MetadataScheduleClip) -> Void
     let onCreate: (PhotographerProfile, Date, Date) -> Void
-    let onMove: (MetadataScheduleClip, TimeInterval, Bool) -> Void
+    let onMove: (MetadataScheduleClip, TimeInterval, Int, Bool) -> Void
     let onResize: (MetadataScheduleClip, MetadataClipResizeEdge, TimeInterval) -> Void
     let onReprocessClip: (MetadataScheduleClip) -> Void
     let onPlacePlayhead: (UUID, Date) -> Void
@@ -171,7 +171,9 @@ struct TimelineTrack: View {
                             onSelect: { onSelect(clip) },
                             onEdit: { onEdit(clip) },
                             onReprocess: { onReprocessClip(clip) },
-                            onMove: { interval, duplicating in onMove(clip, interval, duplicating) },
+                            onMove: { interval, trackOffset, duplicating in
+                                onMove(clip, interval, trackOffset, duplicating)
+                            },
                             onResize: { edge, interval in onResize(clip, edge, interval) }
                         )
                         .frame(width: clipWidth(clip, totalWidth: proxy.size.width), height: 44)
@@ -420,7 +422,7 @@ private struct TimelineClipView: View {
     let onSelect: () -> Void
     let onEdit: () -> Void
     let onReprocess: () -> Void
-    let onMove: (TimeInterval, Bool) -> Void
+    let onMove: (TimeInterval, Int, Bool) -> Void
     let onResize: (MetadataClipResizeEdge, TimeInterval) -> Void
 
     @GestureState private var moveState = TimelineClipMoveState()
@@ -458,7 +460,7 @@ private struct TimelineClipView: View {
                             .padding(4)
                     }
                 }
-                .offset(x: moveState.translation)
+                .offset(moveState.translation)
         }
         .foregroundStyle(color)
         .contentShape(RoundedRectangle(cornerRadius: 6))
@@ -472,11 +474,11 @@ private struct TimelineClipView: View {
             }
             .disabled(!canReprocess)
         }
-        .help("Click to select, double-click to edit, drag to move, Option-drag to duplicate, or drag an edge to resize.")
+        .help("Click to select, double-click to edit, drag horizontally in time or vertically to another track, Option-drag to duplicate, or drag an edge to resize.")
     }
 
     private var isPreviewingDuplicate: Bool {
-        moveState.isDuplicating && abs(moveState.translation) >= 3
+        moveState.isDuplicating && gestureDistance(moveState.translation) >= 3
     }
 
     private func clipBody(showsResizeHandles: Bool) -> some View {
@@ -532,7 +534,7 @@ private struct TimelineClipView: View {
             .updating($moveState) { value, state, _ in
                 guard gestureDistance(value.translation) >= 3 else { return }
                 state = TimelineClipMoveState(
-                    translation: value.translation.width,
+                    translation: value.translation,
                     isDuplicating: NSEvent.modifierFlags.contains(.option)
                 )
             }
@@ -543,6 +545,7 @@ private struct TimelineClipView: View {
                 }
                 onMove(
                     value.translation.width * secondsPerPoint,
+                    Int((value.translation.height / 58).rounded()),
                     NSEvent.modifierFlags.contains(.option)
                 )
             }
@@ -576,7 +579,7 @@ private struct TimelineClipView: View {
 }
 
 private struct TimelineClipMoveState {
-    var translation: CGFloat = 0
+    var translation: CGSize = .zero
     var isDuplicating = false
 }
 

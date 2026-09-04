@@ -208,18 +208,18 @@ struct MetadataProgrammingView: View {
     private var dialogContent: some View {
         sheetContent
         .confirmationDialog(
-            "Remove photographer?",
+            "Remove photographer track?",
             isPresented: Binding(
                 get: { photographerPendingDeletion != nil },
                 set: { if !$0 { photographerPendingDeletion = nil } }
             ),
             presenting: photographerPendingDeletion
         ) { photographer in
-            Button("Remove \(photographer.photographerName)", role: .destructive) {
+            Button("Remove from this day", role: .destructive) {
                 removePhotographer(photographer)
             }
         } message: { photographer in
-            Text("This also removes every metadata clip on \(photographer.photographerName)’s track.")
+            Text("This removes \(photographer.photographerName)’s track and every clip on it from \(selectedDate.formatted(date: .long, time: .omitted)). Other days are unchanged.")
         }
         .alert(
             "Extend into another day?",
@@ -689,8 +689,8 @@ struct MetadataProgrammingView: View {
                                 of: [UTType.text],
                                 delegate: PhotographerTrackDropDelegate(
                                     destinationID: photographer.id,
-                                    photographers: $coordinator.draft.photographers,
-                                    draggedPhotographerID: $coordinator.draggedPhotographerID
+                                    draggedPhotographerID: $coordinator.draggedPhotographerID,
+                                    onMove: coordinator.movePhotographerTrack
                                 )
                             )
                             Divider()
@@ -1008,8 +1008,18 @@ struct MetadataProgrammingView: View {
         timelineFocused = true
     }
 
-    private func moveClip(_ clip: MetadataScheduleClip, by interval: TimeInterval, duplicating: Bool) {
-        coordinator.moveClip(clip, by: interval, duplicating: duplicating)
+    private func moveClip(
+        _ clip: MetadataScheduleClip,
+        by interval: TimeInterval,
+        trackOffset: Int,
+        duplicating: Bool
+    ) {
+        coordinator.moveClip(
+            clip,
+            by: interval,
+            trackOffset: trackOffset,
+            duplicating: duplicating
+        )
     }
 
     private func placePlayhead(on photographerID: UUID, at date: Date) {

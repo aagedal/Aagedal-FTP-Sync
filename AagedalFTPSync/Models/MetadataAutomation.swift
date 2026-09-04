@@ -251,6 +251,14 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+/// A photographer row that is available on one programming day. Photographer
+/// profiles remain job-wide so their filename and IPTC settings are shared,
+/// while timeline membership and ordering can vary from day to day.
+struct MetadataPhotographerTrack: Codable, Hashable, Sendable {
+    var photographerID: UUID
+    var date: PhotographerWorkDate
+}
+
 struct ScheduledMetadataFields: Codable, Hashable, Sendable {
     var headline = ""
     var description = ""
@@ -632,6 +640,7 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
     var timestampPolicy: MetadataTimestampPolicy = .sourceModification
     var existingFieldPolicy: MetadataExistingFieldPolicy = .fillEmpty
     var photographers: [PhotographerProfile] = []
+    var photographerTracks: [MetadataPhotographerTrack] = []
     var clips: [MetadataScheduleClip] = []
 
     init(
@@ -639,13 +648,92 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         timestampPolicy: MetadataTimestampPolicy = .sourceModification,
         existingFieldPolicy: MetadataExistingFieldPolicy = .fillEmpty,
         photographers: [PhotographerProfile] = [],
+        photographerTracks: [MetadataPhotographerTrack]? = nil,
         clips: [MetadataScheduleClip] = []
     ) {
         self.isEnabled = isEnabled
         self.timestampPolicy = timestampPolicy
         self.existingFieldPolicy = existingFieldPolicy
         self.photographers = photographers
+        self.photographerTracks = photographerTracks
+            ?? Self.inferredPhotographerTracks(from: clips)
         self.clips = clips
+    }
+
+    func photographerIDs(on day: Date, calendar: Calendar = .current) -> [UUID] {
+        let workDate = PhotographerWorkDate(day, calendar: calendar)
+        var seen = Set<UUID>()
+        var result = photographerTracks.compactMap { track -> UUID? in
+            guard track.date == workDate, seen.insert(track.photographerID).inserted else { return nil }
+            return track.photographerID
+        }
+
+        // A clip is authoritative. This fallback keeps malformed or legacy data
+        // usable even before the next edit persists its inferred track rows.
+        for clip in clips where clip.overlaps(dayContaining: day, calendar: calendar) {
+            if seen.insert(clip.photographerID).inserted {
+                result.append(clip.photographerID)
+            }
+        }
+        return result
+    }
+
+    mutating func addPhotographerTrack(
+        _ photographerID: UUID,
+        on day: Date,
+        calendar: Calendar = .current
+    ) {
+        let track = MetadataPhotographerTrack(
+            photographerID: photographerID,
+            date: PhotographerWorkDate(day, calendar: calendar)
+        )
+        guard !photographerTracks.contains(track) else { return }
+        photographerTracks.append(track)
+    }
+
+    mutating func ensurePhotographerTracks(
+        for clip: MetadataScheduleClip,
+        calendar: Calendar = .current
+    ) {
+        var day = calendar.startOfDay(for: clip.startsAt)
+        while day < clip.endsAt {
+            if clip.overlaps(dayContaining: day, calendar: calendar) {
+                addPhotographerTrack(clip.photographerID, on: day, calendar: calendar)
+            }
+            guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day),
+                  nextDay > day else { break }
+            day = nextDay
+        }
+    }
+
+    mutating func removePhotographerTrack(
+        _ photographerID: UUID,
+        on day: Date,
+        calendar: Calendar = .current
+    ) {
+        let workDate = PhotographerWorkDate(day, calendar: calendar)
+        photographerTracks.removeAll {
+            $0.photographerID == photographerID && $0.date == workDate
+        }
+    }
+
+    mutating func movePhotographerTrack(
+        _ photographerID: UUID,
+        before destinationID: UUID,
+        on day: Date,
+        calendar: Calendar = .current
+    ) {
+        guard photographerID != destinationID else { return }
+        let workDate = PhotographerWorkDate(day, calendar: calendar)
+        var dayTracks = photographerTracks.filter { $0.date == workDate }
+        guard let sourceIndex = dayTracks.firstIndex(where: { $0.photographerID == photographerID }),
+              let destinationIndex = dayTracks.firstIndex(where: { $0.photographerID == destinationID }) else {
+            return
+        }
+        let track = dayTracks.remove(at: sourceIndex)
+        dayTracks.insert(track, at: destinationIndex)
+        photographerTracks.removeAll { $0.date == workDate }
+        photographerTracks.append(contentsOf: dayTracks)
     }
 
     func restricted(to days: Set<Date>, calendar: Calendar = .current) -> MetadataAutomation {
@@ -670,8 +758,13 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         }
 
         let referencedPhotographerIDs = Set(restrictedClips.map(\.photographerID))
+        let selectedWorkDates = Set(days.map { PhotographerWorkDate($0, calendar: calendar) })
         var result = self
-        result.photographers = photographers.filter { referencedPhotographerIDs.contains($0.id) }
+        result.photographerTracks = photographerTracks.filter { selectedWorkDates.contains($0.date) }
+        let trackPhotographerIDs = Set(result.photographerTracks.map(\.photographerID))
+        result.photographers = photographers.filter {
+            referencedPhotographerIDs.contains($0.id) || trackPhotographerIDs.contains($0.id)
+        }
         result.clips = restrictedClips
         return result
     }
@@ -838,6 +931,7 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         case timestampPolicy
         case existingFieldPolicy
         case photographers
+        case photographerTracks
         case clips
     }
 
@@ -850,5 +944,32 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
             ?? .overwrite
         photographers = try container.decodeIfPresent([PhotographerProfile].self, forKey: .photographers) ?? []
         clips = try container.decodeIfPresent([MetadataScheduleClip].self, forKey: .clips) ?? []
+        photographerTracks = try container.decodeIfPresent(
+            [MetadataPhotographerTrack].self,
+            forKey: .photographerTracks
+        ) ?? Self.inferredPhotographerTracks(from: clips)
+    }
+
+    private static func inferredPhotographerTracks(
+        from clips: [MetadataScheduleClip],
+        calendar: Calendar = .current
+    ) -> [MetadataPhotographerTrack] {
+        var tracks: [MetadataPhotographerTrack] = []
+        for clip in clips {
+            var day = calendar.startOfDay(for: clip.startsAt)
+            while day < clip.endsAt {
+                let track = MetadataPhotographerTrack(
+                    photographerID: clip.photographerID,
+                    date: PhotographerWorkDate(day, calendar: calendar)
+                )
+                if clip.overlaps(dayContaining: day, calendar: calendar), !tracks.contains(track) {
+                    tracks.append(track)
+                }
+                guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day),
+                      nextDay > day else { break }
+                day = nextDay
+            }
+        }
+        return tracks
     }
 }

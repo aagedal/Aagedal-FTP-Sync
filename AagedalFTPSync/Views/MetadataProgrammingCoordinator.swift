@@ -252,7 +252,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         let selected = selectedPhotographerIDs.isEmpty
             ? Set([playhead?.photographerID, selectedPhotographerID].compactMap { $0 })
             : selectedPhotographerIDs
-        return draft.photographers.compactMap { photographer in
+        return timelinePhotographers.compactMap { photographer in
             selected.contains(photographer.id) ? photographer.id : nil
         }
     }
@@ -276,11 +276,14 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     var timelinePhotographers: [PhotographerProfile] {
-        draft.photographers
+        let profilesByID = Dictionary(uniqueKeysWithValues: draft.photographers.map { ($0.id, $0) })
+        return draft.photographerIDs(on: selectedDate, calendar: calendar).compactMap { profilesByID[$0] }
     }
 
     var programmedDays: Set<Date> {
-        draft.clips.reduce(into: Set<Date>()) { days, clip in
+        var days = Set(draft.photographerTracks.compactMap { $0.date.date(calendar: calendar) }
+            .map { calendar.startOfDay(for: $0) })
+        for clip in draft.clips {
             var day = calendar.startOfDay(for: clip.startsAt)
             while clip.endsAt > day {
                 if clip.overlaps(dayContaining: day, calendar: calendar) {
@@ -293,11 +296,18 @@ final class MetadataProgrammingCoordinator: ObservableObject {
                 day = nextDay
             }
         }
+        return days
     }
 
     func knownPhotographers(in store: AppStore) -> [PhotographerProfile] {
-        let assignedIDs = Set(draft.photographers.map(\.id))
-        return store.photographerLibrary.filter { !assignedIDs.contains($0.id) }
+        let assignedToday = Set(timelinePhotographers.map(\.id))
+        var profilesByID = Dictionary(uniqueKeysWithValues: store.photographerLibrary.map { ($0.id, $0) })
+        for photographer in draft.photographers {
+            profilesByID[photographer.id] = photographer
+        }
+        return profilesByID.values
+            .filter { !assignedToday.contains($0.id) }
+            .sorted { $0.photographerName.localizedStandardCompare($1.photographerName) == .orderedAscending }
     }
 
     func clips(for photographer: PhotographerProfile) -> [MetadataScheduleClip] {
@@ -340,7 +350,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         loadedJobID = job.id
         draft = job.metadataAutomation ?? MetadataAutomation()
         lastSavedDraft = draft
-        selectedPhotographerID = draft.photographers.first?.id
+        selectedPhotographerID = timelinePhotographers.first?.id
         selectedPhotographerIDs = Set([selectedPhotographerID].compactMap { $0 })
         editingPhotographerID = nil
         selectedClipIDs = []
@@ -385,15 +395,15 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             copyrightNotice: ""
         )
         draft.photographers.append(photographer)
+        draft.addPhotographerTrack(photographer.id, on: selectedDate, calendar: calendar)
         setSingleSelectedPhotographer(photographer.id)
     }
 
     func addKnownPhotographer(_ photographer: PhotographerProfile) {
-        guard !draft.photographers.contains(where: { $0.id == photographer.id }) else {
-            setSingleSelectedPhotographer(photographer.id)
-            return
+        if !draft.photographers.contains(where: { $0.id == photographer.id }) {
+            draft.photographers.append(photographer)
         }
-        draft.photographers.append(photographer)
+        draft.addPhotographerTrack(photographer.id, on: selectedDate, calendar: calendar)
         setSingleSelectedPhotographer(photographer.id)
     }
 
@@ -421,10 +431,41 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func removePhotographer(_ photographer: PhotographerProfile) {
-        draft.photographers.removeAll { $0.id == photographer.id }
-        draft.clips.removeAll { $0.photographerID == photographer.id }
+        let dayStart = calendar.startOfDay(for: selectedDate)
+        let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
+            ?? dayStart.addingTimeInterval(86_400)
+        draft.removePhotographerTrack(photographer.id, on: selectedDate, calendar: calendar)
+        draft.clips = draft.clips.flatMap { clip -> [MetadataScheduleClip] in
+            guard clip.photographerID == photographer.id,
+                  clip.overlaps(dayContaining: selectedDate, calendar: calendar) else {
+                return [clip]
+            }
+            if clip.startsAt < dayStart, clip.endsAt > nextDay {
+                var before = clip
+                before.endsAt = dayStart
+                var after = clip
+                after.id = UUID()
+                after.startsAt = nextDay
+                return [before, after]
+            }
+            if clip.startsAt < dayStart {
+                var before = clip
+                before.endsAt = dayStart
+                return [before]
+            }
+            if clip.endsAt > nextDay {
+                var after = clip
+                after.startsAt = nextDay
+                return [after]
+            }
+            return []
+        }
+        if !draft.photographerTracks.contains(where: { $0.photographerID == photographer.id }),
+           !draft.clips.contains(where: { $0.photographerID == photographer.id }) {
+            draft.photographers.removeAll { $0.id == photographer.id }
+        }
         selectedClipIDs = selectedClipIDs.filter { id in draft.clips.contains(where: { $0.id == id }) }
-        selectedPhotographerID = draft.photographers.first?.id
+        selectedPhotographerID = timelinePhotographers.first?.id
         selectedPhotographerIDs = Set([selectedPhotographerID].compactMap { $0 })
         if playhead?.photographerID == photographer.id { playhead = nil }
         photographerPendingDeletion = nil
@@ -447,6 +488,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             fields: ScheduledMetadataFields(headline: "Metadata clip")
         )
         draft.clips.append(clip)
+        draft.ensurePhotographerTracks(for: clip, calendar: calendar)
         selectedClipIDs = [clip.id]
         editingClipID = clip.id
     }
@@ -454,6 +496,9 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func updateClip(_ clip: MetadataScheduleClip) {
         guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
         draft.clips[index] = clip
+        draft.ensurePhotographerTracks(for: clip, calendar: calendar)
+        selectedPhotographerID = clip.photographerID
+        selectedPhotographerIDs = [clip.photographerID]
         editingClipID = nil
     }
 
@@ -517,6 +562,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             fields: ScheduledMetadataFields(headline: "Metadata clip")
         )
         draft.clips.append(clip)
+        draft.ensurePhotographerTracks(for: clip, calendar: calendar)
         selectedClipIDs = [clip.id]
         selectedPhotographerID = photographer.id
         selectedPhotographerIDs = [photographer.id]
@@ -579,11 +625,10 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             restrictedTo: sourceDay,
             calendar: calendar
         )
-        let referencedPhotographerIDs = Set(clips.map(\.photographerID))
-        let photographers = draft.photographers.filter {
-            referencedPhotographerIDs.contains($0.id)
-        }
-        copiedDayProgramming = clips.isEmpty
+        let assignedPhotographerIDs = draft.photographerIDs(on: sourceDay, calendar: calendar)
+        let profilesByID = Dictionary(uniqueKeysWithValues: draft.photographers.map { ($0.id, $0) })
+        let photographers = assignedPhotographerIDs.compactMap { profilesByID[$0] }
+        copiedDayProgramming = clips.isEmpty && photographers.isEmpty
             ? nil
             : CopiedMetadataDay(
                 sourceDay: sourceDay,
@@ -601,29 +646,49 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             toDay: targetDay,
             calendar: calendar
         )
-        guard !pasted.isEmpty else { return }
+        guard !pasted.isEmpty || !copiedDayProgramming.photographers.isEmpty else { return }
         let existingPhotographerIDs = Set(draft.photographers.map(\.id))
         draft.photographers.append(contentsOf: copiedDayProgramming.photographers.filter {
             !existingPhotographerIDs.contains($0.id)
         })
+        for photographer in copiedDayProgramming.photographers {
+            draft.addPhotographerTrack(photographer.id, on: targetDay, calendar: calendar)
+        }
         draft.clips.append(contentsOf: pasted)
+        for clip in pasted {
+            draft.ensurePhotographerTracks(for: clip, calendar: calendar)
+        }
         selectedDate = targetDay
         selectedClipIDs = Set(pasted.map(\.id))
-        selectedPhotographerID = pasted.first?.photographerID
+        selectedPhotographerID = pasted.first?.photographerID ?? copiedDayProgramming.photographers.first?.id
         selectedPhotographerIDs = Set(pasted.map(\.photographerID))
+        if selectedPhotographerIDs.isEmpty, let selectedPhotographerID {
+            selectedPhotographerIDs = [selectedPhotographerID]
+        }
         playhead = nil
     }
 
-    func moveClip(_ clip: MetadataScheduleClip, by interval: TimeInterval, duplicating: Bool) {
+    func moveClip(
+        _ clip: MetadataScheduleClip,
+        by interval: TimeInterval,
+        trackOffset: Int = 0,
+        duplicating: Bool
+    ) {
         var changed = MetadataTimelineEditing.moving(
             clip,
             by: interval,
             snapMinutes: snapMinutes,
             calendar: calendar
         )
+        if trackOffset != 0,
+           let sourceIndex = timelinePhotographers.firstIndex(where: { $0.id == clip.photographerID }) {
+            let targetIndex = min(max(sourceIndex + trackOffset, 0), timelinePhotographers.count - 1)
+            changed.photographerID = timelinePhotographers[targetIndex].id
+        }
         if duplicating {
             changed.id = UUID()
             draft.clips.append(changed)
+            draft.ensurePhotographerTracks(for: changed, calendar: calendar)
             selectedClipIDs = [changed.id]
             selectedPhotographerID = changed.photographerID
             selectedPhotographerIDs = [changed.photographerID]
@@ -663,6 +728,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func applyClipChange(_ clip: MetadataScheduleClip) {
         guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
         draft.clips[index] = clip
+        draft.ensurePhotographerTracks(for: clip, calendar: calendar)
         selectedClipIDs = [clip.id]
         selectedPhotographerID = clip.photographerID
         selectedPhotographerIDs = [clip.photographerID]
@@ -718,14 +784,43 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func moveDay(by value: Int) {
         selectedDate = calendar.date(byAdding: .day, value: value, to: selectedDate) ?? selectedDate
         playhead = nil
-        selectedClipIDs = selectedClipIDs.filter { id in
-            draft.clips.first(where: { $0.id == id })?.overlaps(dayContaining: selectedDate, calendar: calendar) == true
-        }
+        reconcileSelectionWithSelectedDay()
+    }
+
+    func movePhotographerTrack(_ photographerID: UUID, before destinationID: UUID) {
+        draft.movePhotographerTrack(
+            photographerID,
+            before: destinationID,
+            on: selectedDate,
+            calendar: calendar
+        )
     }
 
     func clearPlayheadIfOutsideSelectedDay() {
         if let playhead, !calendar.isDate(playhead.date, inSameDayAs: selectedDate) {
             self.playhead = nil
+        }
+        reconcileSelectionWithSelectedDay()
+    }
+
+    private func reconcileSelectionWithSelectedDay() {
+        selectedClipIDs = selectedClipIDs.filter { id in
+            draft.clips.first(where: { $0.id == id })?.overlaps(dayContaining: selectedDate, calendar: calendar) == true
+        }
+        let selectedClips = draft.clips.filter { selectedClipIDs.contains($0.id) }
+        if let selected = selectedClips.first {
+            selectedPhotographerID = selected.photographerID
+            selectedPhotographerIDs = Set(selectedClips.map(\.photographerID))
+            return
+        }
+
+        let visibleIDs = Set(timelinePhotographers.map(\.id))
+        selectedPhotographerIDs.formIntersection(visibleIDs)
+        if selectedPhotographerID.map({ visibleIDs.contains($0) }) != true {
+            selectedPhotographerID = timelinePhotographers.first?.id
+        }
+        if selectedPhotographerIDs.isEmpty, let selectedPhotographerID {
+            selectedPhotographerIDs = [selectedPhotographerID]
         }
     }
 
@@ -771,6 +866,9 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     ) {
         guard !pasted.isEmpty else { return }
         draft.clips.append(contentsOf: pasted)
+        for clip in pasted {
+            draft.ensurePhotographerTracks(for: clip, calendar: calendar)
+        }
         selectedClipIDs = Set(pasted.map(\.id))
         if let newPlayhead {
             playhead = newPlayhead
