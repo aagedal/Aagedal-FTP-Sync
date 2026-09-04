@@ -732,6 +732,7 @@ struct MetadataProgrammingView: View {
                     )
                 }
                 .focusable()
+                .focusEffectDisabled()
                 .focused($timelineFocused)
                 .onKeyPress(.leftArrow) {
                     movePlayhead(bySnapIntervals: -1)

@@ -925,6 +925,7 @@ private struct MapMiniTimeline: View {
         }
         .frame(minWidth: 240, maxWidth: .infinity, minHeight: 38, maxHeight: 44)
         .focusable()
+        .focusEffectDisabled()
         .onKeyPress(.leftArrow) {
             adjustTime(by: -5 * 60)
             return .handled
