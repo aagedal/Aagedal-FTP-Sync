@@ -3,6 +3,38 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class SyncJobValidationTests: XCTestCase {
+    func testOrdinaryLocalJobsRejectOverlappingFoldersInEveryDirection() {
+        for direction in [SyncDirection.leftToRight, .rightToLeft, .bidirectional] {
+            for (left, right) in [("/Photos", "/Photos/Backup"), ("/Photos/Backup", "/Photos"), ("/Photos", "/Photos"), ("/", "/Photos")] {
+                var job = validJob(direction: direction)
+                job.left = Endpoint(kind: .local, localPath: left, bookmark: Data([1]))
+                job.right = Endpoint(kind: .local, localPath: right, bookmark: Data([1]))
+                XCTAssertEqual(job.validationMessage, "Source and destination folders must not overlap.")
+            }
+        }
+    }
+
+    func testSiblingFoldersWithCommonPrefixAreAllowed() {
+        var job = validJob(direction: .leftToRight)
+        job.left = Endpoint(kind: .local, localPath: "/Photos", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/PhotosBackup", bookmark: Data([1]))
+        XCTAssertNil(job.validationMessage)
+    }
+
+    func testOrdinaryLocalJobRejectsSymlinkToSourceDescendant() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Photos")
+        let destination = source.appendingPathComponent("Backup")
+        let alias = root.appendingPathComponent("Alias")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: destination)
+        var job = validJob(direction: .leftToRight)
+        job.left = Endpoint(kind: .local, localPath: source.path, bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: alias.path, bookmark: Data([1]))
+        XCTAssertEqual(job.validationMessage, "Source and destination folders must not overlap.")
+    }
+
     func testCleanupAcceptsOneWayLocalTargetWithLongerRetention() {
         var job = validJob(direction: .leftToRight)
         job.filter.recentHours = 1

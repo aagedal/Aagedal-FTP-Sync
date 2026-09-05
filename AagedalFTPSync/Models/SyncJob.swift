@@ -321,6 +321,15 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
             }
             if let message = metadataAutomation.validationMessage { return message }
         }
+        if left.kind == .local, right.kind == .local {
+            let leftURL = URL(fileURLWithPath: left.localPath).standardizedFileURL.resolvingSymlinksInPath()
+            let rightURL = URL(fileURLWithPath: right.localPath).standardizedFileURL.resolvingSymlinksInPath()
+            let leftComponents = leftURL.pathComponents
+            let rightComponents = rightURL.pathComponents
+            if leftComponents.starts(with: rightComponents) || rightComponents.starts(with: leftComponents) {
+                return "Source and destination folders must not overlap."
+            }
+        }
         return nil
     }
 }

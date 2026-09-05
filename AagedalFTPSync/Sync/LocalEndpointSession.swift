@@ -426,6 +426,15 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func removeFilesTransactionally(_ files: [SyncFile]) async throws {
+        try await removeFilesTransactionally(files, expectedContents: nil)
+    }
+
+    func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) async throws {
+        try await removeFilesTransactionally(files, expectedContents: contents)
+    }
+
+    private func removeFilesTransactionally(_ files: [SyncFile], expectedContents: [URL]?) async throws {
+        precondition(expectedContents == nil || expectedContents?.count == files.count)
         let sources = try files.map { file -> URL in
             let source = try safeURL(for: file.relativePath)
             let values = try source.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -442,7 +451,13 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             move: { source, destination in
                 try fileManager.moveItem(at: source, to: destination)
             },
-            delete: { holding in try fileManager.removeItem(at: holding) }
+            delete: { holding in try fileManager.removeItem(at: holding) },
+            validateStaged: { holdings in
+                guard let expectedContents else { return }
+                for (holding, expected) in zip(holdings, expectedContents) {
+                    try SourceRemovalVerification.validate(holding, matches: expected)
+                }
+            }
         )
     }
 

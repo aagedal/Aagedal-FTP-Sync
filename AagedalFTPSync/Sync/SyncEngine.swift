@@ -1901,7 +1901,10 @@ struct SyncEngine: Sendable {
                     }
                 }
                 publishedProcessedPaths = Set(outputPaths)
-                try await source.removeFilesTransactionally([file] + (sourceSidecar.map { [$0] } ?? []))
+                try await source.removeFilesTransactionally(
+                    [file] + (sourceSidecar.map { [$0] } ?? []),
+                    matching: [temporaryURL] + (sourceSidecar == nil ? [] : [temporarySidecarURL])
+                )
                 movedToProcessed = true
             } catch is CancellationError {
                 throw CancellationError()

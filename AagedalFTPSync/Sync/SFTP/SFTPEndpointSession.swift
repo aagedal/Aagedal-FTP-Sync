@@ -55,5 +55,9 @@ struct SFTPEndpointSession: EndpointSession, Sendable {
         try await transport.removeTransactionally(files: files)
     }
 
+    func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) async throws {
+        try await transport.removeTransactionally(files: files, expectedContents: contents)
+    }
+
     func close() async { await transport.close() }
 }

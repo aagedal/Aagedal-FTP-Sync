@@ -140,13 +140,41 @@ enum RemoteTreeWalker {
     }
 }
 
+enum SourceRemovalVerification {
+    static func validate(_ staged: URL, matches expected: URL) throws {
+        let values = try staged.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              FileManager.default.contentsEqual(atPath: staged.path, andPath: expected.path) else {
+            throw AppError.transferFailed("The source changed after it was downloaded. It was not deleted.")
+        }
+    }
+
+    static func validateRemote(
+        matches expected: URL,
+        isolation: isolated (any Actor)? = #isolation,
+        download: (URL, Int64) async throws -> Void
+    ) async throws {
+        let comparison = FileManager.default.temporaryDirectory
+            .appendingPathComponent(".aagedal-sync-\(UUID().uuidString).verification")
+        defer { try? FileManager.default.removeItem(at: comparison) }
+        let attributes = try FileManager.default.attributesOfItem(atPath: expected.path)
+        guard let size = (attributes[.size] as? NSNumber)?.int64Value else {
+            throw AppError.transferFailed("The downloaded source could not be verified before removal.")
+        }
+        try await download(comparison, size)
+        try validate(comparison, matches: expected)
+    }
+}
+
 enum TransactionalRemoval {
-    static func stageAndDelete<Item>(
+    static func stageAndDelete<Item: Sendable>(
         sources: [Item],
         holdings: [Item],
         labels: [String],
         move: (Item, Item) async throws -> Void,
-        delete: (Item) async throws -> Void
+        delete: (Item) async throws -> Void,
+        validateStaged: ([Item]) async throws -> Void = { _ in },
+        isolation: isolated (any Actor)? = #isolation
     ) async throws {
         precondition(sources.count == holdings.count && sources.count == labels.count)
         var stagedCount = 0
@@ -155,6 +183,8 @@ enum TransactionalRemoval {
                 try await move(sources[index], holdings[index])
                 stagedCount += 1
             }
+            // Verify the entire staged group before deleting any member.
+            try await validateStaged(holdings)
         } catch {
             var rollbackFailures: [String] = []
             for index in (0..<stagedCount).reversed() {
@@ -246,6 +276,7 @@ protocol EndpointSession: Sendable {
     ) async throws -> Int
     func removeFile(_ file: SyncFile) async throws
     func removeFilesTransactionally(_ files: [SyncFile]) async throws
+    func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) async throws
     func close() async
 }
 
@@ -324,8 +355,9 @@ extension EndpointSession {
         let fileManager = FileManager.default
         var backups: [String: (url: URL, file: SyncFile)] = [:]
         var backupURLs: [URL] = []
+        var retainedBackupURLs = Set<URL>()
         defer {
-            for backupURL in backupURLs {
+            for backupURL in backupURLs where !retainedBackupURLs.contains(backupURL) {
                 try? fileManager.removeItem(at: backupURL)
             }
         }
@@ -381,8 +413,11 @@ extension EndpointSession {
             }.value
 
             if !rollbackFailures.isEmpty {
+                retainedBackupURLs = Set(rollbackFailures.compactMap { backups[$0]?.url })
+                let recoveryDetail = retainedBackupURLs.isEmpty ? "" : " Recovery backups were retained at: "
+                    + retainedBackupURLs.map(\.path).sorted().joined(separator: ", ") + "."
                 throw AppError.transferFailed(
-                    "The primary file and its companion could not be published, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The destination may contain an incomplete output group. Publication error: \(publicationError.localizedDescription)"
+                    "The primary file and its companion could not be published, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The destination may contain an incomplete output group. Publication error: \(publicationError.localizedDescription)\(recoveryDetail)"
                 )
             }
             if publicationError is CancellationError { throw CancellationError() }
@@ -419,6 +454,10 @@ extension EndpointSession {
 
     func removeFile(_ file: SyncFile) async throws {
         throw AppError.invalidConfiguration("Moving a processed source file is not supported by this location.")
+    }
+
+    func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) async throws {
+        throw AppError.invalidConfiguration("Verified source removal is not supported by this location.")
     }
 
     func removeFilesTransactionally(_ files: [SyncFile]) async throws {

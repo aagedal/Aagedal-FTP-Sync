@@ -99,6 +99,15 @@ struct FTPEndpointSession: EndpointSession, Sendable {
     }
 
     func removeFilesTransactionally(_ files: [SyncFile]) async throws {
+        try await removeFilesTransactionally(files, expectedContents: nil)
+    }
+
+    func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) async throws {
+        try await removeFilesTransactionally(files, expectedContents: contents)
+    }
+
+    private func removeFilesTransactionally(_ files: [SyncFile], expectedContents: [URL]?) async throws {
+        precondition(expectedContents == nil || expectedContents?.count == files.count)
         let sources = files.map { remotePath(for: $0.relativePath) }
         let staged = sources.map { source in
             let parent = (source as NSString).deletingLastPathComponent
@@ -112,7 +121,22 @@ struct FTPEndpointSession: EndpointSession, Sendable {
             move: { source, destination in
                 try await connection.rename(source, to: destination)
             },
-            delete: { holding in try await connection.delete(path: holding) }
+            delete: { holding in try await connection.delete(path: holding) },
+            validateStaged: { holdings in
+                guard let expectedContents else { return }
+                for (holding, expected) in zip(holdings, expectedContents) {
+                    try await SourceRemovalVerification.validateRemote(matches: expected) { url, limit in
+                        do {
+                            try await connection.download(path: holding, to: url, maximumSize: limit)
+                        } catch {
+                            // An aborted RETR can leave a completion reply pending. Reconnect
+                            // before rollback so RNFR/RNTO cannot consume that stale reply.
+                            await connection.close()
+                            throw error
+                        }
+                    }
+                }
+            }
         )
     }
 

@@ -3,6 +3,35 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FTPListingTests: XCTestCase {
+    func testFailedRollbackRetainsOriginalBackupAndReportsItsLocation() async throws {
+        let original = SyncFile(relativePath: "NEWS.CR3", size: 3, modifiedAt: Date())
+        let sidecar = SyncFile(relativePath: "NEWS.xmp", size: 4, modifiedAt: Date())
+        let destination = PartialFailureDestination(
+            files: [original.relativePath: original, sidecar.relativePath: sidecar],
+            failedImportPath: sidecar.relativePath,
+            failsRollback: true
+        )
+        let input = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try Data("incoming".utf8).write(to: input)
+        defer { try? FileManager.default.removeItem(at: input) }
+        var message = ""
+        do {
+            try await destination.importFilesTransactionally(
+                [EndpointFileImport(localURL: input, file: original), EndpointFileImport(localURL: input, file: sidecar)],
+                replacing: [original.relativePath: original, sidecar.relativePath: sidecar],
+                preserveDate: true, verifySize: true
+            )
+            XCTFail("Publication and rollback should fail")
+        } catch { message = error.localizedDescription }
+        let backups = await destination.exportedBackups
+        defer { for url in backups.values { try? FileManager.default.removeItem(at: url) } }
+        let retained = try XCTUnwrap(backups[original.relativePath])
+        XCTAssertEqual(try Data(contentsOf: retained), Data(repeating: 3, count: 3))
+        XCTAssertTrue(message.contains(retained.path))
+        let unused = try XCTUnwrap(backups[sidecar.relativePath])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unused.path))
+    }
+
     func testCompanionFailureRemovesNewPrimaryFile() async throws {
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
         let primary = SyncFile(relativePath: "NEWS.CR3", size: 5, modifiedAt: baseDate)
@@ -1107,13 +1136,17 @@ private actor PartialFailureDestination: EndpointSession {
     private let failedImportPath: String?
     private let failedDeletePath: String?
     private let blockedImportPath: String?
+    private let failsRollback: Bool
+    private(set) var exportedBackups: [String: URL] = [:]
 
     init(
         files: [String: SyncFile] = [:],
         failedImportPath: String? = nil,
         failedDeletePath: String? = nil,
-        blockedImportPath: String? = nil
+        blockedImportPath: String? = nil,
+        failsRollback: Bool = false
     ) {
+        self.failsRollback = failsRollback
         self.files = files
         self.failedImportPath = failedImportPath
         self.failedDeletePath = failedDeletePath
@@ -1126,6 +1159,7 @@ private actor PartialFailureDestination: EndpointSession {
     func listFiles() async throws -> [String: SyncFile] { files }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
+        exportedBackups[file.relativePath] = temporaryURL
         try Data(repeating: UInt8(file.size), count: Int(file.size)).write(to: temporaryURL)
     }
 
@@ -1135,6 +1169,9 @@ private actor PartialFailureDestination: EndpointSession {
         preserveDate: Bool,
         verifySize: Bool
     ) async throws {
+        if failsRollback, localURL.pathExtension == "rollback" {
+            throw AppError.transferFailed("Injected rollback failure")
+        }
         if file.relativePath == failedImportPath {
             throw AppError.transferFailed("Injected import failure for \(file.relativePath)")
         }

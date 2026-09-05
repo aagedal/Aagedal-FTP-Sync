@@ -109,14 +109,17 @@ actor SFTPTransport {
     private func downloadWithoutDeadlineMapping(
         file: SyncFile,
         to temporaryURL: URL,
-        maximumSize: Int64?
+        maximumSize: Int64?,
+        stagedPath: String? = nil
     ) async throws {
         let initialSizeLimit = try maximumSize.map(TransferSizeLimit.init(maximumBytes:))
         let sftp = try await connect()
         _ = FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
         let output = try FileHandle(forWritingTo: temporaryURL)
         defer { try? output.close() }
-        let sourcePath = try await remotePath(for: file.relativePath, sftp: sftp)
+        let sourcePath: String
+        if let stagedPath { sourcePath = stagedPath }
+        else { sourcePath = try await remotePath(for: file.relativePath, sftp: sftp) }
         try await sftp.withFile(filePath: sourcePath, flags: .read) { remoteFile in
             var offset: UInt64 = 0
             var sizeLimit = initialSizeLimit
@@ -205,13 +208,14 @@ actor SFTPTransport {
         }
     }
 
-    func removeTransactionally(files: [SyncFile]) async throws {
+    func removeTransactionally(files: [SyncFile], expectedContents: [URL]? = nil) async throws {
         try await perform(operation: "transactional removal") {
-            try await self.removeTransactionallyWithoutDeadlineMapping(files: files)
+            try await self.removeTransactionallyWithoutDeadlineMapping(files: files, expectedContents: expectedContents)
         }
     }
 
-    private func removeTransactionallyWithoutDeadlineMapping(files: [SyncFile]) async throws {
+    private func removeTransactionallyWithoutDeadlineMapping(files: [SyncFile], expectedContents: [URL]?) async throws {
+        precondition(expectedContents == nil || expectedContents?.count == files.count)
         let sftp = try await connect()
         var sources: [String] = []
         for file in files {
@@ -225,7 +229,17 @@ actor SFTPTransport {
             move: { source, destination in
                 try await sftp.rename(at: source, to: destination)
             },
-            delete: { holding in try await sftp.remove(at: holding) }
+            delete: { holding in try await sftp.remove(at: holding) },
+            validateStaged: { holdings in
+                guard let expectedContents else { return }
+                for index in holdings.indices {
+                    try await SourceRemovalVerification.validateRemote(matches: expectedContents[index]) { url, limit in
+                        try await self.downloadWithoutDeadlineMapping(
+                            file: files[index], to: url, maximumSize: limit, stagedPath: holdings[index]
+                        )
+                    }
+                }
+            }
         )
     }
 

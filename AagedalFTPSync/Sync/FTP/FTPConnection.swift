@@ -431,6 +431,7 @@ actor FTPConnection {
     }
 
     func rename(_ source: String, to destination: String) async throws {
+        try await connectIfNeeded()
         _ = try await command("RNFR \(escaped(source))", accepting: 300..<400)
         _ = try await command("RNTO \(escaped(destination))", accepting: 200..<300)
     }

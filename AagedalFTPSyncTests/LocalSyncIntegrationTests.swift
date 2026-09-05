@@ -75,6 +75,41 @@ final class TransactionalRemovalTests: XCTestCase {
 }
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testVerifiedRemovalRestoresWholePairWhenSameSizeSourceChanges() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let paths = ["PAIR.CR3", "PAIR.xmp"]
+        let originals = [Data("raw".utf8), Data("xmp".utf8)]
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        var snapshots: [URL] = []
+        for (path, data) in zip(paths, originals) {
+            let source = fixture.left.appendingPathComponent(path)
+            let snapshot = fixture.outside.appendingPathComponent(path)
+            try data.write(to: source)
+            try data.write(to: snapshot)
+            try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: source.path)
+            snapshots.append(snapshot)
+        }
+        let changed = fixture.left.appendingPathComponent(paths[1])
+        try Data("NEW".utf8).write(to: changed)
+        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: changed.path)
+        let session = try LocalEndpointSession(endpoint: fixture.endpoint(for: fixture.left))
+        let files = paths.map { SyncFile(relativePath: $0, size: 3, modifiedAt: timestamp) }
+        do {
+            try await session.removeFilesTransactionally(files, matching: snapshots)
+            XCTFail("Changed source contents must prevent removal even with identical size and date")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("source changed"))
+        }
+        XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent(paths[0])), originals[0])
+        XCTAssertEqual(try Data(contentsOf: changed), Data("NEW".utf8))
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: fixture.left.path)), Set(paths))
+
+        try originals[1].write(to: changed)
+        try await session.removeFilesTransactionally(files, matching: snapshots)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.left.path), [])
+    }
+
     func testLocalArrivalDateIsSetForNewAndReplacementPublication() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

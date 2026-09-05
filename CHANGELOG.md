@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Verify staged source contents against the original download before processed-file removal, restoring changed files and their companions instead of deleting them.
+- Retain recovery backups and report their locations when destination rollback fails.
+- Reject overlapping source and destination folders for ordinary local sync jobs to prevent recursive copying.
+
 ## 2.8.0 — 2026-09-04
 
 ### Safer unattended operation

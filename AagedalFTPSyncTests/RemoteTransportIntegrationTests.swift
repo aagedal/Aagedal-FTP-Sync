@@ -3,6 +3,48 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class RemoteTransportIntegrationTests: XCTestCase {
+    func testVerifiedSourceRemovalRestoresChangedSourcesAcrossTransports() async throws {
+        let configuration = try Self.configuration()
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            for replacement in ["modified", "modified-and-larger"] {
+                let original = try temporaryFile(containing: Data("original".utf8))
+                let changed = try temporaryFile(containing: Data(replacement.utf8))
+                defer {
+                    try? FileManager.default.removeItem(at: original)
+                    try? FileManager.default.removeItem(at: changed)
+                }
+                let session = try makeSession(kind: kind, configuration: configuration)
+                let file = SyncFile(relativePath: "verified-\(UUID().uuidString).txt", size: Int64(replacement.utf8.count), modifiedAt: Date())
+                do {
+                    try await session.importFile(from: changed, as: file, preserveDate: true, verifySize: true)
+                    do {
+                        try await session.removeFilesTransactionally([file], matching: [original])
+                        XCTFail("A changed source must be restored for \(kind)")
+                    } catch {
+                        XCTAssertTrue(
+                            error.localizedDescription.contains("source changed")
+                                || error.localizedDescription.contains("exceeded its advertised size"),
+                            error.localizedDescription
+                        )
+                    }
+                    let restored = try await session.listFiles()
+                    XCTAssertNotNil(restored[file.relativePath])
+                    let restoredURL = try temporaryFile(containing: Data())
+                    defer { try? FileManager.default.removeItem(at: restoredURL) }
+                    try await session.exportFile(file, to: restoredURL)
+                    XCTAssertEqual(try Data(contentsOf: restoredURL), Data(replacement.utf8))
+                    try await session.removeFilesTransactionally([file], matching: [changed])
+                    let remaining = try await session.listFiles()
+                    XCTAssertNil(remaining[file.relativePath])
+                    await session.close()
+                } catch {
+                    await session.close()
+                    throw error
+                }
+            }
+        }
+    }
+
     func testFTPUploadPublishesBytesAndLeavesNoStagingFiles() async throws {
         let configuration = try Self.configuration()
         try await assertSuccessfulUpload(kind: .ftp, configuration: configuration)
