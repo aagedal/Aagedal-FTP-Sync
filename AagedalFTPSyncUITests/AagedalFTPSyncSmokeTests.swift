@@ -80,7 +80,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
-    func testPhotographerMapClipSelectionAndEditing() {
+    func testPhotographerMapClipScrubbingAndEditing() {
         launch(seedJob: true, seedMap: true)
 
         element("open-metadata-programming").click()
@@ -93,8 +93,13 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let clip = element("photographer-map-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
         XCTAssertTrue(clip.waitForExistence(timeout: 5))
 
-        clip.click()
-        XCTAssertEqual(clip.value as? String, "Selected, location set")
+        let selectedTime = element("photographer-map-selected-time")
+        clip.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.5)).click()
+        let earlierTime = selectedTime.value as? String
+        clip.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.5)).click()
+        XCTAssertNotNil(earlierTime)
+        XCTAssertNotEqual(selectedTime.value as? String, earlierTime)
+        XCTAssertEqual(clip.value as? String, "location set")
 
         clip.doubleClick()
         XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))

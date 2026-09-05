@@ -109,7 +109,6 @@ struct PhotographerMapView: View {
     @State private var secondsIntoDay: Double = 12 * 60 * 60
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var selectedPhotographerID: UUID?
-    @State private var selectedClipID: UUID?
     @State private var draggedClipID: UUID?
     @State private var draggedTranslation: CGSize = .zero
 
@@ -149,12 +148,10 @@ struct PhotographerMapView: View {
         .onChange(of: selectedDate) { _, newDate in
             selectedDate = calendar.startOfDay(for: newDate)
             selectedPhotographerID = nil
-            selectedClipID = nil
             fitAllClipLocations()
         }
         .onChange(of: store.selectedJobID) { _, _ in
             selectedPhotographerID = nil
-            selectedClipID = nil
             fitAllClipLocations()
         }
         .onChange(of: selectedInstant) { _, _ in
@@ -347,7 +344,6 @@ struct PhotographerMapView: View {
                 dayDuration: dayDuration,
                 rows: mapTimelineRows,
                 selectedPhotographerID: $selectedPhotographerID,
-                selectedClipID: $selectedClipID,
                 color: color(for:),
                 onOpenClip: openMetadataProgramming(for:at:)
             )
@@ -490,7 +486,6 @@ struct PhotographerMapView: View {
             .onEnded { value in
                 if gestureDistance(value.translation) < 3 {
                     selectedPhotographerID = item.photographer.id
-                    selectedClipID = item.clip.id
                 } else if let coordinate = movedCoordinate(
                     for: item,
                     translation: value.translation,
@@ -653,7 +648,6 @@ private struct MapMiniTimeline: View {
     let dayDuration: Double
     let rows: [PhotographerMapTimelineRow]
     @Binding var selectedPhotographerID: UUID?
-    @Binding var selectedClipID: UUID?
     let color: (PhotographerProfile) -> Color
     let onOpenClip: (MetadataScheduleClip, Date) -> Void
 
@@ -694,10 +688,7 @@ private struct MapMiniTimeline: View {
                 }
                 .frame(height: trackHeight)
                 .contentShape(Rectangle())
-                .simultaneousGesture(scrubGesture(
-                    totalWidth: proxy.size.width,
-                    trackHeight: trackHeight
-                ))
+                .simultaneousGesture(scrubGesture(totalWidth: proxy.size.width))
 
                 HStack {
                     Text("00:00")
@@ -780,37 +771,22 @@ private struct MapMiniTimeline: View {
             totalWidth: totalWidth
         )
         let hasLocation = clip.gpsPosition?.isValid == true
-        let isActive = clip.contains(dayStart.addingTimeInterval(displayedSeconds))
-        let isSelected = selectedClipID == clip.id
         let clipColor = color(photographer)
-        let lineHeight = min(max(laneHeight * 0.55, 1.5), isSelected || isActive ? 4 : 3)
+        let lineHeight = min(max(laneHeight * 0.55, 1.5), 3)
 
-        return Button {
-            _ = select(
-                clip,
-                photographerID: photographer.id,
-                locationX: frame.width / 2,
-                displayWidth: frame.width
-            )
-        } label: {
-            Capsule()
-                .fill(clipColor.opacity(hasLocation ? 0.95 : 0.3))
-                .frame(height: lineHeight)
-                .overlay {
-                    Capsule()
-                        .stroke(
-                            isSelected || isActive
-                                ? Color.primary
-                                : clipColor.opacity(hasLocation ? 0.9 : 0.5),
-                            style: StrokeStyle(
-                                lineWidth: isSelected ? 1.5 : (isActive ? 1 : 0.5),
-                                dash: hasLocation ? [] : [3, 2]
-                            )
-                        )
-                }
-        }
-            .buttonStyle(.plain)
+        // Clip appearance stays constant while the playhead moves across the lanes.
+        return Capsule()
+            .fill(clipColor.opacity(hasLocation ? 0.95 : 0.3))
+            .frame(height: lineHeight)
+            .overlay {
+                Capsule()
+                    .stroke(
+                        clipColor.opacity(hasLocation ? 0.9 : 0.5),
+                        style: StrokeStyle(lineWidth: 0.5, dash: hasLocation ? [] : [3, 2])
+                    )
+            }
             .frame(width: frame.width, height: laneHeight)
+            .contentShape(Rectangle())
             .position(x: frame.midX, y: laneHeight / 2)
             .simultaneousGesture(TapGesture(count: 2).onEnded {
                 let date = select(
@@ -821,13 +797,21 @@ private struct MapMiniTimeline: View {
                 )
                 onOpenClip(clip, date)
             })
-            .help("\(clip.name) · \(hasLocation ? "location set" : "no location") · Click to select or double-click to edit")
+            .help("\(clip.name) · \(hasLocation ? "location set" : "no location") · Click or drag to move the playhead; double-click to edit")
             .accessibilityElement()
             .accessibilityIdentifier("photographer-map-clip-\(clip.id.uuidString)")
             .accessibilityLabel("\(clip.name), \(photographer.photographerName)")
-            .accessibilityValue("\(isSelected ? "Selected" : "Not selected"), \(hasLocation ? "location set" : "no location")")
-            .accessibilityHint("Click to select this clip or double-click to edit it in Metadata Programming")
+            .accessibilityValue(hasLocation ? "location set" : "no location")
+            .accessibilityHint("Click or drag to move the playhead, or double-click to edit this clip in Metadata Programming")
             .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                _ = select(
+                    clip,
+                    photographerID: photographer.id,
+                    locationX: frame.width / 2,
+                    displayWidth: frame.width
+                )
+            }
             .accessibilityAction(named: "Open in Metadata Programming") {
                 let date = select(
                     clip,
@@ -839,10 +823,7 @@ private struct MapMiniTimeline: View {
             }
     }
 
-    private func scrubGesture(
-        totalWidth: CGFloat,
-        trackHeight: CGFloat
-    ) -> some Gesture {
+    private func scrubGesture(totalWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let scrubbedSeconds = seconds(at: value.location.x, totalWidth: totalWidth)
@@ -856,49 +837,18 @@ private struct MapMiniTimeline: View {
                     seconds = scrubbedSeconds
                     lastScrubCommit = now
                 }
-
-                let rowID = row(at: value.location.y, trackHeight: trackHeight)?.photographer.id
-                if selectedPhotographerID != rowID {
-                    selectedPhotographerID = rowID
-                }
-                if hypot(value.translation.width, value.translation.height) >= 3,
-                   selectedClipID != nil {
-                    selectedClipID = nil
-                }
             }
             .onEnded { value in
                 let finalSeconds = seconds(at: value.location.x, totalWidth: totalWidth)
                 seconds = finalSeconds
                 scrubPreviewSeconds = nil
                 lastScrubCommit = .distantPast
-
-                guard hypot(value.translation.width, value.translation.height) < 3 else { return }
-                let date = dayStart.addingTimeInterval(
-                    finalSeconds
-                )
-                selectedClipID = row(at: value.location.y, trackHeight: trackHeight)
-                    .flatMap { clip(at: date, in: $0)?.id }
             }
-    }
-
-    private func row(at locationY: CGFloat, trackHeight: CGFloat) -> PhotographerMapTimelineRow? {
-        guard !rows.isEmpty else { return nil }
-        let fraction = min(max(locationY / max(trackHeight, 1), 0), 0.999_999)
-        return rows[min(Int(fraction * CGFloat(rows.count)), rows.count - 1)]
     }
 
     private func seconds(at locationX: CGFloat, totalWidth: CGFloat) -> Double {
         let fraction = min(max(locationX / max(totalWidth, 1), 0), 1)
         return min(Double(fraction) * dayDuration, maximumSeconds)
-    }
-
-    private func clip(
-        at date: Date,
-        in row: PhotographerMapTimelineRow
-    ) -> MetadataScheduleClip? {
-        row.clips.first { clip in
-            clip.startsAt <= date && date < clip.endsAt
-        }
     }
 
     private func select(
@@ -911,7 +861,6 @@ private struct MapMiniTimeline: View {
         let date = PhotographerMapTimeline.selectionInstant(in: clip, at: fraction)
         seconds = min(max(date.timeIntervalSince(dayStart), 0), maximumSeconds)
         selectedPhotographerID = photographerID
-        selectedClipID = clip.id
         return date
     }
 
@@ -921,11 +870,6 @@ private struct MapMiniTimeline: View {
 
     private func adjustTime(by interval: Double) {
         seconds = min(max(seconds + interval, 0), maximumSeconds)
-        let row = rows.first { $0.photographer.id == selectedPhotographerID } ?? rows.first
-        selectedPhotographerID = row?.photographer.id
-        selectedClipID = row.flatMap {
-            clip(at: dayStart.addingTimeInterval(seconds), in: $0)?.id
-        }
     }
 
     private var maximumSeconds: Double {
