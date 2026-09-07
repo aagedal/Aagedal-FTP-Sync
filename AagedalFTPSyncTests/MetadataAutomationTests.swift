@@ -141,7 +141,7 @@ final class MetadataAutomationTests: XCTestCase {
         let automation = try JSONDecoder().decode(MetadataAutomation.self, from: data)
 
         XCTAssertEqual(automation.timestampPolicy, .sourceModification)
-        XCTAssertEqual(automation.existingFieldPolicy, .overwrite)
+        XCTAssertEqual(automation.existingFieldPolicy, .standard)
     }
 
     func testPhotographerTracksAreAssignedPerDayInTheirOwnOrder() {
@@ -234,11 +234,25 @@ final class MetadataAutomationTests: XCTestCase {
         XCTAssertEqual(decoded.gpsPosition, position)
     }
 
+    func testPerFieldPolicyRoundTripsAndPreservesLegacyChoices() throws {
+        for legacy in ["fillEmpty", "overwrite"] {
+            let data = Data("{\"existingFieldPolicy\":\"\(legacy)\"}".utf8)
+            let decoded = try JSONDecoder().decode(MetadataAutomation.self, from: data)
+            XCTAssertEqual(decoded.existingFieldPolicy, legacy == "overwrite" ? .overwrite : .fillEmpty)
+        }
+        for fields: Set<MetadataWritableField> in [[], [.copyright, .creator], [.headline, .gpsPosition]] {
+            let automation = MetadataAutomation(existingFieldPolicy: .init(overwriteFields: fields))
+            let decoded = try JSONDecoder().decode(MetadataAutomation.self, from: JSONEncoder().encode(automation))
+            XCTAssertEqual(decoded, automation)
+        }
+        XCTAssertEqual(MetadataAutomation().existingFieldPolicy.overwriteFields, [.copyright, .creator])
+    }
+
     func testNewAutomationUsesConfirmedProductDefaults() {
         let automation = MetadataAutomation()
 
         XCTAssertEqual(automation.timestampPolicy, .sourceModification)
-        XCTAssertEqual(automation.existingFieldPolicy, .fillEmpty)
+        XCTAssertEqual(automation.existingFieldPolicy, .standard)
     }
 
     func testLegacyPhotographerJSONLoadsWithoutWorkHours() throws {

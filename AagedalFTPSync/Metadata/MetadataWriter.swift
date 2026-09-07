@@ -148,6 +148,7 @@ enum MetadataWriter {
     static func apply(_ assignment: MetadataAssignment, to fileURL: URL) throws -> [String] {
         var metadata = try ImageMetadata.read(from: fileURL)
         let readWarnings = metadata.warnings
+        var xmp = metadata.xmp ?? XMPData()
         let fields = assignment.clip.fields
 
         let headline = fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -155,29 +156,33 @@ enum MetadataWriter {
         let creator = assignment.photographer.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
         let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
         let keywords = fields.normalizedKeywords
-        let shouldOverwrite = assignment.existingFieldPolicy == .overwrite
 
         if !headline.isEmpty,
-           shouldOverwrite || (isEmpty(metadata.iptc.headline) && isEmpty(metadata.xmp?.headline)) {
+           assignment.existingFieldPolicy.overwrites(.headline) || (isEmpty(metadata.iptc.headline) && isEmpty(metadata.xmp?.headline)) {
             try metadata.iptc.setValue(headline, for: .headline)
+            xmp.headline = headline
         }
         if !description.isEmpty,
-           shouldOverwrite || (isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)) {
+           assignment.existingFieldPolicy.overwrites(.description) || (isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)) {
             try metadata.iptc.setValue(description, for: .captionAbstract)
+            xmp.description = description
         }
         if !keywords.isEmpty,
-           shouldOverwrite || (metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)) {
+           assignment.existingFieldPolicy.overwrites(.keywords) || (metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)) {
             try metadata.iptc.setValues(keywords, for: .keywords)
+            xmp.subject = keywords
         }
         if !creator.isEmpty,
-           shouldOverwrite || (isEmpty(metadata.iptc.byline) && (metadata.xmp?.creator.isEmpty ?? true)) {
+           assignment.existingFieldPolicy.overwrites(.creator) || (isEmpty(metadata.iptc.byline) && (metadata.xmp?.creator.isEmpty ?? true)) {
             try metadata.iptc.setValue(creator, for: .byline)
+            xmp.creator = [creator]
         }
         if !copyright.isEmpty,
-           shouldOverwrite || (isEmpty(metadata.iptc.copyright) && isEmpty(metadata.xmp?.rights)) {
+           assignment.existingFieldPolicy.overwrites(.copyright) || (isEmpty(metadata.iptc.copyright) && isEmpty(metadata.xmp?.rights)) {
             try metadata.iptc.setValue(copyright, for: .copyrightNotice)
+            xmp.rights = copyright
         }
-        metadata.syncIPTCToXMP()
+        metadata.xmp = xmp
         applyGPS(from: assignment, to: &metadata)
         let writeWarnings = try metadata.write(to: fileURL)
         return uniqueWarnings(readWarnings + writeWarnings)
@@ -225,21 +230,20 @@ enum MetadataWriter {
         let creator = assignment.photographer.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
         let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
         let keywords = fields.normalizedKeywords
-        let shouldOverwrite = assignment.existingFieldPolicy == .overwrite
 
-        if !headline.isEmpty, shouldOverwrite || isEmpty(xmp.headline) {
+        if !headline.isEmpty, assignment.existingFieldPolicy.overwrites(.headline) || isEmpty(xmp.headline) {
             xmp.headline = headline
         }
-        if !description.isEmpty, shouldOverwrite || isEmpty(xmp.description) {
+        if !description.isEmpty, assignment.existingFieldPolicy.overwrites(.description) || isEmpty(xmp.description) {
             xmp.description = description
         }
-        if !keywords.isEmpty, shouldOverwrite || xmp.subject.isEmpty {
+        if !keywords.isEmpty, assignment.existingFieldPolicy.overwrites(.keywords) || xmp.subject.isEmpty {
             xmp.subject = keywords
         }
-        if !creator.isEmpty, shouldOverwrite || xmp.creator.isEmpty {
+        if !creator.isEmpty, assignment.existingFieldPolicy.overwrites(.creator) || xmp.creator.isEmpty {
             xmp.creator = [creator]
         }
-        if !copyright.isEmpty, shouldOverwrite || isEmpty(xmp.rights) {
+        if !copyright.isEmpty, assignment.existingFieldPolicy.overwrites(.copyright) || isEmpty(xmp.rights) {
             xmp.rights = copyright
         }
         applyGPS(from: assignment, to: &xmp)
@@ -256,43 +260,42 @@ enum MetadataWriter {
         metadata: ImageMetadata
     ) -> ApplicationAssessment {
         let fields = assignment.clip.fields
-        let overwrite = assignment.existingFieldPolicy == .overwrite
         var assessments: [FieldAssessment] = []
 
         assess(
             fields.headline,
             currentValues: [metadata.iptc.headline, metadata.xmp?.headline],
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.headline),
             into: &assessments
         )
         assess(
             fields.description,
             currentValues: [metadata.iptc.caption, metadata.xmp?.description],
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.description),
             into: &assessments
         )
         assess(
             fields.normalizedKeywords,
             currentValues: [metadata.iptc.keywords, metadata.xmp?.subject ?? []],
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.keywords),
             into: &assessments
         )
         assess(
             assignment.photographer.photographerName,
             currentValues: [metadata.iptc.byline] + (metadata.xmp?.creator.map(Optional.some) ?? []),
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.creator),
             into: &assessments
         )
         assess(
             assignment.photographer.copyrightNotice,
             currentValues: [metadata.iptc.copyright, metadata.xmp?.rights],
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.copyright),
             into: &assessments
         )
         assessGPS(
             assignment.clip.gpsPosition,
             currentValues: [embeddedGPSPosition(metadata), metadata.xmp.flatMap(xmpGPSPosition)],
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.gpsPosition),
             into: &assessments
         )
 
@@ -304,28 +307,27 @@ enum MetadataWriter {
         xmp: XMPData
     ) -> ApplicationAssessment {
         let fields = assignment.clip.fields
-        let overwrite = assignment.existingFieldPolicy == .overwrite
         var assessments: [FieldAssessment] = []
 
-        assess(fields.headline, currentValues: [xmp.headline], overwrite: overwrite, into: &assessments)
-        assess(fields.description, currentValues: [xmp.description], overwrite: overwrite, into: &assessments)
-        assess(fields.normalizedKeywords, currentValues: [xmp.subject], overwrite: overwrite, into: &assessments)
+        assess(fields.headline, currentValues: [xmp.headline], overwrite: assignment.existingFieldPolicy.overwrites(.headline), into: &assessments)
+        assess(fields.description, currentValues: [xmp.description], overwrite: assignment.existingFieldPolicy.overwrites(.description), into: &assessments)
+        assess(fields.normalizedKeywords, currentValues: [xmp.subject], overwrite: assignment.existingFieldPolicy.overwrites(.keywords), into: &assessments)
         assess(
             assignment.photographer.photographerName,
             currentValues: xmp.creator.map(Optional.some),
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.creator),
             into: &assessments
         )
         assess(
             assignment.photographer.copyrightNotice,
             currentValues: [xmp.rights],
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.copyright),
             into: &assessments
         )
         assessGPS(
             assignment.clip.gpsPosition,
             currentValues: [xmpGPSPosition(xmp)],
-            overwrite: overwrite,
+            overwrite: assignment.existingFieldPolicy.overwrites(.gpsPosition),
             into: &assessments
         )
 
@@ -377,7 +379,7 @@ enum MetadataWriter {
               desiredPosition.isValid else { return }
         let hasExistingPosition = embeddedGPSPosition(metadata) != nil
             || metadata.xmp.flatMap(xmpGPSPosition) != nil
-        guard assignment.existingFieldPolicy == .overwrite || !hasExistingPosition else { return }
+        guard assignment.existingFieldPolicy.overwrites(.gpsPosition) || !hasExistingPosition else { return }
 
         metadata.setGPS(
             latitude: desiredPosition.latitude,
@@ -397,7 +399,7 @@ enum MetadataWriter {
     private static func applyGPS(from assignment: MetadataAssignment, to xmp: inout XMPData) {
         guard let desiredPosition = assignment.clip.gpsPosition,
               desiredPosition.isValid else { return }
-        guard assignment.existingFieldPolicy == .overwrite || xmpGPSPosition(xmp) == nil else { return }
+        guard assignment.existingFieldPolicy.overwrites(.gpsPosition) || xmpGPSPosition(xmp) == nil else { return }
         setGPS(desiredPosition, on: &xmp)
     }
 

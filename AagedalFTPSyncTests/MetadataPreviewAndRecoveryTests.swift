@@ -578,6 +578,58 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         XCTAssertEqual(heicMetadata.xmp?.rights, "© Fixture Desk")
     }
 
+    func testDefaultPolicyOverwritesAttributionAndPreservesOtherFields() throws {
+        let folder = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let photographer = PhotographerProfile(name: "Ægir Ødegård", filenamePrefix: "AG",
+            creator: "Ægir Ødegård", copyrightNotice: "© Ægir Ødegård")
+        let clip = MetadataScheduleClip(photographerID: photographer.id, name: "Assignment",
+            startsAt: .distantPast, endsAt: .distantFuture,
+            fields: ScheduledMetadataFields(headline: "New headline", description: "Fill empty caption", keywords: ["new"]),
+            gpsPosition: ScheduledGPSPosition(latitude: 59, longitude: 10))
+        let assignment = MetadataAssignment(photographer: photographer, clip: clip, existingFieldPolicy: .standard)
+
+        for ext in ["tiff", "cr3"] {
+            let url = folder.appendingPathComponent("AG_test.\(ext)")
+            var xmp = XMPData()
+            xmp.headline = "Original XMP headline"
+            xmp.subject = ["original"]
+            xmp.creator = ["Camera creator"]
+            xmp.rights = "Camera copyright"
+            xmp.exifGPSLatitude = "60,0N"
+            xmp.exifGPSLongitude = "5,0E"
+            if ext == "tiff" {
+                try XCTUnwrap(makeImageData(type: .tiff)).write(to: url)
+                var metadata = try ImageMetadata.read(from: url)
+                try metadata.iptc.setValue("Original IPTC headline", for: .headline)
+                metadata.xmp = xmp
+                metadata.setGPS(latitude: 60, longitude: 5)
+                try metadata.write(to: url)
+            } else {
+                try Data("camera data".utf8).write(to: url)
+                try XMPSidecar.write(xmp, to: url.deletingPathExtension().appendingPathExtension("xmp"))
+            }
+            XCTAssertEqual(try MetadataWriter.assess(assignment, at: url, relativePath: url.lastPathComponent), .willApply)
+            _ = try MetadataWriter.apply(assignment, to: url, relativePath: url.lastPathComponent)
+            let result: XMPData
+            if ext == "tiff" {
+                let metadata = try ImageMetadata.read(from: url)
+                result = try XCTUnwrap(metadata.xmp)
+                XCTAssertEqual(metadata.iptc.headline, "Original IPTC headline")
+                XCTAssertEqual(try XCTUnwrap(metadata.exif?.gpsLatitude), 60, accuracy: 0.000_001)
+            } else {
+                result = try XMPSidecar.read(from: url.deletingPathExtension().appendingPathExtension("xmp"))
+            }
+            XCTAssertEqual(result.headline, "Original XMP headline")
+            XCTAssertEqual(result.subject, ["original"])
+            XCTAssertEqual(result.description, "Fill empty caption")
+            XCTAssertEqual(result.creator, ["Ægir Ødegård"])
+            XCTAssertEqual(result.rights, "© Ægir Ødegård")
+            XCTAssertEqual(result.exifGPSLatitude, "60,0N")
+            XCTAssertNotEqual(try MetadataWriter.assess(assignment, at: url, relativePath: url.lastPathComponent), .willApply)
+        }
+    }
+
     func testScheduledGPSHonorsFillEmptyAndOverwriteForEmbeddedImage() throws {
         let folder = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }

@@ -192,9 +192,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     func reprocessConfirmationMessage(for job: SyncJob?) -> String {
         let target = job?.localDestinationDisplayPath ?? "the local destination"
-        let policyNote = draft.existingFieldPolicy == .fillEmpty
-            ? "Existing non-empty fields will be preserved."
-            : "Non-empty programmed values will overwrite existing fields."
+        let policyNote = draft.existingFieldPolicy.explanation
         let scopeDescription: String
         switch pendingReprocessScope {
         case .photographer(let photographerID):

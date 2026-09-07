@@ -27,25 +27,63 @@ enum MetadataTimestampPolicy: String, Codable, CaseIterable, Identifiable, Senda
     }
 }
 
-enum MetadataExistingFieldPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
-    case fillEmpty
-    case overwrite
+enum MetadataWritableField: String, Codable, CaseIterable, Identifiable, Sendable {
+    case headline, description, keywords, creator, copyright, gpsPosition
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .fillEmpty: "Fill empty fields"
-        case .overwrite: "Always overwrite"
+        case .headline: "Headline"
+        case .description: "Description"
+        case .keywords: "Keywords"
+        case .creator: "Creator"
+        case .copyright: "Copyright"
+        case .gpsPosition: "GPS position"
         }
+    }
+}
+
+struct MetadataExistingFieldPolicy: Codable, Hashable, Sendable {
+    var overwriteFields: Set<MetadataWritableField>
+
+    static let standard = Self(overwriteFields: [.copyright, .creator])
+    static let fillEmpty = Self(overwriteFields: [])
+    static let overwrite = Self(overwriteFields: Set(MetadataWritableField.allCases))
+
+    func overwrites(_ field: MetadataWritableField) -> Bool {
+        overwriteFields.contains(field)
     }
 
     var explanation: String {
-        switch self {
-        case .fillEmpty:
-            "Preserve existing metadata and write a programmed value only when that field is empty."
-        case .overwrite:
-            "Replace existing metadata whenever the schedule provides a non-empty value."
+        if overwriteFields.isEmpty {
+            return "Existing non-empty fields will be preserved."
+        }
+        let names = MetadataWritableField.allCases.filter(overwrites).map(\.title).joined(separator: ", ")
+        return "Overwrite: \(names). Other fields are only filled when empty. Blank programmed values never erase existing metadata."
+    }
+
+    init(overwriteFields: Set<MetadataWritableField>) {
+        self.overwriteFields = overwriteFields
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case overwriteFields
+    }
+
+    init(from decoder: Decoder) throws {
+        // Preserve the user's explicit choice from the former global dropdown.
+        if let legacy = try? decoder.singleValueContainer().decode(String.self) {
+            switch legacy {
+            case "fillEmpty": self = .fillEmpty
+            case "overwrite": self = .overwrite
+            default:
+                throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath,
+                    debugDescription: "Unknown metadata field policy: \(legacy)"))
+            }
+        } else {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            overwriteFields = try container.decode(Set<MetadataWritableField>.self, forKey: .overwriteFields)
         }
     }
 }
@@ -666,7 +704,7 @@ struct MetadataAssignment: Equatable, Sendable {
 struct MetadataAutomation: Codable, Hashable, Sendable {
     var isEnabled = false
     var timestampPolicy: MetadataTimestampPolicy = .sourceModification
-    var existingFieldPolicy: MetadataExistingFieldPolicy = .fillEmpty
+    var existingFieldPolicy: MetadataExistingFieldPolicy = .standard
     var photographers: [PhotographerProfile] = []
     var photographerTracks: [MetadataPhotographerTrack] = []
     var clips: [MetadataScheduleClip] = []
@@ -674,7 +712,7 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
     init(
         isEnabled: Bool = false,
         timestampPolicy: MetadataTimestampPolicy = .sourceModification,
-        existingFieldPolicy: MetadataExistingFieldPolicy = .fillEmpty,
+        existingFieldPolicy: MetadataExistingFieldPolicy = .standard,
         photographers: [PhotographerProfile] = [],
         photographerTracks: [MetadataPhotographerTrack]? = nil,
         clips: [MetadataScheduleClip] = []
@@ -969,7 +1007,7 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
         timestampPolicy = try container.decodeIfPresent(MetadataTimestampPolicy.self, forKey: .timestampPolicy)
             ?? .sourceModification
         existingFieldPolicy = try container.decodeIfPresent(MetadataExistingFieldPolicy.self, forKey: .existingFieldPolicy)
-            ?? .overwrite
+            ?? .standard
         photographers = try container.decodeIfPresent([PhotographerProfile].self, forKey: .photographers) ?? []
         clips = try container.decodeIfPresent([MetadataScheduleClip].self, forKey: .clips) ?? []
         photographerTracks = try container.decodeIfPresent(

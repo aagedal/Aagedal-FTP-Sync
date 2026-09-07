@@ -16,6 +16,7 @@ struct MetadataProgrammingView: View {
     @State private var showConfigurationExporter = false
     @State private var exportDocument = ConfigurationTransferFile()
     @State private var exportFilename = ConfigurationTransferScope.metadata.defaultFilename
+    @State private var showOverwriteSettings = false
     @State private var groupDragPreview: TimelineGroupDragPreview?
 
     private var calendar: Calendar { coordinator.calendar }
@@ -305,17 +306,17 @@ struct MetadataProgrammingView: View {
             .layoutPriority(1)
             .help("Schedule Time: \(draft.timestampPolicy.explanation)")
 
-            Picker(selection: $coordinator.draft.existingFieldPolicy) {
-                ForEach(MetadataExistingFieldPolicy.allCases) { policy in
-                    Text(policy.title).tag(policy)
-                }
+            Button {
+                showOverwriteSettings = true
             } label: {
-                Image(systemName: "text.badge.checkmark")
-                    .accessibilityLabel("Existing Fields")
+                Label("Overwrite Settings…", systemImage: "text.badge.checkmark")
             }
-            .frame(minWidth: 190, idealWidth: 235, maxWidth: 235)
-            .layoutPriority(1)
-            .help("Existing Fields: \(draft.existingFieldPolicy.explanation)")
+            .disabled(selectedJob == nil)
+            .accessibilityIdentifier("metadata-overwrite-settings")
+            .help(draft.existingFieldPolicy.explanation)
+            .sheet(isPresented: $showOverwriteSettings) {
+                MetadataOverwriteSettingsView(policy: $coordinator.draft.existingFieldPolicy)
+            }
 
             Spacer(minLength: 0)
 
@@ -1126,5 +1127,48 @@ struct MetadataProgrammingView: View {
     @discardableResult
     private func save() -> Bool {
         coordinator.save(in: store)
+    }
+}
+
+private struct MetadataOverwriteSettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var policy: MetadataExistingFieldPolicy
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Metadata Overwrite Settings")
+                .font(.title2.bold())
+            Text("Choose which fields may replace existing metadata. Unchecked fields are only filled when empty.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(MetadataWritableField.allCases) { field in
+                Toggle(field.title, isOn: Binding(
+                    get: { policy.overwrites(field) },
+                    set: { enabled in
+                        if enabled {
+                            policy.overwriteFields.insert(field)
+                        } else {
+                            policy.overwriteFields.remove(field)
+                        }
+                    }
+                ))
+                .toggleStyle(.checkbox)
+                .accessibilityIdentifier("overwrite-\(field.rawValue)")
+            }
+
+            Text("Blank programmed values never erase existing metadata. GPS position includes altitude.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Restore Defaults") { policy = .standard }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
     }
 }
