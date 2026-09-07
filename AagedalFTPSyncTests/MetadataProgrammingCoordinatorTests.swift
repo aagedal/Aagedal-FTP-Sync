@@ -196,6 +196,117 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.playhead?.date, date(2026, 8, 29, 23, 45, calendar: calendar))
     }
 
+    func testKeyboardRangeCreatesClipInEitherDirectionAndClearsAfterCreation() throws {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: "")
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft.photographers = [photographer]
+        let origin = day.addingTimeInterval(10 * 3_600)
+        coordinator.placePlayhead(on: photographer.id, at: origin)
+
+        coordinator.movePlayhead(bySnapIntervals: 2, extendingSelection: true)
+        XCTAssertEqual(coordinator.selectedTimeRange, DateInterval(start: origin, duration: 1_800))
+        coordinator.movePlayhead(bySnapIntervals: -3, extendingSelection: true)
+        XCTAssertEqual(coordinator.selectedTimeRange, DateInterval(start: origin.addingTimeInterval(-900), end: origin))
+        coordinator.addClip()
+
+        let clip = try XCTUnwrap(coordinator.draft.clips.last)
+        XCTAssertEqual(clip.startsAt, origin.addingTimeInterval(-900))
+        XCTAssertEqual(clip.endsAt, origin)
+        XCTAssertEqual(coordinator.editingClipID, clip.id)
+        XCTAssertNil(coordinator.selectedTimeRange)
+    }
+
+    func testKeyboardRangeCanEndAtMidnightAndClearsOnNavigation() {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: "")
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft.photographers = [photographer]
+        let midnight = day.addingTimeInterval(86_400)
+        coordinator.placePlayhead(on: photographer.id, at: midnight.addingTimeInterval(-900))
+        coordinator.movePlayhead(bySnapIntervals: 2, extendingSelection: true)
+        XCTAssertEqual(coordinator.selectedTimeRange?.end, midnight)
+        coordinator.movePlayhead(bySnapIntervals: -1)
+        XCTAssertNil(coordinator.selectedTimeRange)
+        coordinator.movePlayhead(bySnapIntervals: -1, extendingSelection: true)
+        coordinator.placePlayhead(on: photographer.id, at: day)
+        XCTAssertNil(coordinator.selectedTimeRange)
+        coordinator.movePlayhead(bySnapIntervals: 1, extendingSelection: true)
+        coordinator.moveDay(by: 1)
+        XCTAssertNil(coordinator.selectedTimeRange)
+    }
+
+    func testOpenClipAtPlayheadUsesTrackAndExclusiveEndBoundary() {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: "")
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft.photographers = [photographer]
+        let first = MetadataScheduleClip(photographerID: photographer.id, name: "First", startsAt: day, endsAt: day.addingTimeInterval(900))
+        let second = MetadataScheduleClip(photographerID: photographer.id, name: "Second", startsAt: first.endsAt, endsAt: day.addingTimeInterval(1_800))
+        let otherTrack = MetadataScheduleClip(photographerID: UUID(), name: "Other", startsAt: day, endsAt: second.endsAt)
+        coordinator.draft.clips = [otherTrack, first, second]
+        coordinator.placePlayhead(on: photographer.id, at: first.endsAt)
+        coordinator.selectedClipIDs = [first.id]
+        coordinator.editClipAtPlayhead()
+        XCTAssertEqual(coordinator.editingClipID, second.id)
+        coordinator.editingClipID = nil
+        coordinator.placePlayhead(on: photographer.id, at: second.endsAt)
+        coordinator.editClipAtPlayhead()
+        XCTAssertNil(coordinator.editingClipID)
+    }
+
+    func testKeyboardClipMovementRepeatsAndPreservesDurationAndPlayheadOffset() throws {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: "")
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft.photographers = [photographer]
+        coordinator.snapMinutes = 15
+        let clip = MetadataScheduleClip(photographerID: photographer.id, name: "Move me", startsAt: day.addingTimeInterval(120), endsAt: day.addingTimeInterval(420))
+        let overlapping = MetadataScheduleClip(photographerID: photographer.id, name: "Leave me", startsAt: day, endsAt: day.addingTimeInterval(7_200))
+        coordinator.draft.clips = [overlapping, clip]
+        coordinator.placePlayhead(on: photographer.id, at: clip.startsAt.addingTimeInterval(60))
+        coordinator.selectedClipIDs = [clip.id]
+        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+        coordinator.moveClipAtPlayhead(bySnapIntervals: -1)
+        let moved = try XCTUnwrap(coordinator.draft.clips.first(where: { $0.id == clip.id }))
+        XCTAssertEqual(moved.startsAt, clip.startsAt.addingTimeInterval(900))
+        XCTAssertEqual(moved.endsAt, clip.endsAt.addingTimeInterval(900))
+        XCTAssertEqual(coordinator.playhead?.date, moved.startsAt.addingTimeInterval(60))
+        XCTAssertEqual(coordinator.draft.clips.first, overlapping)
+        XCTAssertEqual(coordinator.selectedClipIDs, [clip.id])
+        XCTAssertNil(coordinator.editingClipID)
+        coordinator.placePlayhead(on: photographer.id, at: day.addingTimeInterval(8_000))
+        let before = coordinator.draft
+        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+        XCTAssertEqual(coordinator.draft, before)
+        XCTAssertEqual(coordinator.playhead?.date, day.addingTimeInterval(8_000))
+    }
+
+    func testKeyboardClipMovementFollowsAcrossMidnightAndClearsRange() throws {
+        let calendar = utcCalendar
+        let photographer = PhotographerProfile(name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: "")
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft.photographers = [photographer]
+        let clip = MetadataScheduleClip(photographerID: photographer.id, name: "Move me", startsAt: day, endsAt: day.addingTimeInterval(3_600))
+        coordinator.draft.clips = [clip]
+        coordinator.placePlayhead(on: photographer.id, at: day)
+        coordinator.rangeSelectionAnchor = day.addingTimeInterval(900)
+        coordinator.moveClipAtPlayhead(bySnapIntervals: -1)
+        XCTAssertEqual(coordinator.selectedDate, day.addingTimeInterval(-86_400))
+        XCTAssertEqual(coordinator.playhead?.date, day.addingTimeInterval(-900))
+        XCTAssertNil(coordinator.selectedTimeRange)
+        XCTAssertTrue(coordinator.draft.photographerIDs(on: coordinator.selectedDate, calendar: calendar).contains(photographer.id))
+        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+        XCTAssertEqual(coordinator.selectedDate, day)
+        XCTAssertEqual(coordinator.draft.clips.first, clip)
+    }
+
     func testCopyAndPasteDayProgrammingPreservesTracksAndVisibleTimes() throws {
         let calendar = utcCalendar
         let firstPhotographerID = UUID()

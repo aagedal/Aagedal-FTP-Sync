@@ -112,6 +112,7 @@ struct TimelineTrack: View {
     let selectedClipIDs: Set<UUID>
     let groupDragPreview: TimelineGroupDragPreview?
     let playheadDate: Date?
+    let selectedTimeRange: DateInterval?
     let showsPlayhead: Bool
     let canPaste: Bool
     let isSelected: Bool
@@ -217,7 +218,7 @@ struct TimelineTrack: View {
                         .contentShape(Rectangle())
                         .gesture(creationGesture(totalWidth: proxy.size.width))
                         .simultaneousGesture(playheadGesture(totalWidth: proxy.size.width))
-                        .help("Click to place the playhead, drag to create a metadata clip, or use the arrow keys to move by track and snap interval")
+                        .help("Click to place the playhead or use the arrow keys to navigate. Shift–Left/Right selects a time range; Command-N creates a clip; Command-I opens the clip at the playhead; Shift-Command-Left/Right moves it. Drag to create a clip.")
                     workHoursBackground(totalWidth: proxy.size.width)
                     hourGrid
                     overlapHighlights(totalWidth: proxy.size.width)
@@ -267,6 +268,14 @@ struct TimelineTrack: View {
                             x: boundaryOffset(boundary.leading.endsAt, totalWidth: proxy.size.width) - 15,
                             y: (trackHeight - 24) / 2
                         )
+                    }
+                    if let selectedTimeRange {
+                        Rectangle()
+                            .fill(Color.accentColor.opacity(0.22))
+                            .overlay { Rectangle().strokeBorder(Color.accentColor, lineWidth: 1) }
+                            .frame(width: intervalWidth(selectedTimeRange, totalWidth: proxy.size.width), height: canvasHeight)
+                            .offset(x: intervalOffset(selectedTimeRange, totalWidth: proxy.size.width))
+                            .allowsHitTesting(false)
                     }
                     playheadMarker(totalWidth: proxy.size.width)
                 }

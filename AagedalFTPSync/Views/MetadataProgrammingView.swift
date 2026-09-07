@@ -635,10 +635,11 @@ struct MetadataProgrammingView: View {
                         .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.borderedProminent)
+                .keyboardShortcut("n", modifiers: .command)
                 .accessibilityLabel("Add Metadata Clip")
                 .accessibilityHint("Adds a clip to the selected photographer track")
                 .disabled(selectedPhotographer == nil)
-                .help(selectedPhotographer == nil ? "Select a photographer first" : "Add a clip to the selected photographer")
+                .help(selectedPhotographer == nil ? "Select a photographer first" : "Add a clip to the selected photographer (⌘N)")
             }
             .padding(14)
 
@@ -670,6 +671,7 @@ struct MetadataProgrammingView: View {
                                     selectedClipIDs: selectedClipIDs,
                                     groupDragPreview: groupDragPreview,
                                     playheadDate: playhead?.date,
+                                    selectedTimeRange: playhead?.photographerID == photographer.id ? coordinator.selectedTimeRange : nil,
                                     showsPlayhead: playhead != nil && selectedPhotographerIDs.contains(photographer.id),
                                     canPaste: !copiedClips.isEmpty && playhead != nil,
                                     isSelected: selectedPhotographerIDs.contains(photographer.id),
@@ -739,12 +741,20 @@ struct MetadataProgrammingView: View {
                 .focusable()
                 .focusEffectDisabled()
                 .focused($timelineFocused)
-                .onKeyPress(.leftArrow) {
-                    movePlayhead(bySnapIntervals: -1)
+                .onKeyPress(.leftArrow, phases: [.down, .repeat]) { press in
+                    if press.modifiers.contains([.shift, .command]) {
+                        coordinator.moveClipAtPlayhead(bySnapIntervals: -1)
+                    } else {
+                        coordinator.movePlayhead(bySnapIntervals: -1, extendingSelection: press.modifiers.contains(.shift))
+                    }
                     return .handled
                 }
-                .onKeyPress(.rightArrow) {
-                    movePlayhead(bySnapIntervals: 1)
+                .onKeyPress(.rightArrow, phases: [.down, .repeat]) { press in
+                    if press.modifiers.contains([.shift, .command]) {
+                        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+                    } else {
+                        coordinator.movePlayhead(bySnapIntervals: 1, extendingSelection: press.modifiers.contains(.shift))
+                    }
                     return .handled
                 }
                 .onKeyPress(.upArrow) {
@@ -772,6 +782,10 @@ struct MetadataProgrammingView: View {
                 .disabled(copiedClips.isEmpty || playhead == nil)
             Button("Select All Clips", action: selectAllClipsForDay)
                 .keyboardShortcut("a", modifiers: .command)
+            Button("Open Clip at Playhead", action: coordinator.editClipAtPlayhead)
+                .keyboardShortcut("i", modifiers: .command)
+            Button("Clear Time Selection") { coordinator.rangeSelectionAnchor = nil }
+                .keyboardShortcut(.escape, modifiers: [])
             Button("Edit Clip", action: editSelectedClip)
                 .keyboardShortcut(.return, modifiers: [])
             Button("Delete Clips", action: deleteSelectedClips)
@@ -1083,11 +1097,6 @@ struct MetadataProgrammingView: View {
 
     private func applyClipChange(_ clip: MetadataScheduleClip) {
         coordinator.applyClipChange(clip)
-    }
-
-    private func movePlayhead(bySnapIntervals intervalCount: Int) {
-        coordinator.movePlayhead(bySnapIntervals: intervalCount)
-        timelineFocused = true
     }
 
     private func selectAdjacentTrack(offset: Int) {

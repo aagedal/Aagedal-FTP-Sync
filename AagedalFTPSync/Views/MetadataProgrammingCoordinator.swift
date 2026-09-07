@@ -30,10 +30,16 @@ struct CopiedMetadataDay: Equatable {
 
 @MainActor
 final class MetadataProgrammingCoordinator: ObservableObject {
-    @Published var selectedDate: Date
+    @Published var selectedDate: Date {
+        didSet { rangeSelectionAnchor = nil }
+    }
     @Published var draft = MetadataAutomation()
     @Published var loadedJobID: UUID?
-    @Published var selectedPhotographerID: UUID?
+    @Published var selectedPhotographerID: UUID? {
+        didSet {
+            if oldValue != selectedPhotographerID { rangeSelectionAnchor = nil }
+        }
+    }
     @Published var selectedPhotographerIDs: Set<UUID> = []
     @Published var editingPhotographerID: UUID?
     @Published var draggedPhotographerID: UUID?
@@ -44,7 +50,15 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     @Published var selectedClipIDs: Set<UUID> = []
     @Published var copiedClips: [MetadataScheduleClip] = []
     @Published private(set) var copiedDayProgramming: CopiedMetadataDay?
-    @Published var playhead: TimelinePlayhead?
+    @Published var playhead: TimelinePlayhead? {
+        didSet { rangeSelectionAnchor = nil }
+    }
+    @Published var rangeSelectionAnchor: Date?
+
+    var selectedTimeRange: DateInterval? {
+        guard let anchor = rangeSelectionAnchor, let playhead, anchor != playhead.date else { return nil }
+        return DateInterval(start: min(anchor, playhead.date), end: max(anchor, playhead.date))
+    }
     @Published var snapMinutes = 15
     @Published var pendingClipChange: PendingClipChange?
     @Published var pendingReprocessScope: MetadataReprocessScope?
@@ -478,8 +492,10 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             ? min(max(calendar.component(.hour, from: Date()), 0), 22)
             : 9
         let defaultStart = calendar.date(byAdding: .hour, value: defaultStartHour, to: dayStart) ?? dayStart
-        let start = playhead?.photographerID == photographer.id ? playhead?.date ?? defaultStart : defaultStart
-        let end = calendar.date(byAdding: .hour, value: 1, to: start) ?? start.addingTimeInterval(3_600)
+        let range = playhead?.photographerID == photographer.id ? selectedTimeRange : nil
+        let start = range?.start ?? (playhead?.photographerID == photographer.id ? playhead?.date ?? defaultStart : defaultStart)
+        let end = range?.end ?? calendar.date(byAdding: .hour, value: 1, to: start) ?? start.addingTimeInterval(3_600)
+        rangeSelectionAnchor = nil
         let clip = MetadataScheduleClip(
             photographerID: photographer.id,
             name: "Metadata clip",
@@ -515,6 +531,34 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         selectedPhotographerID = clip.photographerID
         selectedPhotographerIDs = [clip.photographerID]
         retargetPlayhead(to: clip.photographerID)
+    }
+
+    private var clipAtPlayhead: MetadataScheduleClip? {
+        guard let playhead else { return nil }
+        let candidates = draft.clips.filter {
+            $0.photographerID == playhead.photographerID
+                && $0.startsAt <= playhead.date && playhead.date < $0.endsAt
+        }
+        // Prefer an already selected clip when clips overlap.
+        return candidates.first(where: { selectedClipIDs.contains($0.id) }) ?? candidates.first
+    }
+
+    func editClipAtPlayhead() {
+        guard let clip = clipAtPlayhead else { return }
+        editClip(clip)
+    }
+
+    func moveClipAtPlayhead(bySnapIntervals intervalCount: Int) {
+        guard intervalCount != 0, let playhead, var clip = clipAtPlayhead else { return }
+        let interval = TimeInterval(intervalCount) * TimeInterval(max(snapMinutes, 1) * 60)
+        clip.startsAt = clip.startsAt.addingTimeInterval(interval)
+        clip.endsAt = clip.endsAt.addingTimeInterval(interval)
+        let movedDate = playhead.date.addingTimeInterval(interval)
+        if !calendar.isDate(movedDate, inSameDayAs: selectedDate) {
+            selectedDate = calendar.startOfDay(for: movedDate)
+        }
+        applyClipChange(clip)
+        self.playhead = TimelinePlayhead(photographerID: clip.photographerID, date: movedDate)
     }
 
     func editSelectedClip() {
@@ -858,21 +902,25 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         if let nearest { selectedClipIDs = [nearest.id] }
     }
 
-    func movePlayhead(bySnapIntervals intervalCount: Int) {
+    func movePlayhead(bySnapIntervals intervalCount: Int, extendingSelection: Bool = false) {
         guard intervalCount != 0,
               let photographerID = selectedPhotographerID ?? timelinePhotographers.first?.id else { return }
         let dayStart = calendar.startOfDay(for: selectedDate)
         let nextDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
             ?? dayStart.addingTimeInterval(86_400)
         let step = TimeInterval(max(snapMinutes, 1) * 60)
-        let latest = nextDay.addingTimeInterval(-step)
+        let latest = extendingSelection ? nextDay : nextDay.addingTimeInterval(-step)
         let origin = playhead?.date
             ?? selectedClipIDs.compactMap { id in draft.clips.first(where: { $0.id == id })?.startsAt }.min()
             ?? dayStart
         let snappedOrigin = MetadataTimelineEditing.snapped(origin, toMinutes: snapMinutes, calendar: calendar)
         let target = snappedOrigin.addingTimeInterval(TimeInterval(intervalCount) * step)
         let clamped = min(max(target, dayStart), latest)
+        let anchor = extendingSelection ? (rangeSelectionAnchor ?? min(max(origin, dayStart), nextDay)) : nil
+        selectedPhotographerID = photographerID
         playhead = TimelinePlayhead(photographerID: photographerID, date: clamped)
+        rangeSelectionAnchor = anchor
+        if extendingSelection { selectedClipIDs = [] }
         if selectedPhotographerIDs.isEmpty {
             selectedPhotographerIDs = [photographerID]
         }
