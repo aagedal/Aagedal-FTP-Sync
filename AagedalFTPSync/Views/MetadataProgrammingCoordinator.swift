@@ -533,7 +533,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         retargetPlayhead(to: clip.photographerID)
     }
 
-    private var clipAtPlayhead: MetadataScheduleClip? {
+    var clipAtPlayhead: MetadataScheduleClip? {
         guard let playhead else { return nil }
         let candidates = draft.clips.filter {
             $0.photographerID == playhead.photographerID
@@ -648,6 +648,14 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             on: photographerID
         )
         finishPasting(pasted, playhead: TimelinePlayhead(photographerID: photographerID, date: date))
+    }
+
+    func deleteClipAtPlayhead() {
+        guard let clip = clipAtPlayhead else { return }
+        draft.clips.removeAll { $0.id == clip.id }
+        selectedClipIDs.remove(clip.id)
+        if editingClipID == clip.id { editingClipID = nil }
+        rangeSelectionAnchor = nil
     }
 
     func deleteSelectedClips() {

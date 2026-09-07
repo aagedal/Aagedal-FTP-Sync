@@ -110,6 +110,7 @@ struct TimelineTrack: View {
     let color: Color
     let snapMinutes: Int
     let selectedClipIDs: Set<UUID>
+    let playheadClipID: UUID?
     let groupDragPreview: TimelineGroupDragPreview?
     let playheadDate: Date?
     let selectedTimeRange: DateInterval?
@@ -218,7 +219,7 @@ struct TimelineTrack: View {
                         .contentShape(Rectangle())
                         .gesture(creationGesture(totalWidth: proxy.size.width))
                         .simultaneousGesture(playheadGesture(totalWidth: proxy.size.width))
-                        .help("Click to place the playhead or use the arrow keys to navigate. Shift–Left/Right selects a time range; Command-N creates a clip; Command-I opens the clip at the playhead; Shift-Command-Left/Right moves it. Drag to create a clip.")
+                        .help("Click to place the playhead or use the arrow keys to navigate. Shift–Left/Right selects a time range; Command-N creates a clip; Command-I opens the clip at the playhead; Shift-Command-Left/Right moves it; Command-Backspace deletes it. Drag to create a clip.")
                     workHoursBackground(totalWidth: proxy.size.width)
                     hourGrid
                     overlapHighlights(totalWidth: proxy.size.width)
@@ -228,6 +229,7 @@ struct TimelineTrack: View {
                             clip: clip,
                             color: color,
                             isSelected: selectedClipIDs.contains(clip.id),
+                            isAtPlayhead: playheadClipID == clip.id,
                             selectedClipCount: selectedClipIDs.count,
                             groupPreviewOffset: groupPreviewOffset(
                                 for: clip,
@@ -530,6 +532,7 @@ private struct TimelineClipView: View {
     let clip: MetadataScheduleClip
     let color: Color
     let isSelected: Bool
+    let isAtPlayhead: Bool
     let selectedClipCount: Int
     let groupPreviewOffset: CGFloat
     let continuesFromPreviousDay: Bool
@@ -550,13 +553,15 @@ private struct TimelineClipView: View {
     @GestureState private var startTranslation: CGFloat = 0
     @GestureState private var endTranslation: CGFloat = 0
 
+    private var hasHighlightedOutline: Bool { isSelected || isAtPlayhead }
+
     var body: some View {
         ZStack {
             if isPreviewingDuplicate {
                 clipBody(showsResizeHandles: false)
                     .overlay {
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(isSelected ? color : color.opacity(0.7), lineWidth: isSelected ? 2.5 : 1)
+                            .stroke(hasHighlightedOutline ? color : color.opacity(0.7), lineWidth: hasHighlightedOutline ? 2.5 : 1)
                     }
                     .allowsHitTesting(false)
             }
@@ -565,9 +570,9 @@ private struct TimelineClipView: View {
                 .overlay {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(
-                            isPreviewingDuplicate ? color.opacity(0.9) : (isSelected ? color : color.opacity(0.7)),
+                            isPreviewingDuplicate ? color.opacity(0.9) : (hasHighlightedOutline ? color : color.opacity(0.7)),
                             style: StrokeStyle(
-                                lineWidth: isSelected ? 2.5 : 1,
+                                lineWidth: hasHighlightedOutline ? 2.5 : 1,
                                 dash: isPreviewingDuplicate ? [5, 3] : []
                             )
                         )

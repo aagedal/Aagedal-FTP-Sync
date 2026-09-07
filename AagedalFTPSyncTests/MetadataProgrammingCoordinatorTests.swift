@@ -307,6 +307,30 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.draft.clips.first, clip)
     }
 
+    func testDeleteAtPlayheadRemovesOnlyHighlightedClipAndKeepsPlayhead() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        let photographerID = UUID()
+        let first = MetadataScheduleClip(photographerID: photographerID, name: "First", startsAt: day, endsAt: day.addingTimeInterval(900))
+        let target = MetadataScheduleClip(photographerID: photographerID, name: "Target", startsAt: day, endsAt: day.addingTimeInterval(900))
+        let other = MetadataScheduleClip(photographerID: UUID(), name: "Other track", startsAt: day, endsAt: day.addingTimeInterval(900))
+        coordinator.draft.clips = [first, target, other]
+        coordinator.placePlayhead(on: photographerID, at: day)
+        coordinator.selectedClipIDs = [target.id, other.id]
+        XCTAssertEqual(coordinator.clipAtPlayhead?.id, target.id)
+        coordinator.deleteClipAtPlayhead()
+        XCTAssertEqual(coordinator.draft.clips, [first, other])
+        XCTAssertEqual(coordinator.selectedClipIDs, [other.id])
+        XCTAssertEqual(coordinator.playhead, TimelinePlayhead(photographerID: photographerID, date: day))
+
+        // The remaining clip can also be deleted using only its playhead highlight.
+        coordinator.deleteClipAtPlayhead()
+        XCTAssertEqual(coordinator.draft.clips, [other])
+        coordinator.deleteClipAtPlayhead()
+        XCTAssertEqual(coordinator.draft.clips, [other])
+    }
+
     func testCopyAndPasteDayProgrammingPreservesTracksAndVisibleTimes() throws {
         let calendar = utcCalendar
         let firstPhotographerID = UUID()

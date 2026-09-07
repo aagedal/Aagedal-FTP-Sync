@@ -669,6 +669,7 @@ struct MetadataProgrammingView: View {
                                     color: color(for: photographer),
                                     snapMinutes: snapMinutes,
                                     selectedClipIDs: selectedClipIDs,
+                                    playheadClipID: coordinator.clipAtPlayhead?.id,
                                     groupDragPreview: groupDragPreview,
                                     playheadDate: playhead?.date,
                                     selectedTimeRange: playhead?.photographerID == photographer.id ? coordinator.selectedTimeRange : nil,
@@ -788,6 +789,8 @@ struct MetadataProgrammingView: View {
                 .keyboardShortcut(.escape, modifiers: [])
             Button("Edit Clip", action: editSelectedClip)
                 .keyboardShortcut(.return, modifiers: [])
+            Button("Delete Clip at Playhead", action: coordinator.deleteClipAtPlayhead)
+                .keyboardShortcut(.delete, modifiers: .command)
             Button("Delete Clips", action: deleteSelectedClips)
                 .keyboardShortcut(.delete, modifiers: [])
             Button("Previous Day") { moveDay(by: -1) }
