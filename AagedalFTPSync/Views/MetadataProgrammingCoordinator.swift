@@ -33,7 +33,16 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     @Published var selectedDate: Date {
         didSet { rangeSelectionAnchor = nil }
     }
-    @Published var draft = MetadataAutomation()
+    @Published var draft = MetadataAutomation() {
+        didSet {
+            // External replacements and track edits must not leave stale clip history.
+            if timelineEditDepth == 0, !isRestoringTimelineEdit,
+               oldValue.clips != draft.clips || oldValue.photographerTracks != draft.photographerTracks {
+                undoTimelineEdits = []
+                redoTimelineEdits = []
+            }
+        }
+    }
     @Published var loadedJobID: UUID?
     @Published var selectedPhotographerID: UUID? {
         didSet {
@@ -341,7 +350,88 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         return Set(processedPaths).count
     }
 
+    private struct TimelineEditState {
+        let clips: [MetadataScheduleClip]
+        let tracks: [MetadataPhotographerTrack]
+        let day: Date
+        let playhead: TimelinePlayhead?
+        let selectedIDs: Set<UUID>
+        let photographerID: UUID?
+        let photographerIDs: Set<UUID>
+        let rangeAnchor: Date?
+    }
+
+    private struct TimelineEdit {
+        let before: TimelineEditState
+        let after: TimelineEditState
+    }
+
+    @Published private var undoTimelineEdits: [TimelineEdit] = []
+    @Published private var redoTimelineEdits: [TimelineEdit] = []
+    private var timelineEditDepth = 0
+    private var timelineEditStart: TimelineEditState?
+    private var isRestoringTimelineEdit = false
+
+    var canUndoTimelineEdit: Bool { !undoTimelineEdits.isEmpty }
+    var canRedoTimelineEdit: Bool { !redoTimelineEdits.isEmpty }
+
+    private var timelineEditState: TimelineEditState {
+        TimelineEditState(
+            clips: draft.clips, tracks: draft.photographerTracks,
+            day: selectedDate, playhead: playhead, selectedIDs: selectedClipIDs,
+            photographerID: selectedPhotographerID, photographerIDs: selectedPhotographerIDs,
+            rangeAnchor: rangeSelectionAnchor
+        )
+    }
+
+    private func beginTimelineEdit() {
+        if timelineEditDepth == 0 { timelineEditStart = timelineEditState }
+        timelineEditDepth += 1
+    }
+
+    private func endTimelineEdit() {
+        timelineEditDepth -= 1
+        guard timelineEditDepth == 0, let before = timelineEditStart else { return }
+        timelineEditStart = nil
+        let after = timelineEditState
+        guard before.clips != after.clips || before.tracks != after.tracks else { return }
+        undoTimelineEdits.append(TimelineEdit(before: before, after: after))
+        if undoTimelineEdits.count > 100 { undoTimelineEdits.removeFirst() }
+        redoTimelineEdits = []
+    }
+
+    func undoTimelineEdit() {
+        guard let edit = undoTimelineEdits.popLast() else { return }
+        restoreTimelineEdit(edit.before)
+        redoTimelineEdits.append(edit)
+    }
+
+    func redoTimelineEdit() {
+        guard let edit = redoTimelineEdits.popLast() else { return }
+        restoreTimelineEdit(edit.after)
+        undoTimelineEdits.append(edit)
+    }
+
+    private func restoreTimelineEdit(_ state: TimelineEditState) {
+        isRestoringTimelineEdit = true
+        defer { isRestoringTimelineEdit = false }
+        var restored = draft
+        restored.clips = state.clips
+        restored.photographerTracks = state.tracks
+        draft = restored
+        selectedDate = state.day
+        selectedPhotographerID = state.photographerID
+        selectedPhotographerIDs = state.photographerIDs
+        selectedClipIDs = state.selectedIDs
+        playhead = state.playhead
+        rangeSelectionAnchor = state.rangeAnchor
+        editingClipID = nil
+        pendingClipChange = nil
+    }
+
     func loadSelectedJob(from store: AppStore) {
+        undoTimelineEdits = []
+        redoTimelineEdits = []
         autosaveTask?.cancel()
         autosaveTask = nil
         previewTask?.cancel()
@@ -486,6 +576,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func addClip() {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         guard let photographer = selectedPhotographer else { return }
         let dayStart = calendar.startOfDay(for: selectedDate)
         let defaultStartHour = calendar.isDateInToday(selectedDate)
@@ -510,6 +602,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func updateClip(_ clip: MetadataScheduleClip) {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         guard let index = draft.clips.firstIndex(where: { $0.id == clip.id }) else { return }
         draft.clips[index] = clip
         draft.ensurePhotographerTracks(for: clip, calendar: calendar)
@@ -549,6 +643,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func moveClipAtPlayhead(bySnapIntervals intervalCount: Int) {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         guard intervalCount != 0, let playhead, var clip = clipAtPlayhead else { return }
         let interval = TimeInterval(intervalCount) * TimeInterval(max(snapMinutes, 1) * 60)
         clip.startsAt = clip.startsAt.addingTimeInterval(interval)
@@ -598,6 +694,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func createClip(for photographer: PhotographerProfile, from start: Date, to end: Date) {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         let clip = MetadataScheduleClip(
             photographerID: photographer.id,
             name: "Metadata clip",
@@ -651,6 +749,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func deleteClipAtPlayhead() {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         guard let clip = clipAtPlayhead else { return }
         draft.clips.removeAll { $0.id == clip.id }
         selectedClipIDs.remove(clip.id)
@@ -659,6 +759,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func deleteSelectedClips() {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         guard !selectedClipIDs.isEmpty else { return }
         draft.clips.removeAll { selectedClipIDs.contains($0.id) }
         selectedClipIDs = []
@@ -726,6 +828,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         trackOffset: Int = 0,
         duplicating: Bool
     ) {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         if selectedClipIDs.contains(clip.id), selectedClipIDs.count > 1 {
             moveSelectedClips(anchoredBy: clip, by: interval, trackOffset: trackOffset)
             return
@@ -865,6 +969,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         selecting selectedIDs: Set<UUID>,
         primaryPhotographerID: UUID
     ) {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         let clipsByID = Dictionary(uniqueKeysWithValues: clips.map { ($0.id, $0) })
         let existingIDs = Set(draft.clips.map(\.id))
         guard Set(clipsByID.keys).isSubset(of: existingIDs) else { return }
@@ -1017,6 +1123,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         _ pasted: [MetadataScheduleClip],
         playhead newPlayhead: TimelinePlayhead? = nil
     ) {
+        beginTimelineEdit()
+        defer { endTimelineEdit() }
         guard !pasted.isEmpty else { return }
         draft.clips.append(contentsOf: pasted)
         for clip in pasted {

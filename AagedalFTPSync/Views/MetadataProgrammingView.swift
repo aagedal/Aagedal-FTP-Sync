@@ -776,6 +776,12 @@ struct MetadataProgrammingView: View {
 
     private var timelineKeyboardShortcuts: some View {
         Group {
+            Button("Undo Timeline Edit", action: coordinator.undoTimelineEdit)
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!coordinator.canUndoTimelineEdit)
+            Button("Redo Timeline Edit", action: coordinator.redoTimelineEdit)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!coordinator.canRedoTimelineEdit)
             Button("Copy", action: copySelectedClips)
                 .keyboardShortcut("c", modifiers: .command)
             Button("Paste", action: pasteClips)

@@ -331,6 +331,96 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.draft.clips, [other])
     }
 
+    func testUndoRedoDeletionRestoresClipsAndSelection() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        let clip = MetadataScheduleClip(photographerID: UUID(), name: "Delete me", startsAt: day, endsAt: day.addingTimeInterval(900))
+        coordinator.draft.clips = [clip]
+        coordinator.placePlayhead(on: clip.photographerID, at: day)
+        coordinator.deleteClipAtPlayhead()
+        XCTAssertTrue(coordinator.canUndoTimelineEdit)
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, [clip])
+        XCTAssertEqual(coordinator.clipAtPlayhead?.id, clip.id)
+        coordinator.redoTimelineEdit()
+        XCTAssertTrue(coordinator.draft.clips.isEmpty)
+        coordinator.undoTimelineEdit()
+        coordinator.selectedClipIDs = [clip.id]
+        coordinator.deleteSelectedClips()
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.selectedClipIDs, [clip.id])
+        XCTAssertEqual(coordinator.draft.clips, [clip])
+    }
+
+    func testUndoRedoKeyboardMoveRestoresDayPlayheadAndTracks() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        let clip = MetadataScheduleClip(photographerID: UUID(), name: "Move me", startsAt: day, endsAt: day.addingTimeInterval(900))
+        coordinator.draft = MetadataAutomation(clips: [clip])
+        let originalTracks = coordinator.draft.photographerTracks
+        coordinator.placePlayhead(on: clip.photographerID, at: day)
+        coordinator.moveClipAtPlayhead(bySnapIntervals: -1)
+        let moved = coordinator.draft
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, [clip])
+        XCTAssertEqual(coordinator.draft.photographerTracks, originalTracks)
+        XCTAssertEqual(coordinator.selectedDate, day)
+        XCTAssertEqual(coordinator.playhead?.date, day)
+        XCTAssertFalse(coordinator.canUndoTimelineEdit)
+        coordinator.redoTimelineEdit()
+        XCTAssertEqual(coordinator.draft, moved)
+        XCTAssertEqual(coordinator.playhead?.date, day.addingTimeInterval(-900))
+        XCTAssertEqual(coordinator.selectedDate, day.addingTimeInterval(-86_400))
+    }
+
+    func testUndoDragResizeAndEditorChangeAndInvalidateRedoOnNewEdit() throws {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        let clip = MetadataScheduleClip(photographerID: UUID(), name: "Edit me", startsAt: day.addingTimeInterval(3_600), endsAt: day.addingTimeInterval(7_200))
+        coordinator.draft = MetadataAutomation(clips: [clip])
+        coordinator.moveClip(clip, by: 900, duplicating: false)
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, [clip])
+        XCTAssertTrue(coordinator.canRedoTimelineEdit)
+        coordinator.resizeClip(clip, edge: .end, by: 900)
+        XCTAssertFalse(coordinator.canRedoTimelineEdit)
+        XCTAssertEqual(coordinator.draft.clips.first?.endsAt, clip.endsAt.addingTimeInterval(900))
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, [clip])
+        var edited = clip
+        edited.endsAt = edited.endsAt.addingTimeInterval(1_800)
+        coordinator.updateClip(edited)
+        coordinator.draft.isEnabled = true
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, [clip])
+        XCTAssertTrue(coordinator.draft.isEnabled)
+        coordinator.redoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, [edited])
+        coordinator.draft.clips = []
+        XCTAssertFalse(coordinator.canUndoTimelineEdit)
+        XCTAssertFalse(coordinator.canRedoTimelineEdit)
+    }
+
+    func testUndoGroupMoveIsOneOperation() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        let first = MetadataScheduleClip(photographerID: UUID(), name: "First", startsAt: day, endsAt: day.addingTimeInterval(900))
+        let second = MetadataScheduleClip(photographerID: UUID(), name: "Second", startsAt: day.addingTimeInterval(900), endsAt: day.addingTimeInterval(1_800))
+        coordinator.draft = MetadataAutomation(clips: [first, second])
+        coordinator.selectedClipIDs = [first.id, second.id]
+        coordinator.moveClip(first, by: 900, duplicating: false)
+        let moved = coordinator.draft.clips
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, [first, second])
+        XCTAssertFalse(coordinator.canUndoTimelineEdit)
+        coordinator.redoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips, moved)
+    }
+
     func testCopyAndPasteDayProgrammingPreservesTracksAndVisibleTimes() throws {
         let calendar = utcCalendar
         let firstPhotographerID = UUID()
