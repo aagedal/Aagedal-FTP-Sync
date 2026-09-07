@@ -24,20 +24,24 @@ enum SyncDirection: String, Codable, CaseIterable, Identifiable, Sendable {
 
 enum FilterPreset: String, Codable, CaseIterable, Identifiable, Sendable {
     case all
+    case allMedia
     case jpeg
     case raw
     case photos
     case video
+    case audio
     case custom
 
     var id: String { rawValue }
     var title: String {
         switch self {
         case .all: "All files"
+        case .allMedia: "All Media"
         case .jpeg: "JPEG"
         case .raw: "Camera RAW"
         case .photos: "All photos"
         case .video: "Video"
+        case .audio: "Audio"
         case .custom: "Custom extensions"
         }
     }
@@ -45,11 +49,16 @@ enum FilterPreset: String, Codable, CaseIterable, Identifiable, Sendable {
     var extensions: Set<String>? {
         switch self {
         case .all: return nil
+        case .allMedia:
+            return (FilterPreset.photos.extensions ?? [])
+                .union(FilterPreset.video.extensions ?? [])
+                .union(FilterPreset.audio.extensions ?? [])
         case .jpeg: return ["jpg", "jpeg"]
         case .raw: return ["3fr", "arw", "cr2", "cr3", "dng", "erf", "fff", "iiq", "kdc", "mef", "mos", "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf", "x3f"]
         case .photos:
             return Set(["jpg", "jpeg", "heic", "heif", "png", "tif", "tiff"] + Array(FilterPreset.raw.extensions ?? []))
         case .video: return ["3gp", "avi", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "mts", "mxf", "webm"]
+        case .audio: return ["aac", "aif", "aiff", "alac", "bwf", "caf", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav", "wave", "wma"]
         case .custom: return []
         }
     }
