@@ -88,7 +88,9 @@ enum PhotographerMapCameraFraming {
             x: mapRect.midX,
             y: mapRect.midY
         ).coordinate.latitude
-        let minimumSpan = MKMapPointsPerMeterAtLatitude(centerLatitude) * 2_500
+        // Keep nearby or overlapping locations at neighborhood scale, while the
+        // proportional padding below leaves room around more spread-out locations.
+        let minimumSpan = MKMapPointsPerMeterAtLatitude(centerLatitude) * 500
         let paddedWidth = max(mapRect.width * 1.3, minimumSpan)
         let paddedHeight = max(mapRect.height * 1.3, minimumSpan)
         return MKMapRect(
