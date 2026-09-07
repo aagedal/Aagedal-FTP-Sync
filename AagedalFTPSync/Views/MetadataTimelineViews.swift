@@ -41,15 +41,9 @@ struct TimelineHourHeader: View {
                             .foregroundStyle(.secondary)
                             .offset(x: max(0, proxy.size.width * CGFloat(hour) / 24 - 15))
                     }
-                    if calendar.isDateInToday(day) {
-                        Rectangle()
-                            .fill(.red.opacity(0.75))
-                            .frame(width: 1)
-                            .offset(x: currentTimeOffset(totalWidth: proxy.size.width))
-                    }
-
                 }
             }
+            .padding(.horizontal, 4)
 
             VStack(spacing: 0) {
                 Text("24:00")
@@ -76,11 +70,34 @@ struct TimelineHourHeader: View {
         let nextDay = calendar.date(byAdding: .day, value: 1, to: day) ?? day
         return nextDay.formatted(.dateTime.weekday(.abbreviated).day())
     }
+}
 
-    private func currentTimeOffset(totalWidth: CGFloat) -> CGFloat {
-        let start = calendar.startOfDay(for: day)
-        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
-        return CGFloat(Date().timeIntervalSince(start) / end.timeIntervalSince(start)) * totalWidth
+/// One overlay spans the ruler and all tracks, including the row dividers.
+struct TimelineCurrentTimeIndicator: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let day: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let calendar = Calendar.current
+            if calendar.isDate(day, inSameDayAs: context.date) {
+                GeometryReader { proxy in
+                    let labelWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 252 : 177
+                    let nextDayWidth: CGFloat = dynamicTypeSize.isAccessibilitySize ? 104 : 68
+                    let canvasWidth = max(0, proxy.size.width - labelWidth - nextDayWidth - 8)
+                    let start = calendar.startOfDay(for: day)
+                    let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+                    let fraction = context.date.timeIntervalSince(start) / end.timeIntervalSince(start)
+
+                    Rectangle()
+                        .fill(.red.opacity(0.75))
+                        .frame(width: 1, height: proxy.size.height)
+                        .offset(x: labelWidth + 4 + CGFloat(fraction) * canvasWidth)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -204,7 +221,6 @@ struct TimelineTrack: View {
                     workHoursBackground(totalWidth: proxy.size.width)
                     hourGrid
                     overlapHighlights(totalWidth: proxy.size.width)
-                    currentTimeMarker(totalWidth: proxy.size.width)
                     creationPreview(totalWidth: proxy.size.width)
                     ForEach(clips) { clip in
                         TimelineClipView(
@@ -426,17 +442,6 @@ struct TimelineTrack: View {
                 .fill(.red.opacity(0.2))
                 .frame(width: intervalWidth(interval, totalWidth: totalWidth), height: canvasHeight)
                 .offset(x: intervalOffset(interval, totalWidth: totalWidth))
-                .allowsHitTesting(false)
-        }
-    }
-
-    @ViewBuilder
-    private func currentTimeMarker(totalWidth: CGFloat) -> some View {
-        if calendar.isDateInToday(day) {
-            Rectangle()
-                .fill(.red.opacity(0.75))
-                .frame(width: 1, height: canvasHeight)
-                .offset(x: CGFloat(Date().timeIntervalSince(dayStart) / dayDuration) * totalWidth)
                 .allowsHitTesting(false)
         }
     }

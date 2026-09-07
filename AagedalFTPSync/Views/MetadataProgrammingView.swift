@@ -647,77 +647,82 @@ struct MetadataProgrammingView: View {
             GeometryReader { viewport in
                 ScrollView([.horizontal, .vertical]) {
                     VStack(spacing: 0) {
-                        TimelineHourHeader(day: selectedDate)
+                        VStack(spacing: 0) {
+                            TimelineHourHeader(day: selectedDate)
 
-                        if timelinePhotographers.isEmpty {
-                            ContentUnavailableView {
-                                Label("No photographer tracks", systemImage: "person.crop.circle.badge.plus")
-                            } description: {
-                                Text("Use the row below to add a new or known photographer.")
+                            if timelinePhotographers.isEmpty {
+                                ContentUnavailableView {
+                                    Label("No photographer tracks", systemImage: "person.crop.circle.badge.plus")
+                                } description: {
+                                    Text("Use the row below to add a new or known photographer.")
+                                }
+                                .frame(height: 180)
                             }
-                            .frame(height: 180)
-                        }
 
-                        ForEach(timelinePhotographers) { photographer in
-                            TimelineTrack(
-                                photographer: photographer,
-                                clips: clips(for: photographer),
-                                allClips: draft.clips,
-                                day: selectedDate,
-                                color: color(for: photographer),
-                                snapMinutes: snapMinutes,
-                                selectedClipIDs: selectedClipIDs,
-                                groupDragPreview: groupDragPreview,
-                                playheadDate: playhead?.date,
-                                showsPlayhead: playhead != nil && selectedPhotographerIDs.contains(photographer.id),
-                                canPaste: !copiedClips.isEmpty && playhead != nil,
-                                isSelected: selectedPhotographerIDs.contains(photographer.id),
-                                processedFileCount: processedFileCount(for: photographer),
-                                canReprocess: canReprocessMetadata,
-                                onSelectPhotographer: {
-                                    coordinator.selectPhotographer(
-                                        photographer.id,
-                                        extendingSelection: NSEvent.modifierFlags.contains(.shift)
-                                    )
-                                    timelineFocused = true
-                                },
-                                onEditPhotographer: {
-                                    coordinator.selectPhotographer(photographer.id, extendingSelection: false)
-                                    editingPhotographerID = photographer.id
-                                },
-                                onRequestRemove: {
-                                    coordinator.selectPhotographer(photographer.id, extendingSelection: false)
-                                    photographerPendingDeletion = photographer
-                                },
-                                onReprocessPhotographer: {
-                                    pendingReprocessScope = .photographer(photographer.id)
-                                },
-                                onBeginReordering: {
-                                    draggedPhotographerID = photographer.id
-                                },
-                                onSelect: selectClip,
-                                onEdit: editClip,
-                                onCreate: createClip,
-                                onMove: moveClip,
-                                onPreviewMove: previewMove,
-                                onEndMovePreview: { groupDragPreview = nil },
-                                onResize: resizeClip,
-                                onResizeBoundary: resizeBoundary,
-                                onReprocessClip: { clip in
-                                    pendingReprocessScope = .clip(clip.id)
-                                },
-                                onPlacePlayhead: placePlayhead,
-                                onPasteAtPlayhead: pasteClips
-                            )
-                            .onDrop(
-                                of: [UTType.text],
-                                delegate: PhotographerTrackDropDelegate(
-                                    destinationID: photographer.id,
-                                    draggedPhotographerID: $coordinator.draggedPhotographerID,
-                                    onMove: coordinator.movePhotographerTrack
+                            ForEach(timelinePhotographers) { photographer in
+                                TimelineTrack(
+                                    photographer: photographer,
+                                    clips: clips(for: photographer),
+                                    allClips: draft.clips,
+                                    day: selectedDate,
+                                    color: color(for: photographer),
+                                    snapMinutes: snapMinutes,
+                                    selectedClipIDs: selectedClipIDs,
+                                    groupDragPreview: groupDragPreview,
+                                    playheadDate: playhead?.date,
+                                    showsPlayhead: playhead != nil && selectedPhotographerIDs.contains(photographer.id),
+                                    canPaste: !copiedClips.isEmpty && playhead != nil,
+                                    isSelected: selectedPhotographerIDs.contains(photographer.id),
+                                    processedFileCount: processedFileCount(for: photographer),
+                                    canReprocess: canReprocessMetadata,
+                                    onSelectPhotographer: {
+                                        coordinator.selectPhotographer(
+                                            photographer.id,
+                                            extendingSelection: NSEvent.modifierFlags.contains(.shift)
+                                        )
+                                        timelineFocused = true
+                                    },
+                                    onEditPhotographer: {
+                                        coordinator.selectPhotographer(photographer.id, extendingSelection: false)
+                                        editingPhotographerID = photographer.id
+                                    },
+                                    onRequestRemove: {
+                                        coordinator.selectPhotographer(photographer.id, extendingSelection: false)
+                                        photographerPendingDeletion = photographer
+                                    },
+                                    onReprocessPhotographer: {
+                                        pendingReprocessScope = .photographer(photographer.id)
+                                    },
+                                    onBeginReordering: {
+                                        draggedPhotographerID = photographer.id
+                                    },
+                                    onSelect: selectClip,
+                                    onEdit: editClip,
+                                    onCreate: createClip,
+                                    onMove: moveClip,
+                                    onPreviewMove: previewMove,
+                                    onEndMovePreview: { groupDragPreview = nil },
+                                    onResize: resizeClip,
+                                    onResizeBoundary: resizeBoundary,
+                                    onReprocessClip: { clip in
+                                        pendingReprocessScope = .clip(clip.id)
+                                    },
+                                    onPlacePlayhead: placePlayhead,
+                                    onPasteAtPlayhead: pasteClips
                                 )
-                            )
-                            Divider()
+                                .onDrop(
+                                    of: [UTType.text],
+                                    delegate: PhotographerTrackDropDelegate(
+                                        destinationID: photographer.id,
+                                        draggedPhotographerID: $coordinator.draggedPhotographerID,
+                                        onMove: coordinator.movePhotographerTrack
+                                    )
+                                )
+                                Divider()
+                            }
+                        }
+                        .overlay {
+                            TimelineCurrentTimeIndicator(day: selectedDate)
                         }
 
                         TimelineAddPhotographerRow(
