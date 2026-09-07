@@ -421,6 +421,30 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.draft.clips, moved)
     }
 
+    func testTimelineUndoAndRedoPreserveMapWindowPositionChanges() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        let jobID = UUID()
+        coordinator.loadedJobID = jobID
+        let clip = MetadataScheduleClip(photographerID: UUID(), name: "Move me", startsAt: day, endsAt: day.addingTimeInterval(900))
+        coordinator.draft = MetadataAutomation(clips: [clip])
+        coordinator.placePlayhead(on: clip.photographerID, at: day)
+        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+        let newPosition = ScheduledGPSPosition(latitude: 59.92, longitude: 10.76)
+        coordinator.applyExternalGPSPosition(newPosition, to: clip.id, jobID: jobID)
+        XCTAssertTrue(coordinator.canUndoTimelineEdit)
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips.first?.startsAt, day)
+        XCTAssertEqual(coordinator.draft.clips.first?.gpsPosition, newPosition)
+        let redoneMapPosition = ScheduledGPSPosition(latitude: 59.91, longitude: 10.75)
+        coordinator.applyExternalGPSPosition(redoneMapPosition, to: clip.id, jobID: jobID)
+        XCTAssertTrue(coordinator.canRedoTimelineEdit)
+        coordinator.redoTimelineEdit()
+        XCTAssertEqual(coordinator.draft.clips.first?.startsAt, day.addingTimeInterval(900))
+        XCTAssertEqual(coordinator.draft.clips.first?.gpsPosition, redoneMapPosition)
+    }
+
     func testCopyAndPasteDayProgrammingPreservesTracksAndVisibleTimes() throws {
         let calendar = utcCalendar
         let firstPhotographerID = UUID()

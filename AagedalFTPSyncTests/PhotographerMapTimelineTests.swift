@@ -141,6 +141,42 @@ final class PhotographerMapTimelineTests: XCTestCase {
         XCTAssertNil(PhotographerMapCameraFraming.mapRect(for: []))
     }
 
+    @MainActor
+    func testMapUndoRedoIsIndependentAndKeepsHistoryWhenSavingFails() {
+        let history = PhotographerMapUndoHistory()
+        let otherWindow = PhotographerMapUndoHistory()
+        let jobID = UUID()
+        let clipID = UUID()
+        let before = ScheduledGPSPosition(latitude: 59.91, longitude: 10.75)
+        let after = ScheduledGPSPosition(latitude: 59.92, longitude: 10.76)
+        history.record(.init(jobID: jobID, clipID: clipID, before: before, after: after))
+        XCTAssertFalse(otherWindow.canUndo)
+        history.undo { _, _, _, _ in false }
+        XCTAssertTrue(history.canUndo)
+        XCTAssertFalse(history.canRedo)
+        history.undo { job, clip, expected, position in
+            XCTAssertEqual(job, jobID)
+            XCTAssertEqual(clip, clipID)
+            XCTAssertEqual(expected, after)
+            XCTAssertEqual(position, before)
+            return true
+        }
+        XCTAssertFalse(history.canUndo)
+        XCTAssertTrue(history.canRedo)
+        history.redo { _, _, expected, position in
+            XCTAssertEqual(expected, before)
+            XCTAssertEqual(position, after)
+            return true
+        }
+        XCTAssertTrue(history.canUndo)
+        XCTAssertFalse(history.canRedo)
+        history.undo { _, _, _, _ in true }
+        history.record(.init(jobID: jobID, clipID: clipID, before: before, after: after))
+        XCTAssertFalse(history.canRedo)
+        history.clear()
+        XCTAssertFalse(history.canUndo)
+    }
+
     private func photographer(_ name: String) -> PhotographerProfile {
         PhotographerProfile(
             name: name,

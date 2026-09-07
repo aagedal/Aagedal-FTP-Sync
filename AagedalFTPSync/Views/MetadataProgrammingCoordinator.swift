@@ -351,7 +351,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     private struct TimelineEditState {
-        let clips: [MetadataScheduleClip]
+        var clips: [MetadataScheduleClip]
         let tracks: [MetadataPhotographerTrack]
         let day: Date
         let playhead: TimelinePlayhead?
@@ -362,8 +362,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     private struct TimelineEdit {
-        let before: TimelineEditState
-        let after: TimelineEditState
+        var before: TimelineEditState
+        var after: TimelineEditState
     }
 
     @Published private var undoTimelineEdits: [TimelineEdit] = []
@@ -687,7 +687,25 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         guard loadedJobID == jobID,
               let clipIndex = draft.clips.firstIndex(where: { $0.id == clipID }) else { return }
         let wasClean = draft == lastSavedDraft
+        // Map changes belong to the map window. Keep them in every timeline
+        // snapshot so undoing a time edit never rolls back a later map move.
+        func updatingPosition(in edits: [TimelineEdit]) -> [TimelineEdit] {
+            edits.map { edit in
+                var updated = edit
+                if let index = updated.before.clips.firstIndex(where: { $0.id == clipID }) {
+                    updated.before.clips[index].gpsPosition = position
+                }
+                if let index = updated.after.clips.firstIndex(where: { $0.id == clipID }) {
+                    updated.after.clips[index].gpsPosition = position
+                }
+                return updated
+            }
+        }
+        undoTimelineEdits = updatingPosition(in: undoTimelineEdits)
+        redoTimelineEdits = updatingPosition(in: redoTimelineEdits)
+        isRestoringTimelineEdit = true
         draft.clips[clipIndex].gpsPosition = position
+        isRestoringTimelineEdit = false
         if wasClean {
             lastSavedDraft = draft
         }

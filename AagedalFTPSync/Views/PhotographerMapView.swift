@@ -102,7 +102,51 @@ enum PhotographerMapCameraFraming {
     }
 }
 
+@MainActor
+final class PhotographerMapUndoHistory: ObservableObject {
+    struct Move {
+        let jobID: UUID
+        let clipID: UUID
+        let before: ScheduledGPSPosition
+        let after: ScheduledGPSPosition
+    }
+
+    @Published private var undoMoves: [Move] = []
+    @Published private var redoMoves: [Move] = []
+    var canUndo: Bool { !undoMoves.isEmpty }
+    var canRedo: Bool { !redoMoves.isEmpty }
+
+    func record(_ move: Move) {
+        guard move.before != move.after else { return }
+        undoMoves.append(move)
+        if undoMoves.count > 100 { undoMoves.removeFirst() }
+        redoMoves = []
+    }
+
+    func clear() {
+        undoMoves = []
+        redoMoves = []
+    }
+
+    // The caller persists only the coordinate, preserving edits from other windows.
+    func undo(apply: (UUID, UUID, ScheduledGPSPosition, ScheduledGPSPosition) -> Bool) {
+        guard let move = undoMoves.last,
+              apply(move.jobID, move.clipID, move.after, move.before) else { return }
+        undoMoves.removeLast()
+        redoMoves.append(move)
+    }
+
+    func redo(apply: (UUID, UUID, ScheduledGPSPosition, ScheduledGPSPosition) -> Bool) {
+        guard let move = redoMoves.last,
+              apply(move.jobID, move.clipID, move.before, move.after) else { return }
+        redoMoves.removeLast()
+        undoMoves.append(move)
+    }
+}
+
 struct PhotographerMapView: View {
+    @Environment(\.controlActiveState) private var controlActiveState
+    @StateObject private var undoHistory = PhotographerMapUndoHistory()
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
     @AppStorage("photographerMapRenderingMode") private var renderingMode: PhotographerMapRenderingMode = .standard
@@ -144,6 +188,21 @@ struct PhotographerMapView: View {
                 timelineControls
             }
         }
+        .background {
+            if controlActiveState == .key {
+                Group {
+                    Button("Undo Map Move") { undoHistory.undo(apply: applyHistoryPosition) }
+                        .keyboardShortcut("z", modifiers: .command)
+                        .disabled(!undoHistory.canUndo)
+                    Button("Redo Map Move") { undoHistory.redo(apply: applyHistoryPosition) }
+                        .keyboardShortcut("z", modifiers: [.command, .shift])
+                        .disabled(!undoHistory.canRedo)
+                }
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityHidden(true)
+            }
+        }
         .frame(minWidth: 900, minHeight: 650)
         .onAppear(perform: applyRequestedDate)
         .onChange(of: store.metadataMapRequestedDate) { _, _ in applyRequestedDate() }
@@ -153,6 +212,7 @@ struct PhotographerMapView: View {
             fitAllClipLocations()
         }
         .onChange(of: store.selectedJobID) { _, _ in
+            undoHistory.clear()
             selectedPhotographerID = nil
             fitAllClipLocations()
         }
@@ -533,11 +593,21 @@ struct PhotographerMapView: View {
         var position = item.position
         position.latitude = coordinate.latitude
         position.longitude = coordinate.longitude
-        _ = store.updateMetadataClipPosition(
-            position,
-            clipID: item.clip.id,
-            jobID: selectedJob.id
-        )
+        guard position != item.position,
+              store.updateMetadataClipPosition(position, clipID: item.clip.id, jobID: selectedJob.id) else { return }
+        undoHistory.record(.init(jobID: selectedJob.id, clipID: item.clip.id, before: item.position, after: position))
+    }
+
+    private func applyHistoryPosition(
+        jobID: UUID,
+        clipID: UUID,
+        expected: ScheduledGPSPosition,
+        position: ScheduledGPSPosition
+    ) -> Bool {
+        guard selectedJob?.id == jobID,
+              let clip = automation.clips.first(where: { $0.id == clipID }),
+              clip.gpsPosition == expected else { return false }
+        return store.updateMetadataClipPosition(position, clipID: clipID, jobID: jobID)
     }
 
     private func openMetadataProgramming(for item: ScheduledPhotographerPosition) {

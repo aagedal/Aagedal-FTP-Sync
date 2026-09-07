@@ -3,6 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct MetadataProgrammingView: View {
+    @Environment(\.controlActiveState) private var controlActiveState
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
     @StateObject private var coordinator = MetadataProgrammingCoordinator()
@@ -768,7 +769,7 @@ struct MetadataProgrammingView: View {
                 }
             }
 
-            if timelineFocused {
+            if timelineFocused && controlActiveState == .key {
                 timelineKeyboardShortcuts
             }
         }
