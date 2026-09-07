@@ -149,7 +149,7 @@ struct PhotographerMapView: View {
     @StateObject private var undoHistory = PhotographerMapUndoHistory()
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
-    @AppStorage("photographerMapRenderingMode") private var renderingMode: PhotographerMapRenderingMode = .standard
+    @AppStorage("photographerMapRenderingMode") private var renderingMode: PhotographerMapRenderingMode = .standardWithoutPointsOfInterest
     @AppStorage("photographerMapShows3DBuildings") private var shows3DBuildings = false
     @State private var selectedDate = Date()
     @State private var secondsIntoDay: Double = 12 * 60 * 60
