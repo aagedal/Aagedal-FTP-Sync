@@ -343,7 +343,12 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func processedFileCount(for photographer: PhotographerProfile, in store: AppStore) -> Int {
         guard let loadedJobID else { return 0 }
         let processedPaths = store.metadataAuditTrail(for: loadedJobID).lazy
-            .filter { $0.status == .applied && $0.photographerID == photographer.id }
+            .filter { entry in
+                guard entry.status == .applied,
+                      entry.photographerID == photographer.id,
+                      let scheduledAt = entry.scheduledAt else { return false }
+                return self.calendar.isDate(scheduledAt, inSameDayAs: self.selectedDate)
+            }
             .map(\.relativePath)
         return Set(processedPaths).count
     }

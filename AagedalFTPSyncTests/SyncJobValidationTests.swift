@@ -3,6 +3,62 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class SyncJobValidationTests: XCTestCase {
+    func testImageOutputFolderFollowsStorageAndPhotographerSorting() throws {
+        let photographer = PhotographerProfile(
+            name: "Jane/News: Desk", filenamePrefix: "JAD", creator: "Jane/News: Desk", copyrightNotice: ""
+        )
+        for direction in [SyncDirection.leftToRight, .rightToLeft] {
+            var job = validJob(direction: direction)
+            job.left = Endpoint(kind: .local, localPath: "/LeftPhotos", bookmark: Data([1]))
+            job.right = Endpoint(kind: .local, localPath: "/RightPhotos", bookmark: Data([1]))
+            job.metadataAutomation = MetadataAutomation(photographers: [photographer])
+            // Sorting only applies when processed-file storage is configured.
+            job.sortsProcessedFilesByPhotographer = true
+            var folder = try XCTUnwrap(job.imageOutputFolder(for: photographer))
+            XCTAssertEqual(folder.endpoint, job.destinationEndpoint)
+            XCTAssertNil(folder.managedFolder)
+            XCTAssertNil(folder.photographerFolder)
+
+            job.processedFilesLocation = .processedSubfolder
+            folder = try XCTUnwrap(job.imageOutputFolder(for: photographer))
+            XCTAssertEqual(folder.endpoint, job.destinationEndpoint)
+            XCTAssertEqual(folder.managedFolder?.directoryName, "Processed Files")
+            XCTAssertEqual(folder.photographerFolder, "Jane News Desk (JAD)")
+
+            job.sortsProcessedFilesByPhotographer = false
+            XCTAssertNil(job.imageOutputFolder(for: photographer)?.photographerFolder)
+
+            let custom = Endpoint(kind: .local, localPath: "/CustomPhotos", bookmark: Data([1]))
+            job.processedFilesLocation = .customFolder
+            job.processedFolder = custom
+            folder = try XCTUnwrap(job.imageOutputFolder(for: photographer))
+            XCTAssertEqual(folder.endpoint, custom)
+            XCTAssertNil(folder.managedFolder)
+            XCTAssertNil(folder.photographerFolder)
+
+            job.sortsProcessedFilesByPhotographer = true
+            XCTAssertEqual(job.imageOutputFolder(for: photographer)?.photographerFolder, "Jane News Desk (JAD)")
+        }
+    }
+
+    func testImageOutputFolderDisambiguatesPhotographersAndRejectsMissingDestination() throws {
+        let first = PhotographerProfile(name: "Jane", filenamePrefix: "JAD", creator: "Jane", copyrightNotice: "")
+        let second = PhotographerProfile(name: "Jane", filenamePrefix: "JAD", creator: "Jane", copyrightNotice: "")
+        var job = validJob(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(photographers: [first, second])
+        job.processedFilesLocation = .processedSubfolder
+        job.sortsProcessedFilesByPhotographer = true
+        let firstFolder = try XCTUnwrap(job.imageOutputFolder(for: first)?.photographerFolder)
+        let secondFolder = try XCTUnwrap(job.imageOutputFolder(for: second)?.photographerFolder)
+        XCTAssertNotEqual(firstFolder, secondFolder)
+        XCTAssertTrue(firstFolder.hasPrefix("Jane (JAD) ["))
+        job.direction = .bidirectional
+        XCTAssertNil(job.imageOutputFolder(for: first))
+        job.processedFilesLocation = .customFolder
+        job.processedFolder = nil
+        XCTAssertNil(job.imageOutputFolder(for: first))
+    }
+
     func testOrdinaryLocalJobsRejectOverlappingFoldersInEveryDirection() {
         for direction in [SyncDirection.leftToRight, .rightToLeft, .bidirectional] {
             for (left, right) in [("/Photos", "/Photos/Backup"), ("/Photos/Backup", "/Photos"), ("/Photos", "/Photos"), ("/", "/Photos")] {

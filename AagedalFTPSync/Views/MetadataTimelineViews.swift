@@ -119,6 +119,7 @@ struct TimelineTrack: View {
     let isSelected: Bool
     let processedFileCount: Int
     let canReprocess: Bool
+    let onOpenImageFolder: () -> Void
     let onSelectPhotographer: () -> Void
     let onEditPhotographer: () -> Void
     let onRequestRemove: () -> Void
@@ -185,6 +186,9 @@ struct TimelineTrack: View {
                             .padding(.horizontal, 5)
                             .padding(.vertical, 1)
                             .background(.quaternary, in: Capsule())
+                            .contentShape(Capsule())
+                            .onTapGesture(count: 2, perform: onOpenImageFolder)
+                            .accessibilityAction(named: "Open Images Folder", onOpenImageFolder)
                             .help(processedFileHelp)
                     }
                     .font(.caption)
@@ -322,7 +326,7 @@ struct TimelineTrack: View {
 
     private var processedFileHelp: String {
         let files = processedFileCount == 1 ? "1 unique file" : "\(processedFileCount) unique files"
-        return "Metadata successfully applied to \(files) for this photographer in the current job."
+        return "Metadata successfully applied to \(files) for this photographer on the displayed date in the current job. Double-click to open the images folder in Finder."
     }
 
     private var nextDay: Date {

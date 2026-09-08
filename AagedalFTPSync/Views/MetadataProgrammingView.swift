@@ -680,6 +680,11 @@ struct MetadataProgrammingView: View {
                                     isSelected: selectedPhotographerIDs.contains(photographer.id),
                                     processedFileCount: processedFileCount(for: photographer),
                                     canReprocess: canReprocessMetadata,
+                                    onOpenImageFolder: {
+                                        if let selectedJob {
+                                            store.openImageOutputFolder(for: photographer, in: selectedJob)
+                                        }
+                                    },
                                     onSelectPhotographer: {
                                         coordinator.selectPhotographer(
                                             photographer.id,

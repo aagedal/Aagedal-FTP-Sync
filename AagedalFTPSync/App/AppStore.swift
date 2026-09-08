@@ -722,6 +722,37 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func openImageOutputFolder(for photographer: PhotographerProfile, in job: SyncJob) {
+        // Use the saved profile, whose name and prefixes were used by the sync engine.
+        let savedPhotographer = job.metadataAutomation?.photographers.first { $0.id == photographer.id }
+            ?? photographer
+        guard let folder = job.imageOutputFolder(for: savedPhotographer) else {
+            alertMessage = "This job does not have a local images folder."
+            return
+        }
+        do {
+            let access = try BookmarkAccess(endpoint: folder.endpoint)
+            try withExtendedLifetime(access) {
+                let root = try folder.managedFolder?.url(inside: access.url, createIfNeeded: false)
+                    ?? access.url
+                var target = root
+                if let photographerFolder = folder.photographerFolder {
+                    let subfolder = root.appendingPathComponent(photographerFolder, isDirectory: true)
+                    var isDirectory: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: subfolder.path, isDirectory: &isDirectory),
+                       isDirectory.boolValue {
+                        target = subfolder
+                    }
+                }
+                guard NSWorkspace.shared.open(target) else {
+                    throw AppError.folderPermissionLost("Finder could not open the images folder.")
+                }
+            }
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
     func revealDownloadFolder(for job: SyncJob) {
         guard let destination = job.destinationEndpoint, destination.kind == .local else {
             alertMessage = "This job does not have a local download folder."

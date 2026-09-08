@@ -1941,7 +1941,7 @@ struct SyncEngine: Sendable {
         sortedByPhotographer: Bool
     ) -> SyncFile {
         guard sortedByPhotographer else { return file }
-        let folder = photographerFolderName(
+        let folder = PhotographerOutputFolder.name(
             for: assignment.photographer,
             photographers: automation?.photographers ?? [assignment.photographer]
         )
@@ -1950,77 +1950,6 @@ struct SyncEngine: Sendable {
             size: file.size,
             modifiedAt: file.modifiedAt
         )
-    }
-
-    private func photographerFolderName(
-        for photographer: PhotographerProfile,
-        photographers: [PhotographerProfile]
-    ) -> String {
-        let readableName = readablePhotographerFolderName(for: photographer)
-        let comparisonKey = folderComparisonKey(readableName)
-        let matchingFolders = photographers.filter {
-            folderComparisonKey(readablePhotographerFolderName(for: $0)) == comparisonKey
-        }
-        guard matchingFolders.contains(where: { $0.id != photographer.id }) else {
-            return readableName
-        }
-
-        let shortIdentifier = String(photographer.id.uuidString.prefix(8)).lowercased()
-        let shortIdentifierIsUnique = !matchingFolders.contains {
-            $0.id != photographer.id
-                && $0.id.uuidString.prefix(8).lowercased() == shortIdentifier
-        }
-        let identifier = shortIdentifierIsUnique
-            ? shortIdentifier
-            : photographer.id.uuidString.lowercased()
-        return "\(readableName) [\(identifier)]"
-    }
-
-    private func readablePhotographerFolderName(for photographer: PhotographerProfile) -> String {
-        let base = safeFolderComponent(
-            photographer.photographerName,
-            fallback: "Photographer",
-            maximumScalars: 36
-        )
-        let identifier = photographer.normalizedPrefixes.first
-            ?? "ID-\(photographer.id.uuidString.prefix(8))"
-        let readableIdentifier = safeFolderComponent(
-            identifier,
-            fallback: "ID-\(photographer.id.uuidString.prefix(8))",
-            maximumScalars: 12
-        )
-        return "\(base) (\(readableIdentifier))"
-    }
-
-    private func safeFolderComponent(
-        _ value: String,
-        fallback: String,
-        maximumScalars: Int = 60
-    ) -> String {
-        let replacedScalars = value.unicodeScalars.map { scalar -> Character in
-            if scalar == "/" || scalar == ":" || CharacterSet.controlCharacters.contains(scalar) {
-                return " "
-            }
-            return Character(String(scalar))
-        }
-        let collapsed = String(replacedScalars)
-            .split(whereSeparator: { $0.isWhitespace })
-            .joined(separator: " ")
-            .precomposedStringWithCanonicalMapping
-        var limited = String(collapsed.unicodeScalars.prefix(maximumScalars))
-        if limited.isEmpty || limited == "." || limited == ".." {
-            return fallback
-        }
-        if PathSafety.isInternalStagingPath(limited) {
-            let visibleName = limited.drop(while: { $0 == "." })
-            limited = String("Photographer \(visibleName)".unicodeScalars.prefix(maximumScalars))
-        }
-        return limited
-    }
-
-    private func folderComparisonKey(_ value: String) -> String {
-        value.precomposedStringWithCanonicalMapping
-            .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 
     private func importProcessedFile(

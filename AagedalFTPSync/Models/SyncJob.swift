@@ -243,6 +243,34 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
             .path
     }
 
+    func imageOutputFolder(for photographer: PhotographerProfile) -> (
+        endpoint: Endpoint, managedFolder: ManagedOutputFolder?, photographerFolder: String?
+    )? {
+        let endpoint: Endpoint?
+        let managedFolder: ManagedOutputFolder?
+        if movesProcessedFiles {
+            switch effectiveProcessedFilesLocation {
+            case .customFolder:
+                endpoint = processedFolder
+                managedFolder = nil
+            case .processedSubfolder:
+                endpoint = destinationEndpoint
+                managedFolder = .processedFiles
+            }
+        } else {
+            endpoint = destinationEndpoint
+            managedFolder = nil
+        }
+        guard let endpoint, endpoint.kind == .local else { return nil }
+        let photographerFolder = movesProcessedFiles && sortsProcessedFilesByPhotographer
+            ? PhotographerOutputFolder.name(
+                for: photographer,
+                photographers: metadataAutomation?.photographers ?? [photographer]
+            )
+            : nil
+        return (endpoint, managedFolder, photographerFolder)
+    }
+
     var validationMessage: String? {
         if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Give this job a name." }
         if let message = left.validationMessage { return "Left side: \(message)" }
@@ -473,4 +501,79 @@ struct SyncRunFailure: LocalizedError, Sendable {
     }
 
     var errorDescription: String? { failureDescription }
+}
+
+/// Shared with file publishing so Finder opens the exact photographer directory.
+enum PhotographerOutputFolder {
+    static func name(
+        for photographer: PhotographerProfile,
+        photographers: [PhotographerProfile]
+    ) -> String {
+        let readableName = readablePhotographerFolderName(for: photographer)
+        let comparisonKey = folderComparisonKey(readableName)
+        let matchingFolders = photographers.filter {
+            folderComparisonKey(readablePhotographerFolderName(for: $0)) == comparisonKey
+        }
+        guard matchingFolders.contains(where: { $0.id != photographer.id }) else {
+            return readableName
+        }
+
+        let shortIdentifier = String(photographer.id.uuidString.prefix(8)).lowercased()
+        let shortIdentifierIsUnique = !matchingFolders.contains {
+            $0.id != photographer.id
+                && $0.id.uuidString.prefix(8).lowercased() == shortIdentifier
+        }
+        let identifier = shortIdentifierIsUnique
+            ? shortIdentifier
+            : photographer.id.uuidString.lowercased()
+        return "\(readableName) [\(identifier)]"
+    }
+
+    private static func readablePhotographerFolderName(for photographer: PhotographerProfile) -> String {
+        let base = safeFolderComponent(
+            photographer.photographerName,
+            fallback: "Photographer",
+            maximumScalars: 36
+        )
+        let identifier = photographer.normalizedPrefixes.first
+            ?? "ID-\(photographer.id.uuidString.prefix(8))"
+        let readableIdentifier = safeFolderComponent(
+            identifier,
+            fallback: "ID-\(photographer.id.uuidString.prefix(8))",
+            maximumScalars: 12
+        )
+        return "\(base) (\(readableIdentifier))"
+    }
+
+    private static func safeFolderComponent(
+        _ value: String,
+        fallback: String,
+        maximumScalars: Int = 60
+    ) -> String {
+        let replacedScalars = value.unicodeScalars.map { scalar -> Character in
+            if scalar == "/" || scalar == ":" || CharacterSet.controlCharacters.contains(scalar) {
+                return " "
+            }
+            return Character(String(scalar))
+        }
+        let collapsed = String(replacedScalars)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+            .precomposedStringWithCanonicalMapping
+        var limited = String(collapsed.unicodeScalars.prefix(maximumScalars))
+        if limited.isEmpty || limited == "." || limited == ".." {
+            return fallback
+        }
+        if PathSafety.isInternalStagingPath(limited) {
+            let visibleName = limited.drop(while: { $0 == "." })
+            limited = String("Photographer \(visibleName)".unicodeScalars.prefix(maximumScalars))
+        }
+        return limited
+    }
+
+    private static func folderComparisonKey(_ value: String) -> String {
+        value.precomposedStringWithCanonicalMapping
+            .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+    }
+
 }

@@ -3,6 +3,64 @@ import XCTest
 
 @MainActor
 final class MetadataProgrammingCoordinatorTests: XCTestCase {
+    func testProcessedFileCountUsesDisplayedSchedulingDayAndUniqueSuccessfulFiles() throws {
+        var calendar = utcCalendar
+        calendar.timeZone = TimeZone(identifier: "Europe/Oslo")!
+        let day = date(2026, 9, 8, 0, 0, calendar: calendar)
+        let nextDay = date(2026, 9, 9, 0, 0, calendar: calendar)
+        let photographer = PhotographerProfile(
+            name: "Desk", filenamePrefix: "DSK", creator: "Desk", copyrightNotice: ""
+        )
+        let otherPhotographer = PhotographerProfile(
+            name: "Other", filenamePrefix: "OTH", creator: "Other", copyrightNotice: ""
+        )
+        let jobID = UUID()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-day-count-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let auditRepository = MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json"))
+        func entry(
+            _ path: String, at scheduledAt: Date?, status: MetadataAuditStatus = .applied,
+            photographer profile: PhotographerProfile? = nil, job: UUID? = nil
+        ) -> MetadataAuditEntry {
+            MetadataAuditEntry(
+                runID: UUID(), jobID: job ?? jobID, occurredAt: nextDay,
+                operation: .reprocess, relativePath: path, status: status,
+                timestampPolicy: .cameraCapture, scheduledAt: scheduledAt,
+                matchedPhotographer: profile ?? photographer
+            )
+        }
+        try auditRepository.save([
+            entry("start.jpg", at: day),
+            entry("start.jpg", at: day),
+            entry("end.jpg", at: nextDay.addingTimeInterval(-1)),
+            entry("previous.jpg", at: day.addingTimeInterval(-1)),
+            entry("next.jpg", at: nextDay),
+            entry("unknown.jpg", at: nil),
+            entry("failed.jpg", at: day, status: .failed),
+            entry("skipped.jpg", at: day, status: .skipped),
+            entry("other.jpg", at: day, photographer: otherPhotographer),
+            entry("other-job.jpg", at: day, job: UUID())
+        ])
+        let store = AppStore(
+            repository: JobRepository(fileURL: root.appendingPathComponent("jobs.json")),
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(fileURL: root.appendingPathComponent("photographers.json")),
+            serverProfileRepository: ServerProfileRepository(fileURL: root.appendingPathComponent("servers.json")),
+            metadataAuditRepository: auditRepository,
+            syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json"))
+        )
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        XCTAssertEqual(coordinator.processedFileCount(for: photographer, in: store), 0)
+        coordinator.loadedJobID = jobID
+        XCTAssertEqual(coordinator.processedFileCount(for: photographer, in: store), 2)
+        coordinator.selectedDate = nextDay
+        XCTAssertEqual(coordinator.processedFileCount(for: photographer, in: store), 1)
+        coordinator.selectedDate = date(2026, 9, 10, 0, 0, calendar: calendar)
+        XCTAssertEqual(coordinator.processedFileCount(for: photographer, in: store), 0)
+    }
+
     func testOpenClipSelectsItsDayTrackAndEditor() {
         let calendar = utcCalendar
         let photographerID = UUID()

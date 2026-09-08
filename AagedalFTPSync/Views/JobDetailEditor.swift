@@ -537,9 +537,7 @@ struct JobDetailEditor: View {
             set: { enabled in
                 if enabled {
                     if !draft.movesProcessedFiles {
-                        draft.processedFilesLocation = .customFolder
-                        draft.processedFolder = .local
-                        showProcessedFolderPicker = true
+                        draft.processedFilesLocation = .processedSubfolder
                     }
                 } else {
                     draft.processedFolder = nil
