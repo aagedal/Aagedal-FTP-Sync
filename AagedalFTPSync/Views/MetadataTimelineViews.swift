@@ -781,13 +781,18 @@ private struct TimelineLinkedBoundaryHandle: View {
                 }
         )
         .onKeyPress(.leftArrow) {
-            onSelect()
-            onResize(-TimeInterval(max(snapMinutes, 1) * 60))
+            // Selection and resizing publish coordinator changes; wait until the view update ends.
+            DispatchQueue.main.async {
+                onSelect()
+                onResize(-TimeInterval(max(snapMinutes, 1) * 60))
+            }
             return .handled
         }
         .onKeyPress(.rightArrow) {
-            onSelect()
-            onResize(TimeInterval(max(snapMinutes, 1) * 60))
+            DispatchQueue.main.async {
+                onSelect()
+                onResize(TimeInterval(max(snapMinutes, 1) * 60))
+            }
             return .handled
         }
         .accessibilityLabel("Adjust boundary between \(leading.name) and \(trailing.name)")

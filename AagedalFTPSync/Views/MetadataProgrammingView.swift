@@ -750,27 +750,39 @@ struct MetadataProgrammingView: View {
                 .focusEffectDisabled()
                 .focused($timelineFocused)
                 .onKeyPress(.leftArrow, phases: [.down, .repeat]) { press in
-                    if press.modifiers.contains([.shift, .command]) {
-                        coordinator.moveClipAtPlayhead(bySnapIntervals: -1)
-                    } else {
-                        coordinator.movePlayhead(bySnapIntervals: -1, extendingSelection: press.modifiers.contains(.shift))
+                    let modifiers = press.modifiers
+                    // SwiftUI can deliver key callbacks during a view update.
+                    // Defer the entire action so its published changes happen together afterward.
+                    DispatchQueue.main.async {
+                        if modifiers.contains([.shift, .command]) {
+                            coordinator.moveClipAtPlayhead(bySnapIntervals: -1)
+                        } else {
+                            coordinator.movePlayhead(bySnapIntervals: -1, extendingSelection: modifiers.contains(.shift))
+                        }
                     }
                     return .handled
                 }
                 .onKeyPress(.rightArrow, phases: [.down, .repeat]) { press in
-                    if press.modifiers.contains([.shift, .command]) {
-                        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
-                    } else {
-                        coordinator.movePlayhead(bySnapIntervals: 1, extendingSelection: press.modifiers.contains(.shift))
+                    let modifiers = press.modifiers
+                    DispatchQueue.main.async {
+                        if modifiers.contains([.shift, .command]) {
+                            coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+                        } else {
+                            coordinator.movePlayhead(bySnapIntervals: 1, extendingSelection: modifiers.contains(.shift))
+                        }
                     }
                     return .handled
                 }
                 .onKeyPress(.upArrow) {
-                    selectAdjacentTrack(offset: -1)
+                    DispatchQueue.main.async {
+                        selectAdjacentTrack(offset: -1)
+                    }
                     return .handled
                 }
                 .onKeyPress(.downArrow) {
-                    selectAdjacentTrack(offset: 1)
+                    DispatchQueue.main.async {
+                        selectAdjacentTrack(offset: 1)
+                    }
                     return .handled
                 }
             }
