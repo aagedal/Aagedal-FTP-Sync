@@ -238,7 +238,14 @@ struct JobsWindowView: View {
     private var editorSelectionBinding: Binding<UUID?> {
         Binding(
             get: { editingSession.jobID },
-            set: { jobID in requestSelection(jobID) }
+            set: { jobID in
+                // List can write its selection while SwiftUI is updating views.
+                // Defer the entire transition, including unsaved-change prompts,
+                // so it does not publish observable state during that update.
+                DispatchQueue.main.async {
+                    requestSelection(jobID)
+                }
+            }
         )
     }
 

@@ -75,6 +75,38 @@ final class TransactionalRemovalTests: XCTestCase {
 }
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testSortingPreferencesWithoutMetadataSyncWithoutMovingSource() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            for metadata in [nil, MetadataAutomation(isEnabled: false)] as [MetadataAutomation?] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                let source = fixture.left.appendingPathComponent("JAD_PHOTO.jpg")
+                let contents = Data("untagged photo".utf8)
+                try contents.write(to: source)
+                var job = try fixture.job(direction: .leftToRight)
+                job.metadataAutomation = metadata
+                job.processedFilesLocation = location
+                if location == .customFolder {
+                    job.processedFolder = try fixture.endpoint(for: fixture.processed)
+                }
+                job.sortsProcessedFilesByPhotographer = true
+                XCTAssertNil(job.validationMessage)
+
+                let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+
+                XCTAssertEqual(result.transferred, 1)
+                XCTAssertEqual(result.processed, 0)
+                XCTAssertEqual(try Data(contentsOf: source), contents)
+                let destination = URL(fileURLWithPath: try XCTUnwrap(job.localDestinationDisplayPath))
+                XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(source.lastPathComponent)), contents)
+                let processed = location == .customFolder
+                    ? fixture.processed
+                    : fixture.right.appendingPathComponent("Processed Files")
+                XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: processed.path), [])
+            }
+        }
+    }
+
     func testVerifiedRemovalRestoresWholePairWhenSameSizeSourceChanges() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

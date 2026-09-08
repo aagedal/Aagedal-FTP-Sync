@@ -117,6 +117,7 @@ final class AppStore: ObservableObject {
         refreshLaunchAtLoginStatus()
         selectedJobID = jobs.last?.id
         for index in jobs.indices {
+            jobs[index].intervalSeconds = max(jobs[index].intervalSeconds, 5)
             let configuredToStart = jobs[index].startsOnAppLaunch
             let usesServerProfile = jobs[index].left.serverProfileID != nil
                 || jobs[index].right.serverProfileID != nil
@@ -287,7 +288,7 @@ final class AppStore: ObservableObject {
     func updateInterval(jobID: UUID, seconds: Double) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         var updatedJobs = jobs
-        updatedJobs[index].intervalSeconds = min(max(seconds, 2), 300)
+        updatedJobs[index].intervalSeconds = min(max(seconds, 5), 300)
         guard persistAndPublishJobs(updatedJobs) else { return }
         scheduler.reschedule(jobID, job: jobs.first(where: { $0.id == jobID }))
     }

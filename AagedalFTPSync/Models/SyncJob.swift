@@ -276,7 +276,7 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
         if let message = left.validationMessage { return "Left side: \(message)" }
         if let message = right.validationMessage { return "Right side: \(message)" }
         if left.kind.isRemote && right.kind.isRemote { return "Version 2.0 supports remote ↔ local and local ↔ local jobs." }
-        if intervalSeconds < 2 { return "The interval must be at least 2 seconds." }
+        if intervalSeconds < 5 { return "The interval must be at least 5 seconds." }
         if let targetCleanup {
             guard direction != .bidirectional else { return "Automatic cleanup is only available for one-way jobs." }
             let target = direction == .leftToRight ? right : left
@@ -302,9 +302,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
             guard direction != .bidirectional else {
                 return "Moving processed files is only available for one-way jobs."
             }
-            guard metadataAutomation?.isEnabled == true else {
-                return "Enable automatic metadata before moving files to a processed folder."
-            }
+            // Folder preferences can be saved before metadata is configured.
+            // The engine only moves source files after metadata is applied.
 
             switch effectiveProcessedFilesLocation {
             case .customFolder:

@@ -424,7 +424,7 @@ private struct JobQuickControls: View {
                 }
                 Slider(
                     value: $intervalSeconds,
-                    in: 2...300,
+                    in: 5...300,
                     step: 1,
                     onEditingChanged: { editing in
                         if editing { intervalWasEdited = true }
@@ -432,7 +432,7 @@ private struct JobQuickControls: View {
                     }
                 )
                 HStack {
-                    Text("2 sec")
+                    Text("5 sec")
                     Spacer()
                     Text("5 min")
                 }

@@ -469,6 +469,7 @@ extension SyncJob {
         var result = self
         result.id = id
         result.name = name ?? self.name
+        result.intervalSeconds = max(result.intervalSeconds, 5)
         result.left = left.preparedForImport()
         result.right = right.preparedForImport()
         result.processedFolder = processedFolder?.preparedForImport()

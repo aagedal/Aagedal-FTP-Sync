@@ -3,6 +3,22 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class SyncJobValidationTests: XCTestCase {
+    func testMinimumCheckIntervalIsFiveSeconds() {
+        var job = validJob(direction: .leftToRight)
+        job.intervalSeconds = 4
+        XCTAssertEqual(job.validationMessage, "The interval must be at least 5 seconds.")
+        job.intervalSeconds = 5
+        XCTAssertNil(job.validationMessage)
+    }
+
+    func testImportedLegacyCheckIntervalIsRaisedToFiveSeconds() {
+        var job = validJob(direction: .leftToRight)
+        job.intervalSeconds = 2
+        XCTAssertEqual(job.preparedForImport().intervalSeconds, 5)
+        job.intervalSeconds = 60
+        XCTAssertEqual(job.preparedForImport().intervalSeconds, 60)
+    }
+
     func testImageOutputFolderFollowsStorageAndPhotographerSorting() throws {
         let photographer = PhotographerProfile(
             name: "Jane/News: Desk", filenamePrefix: "JAD", creator: "Jane/News: Desk", copyrightNotice: ""
@@ -146,7 +162,7 @@ final class SyncJobValidationTests: XCTestCase {
         XCTAssertEqual(job.validationMessage, "Source and target folders must not overlap when cleanup is enabled.")
     }
 
-    func testProcessedFolderRequiresAutomaticMetadata() {
+    func testProcessedFolderPreferencesCanBeSavedBeforeMetadataSetup() {
         var job = validJob(direction: .leftToRight)
         job.processedFolder = Endpoint(
             kind: .local,
@@ -154,10 +170,16 @@ final class SyncJobValidationTests: XCTestCase {
             bookmark: Data([1])
         )
 
-        XCTAssertEqual(
-            job.validationMessage,
-            "Enable automatic metadata before moving files to a processed folder."
-        )
+        job.sortsProcessedFilesByPhotographer = true
+        XCTAssertNil(job.validationMessage)
+
+        job.processedFilesLocation = .processedSubfolder
+        job.processedFolder = nil
+        XCTAssertNil(job.validationMessage)
+
+        job.metadataAutomation = validMetadataAutomation()
+        job.metadataAutomation?.isEnabled = false
+        XCTAssertNil(job.validationMessage)
     }
 
     func testProcessedFolderRejectsTwoWayJobs() {

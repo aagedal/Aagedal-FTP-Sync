@@ -36,7 +36,7 @@ struct JobDetailEditor: View {
                         .help("Repeatedly sync this job while the app is open.")
                     LabeledContent("Check every") {
                         HStack {
-                            Slider(value: $session.draft.intervalSeconds, in: 2...300, step: 1)
+                            Slider(value: intervalSecondsBinding, in: 5...300)
                                 .frame(width: 220)
                             Text(intervalLabel).monospacedDigit().frame(width: 72, alignment: .trailing)
                         }
@@ -119,6 +119,11 @@ struct JobDetailEditor: View {
                     .accessibilityIdentifier("open-metadata-programming")
                     .disabled(session.isNewJob)
                     .help(session.isNewJob ? "Save this job before programming metadata." : "Open metadata programming for this job.")
+                    if session.isNewJob {
+                        Text("Save this job first, then open Metadata Programming to add photographers and their schedules. You can choose processed-folder and sorting preferences now.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("Assign permanent photographer profiles to filename initials, then program Headline, Description, and Keywords on a day timeline.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -177,6 +182,12 @@ struct JobDetailEditor: View {
                             isOn: sortProcessedFilesByPhotographerBinding
                         )
 
+                        if currentMetadataAutomation?.isEnabled != true {
+                            Text("These folder preferences will be saved. Files will sync normally and stay at their source until automatic metadata is configured and enabled. Photographer sorting applies only to successfully tagged files.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
                         Text("After the synced and processed copies are verified, the original is removed from its source. Metadata skips, failures, and processed-file collisions leave the source untouched.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -200,11 +211,21 @@ struct JobDetailEditor: View {
                         .disabled(draft.targetCleanup == nil && !hasLocalOneWayTarget)
 
                     if draft.targetCleanup != nil {
-                        Stepper(value: targetCleanupHoursBinding, in: 1...720) {
-                            LabeledContent("Delete target files older than") {
-                                Text(targetCleanupLabel).monospacedDigit()
+                        LabeledContent("Delete target files older than") {
+                            HStack {
+                                Slider(value: targetCleanupSliderBinding, in: Double(targetCleanupHoursRange.lowerBound)...Double(targetCleanupHoursRange.upperBound))
+                                    .frame(width: 220)
+                                    .accessibilityLabel("Target cleanup age")
+                                TextField("Hours", value: targetCleanupHoursBinding, format: .number.grouping(.never))
+                                    .textFieldStyle(.roundedBorder)
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(width: 64)
+                                    .accessibilityLabel("Target cleanup age in hours")
+                                Text("hours")
                             }
                         }
+                        Text("\(targetCleanupLabel). Choose \(targetCleanupHoursRange.lowerBound)–\(targetCleanupHoursRange.upperBound) hours.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Text("Cleanup removes only matching file types from the local target and never touches the source. RAW files and their XMP sidecars are removed together. The deletion age must be greater than the source file-age window.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if !hasLocalOneWayTarget {
@@ -462,6 +483,15 @@ struct JobDetailEditor: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    // A stepped macOS slider draws a tick for every second, which looks like
+    // an extra line at this range. Round the value without drawing tick marks.
+    private var intervalSecondsBinding: Binding<Double> {
+        Binding(
+            get: { session.draft.intervalSeconds },
+            set: { session.draft.intervalSeconds = $0.rounded() }
+        )
+    }
+
     private var intervalLabel: String {
         if draft.intervalSeconds < 60 { return "\(Int(draft.intervalSeconds)) sec" }
         return "\(Int(draft.intervalSeconds / 60)) min"
@@ -690,7 +720,19 @@ struct JobDetailEditor: View {
     private var targetCleanupHoursBinding: Binding<Int> {
         Binding(
             get: { draft.targetCleanup?.olderThanHours ?? 2 },
-            set: { draft.targetCleanup?.olderThanHours = $0 }
+            set: { draft.targetCleanup?.olderThanHours = min(max($0, targetCleanupHoursRange.lowerBound), targetCleanupHoursRange.upperBound) }
+        )
+    }
+
+    private var targetCleanupHoursRange: ClosedRange<Int> {
+        let minimum = max(1, (draft.filter.recentHours ?? 0) + 1)
+        return minimum...max(720, minimum + 1)
+    }
+
+    private var targetCleanupSliderBinding: Binding<Double> {
+        Binding(
+            get: { Double(targetCleanupHoursBinding.wrappedValue) },
+            set: { targetCleanupHoursBinding.wrappedValue = Int($0.rounded()) }
         )
     }
 
