@@ -1015,21 +1015,12 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         let currentIndex = timelinePhotographers.firstIndex(where: { $0.id == currentPhotographerID }) ?? 0
         let targetIndex = min(max(currentIndex + offset, 0), timelinePhotographers.count - 1)
         let targetPhotographer = timelinePhotographers[targetIndex]
-        let trackClips = clips(for: targetPhotographer)
         let referenceDate = playhead?.date ?? selected?.startsAt
         setSingleSelectedPhotographer(targetPhotographer.id)
         if let referenceDate {
             playhead = TimelinePlayhead(photographerID: targetPhotographer.id, date: referenceDate)
         }
-        guard !trackClips.isEmpty else {
-            selectedClipIDs = []
-            return
-        }
-        let nearestDate = referenceDate ?? calendar.startOfDay(for: selectedDate)
-        let nearest = trackClips.min {
-            abs($0.startsAt.timeIntervalSince(nearestDate)) < abs($1.startsAt.timeIntervalSince(nearestDate))
-        }
-        if let nearest { selectedClipIDs = [nearest.id] }
+        selectedClipIDs = clipAtPlayhead.map { [$0.id] } ?? []
     }
 
     func movePlayhead(bySnapIntervals intervalCount: Int, extendingSelection: Bool = false) {
@@ -1050,7 +1041,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         selectedPhotographerID = photographerID
         playhead = TimelinePlayhead(photographerID: photographerID, date: clamped)
         rangeSelectionAnchor = anchor
-        if extendingSelection { selectedClipIDs = [] }
+        selectedClipIDs = extendingSelection ? [] : (clipAtPlayhead.map { [$0.id] } ?? [])
         if selectedPhotographerIDs.isEmpty {
             selectedPhotographerIDs = [photographerID]
         }

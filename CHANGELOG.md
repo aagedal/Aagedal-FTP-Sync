@@ -2,6 +2,8 @@
 
 ## 2.8.1 — 2026-09-08
 
+- Clear clip highlighting when keyboard playhead navigation lands in empty timeline space; select only the clip containing the playhead.
+
 - Make Photographer Map marker dragging follow the pointer directly, with a fixed pin-center anchor and map navigation suspended during a marker move.
 
 - Merge imported metadata programming by clip UUID: update matching clips, add new clips, and retain local clips omitted from an export. Incoming versions win; overlapping assignments are rejected before saving.

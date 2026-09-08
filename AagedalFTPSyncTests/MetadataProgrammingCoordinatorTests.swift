@@ -173,6 +173,47 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.playhead, TimelinePlayhead(photographerID: second.id, date: targetDate))
     }
 
+    func testTrackNavigationSelectsOnlyClipContainingPlayhead() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let first = PhotographerProfile(name: "First", filenamePrefix: "ONE", creator: "First", copyrightNotice: "")
+        let second = PhotographerProfile(name: "Second", filenamePrefix: "TWO", creator: "Second", copyrightNotice: "")
+        let clip = MetadataScheduleClip(photographerID: second.id, name: "Assignment",
+            startsAt: day.addingTimeInterval(3600), endsAt: day.addingTimeInterval(7200))
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        coordinator.draft = MetadataAutomation(photographers: [first, second], clips: [clip])
+        coordinator.draft.addPhotographerTrack(first.id, on: day, calendar: calendar)
+        coordinator.draft.movePhotographerTrack(first.id, before: second.id, on: day, calendar: calendar)
+
+        for offset in [0.0, 3600, 5400, 7200, 9000] {
+            let instant = day.addingTimeInterval(offset)
+            coordinator.placePlayhead(on: first.id, at: instant)
+            coordinator.selectAdjacentTrack(offset: 1)
+            XCTAssertEqual(coordinator.playhead, TimelinePlayhead(photographerID: second.id, date: instant))
+            XCTAssertEqual(coordinator.selectedClipIDs, clip.contains(instant) ? [clip.id] : [])
+        }
+    }
+
+    func testHorizontalNavigationClearsSelectionInGapAndMoveShortcutDoesNothing() {
+        let calendar = utcCalendar
+        let day = date(2026, 8, 29, 0, 0, calendar: calendar)
+        let coordinator = MetadataProgrammingCoordinator(selectedDate: day, calendar: calendar)
+        let clip = MetadataScheduleClip(photographerID: UUID(), name: "Assignment",
+            startsAt: day, endsAt: day.addingTimeInterval(1800))
+        coordinator.draft.clips = [clip]
+        coordinator.snapMinutes = 15
+        coordinator.placePlayhead(on: clip.photographerID, at: day)
+        coordinator.movePlayhead(bySnapIntervals: 1)
+        XCTAssertEqual(coordinator.selectedClipIDs, [clip.id])
+        coordinator.movePlayhead(bySnapIntervals: 1)
+        XCTAssertTrue(coordinator.selectedClipIDs.isEmpty)
+        XCTAssertNil(coordinator.clipAtPlayhead)
+        coordinator.moveClipAtPlayhead(bySnapIntervals: 1)
+        XCTAssertEqual(coordinator.draft.clips, [clip])
+        coordinator.movePlayhead(bySnapIntervals: -1)
+        XCTAssertEqual(coordinator.selectedClipIDs, [clip.id])
+    }
+
     func testHorizontalNavigationMovesPlayheadBySnapIntervalAndClampsToDay() {
         let calendar = utcCalendar
         let photographer = PhotographerProfile(
