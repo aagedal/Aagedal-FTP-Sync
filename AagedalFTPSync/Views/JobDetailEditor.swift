@@ -29,10 +29,11 @@ struct JobDetailEditor: View {
                     TextField("Name", text: $session.draft.name)
                         .accessibilityIdentifier("job-name")
                     Toggle("Two-way sync", isOn: twoWayBinding)
-                    Toggle("Run automatically", isOn: $session.draft.isEnabled)
-                    Toggle("Start this job when the app launches", isOn: startOnAppLaunchBinding)
-                    Toggle("Show latest sync session count only", isOn: latestSessionTransferCountBinding)
-                        .help("A sync session is one scheduled check or a manual Sync Now run.")
+                }
+
+                Section("Automatic syncing") {
+                    Toggle("Automatic syncing enabled", isOn: $session.draft.isEnabled)
+                        .help("Repeatedly sync this job while the app is open.")
                     LabeledContent("Check every") {
                         HStack {
                             Slider(value: $session.draft.intervalSeconds, in: 2...300, step: 1)
@@ -40,6 +41,15 @@ struct JobDetailEditor: View {
                             Text(intervalLabel).monospacedDigit().frame(width: 72, alignment: .trailing)
                         }
                     }
+                    .disabled(!session.draft.isEnabled)
+                    .help("Wait this long after a sync finishes before checking again.")
+                    Toggle("Enable automatically on app launch", isOn: startOnAppLaunchBinding)
+                        .help("Enable automatic syncing for this job each time the app opens.")
+                }
+
+                Section("Display") {
+                    Toggle("Show latest sync session count only", isOn: latestSessionTransferCountBinding)
+                        .help("A sync session is one scheduled check or a manual Sync Now run.")
                 }
 
                 if shouldShowSyncStatus {
