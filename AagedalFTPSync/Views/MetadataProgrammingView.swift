@@ -749,6 +749,14 @@ struct MetadataProgrammingView: View {
                 .focusable()
                 .focusEffectDisabled()
                 .focused($timelineFocused)
+                .accessibilityIdentifier("metadata-programming-timeline")
+                .onKeyPress("i", phases: .down) { press in
+                    guard press.modifiers == .command else { return .ignored }
+                    DispatchQueue.main.async {
+                        coordinator.editClipAtPlayhead()
+                    }
+                    return .handled
+                }
                 .onKeyPress(.leftArrow, phases: [.down, .repeat]) { press in
                     let modifiers = press.modifiers
                     // SwiftUI can deliver key callbacks during a view update.
@@ -808,8 +816,6 @@ struct MetadataProgrammingView: View {
                 .disabled(copiedClips.isEmpty || playhead == nil)
             Button("Select All Clips", action: selectAllClipsForDay)
                 .keyboardShortcut("a", modifiers: .command)
-            Button("Open Clip at Playhead", action: coordinator.editClipAtPlayhead)
-                .keyboardShortcut("i", modifiers: .command)
             Button("Clear Time Selection") { coordinator.rangeSelectionAnchor = nil }
                 .keyboardShortcut(.escape, modifiers: [])
             Button("Edit Clip", action: editSelectedClip)

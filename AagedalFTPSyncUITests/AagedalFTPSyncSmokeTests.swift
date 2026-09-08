@@ -80,6 +80,24 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.typeKey(.escape, modifierFlags: [])
     }
 
+    func testTimelineKeyboardNavigationOpensClipMetadata() {
+        launch(seedJob: true, seedMap: true)
+
+        element("open-metadata-programming").click()
+        let metadataWindow = app.windows["Metadata Programming"]
+        XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
+        let clip = metadataWindow.staticTexts["Map Assignment"].firstMatch
+        XCTAssertTrue(clip.waitForExistence(timeout: 3))
+        clip.click()
+
+        // Selection provides the starting time; the arrow creates/moves the
+        // playhead before Command-I is sent through the same focused timeline.
+        let timeline = element("metadata-programming-timeline")
+        timeline.typeKey(.rightArrow, modifierFlags: [])
+        timeline.typeKey("i", modifierFlags: .command)
+        XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
+    }
+
     func testPhotographerMapClipScrubbingAndEditing() {
         launch(seedJob: true, seedMap: true)
 

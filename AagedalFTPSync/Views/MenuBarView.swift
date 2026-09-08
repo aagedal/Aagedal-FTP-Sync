@@ -150,6 +150,7 @@ struct MenuBarView: View {
 
 private struct MenuJobRow: View {
     @EnvironmentObject private var store: AppStore
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var showQuickControls = false
@@ -243,8 +244,11 @@ private struct MenuJobRow: View {
     private var metadataButton: some View {
         Button {
             store.selectedJobID = job.id
-            RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
-            openWindow(id: "metadata-programming")
+            dismiss()
+            DispatchQueue.main.async {
+                RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
+                openWindow(id: "metadata-programming")
+            }
         } label: {
             Image(systemName: "tag")
         }

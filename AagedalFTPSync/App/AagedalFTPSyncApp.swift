@@ -138,6 +138,12 @@ final class RegularWindowController {
 
     private func bringToFront(_ windowID: String) {
         guard let window = windowsByID[windowID] else { return }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        // Menu-bar panels can restore the previously active app as they close.
+        // Activate again when ordering the destination, including the deferred pass.
+        NSApplication.shared.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
 }
