@@ -11,6 +11,18 @@ enum FTPNetworkLimits {
     static let maximumListingBytes = 32 * 1_024 * 1_024
 }
 
+struct FTPReadTimeout: LocalizedError {
+    let address: String
+    let seconds: TimeInterval
+    let stage: String
+    var operation: String? = nil
+
+    var errorDescription: String? {
+        let context = operation.map { " Operation: \($0)." } ?? ""
+        return "Timed out reading from \(address) after \(seconds.formatted()) seconds while \(stage).\(context)"
+    }
+}
+
 struct BoundedDataAccumulator {
     let maximumBytes: Int
     private(set) var data = Data()
@@ -174,7 +186,7 @@ final class NetworkStream: @unchecked Sendable {
         }
     }
 
-    func receiveChunk(maximum: Int = 512 * 1_024) async throws -> Data? {
+    func receiveChunk(maximum: Int = 512 * 1_024, context: String = "receiving data") async throws -> Data? {
         let connection = self.connection
         let address = self.address
         let queue = self.queue
@@ -198,7 +210,7 @@ final class NetworkStream: @unchecked Sendable {
                 queue.asyncAfter(deadline: .now() + timeout) {
                     guard gate.claim() else { return }
                     connection.cancel()
-                    continuation.resume(throwing: AppError.transferFailed("Timed out reading from \(address)."))
+                    continuation.resume(throwing: FTPReadTimeout(address: address, seconds: timeout, stage: context))
                 }
             }
         } onCancel: {
@@ -211,19 +223,19 @@ final class NetworkStream: @unchecked Sendable {
         return code == .ENODATA
     }
 
-    func receiveLine(maximumBytes: Int = FTPNetworkLimits.maximumReplyLineBytes) async throws -> String {
+    func receiveLine(maximumBytes: Int = FTPNetworkLimits.maximumReplyLineBytes, context: String = "waiting for a server reply") async throws -> String {
         while true {
             if let line = try lineBuffer.nextLine(maximumBytes: maximumBytes) { return line }
-            guard let data = try await receiveChunk(maximum: 64 * 1_024) else {
+            guard let data = try await receiveChunk(maximum: 64 * 1_024, context: context) else {
                 throw AppError.transferFailed("The FTP server closed the connection unexpectedly.")
             }
             lineBuffer.append(data)
         }
     }
 
-    func receiveAll(maximumBytes: Int = FTPNetworkLimits.maximumListingBytes) async throws -> Data {
+    func receiveAll(maximumBytes: Int = FTPNetworkLimits.maximumListingBytes, context: String = "receiving a directory listing") async throws -> Data {
         var result = BoundedDataAccumulator(maximumBytes: maximumBytes)
-        while let data = try await receiveChunk() {
+        while let data = try await receiveChunk(context: context) {
             try result.append(data, context: "directory listing")
         }
         return result.data
@@ -291,11 +303,15 @@ actor FTPConnection {
     func list(path: String) async throws -> String {
         let data: Data
         do {
-            data = try await withDataConnection(command: "MLSD \(escaped(path))") { stream in
+            data = try await withDataConnection(command: "MLSD \(escaped(path))", context: "listing folder \(escaped(path))") { stream in
                 try await stream.receiveAll()
             }
+        } catch let timeout as FTPReadTimeout {
+            throw timeout
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            data = try await withDataConnection(command: "LIST \(escaped(path))") { stream in
+            data = try await withDataConnection(command: "LIST \(escaped(path))", context: "listing folder \(escaped(path))") { stream in
                 try await stream.receiveAll()
             }
         }
@@ -329,8 +345,8 @@ actor FTPConnection {
         _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: outputURL)
         defer { try? handle.close() }
-        _ = try await withDataConnection(command: "RETR \(escaped(path))") { stream in
-            while let data = try await stream.receiveChunk() {
+        _ = try await withDataConnection(command: "RETR \(escaped(path))", context: "downloading file \(escaped(path))") { stream in
+            while let data = try await stream.receiveChunk(context: "receiving file data") {
                 try Task.checkCancellation()
                 try sizeLimit?.record(data.count)
                 try handle.write(contentsOf: data)
@@ -345,7 +361,7 @@ actor FTPConnection {
         do {
             let handle = try FileHandle(forReadingFrom: localURL)
             defer { try? handle.close() }
-            _ = try await withDataConnection(command: "STOR \(escaped(temporaryPath))") { stream in
+            _ = try await withDataConnection(command: "STOR \(escaped(temporaryPath))", context: "uploading file \(escaped(path))") { stream in
                 while true {
                     try Task.checkCancellation()
                     guard let data = try handle.read(upToCount: 512 * 1_024), !data.isEmpty else { break }
@@ -444,6 +460,19 @@ actor FTPConnection {
 
     private func withDataConnection<T: Sendable>(
         command dataCommand: String,
+        context: String,
+        operation: (NetworkStream) async throws -> T
+    ) async throws -> T {
+        do {
+            return try await performDataConnection(command: dataCommand, operation: operation)
+        } catch var timeout as FTPReadTimeout {
+            timeout.operation = Self.redactingSecrets(in: context, secrets: [password, escaped(password)])
+            throw timeout
+        }
+    }
+
+    private func performDataConnection<T: Sendable>(
+        command dataCommand: String,
         operation: (NetworkStream) async throws -> T
     ) async throws -> T {
         try await connectIfNeeded()
@@ -454,6 +483,10 @@ actor FTPConnection {
                 throw AppError.transferFailed("The FTP server returned an invalid EPSV response.")
             }
             port = parsed
+        } catch let timeout as FTPReadTimeout {
+            throw timeout
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             let reply = try await command("PASV", accepting: 200..<300)
             guard let parsed = Self.parsePassivePort(reply.lines.joined(separator: " ")) else {
@@ -476,7 +509,7 @@ actor FTPConnection {
             let result = try await operation(dataStream)
             try? await dataStream.finishWriting()
             dataStream.cancel()
-            _ = try await readReply(accepting: 200..<300)
+            _ = try await readReply(accepting: 200..<300, context: "waiting for the transfer completion reply (\(Self.commandContext(dataCommand)))")
             return result
         } catch {
             dataStream.cancel()
@@ -494,7 +527,7 @@ actor FTPConnection {
         )
         try await stream.start()
         control = stream
-        _ = try await readReply(accepting: 200..<300)
+        _ = try await readReply(accepting: 200..<300, context: "waiting for the server greeting")
         do {
             let userReply = try await command("USER \(escaped(endpoint.username))", accepting: 200..<400)
             if userReply.code == 331 {
@@ -502,6 +535,8 @@ actor FTPConnection {
             }
         } catch is CancellationError {
             throw CancellationError()
+        } catch let timeout as FTPReadTimeout {
+            throw timeout
         } catch {
             throw AppError.transferFailed("FTP authentication failed.")
         }
@@ -517,12 +552,21 @@ actor FTPConnection {
     private func command(_ value: String, accepting range: Range<Int>) async throws -> FTPReply {
         guard let control else { throw AppError.transferFailed("FTP is not connected.") }
         try await control.send(Data("\(value)\r\n".utf8))
-        return try await readReply(accepting: range)
+        return try await readReply(accepting: range, context: "waiting for the reply to \(Self.commandContext(value))")
     }
 
-    private func readReply(accepting range: Range<Int>) async throws -> FTPReply {
+    // Only known path commands may include arguments; USER/PASS and other
+    // commands are identified by verb alone so credentials cannot enter logs.
+    static func commandContext(_ command: String) -> String {
+        let verb = String(command.prefix { !$0.isWhitespace }).uppercased()
+        let pathCommands: Set<String> = ["MLSD", "LIST", "RETR", "STOR", "MDTM", "SIZE", "DELE", "MKD", "RNFR", "RNTO"]
+        return pathCommands.contains(verb) ? command : verb
+    }
+
+    private func readReply(accepting range: Range<Int>, context: String) async throws -> FTPReply {
         guard let control else { throw AppError.transferFailed("FTP is not connected.") }
-        let first = try await control.receiveLine()
+        let safeContext = Self.redactingSecrets(in: context, secrets: [password, escaped(password)])
+        let first = try await control.receiveLine(context: safeContext)
         guard first.count >= 3, let code = Int(first.prefix(3)) else {
             throw AppError.transferFailed("Invalid FTP response: \(first)")
         }
@@ -533,7 +577,7 @@ actor FTPConnection {
                 guard lines.count < FTPNetworkLimits.maximumReplyLines else {
                     throw AppError.transferFailed("The FTP server sent too many response lines.")
                 }
-                let line = try await control.receiveLine()
+                let line = try await control.receiveLine(context: safeContext)
                 guard line.utf8.count <= FTPNetworkLimits.maximumReplyBytes - responseBytes else {
                     throw AppError.transferFailed("The FTP server response exceeded the safety limit.")
                 }

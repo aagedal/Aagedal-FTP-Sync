@@ -3,6 +3,50 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FTPListingTests: XCTestCase {
+    func testFTPCommandDiagnosticsExcludeCredentials() {
+        XCTAssertEqual(FTPConnection.commandContext("PASS super-secret"), "PASS")
+        XCTAssertEqual(FTPConnection.commandContext("USER private-user"), "USER")
+        XCTAssertEqual(FTPConnection.commandContext("AUTH secret-token"), "AUTH")
+        XCTAssertEqual(FTPConnection.commandContext("RETR /photos/my photo.jpg"), "RETR /photos/my photo.jpg")
+    }
+
+    @MainActor
+    func testStalledFTPReadReportsStageAddressAndTimeout() async throws {
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = expectation(description: "Listening")
+        let queue = DispatchQueue(label: "ftp-timeout-test")
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.fulfill() }
+        }
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            // Keep the socket open without replying until the client times out.
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, _, _ in
+                connection.cancel()
+            }
+        }
+        listener.start(queue: queue)
+        defer { listener.cancel() }
+        await fulfillment(of: [ready], timeout: 3)
+        let port = try XCTUnwrap(listener.port)
+        let stream = try NetworkStream(
+            host: "127.0.0.1", port: Int(port.rawValue), tls: false,
+            connectionTimeout: 2, operationTimeout: 0.05
+        )
+        defer { stream.cancel() }
+        try await stream.start()
+        do {
+            _ = try await stream.receiveLine(context: "waiting for the transfer completion reply (RETR /photo.jpg)")
+            XCTFail("The stalled read should time out")
+        } catch let timeout as FTPReadTimeout {
+            XCTAssertEqual(timeout.address, "127.0.0.1:\(port.rawValue)")
+            XCTAssertEqual(timeout.seconds, 0.05)
+            XCTAssertEqual(SyncLogFailureCategory.classify(timeout), .timeout)
+            XCTAssertTrue(timeout.localizedDescription.contains("transfer completion reply"))
+            XCTAssertTrue(timeout.localizedDescription.contains("/photo.jpg"))
+        }
+    }
+
     func testFailedRollbackRetainsOriginalBackupAndReportsItsLocation() async throws {
         let original = SyncFile(relativePath: "NEWS.CR3", size: 3, modifiedAt: Date())
         let sidecar = SyncFile(relativePath: "NEWS.xmp", size: 4, modifiedAt: Date())

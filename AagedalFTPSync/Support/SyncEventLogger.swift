@@ -40,6 +40,7 @@ enum SyncLogFailureCategory: String, Sendable {
         if error is CancellationError { return .unexpected }
         if error is SyncRunFailure { return .transfer }
         if error is URLError { return .network }
+        if error is FTPReadTimeout { return .timeout }
         guard let appError = error as? AppError else { return .unexpected }
         switch appError {
         case .invalidConfiguration:
