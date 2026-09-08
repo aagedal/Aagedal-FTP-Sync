@@ -580,9 +580,7 @@ actor FTPConnection {
         guard let control else { throw AppError.transferFailed("FTP is not connected.") }
         let safeContext = Self.redactingSecrets(in: context, secrets: [password, escaped(password)])
         let first = try await control.receiveLine(context: safeContext)
-        guard first.count >= 3, let code = Int(first.prefix(3)) else {
-            throw AppError.transferFailed("Invalid FTP response: \(first)")
-        }
+        let code = try Self.replyCode(from: first, secrets: [password, escaped(password)])
         var lines = [first]
         var responseBytes = first.utf8.count
         if first.dropFirst(3).first == "-" {
@@ -606,6 +604,13 @@ actor FTPConnection {
             )
         }
         return FTPReply(code: code, lines: lines)
+    }
+
+    static func replyCode(from line: String, secrets: [String]) throws -> Int {
+        guard line.count >= 3, let code = Int(line.prefix(3)) else {
+            throw AppError.transferFailed("Invalid FTP response: \(redactingSecrets(in: line, secrets: secrets))")
+        }
+        return code
     }
 
     private func escaped(_ value: String) -> String {

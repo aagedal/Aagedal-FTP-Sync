@@ -32,6 +32,7 @@ actor SFTPTransport {
     private var sshClient: SSHClientBox?
     private var sftpClient: SFTPClient?
     private var canonicalRoot: String?
+    private var connectionGeneration = UUID()
 
     init(endpoint: Endpoint, password: String, inactivityTimeoutSeconds: Int64 = 30) {
         self.endpoint = endpoint
@@ -244,6 +245,7 @@ actor SFTPTransport {
     }
 
     func close() async {
+        connectionGeneration = UUID()
         let sftp = sftpClient
         let ssh = sshClient
         sftpClient = nil
@@ -386,20 +388,35 @@ actor SFTPTransport {
     }
 
     private func resolvedRoot(using sftp: SFTPClient) async throws -> String {
+        try await resolvedRoot(
+            getRealPath: { try await sftp.getRealPath(atPath: $0) },
+            getPermissions: { try await sftp.getLinkAttributes(at: $0)?.permissions }
+        )
+    }
+
+    func resolvedRoot(
+        getRealPath: @Sendable (String) async throws -> String,
+        getPermissions: @Sendable (String) async throws -> UInt32?
+    ) async throws -> String {
+        try Task.checkCancellation()
         if let canonicalRoot { return canonicalRoot }
-        let resolved = try await sftp.getRealPath(atPath: normalizedRoot)
+        let generation = connectionGeneration
+        let resolved = try await getRealPath(normalizedRoot)
         guard resolved.hasPrefix("/") else {
             throw AppError.transferFailed("The SFTP server returned a non-absolute configured root.")
         }
-        canonicalRoot = resolved.count > 1 && resolved.hasSuffix("/")
+        let root = resolved.count > 1 && resolved.hasSuffix("/")
             ? String(resolved.dropLast())
             : resolved
-        guard let attributes = try await sftp.getLinkAttributes(at: canonicalRoot!),
-              (attributes.permissions ?? 0) & 0o170000 == 0o040000 else {
-            canonicalRoot = nil
+        guard let permissions = try await getPermissions(root),
+              permissions & 0o170000 == 0o040000 else {
             throw AppError.transferFailed("The configured SFTP root is not a real directory.")
         }
-        return canonicalRoot!
+        try Task.checkCancellation()
+        guard generation == connectionGeneration else { throw CancellationError() }
+        // Publish only a fully validated root from the still-current connection.
+        canonicalRoot = root
+        return root
     }
 
     private func remotePath(for relative: String, sftp: SFTPClient) async throws -> String {

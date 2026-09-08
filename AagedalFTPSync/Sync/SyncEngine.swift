@@ -384,6 +384,11 @@ struct SyncEngine: Sendable {
                 leftListingTask.cancel()
                 rightListingTask.cancel()
                 processedListingTask.cancel()
+                // Cancellation is cooperative. Drain every task before closing
+                // its session or releasing the job's concurrency lease.
+                _ = await leftListingTask.result
+                _ = await rightListingTask.result
+                _ = await processedListingTask.result
                 throw error
             }
             try validateLocalDestinationPaths(job: job, leftFiles: leftFiles, rightFiles: rightFiles)
@@ -1105,11 +1110,15 @@ struct SyncEngine: Sendable {
         runID: UUID,
         state: EarlyTransferState
     ) async throws {
-        let directoryFiles = Dictionary(
-            uniqueKeysWithValues: listing.entries.compactMap { entry in
-                entry.file.map { ($0.relativePath, $0) }
+        var directoryFiles: [String: SyncFile] = [:]
+        for entry in listing.entries {
+            guard let file = entry.file else { continue }
+            guard directoryFiles.updateValue(file, forKey: file.relativePath) == nil else {
+                throw AppError.transferFailed(
+                    "The server returned a duplicate directory entry: \(file.relativePath)."
+                )
             }
-        )
+        }
         let authoritativePaths = Set(listing.entries.compactMap { entry in
             entry.file != nil && entry.hasAuthoritativeTimestamp ? entry.relativePath : nil
         })

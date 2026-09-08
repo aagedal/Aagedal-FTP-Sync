@@ -75,6 +75,57 @@ final class TransactionalRemovalTests: XCTestCase {
 }
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testResetRollbackCollisionRetainsRecoveryFilesAndManifest() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let paths = ["a.jpg", "b.jpg"]
+        let first = fixture.right.appendingPathComponent(paths[0])
+        for path in paths {
+            try Data(path.utf8).write(to: fixture.right.appendingPathComponent(path))
+        }
+        let job = try fixture.job(direction: .leftToRight)
+        let manifest = DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("downloads.json"))
+        try await manifest.record(relativePaths: paths, jobID: job.id, destinationEndpoint: job.right)
+        let operations = JobResetFileOperations(
+            createDirectory: { url, intermediate in
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: intermediate)
+            },
+            moveItem: { source, destination in
+                if source.lastPathComponent == "b.jpg" {
+                    // Another writer occupies the first file's original location
+                    // after it was staged, preventing rollback from restoring it.
+                    try Data("new arrival".utf8).write(to: first)
+                    throw AppError.transferFailed("Injected staging failure")
+                }
+                try FileManager.default.moveItem(at: source, to: destination)
+            },
+            removeItem: { try FileManager.default.removeItem(at: $0) }
+        )
+        let service = JobResetService(downloadManifestRepository: manifest, fileOperations: operations)
+        var message = ""
+        do {
+            _ = try await service.resetDownloads(for: job)
+            XCTFail("The reset should fail when staging and rollback both fail")
+        } catch { message = error.localizedDescription }
+
+        let recovery = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(at: fixture.right, includingPropertiesForKeys: nil)
+                .first { $0.lastPathComponent.hasPrefix(".aagedal-sync-reset-") }
+        )
+        XCTAssertTrue(message.contains(recovery.resolvingSymlinksInPath().path), message)
+        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent("a.jpg")), Data("a.jpg".utf8))
+        XCTAssertEqual(try Data(contentsOf: first), Data("new arrival".utf8))
+        XCTAssertEqual(try Data(contentsOf: fixture.right.appendingPathComponent("b.jpg")), Data("b.jpg".utf8))
+        let retained = try await manifest.relativePaths(jobID: job.id, destinationEndpoint: job.right)
+        XCTAssertEqual(retained, Set(paths))
+        do {
+            _ = try await service.resetDownloads(for: job)
+            XCTFail("A retry must preserve the unresolved recovery folder")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("recovery folder"))
+        }
+    }
+
     func testSortingPreferencesWithoutMetadataSyncWithoutMovingSource() async throws {
         for location in ProcessedFilesLocation.allCases {
             for metadata in [nil, MetadataAutomation(isEnabled: false)] as [MetadataAutomation?] {

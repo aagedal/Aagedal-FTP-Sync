@@ -3,6 +3,56 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FTPListingTests: XCTestCase {
+    func testMalformedFTPReplyRedactsRawAndTransmittedPasswords() throws {
+        let password = "private\r\npassword"
+        let transmitted = "privatepassword"
+        for reply in ["Unexpected \(password)", "Unexpected \(transmitted)", "x"] {
+            XCTAssertThrowsError(try FTPConnection.replyCode(from: reply, secrets: [password, transmitted])) { error in
+                XCTAssertFalse(error.localizedDescription.contains(password))
+                XCTAssertFalse(error.localizedDescription.contains(transmitted))
+                XCTAssertTrue(error.localizedDescription.contains("Invalid FTP response"))
+            }
+        }
+        XCTAssertEqual(try FTPConnection.replyCode(from: "220 Ready", secrets: [password]), 220)
+    }
+
+    func testRemoteTreeWalkerRejectsDuplicateEntriesBeforePublishingDirectory() async throws {
+        for kinds in [[false, false], [true, true], [false, true]] {
+            let entries = kinds.map {
+                RemoteDirectoryEntry(name: "duplicate.jpg", isDirectory: $0, size: 1,
+                                     modifiedAt: Date(), hasAuthoritativeTimestamp: true)
+            }
+            do {
+                _ = try await RemoteTreeWalker.listFiles(
+                    root: "/", join: { $0 + $1 }, listDirectory: { _ in entries },
+                    onCompletedDirectory: { _ in XCTFail("Duplicate entries must never reach publication") }
+                )
+                XCTFail("Duplicate files, directories, and file/directory pairs must be rejected")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("duplicate directory entry"))
+            }
+        }
+    }
+
+    func testEarlyDeliveryRejectsDuplicateSnapshotFilesWithoutPublishing() async throws {
+        let file = SyncFile(relativePath: "duplicate.jpg", size: 1, modifiedAt: Date())
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [file, file])],
+            finalFiles: [file.relativePath: file], timeline: timeline
+        )
+        let destination = FastStartDestination(timeline: timeline)
+        let engine = retryTestEngine(source: source, destination: destination)
+        do {
+            _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+            XCTFail("The duplicate snapshot must fail before publication")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("duplicate directory entry"))
+        }
+        let imports = await destination.importCount
+        XCTAssertEqual(imports, 0)
+    }
+
     func testFTPCommandDiagnosticsExcludeCredentials() {
         XCTAssertEqual(FTPConnection.commandContext("PASS super-secret"), "PASS")
         XCTAssertEqual(FTPConnection.commandContext("USER private-user"), "USER")

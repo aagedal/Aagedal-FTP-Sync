@@ -3,6 +3,44 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class PathSafetyTests: XCTestCase {
+    func testSFTPRootResolutionRejectsCloseDuringValidationWithoutCachingStaleRoot() async throws {
+        let transport = SFTPTransport(endpoint: Endpoint(kind: .sftp), password: "")
+        do {
+            _ = try await transport.resolvedRoot(
+                getRealPath: { _ in "/old-root/" },
+                getPermissions: { path in
+                    XCTAssertEqual(path, "/old-root")
+                    await transport.close()
+                    return 0o040755
+                }
+            )
+            XCTFail("A root from a closed connection must be discarded")
+        } catch is CancellationError {
+            // A successful response arriving after close must not revive the cache.
+        }
+        let root = try await transport.resolvedRoot(
+            getRealPath: { _ in "/new-root/" }, getPermissions: { _ in 0o040755 }
+        )
+        XCTAssertEqual(root, "/new-root")
+    }
+
+    func testSFTPRootValidationFailureDoesNotCacheUnvalidatedPath() async throws {
+        let transport = SFTPTransport(endpoint: Endpoint(kind: .sftp), password: "")
+        do {
+            _ = try await transport.resolvedRoot(
+                getRealPath: { _ in "/unvalidated" },
+                getPermissions: { _ in throw AppError.transferFailed("Injected failure") }
+            )
+            XCTFail("Validation should fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Injected failure"))
+        }
+        let root = try await transport.resolvedRoot(
+            getRealPath: { _ in "/validated" }, getPermissions: { _ in 0o040755 }
+        )
+        XCTAssertEqual(root, "/validated")
+    }
+
     func testSFTPUploadRejectsChildSymlinkResolvingOutsideRoot() {
         XCTAssertThrowsError(try SFTPPathContainment.validateExistingParent(
             path: "/uploads/escape",

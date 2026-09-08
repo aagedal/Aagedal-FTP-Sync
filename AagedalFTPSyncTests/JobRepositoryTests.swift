@@ -4,6 +4,50 @@ import XCTest
 
 final class JobRepositoryTests: XCTestCase {
     @MainActor
+    func testListingFailureWaitsForSiblingCleanupBeforeClosingSessions() async throws {
+        try await assertListingCleanupOrder(cancelRun: false)
+    }
+
+    @MainActor
+    func testCancelledRunWaitsForListingCleanupBeforeClosingSessions() async throws {
+        try await assertListingCleanupOrder(cancelRun: true)
+    }
+
+    @MainActor
+    private func assertListingCleanupOrder(cancelRun: Bool) async throws {
+        let cancelled = expectation(description: "Listing observed cancellation")
+        let closedEarly = expectation(description: "Session closed before listing finished")
+        closedEarly.isInverted = true
+        let pending = ShutdownEndpointSession(cancelled: cancelled, closedEarly: closedEarly)
+        let first = CoordinatedListingSession(pending: pending, fails: !cancelRun)
+        var job = SyncJob(name: "Listing shutdown")
+        job.left = Endpoint(kind: .local, localPath: "/mock-left", bookmark: Data("left".utf8))
+        job.right = Endpoint(kind: .local, localPath: "/mock-right", bookmark: Data("right".utf8))
+        job.direction = .leftToRight
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            if endpoint.localPath == "/mock-left" { return first }
+            return pending
+        })
+        let run = Task { try await engine.run(job: job, leftPassword: nil, rightPassword: nil) }
+        if cancelRun {
+            await pending.waitUntilStarted()
+            run.cancel()
+        }
+        await fulfillment(of: [cancelled], timeout: 3)
+        await fulfillment(of: [closedEarly], timeout: 0.1)
+        await pending.releaseCleanup()
+        let result = await run.result
+        switch result {
+        case .success: XCTFail("The run must report failure or cancellation")
+        case .failure(let error):
+            if cancelRun { XCTAssertTrue(error is CancellationError) }
+            else { XCTAssertTrue(error.localizedDescription.contains("Injected listing failure")) }
+        }
+        let closeCount = await pending.closeCount
+        XCTAssertEqual(closeCount, 1)
+    }
+
+    @MainActor
     func testRecoveredFTPProfilePausesReferencedJobAtLaunch() throws {
         try assertRecoveredServerProfilePausesReferencedJobAtLaunch(kind: .ftp)
     }
@@ -337,6 +381,73 @@ final class JobRepositoryTests: XCTestCase {
         XCTAssertTrue(result.recoveredFromBackup)
         XCTAssertEqual(result.jobs, [recoverableJob])
     }
+}
+
+private actor ShutdownEndpointSession: EndpointSession {
+    private let cancelled: XCTestExpectation
+    private let closedEarly: XCTestExpectation
+    private var started = false
+    private var finished = false
+    private var cleanupReleased = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var cleanupContinuation: CheckedContinuation<Void, Never>?
+    private(set) var closeCount = 0
+
+    init(cancelled: XCTestExpectation, closedEarly: XCTestExpectation) {
+        self.cancelled = cancelled
+        self.closedEarly = closedEarly
+    }
+
+    func waitUntilStarted() async {
+        guard !started else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseCleanup() {
+        cleanupReleased = true
+        cleanupContinuation?.resume()
+        cleanupContinuation = nil
+    }
+
+    func listFiles() async throws -> [String: SyncFile] {
+        started = true
+        for waiter in startWaiters { waiter.resume() }
+        startWaiters.removeAll()
+        do {
+            try await Task.sleep(for: .seconds(30))
+            throw AppError.transferFailed("Listing cancellation was never requested")
+        } catch {
+            await withCheckedContinuation { continuation in
+                if cleanupReleased { continuation.resume() }
+                else { cleanupContinuation = continuation }
+                cancelled.fulfill()
+            }
+            finished = true
+            throw error
+        }
+    }
+
+    func close() async {
+        closeCount += 1
+        if !finished { closedEarly.fulfill() }
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {}
+    func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool, verifySize: Bool) async throws {}
+}
+
+private struct CoordinatedListingSession: EndpointSession {
+    let pending: ShutdownEndpointSession
+    let fails: Bool
+
+    func listFiles() async throws -> [String: SyncFile] {
+        await pending.waitUntilStarted()
+        if fails { throw AppError.transferFailed("Injected listing failure") }
+        return [:]
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {}
+    func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool, verifySize: Bool) async throws {}
 }
 
 private actor BlockingEndpointSession: EndpointSession {

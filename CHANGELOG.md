@@ -2,6 +2,9 @@
 
 ## 2.8.1 — 2026-09-08
 
+- Reject duplicate server listings without crashing, wait for cancelled listings before closing their sessions, and prevent SFTP root validation from restoring stale connection state.
+- Preserve reset recovery files when rollback fails, and redact passwords from malformed FTP replies in error history.
+
 - Clear clip highlighting when keyboard playhead navigation lands in empty timeline space; select only the clip containing the playhead.
 
 - Make Photographer Map marker dragging follow the pointer directly, with a fixed pin-center anchor and map navigation suspended during a marker move.

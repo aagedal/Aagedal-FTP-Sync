@@ -87,6 +87,15 @@ enum RemoteTreeWalker {
                 )
             }
 
+            var seenNames = Set<String>()
+            for entry in entries where PathSafety.isSafeServerName(entry.name) {
+                guard seenNames.insert(entry.name).inserted else {
+                    throw AppError.transferFailed(
+                        "The server returned a duplicate directory entry: \(entry.name)."
+                    )
+                }
+            }
+
             var completedEntries: [RemoteTreeEntry] = []
             var childDirectories: [(remote: String, relative: String)] = []
             for entry in entries {

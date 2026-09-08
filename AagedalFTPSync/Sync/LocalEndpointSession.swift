@@ -617,12 +617,12 @@ actor JobResetService {
                     rollbackFailures.append(item.original.lastPathComponent)
                 }
             }
-            try? fileOperations.removeItem(holdingURL)
             if !rollbackFailures.isEmpty {
                 throw AppError.transferFailed(
-                    "The download reset failed, and rollback could not restore: \(rollbackFailures.joined(separator: ", "))."
+                    "The download reset failed, and rollback could not restore: \(rollbackFailures.joined(separator: ", ")). Recovery files were retained at: \(holdingURL.path)."
                 )
             }
+            try? fileOperations.removeItem(holdingURL)
             throw error
         }
 
