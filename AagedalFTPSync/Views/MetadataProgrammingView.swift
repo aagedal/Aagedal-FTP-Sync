@@ -882,7 +882,14 @@ struct MetadataProgrammingView: View {
     private var selectedJobBinding: Binding<UUID?> {
         Binding(
             get: { store.selectedJobID },
-            set: { store.selectedJobID = $0 }
+            set: { jobID in
+                // List can write its selection while SwiftUI is updating the view.
+                // Publish the change after that update has finished.
+                DispatchQueue.main.async {
+                    guard store.selectedJobID != jobID else { return }
+                    store.selectedJobID = jobID
+                }
+            }
         )
     }
 
