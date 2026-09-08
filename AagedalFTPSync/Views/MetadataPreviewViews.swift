@@ -276,6 +276,7 @@ struct ProgrammingMonthCalendar: View {
             } label: {
                 Label(exportTitle(for: date), systemImage: "square.and.arrow.up")
             }
+            .help("Includes the full duration of clips touching the selected days, including overnight assignments.")
             .disabled(programmedDays.isDisjoint(with: daySelection.contextSelection(for: date)))
         }
     }

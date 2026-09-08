@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 2.8.1 — 2026-09-08
+
+- Merge imported metadata programming by clip UUID: update matching clips, add new clips, and retain local clips omitted from an export. Incoming versions win; overlapping assignments are rejected before saving.
+- Preserve full clip durations and stable identities in selected-day exports, including overnight assignments.
 
 - Verify staged source contents against the original download before processed-file removal, restoring changed files and their companions instead of deleting them.
 - Retain recovery backups and report their locations when destination rollback fails.

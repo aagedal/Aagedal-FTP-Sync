@@ -34,6 +34,9 @@ struct ConfigurationImportResult: Equatable, Sendable {
     let importedPresets: Int
     let importedPhotographers: Int
     let importedServerProfiles: Int
+    var addedClips = 0
+    var updatedClips = 0
+    var unchangedClips = 0
 
     var summary: String {
         var parts: [String] = []
@@ -67,7 +70,9 @@ struct ConfigurationImportResult: Equatable, Sendable {
                     : "\(skippedMetadataProgramming) unmatched programmings skipped"
             )
         }
-        return parts.isEmpty ? "The package contained no changes." : "Imported " + parts.joined(separator: ", ") + "."
+        let summary = parts.isEmpty ? "The package contained no changes." : "Imported " + parts.joined(separator: ", ") + "."
+        guard importedMetadataProgramming > 0 else { return summary }
+        return summary + " Clips: \(addedClips) added, \(updatedClips) updated, \(unchangedClips) unchanged."
     }
 }
 
@@ -214,6 +219,9 @@ struct ConfigurationTransferCoordinator {
             updatedJobs.append(importedJob)
         }
 
+        var addedClips = 0
+        var updatedClips = 0
+        var unchangedClips = 0
         var appliedProgramming = 0
         var skippedProgramming = 0
         var targetedJobIDs = Set<UUID>()
@@ -244,7 +252,47 @@ struct ConfigurationTransferCoordinator {
             if let message = programming.automation.validationMessage {
                 throw AppError.invalidConfiguration("\(programming.jobName): \(message)")
             }
-            updatedJobs[index].metadataAutomation = programming.automation
+            let incoming = programming.automation
+            guard Set(incoming.clips.map(\.id)).count == incoming.clips.count,
+                  Set(incoming.photographers.map(\.id)).count == incoming.photographers.count else {
+                throw AppError.invalidConfiguration("The programming contains duplicate clip or photographer IDs.")
+            }
+            var merged = incoming
+            if transfer.scope == .metadata, let existing = updatedJobs[index].metadataAutomation {
+                // Incoming settings and matching records win; omitted records are retained.
+                merged.clips = existing.clips
+                for clip in incoming.clips {
+                    if let clipIndex = merged.clips.firstIndex(where: { $0.id == clip.id }) {
+                        if merged.clips[clipIndex] == clip {
+                            unchangedClips += 1
+                        } else {
+                            updatedClips += 1
+                            merged.clips[clipIndex] = clip
+                        }
+                    } else {
+                        addedClips += 1
+                        merged.clips.append(clip)
+                    }
+                }
+                merged.photographers = existing.photographers
+                for photographer in incoming.photographers {
+                    if let profileIndex = merged.photographers.firstIndex(where: { $0.id == photographer.id }) {
+                        merged.photographers[profileIndex] = photographer
+                    } else {
+                        merged.photographers.append(photographer)
+                    }
+                }
+                // Preserve incoming day order, followed by any local-only tracks.
+                merged.photographerTracks += existing.photographerTracks.filter {
+                    !incoming.photographerTracks.contains($0)
+                }
+            } else {
+                addedClips += incoming.clips.count
+            }
+            if let message = merged.validationMessage {
+                throw AppError.invalidConfiguration("\(programming.jobName): \(message)")
+            }
+            updatedJobs[index].metadataAutomation = merged
             appliedProgramming += 1
         }
 
@@ -332,7 +380,10 @@ struct ConfigurationTransferCoordinator {
                 skippedMetadataProgramming: skippedProgramming,
                 importedPresets: transfer.metadataPresets.count,
                 importedPhotographers: normalizedImportedPhotographers.count,
-                importedServerProfiles: transfer.serverProfiles.count
+                importedServerProfiles: transfer.serverProfiles.count,
+                addedClips: addedClips,
+                updatedClips: updatedClips,
+                unchangedClips: unchangedClips
             ),
             selectedJobID: selectedJobID,
             importedJobIDs: importedJobIDs

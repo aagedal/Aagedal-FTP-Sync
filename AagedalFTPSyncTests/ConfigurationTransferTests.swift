@@ -449,7 +449,7 @@ final class ConfigurationTransferTests: XCTestCase {
     }
 
     @MainActor
-    func testSelectedDayMetadataExportTrimsClipsAndExcludesOtherDays() throws {
+    func testSelectedDayMetadataExportPreservesWholeClipsAndStableIDs() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metadata-day-export-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -498,8 +498,23 @@ final class ConfigurationTransferTests: XCTestCase {
         XCTAssertEqual(exportedAutomation.photographers, [fixture.photographer])
         XCTAssertEqual(exportedAutomation.clips.count, 1)
         XCTAssertEqual(exportedAutomation.clips[0].id, crossingClip.id)
-        XCTAssertEqual(exportedAutomation.clips[0].startsAt, selectedDay)
+        XCTAssertEqual(exportedAutomation.clips[0].startsAt, crossingClip.startsAt)
         XCTAssertEqual(exportedAutomation.clips[0].endsAt, selectedDay.addingTimeInterval(2 * 3_600))
+
+        var spanningAutomation = automation
+        spanningAutomation.clips = [crossingClip]
+        spanningAutomation.clips[0].endsAt = selectedDayEnd.addingTimeInterval(3 * 86_400)
+        let separatedDay = selectedDayEnd.addingTimeInterval(86_400)
+        let spanningData = try XCTUnwrap(store.metadataProgrammingExportData(
+            for: fixture.job, automation: spanningAutomation,
+            on: [selectedDay, separatedDay], calendar: calendar, password: nil))
+        let repeatedData = try XCTUnwrap(store.metadataProgrammingExportData(
+            for: fixture.job, automation: spanningAutomation,
+            on: [selectedDay, separatedDay], calendar: calendar, password: nil))
+        let spanning = try ConfigurationTransferCodec.decode(spanningData, password: nil)
+        let repeated = try ConfigurationTransferCodec.decode(repeatedData, password: nil)
+        XCTAssertEqual(spanning.metadataProgramming.first?.automation.clips, spanningAutomation.clips)
+        XCTAssertEqual(repeated.metadataProgramming, spanning.metadataProgramming)
     }
 
     @MainActor

@@ -408,7 +408,11 @@ final class AppStore: ObservableObject {
         calendar: Calendar,
         password: String?
     ) -> Data? {
-        let restrictedAutomation = automation.restricted(to: days, calendar: calendar)
+        var restrictedAutomation = automation.restricted(to: days, calendar: calendar)
+        // A shared clip keeps its identity and full interval, including overnight work.
+        restrictedAutomation.clips = automation.clips.filter { clip in
+            days.contains { clip.overlaps(dayContaining: $0, calendar: calendar) }
+        }
         guard !restrictedAutomation.clips.isEmpty else {
             alertMessage = "The selected days do not contain any metadata programming to export."
             return nil

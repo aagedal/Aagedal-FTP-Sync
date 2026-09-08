@@ -307,6 +307,66 @@ final class ConfigurationTransferCoordinatorTests: XCTestCase {
         XCTAssertTrue(prepared.state.serverProfiles.isEmpty)
     }
 
+    func testRepeatedMetadataImportUpdatesAddsAndPreservesOmittedClips() throws {
+        let fixture = makeFixture(jobName: "Desk", prefix: "AD")
+        var job = fixture.job
+        var existing = try XCTUnwrap(job.metadataAutomation)
+        var localClip = existing.clips[0]
+        localClip.id = UUID()
+        localClip.startsAt = localClip.endsAt
+        localClip.endsAt = localClip.startsAt.addingTimeInterval(3600)
+        existing.clips.append(localClip)
+        job.metadataAutomation = existing
+        var incoming = try XCTUnwrap(fixture.job.metadataAutomation)
+        incoming.clips[0].fields.headline = "Updated headline"
+        var newClip = localClip
+        newClip.id = UUID()
+        newClip.startsAt = localClip.endsAt
+        newClip.endsAt = newClip.startsAt.addingTimeInterval(3600)
+        incoming.clips.append(newClip)
+        var source = fixture.job
+        source.metadataAutomation = incoming
+        let data = try coordinator.exportData(scope: .metadata, password: nil,
+            state: ConfigurationTransferState(jobs: [source], metadataPresets: [], photographers: []))
+        let first = try coordinator.prepareImport(from: data, password: nil,
+            currentState: ConfigurationTransferState(jobs: [job], metadataPresets: [], photographers: []),
+            metadataTargetJobID: job.id)
+        XCTAssertEqual(first.state.jobs[0].metadataAutomation?.clips,
+                       [incoming.clips[0], localClip, newClip])
+        let second = try coordinator.prepareImport(from: data, password: nil,
+            currentState: first.state, metadataTargetJobID: job.id)
+        XCTAssertEqual(second.state, first.state)
+        XCTAssertEqual(first.result.addedClips, 1)
+        XCTAssertEqual(first.result.updatedClips, 1)
+        XCTAssertEqual(second.result.addedClips, 0)
+        XCTAssertEqual(second.result.updatedClips, 0)
+        XCTAssertEqual(second.result.unchangedClips, 2)
+    }
+
+    func testMetadataMergeRejectsOverlapWithRetainedLocalClip() throws {
+        let fixture = makeFixture(jobName: "Desk", prefix: "AD")
+        var source = fixture.job
+        source.metadataAutomation?.clips[0].id = UUID()
+        let transfer = ConfigurationTransfer(scope: .metadata, jobs: [source],
+            metadataPresets: [], photographers: [])
+        XCTAssertThrowsError(try coordinator.prepareImport(transfer,
+            currentState: ConfigurationTransferState(jobs: [fixture.job], metadataPresets: [], photographers: [])))
+    }
+
+    func testMetadataImportRejectsDuplicateClipIDs() throws {
+        let fixture = makeFixture(jobName: "Desk", prefix: "AD")
+        var source = fixture.job
+        var automation = try XCTUnwrap(source.metadataAutomation)
+        var duplicate = automation.clips[0]
+        duplicate.startsAt = duplicate.endsAt
+        duplicate.endsAt = duplicate.startsAt.addingTimeInterval(3600)
+        automation.clips.append(duplicate)
+        source.metadataAutomation = automation
+        XCTAssertThrowsError(try coordinator.prepareImport(
+            ConfigurationTransfer(scope: .metadata, jobs: [source], metadataPresets: [], photographers: []),
+            currentState: ConfigurationTransferState(jobs: [fixture.job], metadataPresets: [], photographers: [])))
+    }
+
     private var emptyState: ConfigurationTransferState {
         ConfigurationTransferState(jobs: [], metadataPresets: [], photographers: [])
     }
