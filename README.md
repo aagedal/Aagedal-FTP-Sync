@@ -48,7 +48,7 @@ Version 2.8 strengthens unattended operation with safer job recovery, bounded SF
 
 ## Build
 
-Open `Aagedal FTP Sync.xcodeproj`, select the `AagedalFTPSync` scheme, choose your development team, and run.
+Open `Aagedal FTP Sync.xcodeproj` and select the `AagedalFTPSync` scheme. For signed builds, create `Configuration/Signing.local.xcconfig` with your own `DEVELOPMENT_TEAM = YOUR_TEAM_ID`, or pass that setting to `xcodebuild`. This optional file is ignored by Git; account-specific signing settings do not belong in the shared project. Then build and run.
 
 The committed Xcode project is generated from [`project.yml`](project.yml) with [XcodeGen](https://github.com/yonaskolb/XcodeGen). Regenerate it after changing project structure:
 
@@ -77,7 +77,7 @@ xcodebuild test \
 
 UI automation requires a signed test runner, so do not add `CODE_SIGNING_ALLOWED=NO` to this command.
 
-The scheduled integration workflow runs this suite on a trusted self-hosted macOS runner with an Apple Development identity. Give that runner the custom `signed-ui-tests` label; pull-request events never automatically dispatch code to it.
+The scheduled integration workflow runs this suite on a trusted self-hosted macOS runner with an Apple Development identity. Give that runner the custom `signed-ui-tests` label and configure the repository variable `APPLE_DEVELOPMENT_TEAM` for its signing account; pull-request events never automatically dispatch code to it.
 
 Opt-in loopback FTP, trusted implicit-FTPS, and SFTP write/fault tests use OpenSSL plus the pinned Python packages in `Scripts/delivery-latency-requirements.txt`. Install the Python packages in an activated virtual environment, then run:
 

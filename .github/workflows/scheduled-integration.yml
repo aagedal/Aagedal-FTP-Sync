@@ -40,17 +40,20 @@ jobs:
     name: Signed macOS UI smoke tests
     runs-on: [self-hosted, macOS, signed-ui-tests]
     timeout-minutes: 30
+    env:
+      DEVELOPMENT_TEAM: ${{ vars.APPLE_DEVELOPMENT_TEAM }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - name: Verify signing identity
-        run: >-
-          security find-identity -v -p codesigning
-          | grep -q '"Apple Development:'
+        run: |
+          test -n "$DEVELOPMENT_TEAM" || { echo "Set the APPLE_DEVELOPMENT_TEAM repository variable for this runner."; exit 1; }
+          security find-identity -v -p codesigning | grep -q '"Apple Development:'
       - name: Run signed UI smoke suite
         run: >-
           xcodebuild test
           -project 'Aagedal FTP Sync.xcodeproj'
           -scheme AagedalFTPSyncUISmokeTests
           -destination 'platform=macOS'
+          DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM"

@@ -799,27 +799,27 @@ final class MetadataAutomationTests: XCTestCase {
 
     func testLocationPlaceNamingPrefersPointOfInterest() {
         let name = LocationPlaceNaming.preferredName(
-            areasOfInterest: ["Oslo City Hall"],
-            name: "Rådhusplassen 1",
+            areasOfInterest: ["Example City Hall"],
+            name: "Example Square 1",
             locality: "Oslo",
             administrativeArea: "Oslo",
             country: "Norway",
             fallback: "59.91110, 10.73340"
         )
 
-        XCTAssertEqual(name, "Oslo City Hall")
+        XCTAssertEqual(name, "Example City Hall")
     }
 
     func testLocationPlaceNamingBuildsReadableDistinctDescription() {
         let name = LocationPlaceNaming.displayName(
-            name: "Karl Johans gate 22",
-            thoroughfare: "Karl Johans gate",
+            name: "Example Street 22",
+            thoroughfare: "Example Street",
             locality: "Oslo",
             administrativeArea: "Oslo",
             country: "Norway"
         )
 
-        XCTAssertEqual(name, "Karl Johans gate 22, Oslo, Norway")
+        XCTAssertEqual(name, "Example Street 22, Oslo, Norway")
     }
 
     func testLocationPlaceNamingFallsBackToCoordinates() {

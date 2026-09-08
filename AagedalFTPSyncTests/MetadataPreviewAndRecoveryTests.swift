@@ -581,8 +581,8 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
     func testDefaultPolicyOverwritesAttributionAndPreservesOtherFields() throws {
         let folder = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
-        let photographer = PhotographerProfile(name: "Ægir Ødegård", filenamePrefix: "AG",
-            creator: "Ægir Ødegård", copyrightNotice: "© Ægir Ødegård")
+        let photographer = PhotographerProfile(name: "Example ÆØÅ", filenamePrefix: "AG",
+            creator: "Example ÆØÅ", copyrightNotice: "© Example ÆØÅ")
         let clip = MetadataScheduleClip(photographerID: photographer.id, name: "Assignment",
             startsAt: .distantPast, endsAt: .distantFuture,
             fields: ScheduledMetadataFields(headline: "New headline", description: "Fill empty caption", keywords: ["new"]),
@@ -623,8 +623,8 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
             XCTAssertEqual(result.headline, "Original XMP headline")
             XCTAssertEqual(result.subject, ["original"])
             XCTAssertEqual(result.description, "Fill empty caption")
-            XCTAssertEqual(result.creator, ["Ægir Ødegård"])
-            XCTAssertEqual(result.rights, "© Ægir Ødegård")
+            XCTAssertEqual(result.creator, ["Example ÆØÅ"])
+            XCTAssertEqual(result.rights, "© Example ÆØÅ")
             XCTAssertEqual(result.exifGPSLatitude, "60,0N")
             XCTAssertNotEqual(try MetadataWriter.assess(assignment, at: url, relativePath: url.lastPathComponent), .willApply)
         }

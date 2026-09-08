@@ -74,6 +74,8 @@ struct AagedalFTPSyncApp: App {
                     .tabItem { Label("Servers", systemImage: "server.rack") }
                 PhotographerSettingsView()
                     .tabItem { Label("Photographers", systemImage: "person.2") }
+                MetadataSyncSettingsView()
+                    .tabItem { Label("Metadata Sync", systemImage: "arrow.triangle.2.circlepath") }
             }
             .environmentObject(store)
             .applyingUITestDynamicTypeSize()

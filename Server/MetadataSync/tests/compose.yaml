@@ -1,0 +1,32 @@
+services:
+  database:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: local-root-test-only
+      MARIADB_DATABASE: hosting_test
+      MARIADB_USER: hosting_test
+      MARIADB_PASSWORD: local-test-only
+    tmpfs:
+      - /var/lib/mysql
+    volumes:
+      - ../schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  server:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile
+    depends_on:
+      database:
+        condition: service_healthy
+  test:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile
+    command: [php, tests/run.php]
+    depends_on:
+      server:
+        condition: service_started

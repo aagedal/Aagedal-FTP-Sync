@@ -5,13 +5,15 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
+configFiles:
+  Debug: Configuration/Signing.xcconfig
+  Release: Configuration/Signing.xcconfig
 settings:
   base:
     ARCHS: arm64
     SWIFT_VERSION: "6.0"
     CURRENT_PROJECT_VERSION: 34
     MARKETING_VERSION: 2.8.1
-    DEVELOPMENT_TEAM: 3R5QGG9DW6
     CODE_SIGN_STYLE: Automatic
     DEAD_CODE_STRIPPING: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES

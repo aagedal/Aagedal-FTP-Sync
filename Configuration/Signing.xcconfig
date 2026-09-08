@@ -1,0 +1,4 @@
+// Optional machine-local signing settings. Never commit an account's team ID.
+// Create Signing.local.xcconfig here with DEVELOPMENT_TEAM = YOUR_TEAM_ID,
+// or supply DEVELOPMENT_TEAM as an xcodebuild command-line setting.
+#include? "Signing.local.xcconfig"

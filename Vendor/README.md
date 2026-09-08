@@ -11,6 +11,7 @@ These packages are source-vendored so Aagedal FTP Sync 2.6 can carry reviewed se
   - resolve `swift-nio-ssh` from `../swift-nio-ssh`;
   - require `swift-crypto` 4.5.1 or newer;
   - remove the unused `ColorizeSwift` example dependency and executable target.
+  - remove account-specific signing team IDs from the unused example Xcode project; developers select their own signing team when building it.
 
 ## SwiftNIO SSH fork
 
