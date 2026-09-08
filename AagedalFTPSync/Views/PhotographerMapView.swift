@@ -156,7 +156,7 @@ struct PhotographerMapView: View {
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var selectedPhotographerID: UUID?
     @State private var draggedClipID: UUID?
-    @State private var draggedTranslation: CGSize = .zero
+    @State private var draggedCoordinate: CLLocationCoordinate2D?
 
     private let calendar = Calendar.current
     private let mapCoordinateSpaceName = "photographer-map"
@@ -298,22 +298,25 @@ struct PhotographerMapView: View {
 
     private var map: some View {
         MapReader { proxy in
-            Map(position: $cameraPosition, selection: $selectedPhotographerID) {
+            Map(
+                position: $cameraPosition,
+                interactionModes: draggedClipID == nil ? .all : [],
+                selection: $selectedPhotographerID
+            ) {
                 ForEach(positions) { item in
                     Annotation(
                         "",
                         coordinate: coordinate(for: item),
-                        anchor: .bottom
+                        anchor: .center
                     ) {
                         PhotographerMapMarker(
                             item: item,
                             color: color(for: item.photographer),
                             isSelected: selectedPhotographerID == item.photographer.id
                         )
-                        .offset(markerOffset(for: item))
                         .tag(item.photographer.id)
                         .accessibilityLabel(markerAccessibilityLabel(item))
-                        .gesture(markerGesture(for: item, proxy: proxy))
+                        .highPriorityGesture(markerGesture(for: item, proxy: proxy))
                     }
                 }
             }
@@ -524,14 +527,13 @@ struct PhotographerMapView: View {
     }
 
     private func coordinate(for item: ScheduledPhotographerPosition) -> CLLocationCoordinate2D {
+        if draggedClipID == item.clip.id, let draggedCoordinate {
+            return draggedCoordinate
+        }
         return CLLocationCoordinate2D(
             latitude: item.position.latitude,
             longitude: item.position.longitude
         )
-    }
-
-    private func markerOffset(for item: ScheduledPhotographerPosition) -> CGSize {
-        draggedClipID == item.clip.id ? draggedTranslation : .zero
     }
 
     private func markerGesture(
@@ -541,46 +543,23 @@ struct PhotographerMapView: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .named(mapCoordinateSpaceName))
             .onChanged { value in
                 guard gestureDistance(value.translation) >= 3 else { return }
+                guard let coordinate = proxy.convert(value.location, from: .named(mapCoordinateSpaceName)) else { return }
                 selectedPhotographerID = item.photographer.id
                 draggedClipID = item.clip.id
-                draggedTranslation = value.translation
+                draggedCoordinate = coordinate
             }
             .onEnded { value in
                 if gestureDistance(value.translation) < 3 {
                     selectedPhotographerID = item.photographer.id
-                } else if let coordinate = movedCoordinate(
-                    for: item,
-                    translation: value.translation,
-                    proxy: proxy
-                ) {
+                } else if let coordinate = proxy.convert(value.location, from: .named(mapCoordinateSpaceName)) {
                     saveMovedCoordinate(coordinate, for: item)
                 }
                 draggedClipID = nil
-                draggedTranslation = .zero
+                draggedCoordinate = nil
             }
             .simultaneously(with: TapGesture(count: 2).onEnded {
                 openMetadataProgramming(for: item)
             })
-    }
-
-    private func movedCoordinate(
-        for item: ScheduledPhotographerPosition,
-        translation: CGSize,
-        proxy: MapProxy
-    ) -> CLLocationCoordinate2D? {
-        let originalCoordinate = CLLocationCoordinate2D(
-            latitude: item.position.latitude,
-            longitude: item.position.longitude
-        )
-        guard let originalPoint = proxy.convert(
-            originalCoordinate,
-            to: .named(mapCoordinateSpaceName)
-        ) else { return nil }
-        let movedPoint = CGPoint(
-            x: originalPoint.x + translation.width,
-            y: originalPoint.y + translation.height
-        )
-        return proxy.convert(movedPoint, from: .named(mapCoordinateSpaceName))
     }
 
     private func saveMovedCoordinate(
@@ -688,26 +667,30 @@ private struct PhotographerMapMarker: View {
     let isSelected: Bool
 
     var body: some View {
-        VStack(spacing: 2) {
-            Text(item.photographer.photographerName)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: 222)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .foregroundStyle(.primary)
-                .background(.regularMaterial, in: Capsule())
-                .overlay {
-                    Capsule().stroke(color, lineWidth: isSelected ? 3 : 1)
-                }
-
-            Image(systemName: "mappin.circle.fill")
-                .font(.system(size: isSelected ? 31 : 27))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(.white, color)
-                .shadow(radius: 2, y: 1)
-        }
+        // Keep the geographic anchor at the center of a fixed-size pin. The label
+        // is an overlay so its size cannot shift the coordinate or drag target.
+        Image(systemName: "mappin.circle.fill")
+            .font(.system(size: 31))
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, color)
+            .frame(width: 31, height: 31)
+            .shadow(radius: 2, y: 1)
+            .overlay(alignment: .bottom) {
+                Text(item.photographer.photographerName)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 222)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .foregroundStyle(.primary)
+                    .background(.regularMaterial, in: Capsule())
+                    .overlay {
+                        Capsule().stroke(color, lineWidth: isSelected ? 3 : 1)
+                    }
+                    .offset(y: -35)
+            }
         .help("Click to select, drag to update this clip’s GPS location, or double-click to edit the metadata clip.")
     }
 }
