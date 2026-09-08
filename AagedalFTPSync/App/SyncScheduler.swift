@@ -109,6 +109,7 @@ final class SyncFailureNotificationCoordinator {
 enum SyncAttempt {
     case succeeded
     case failed(String)
+    case sourceFilesFailed(String)
     case cancelled
     case skipped
 }
@@ -268,7 +269,7 @@ final class SyncScheduler {
 
                 let delay: Double
                 switch attempt {
-                case .succeeded:
+                case .succeeded, .sourceFilesFailed:
                     consecutiveFailures = 0
                     delay = job.intervalSeconds
                 case .failed:

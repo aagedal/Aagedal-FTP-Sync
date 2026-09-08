@@ -380,7 +380,9 @@ struct JobDetailEditor: View {
                     isExpanded: $showSyncFailureHistory
                 ) {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 10) {
+                        // Keep selectable error text out of lazy view recycling to avoid
+                        // vertically flipped messages after repeated history updates.
+                        VStack(alignment: .leading, spacing: 10) {
                             ForEach(syncFailureHistory) { failure in
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(failure.occurredAt.formatted(date: .abbreviated, time: .standard))

@@ -263,6 +263,25 @@ def make_ftp_handler(
     failed_destination = (root / publication_failure_path).resolve()
 
     class FaultInjectingFTPHandler(base_handler):
+        retried_paths: set[str] = set()
+
+        def ftp_RETR(self, path: str):
+            file = Path(path)
+            if file.name.startswith("CLEANUP-RETRY-") and path not in self.retried_paths:
+                self.retried_paths.add(path)
+                self.respond("450 Injected temporary file failure.")
+                return
+            if file.name.startswith("CLEANUP-DENIED-"):
+                self.respond("550 Injected read permission failure.")
+                return
+            if file.name.startswith(("CLEANUP-GONE-", "CLEANUP-STALL-")):
+                file.unlink(missing_ok=True)
+                if file.name.startswith("CLEANUP-GONE-"):
+                    self.respond("550 File removed by server cleanup.")
+                # The stalled variant intentionally never sends a RETR reply.
+                return
+            return super().ftp_RETR(path)
+
         def ftp_RNTO(self, path: str):
             source_text = getattr(self, "_rnfr", None)
             if source_text is not None:

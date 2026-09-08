@@ -974,13 +974,14 @@ final class AppStore: ObservableObject {
             recordMetadataAudit(partialResult.metadataReport, jobID: jobID)
             let message: String
             if let summary = partialResult.summary {
-                message = "Sync stopped after \(summary). \(failure.failureDescription)"
+                let prefix = failure.completedWithSourceFailures ? "Sync finished with" : "Sync stopped after"
+                message = "\(prefix) \(summary). \(failure.failureDescription)"
             } else {
                 message = failure.failureDescription
             }
             recordSyncFailure(message, jobID: jobID)
             phases[jobID] = .failed(message, retryAt: nil)
-            attempt = .failed(message)
+            attempt = failure.completedWithSourceFailures ? .sourceFilesFailed(message) : .failed(message)
         } catch {
             let message = error.localizedDescription
             recordSyncFailure(message, jobID: jobID)
@@ -1172,7 +1173,7 @@ extension AppStore: SyncSchedulerDelegate {
                     nextRun: date
                 )
             }
-        case .failed(let message):
+        case .failed(let message), .sourceFilesFailed(let message):
             phases[jobID] = .failed(message, retryAt: date)
         case .cancelled, .skipped:
             break

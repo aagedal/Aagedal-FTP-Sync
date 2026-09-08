@@ -41,6 +41,8 @@ enum SyncLogFailureCategory: String, Sendable {
         if error is SyncRunFailure { return .transfer }
         if error is URLError { return .network }
         if error is FTPReadTimeout { return .timeout }
+        if let failure = error as? FTPDownloadFailure { return classify(failure.underlyingError) }
+        if error is FTPCommandFailure || error is FTPFileNoLongerListed { return .transfer }
         guard let appError = error as? AppError else { return .unexpected }
         switch appError {
         case .invalidConfiguration:

@@ -466,6 +466,215 @@ final class FTPListingTests: XCTestCase {
         XCTAssertEqual(importCount, 0)
     }
 
+    func testFailedDownloadsRetryAfterOtherFilesWithTwoAttemptLimit() async throws {
+        for early in [true, false] {
+            for failures in [1, 10] {
+                let date = Date(timeIntervalSince1970: 1_800_000_000)
+                let slow = SyncFile(relativePath: "SLOW.JPG", size: 5, modifiedAt: date)
+                let others = (1...6).map {
+                    SyncFile(relativePath: "KEEP\($0).JPG", size: 5, modifiedAt: date.addingTimeInterval(Double(-$0)))
+                }
+                let files = [slow] + others
+                let timeline = FastStartTimeline()
+                let source = IncrementalSource(
+                    snapshots: early ? [directorySnapshot("", files: files)] : [],
+                    finalFiles: Dictionary(uniqueKeysWithValues: files.map { ($0.relativePath, $0) }),
+                    timeline: timeline,
+                    downloadFailures: [slow.relativePath: failures]
+                )
+                let destination = ConditionalDestination(timeline: timeline)
+                let engine = retryTestEngine(source: source, destination: destination)
+                do {
+                    let result = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+                    XCTAssertEqual(failures, 1)
+                    XCTAssertEqual(result.transferred, files.count)
+                } catch let failure as SyncRunFailure {
+                    XCTAssertEqual(failures, 10)
+                    XCTAssertEqual(failure.partialResult.transferred, others.count)
+                    XCTAssertTrue(failure.completedWithSourceFailures)
+                    XCTAssertTrue(failure.failureDescription.contains("SLOW.JPG"))
+                    XCTAssertTrue(failure.failureDescription.contains("retrying at the end of the queue"))
+                }
+                let events = await timeline.events
+                XCTAssertEqual(events.filter { $0.hasPrefix("export:") },
+                    ["export:SLOW.JPG"] + others.map { "export:\($0.relativePath)" } + ["export:SLOW.JPG"])
+                let lastRead = try XCTUnwrap(events.lastIndex(of: "export:SLOW.JPG"))
+                XCTAssertEqual(events[lastRead - 1], "source-close")
+                let stored = await destination.storedFiles
+                XCTAssertEqual(Set(stored.keys), Set((failures == 1 ? files : others).map(\.relativePath)))
+            }
+        }
+    }
+
+    func testDeferredComparisonRetriesWithoutUnnecessaryReplacement() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let slow = SyncFile(relativePath: "SLOW.JPG", size: 5, modifiedAt: date)
+        let other = SyncFile(relativePath: "KEEP.JPG", size: 5, modifiedAt: date)
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [], finalFiles: [slow.relativePath: slow, other.relativePath: other],
+            timeline: timeline, downloadFailures: [slow.relativePath: 1]
+        )
+        let destination = ConditionalDestination(timeline: timeline, initialFiles: [slow.relativePath: slow])
+        let engine = retryTestEngine(source: source, destination: destination)
+        var job = partialFailureJob()
+        job.verifiesMatchingFileContents = true
+        let result = try await engine.run(job: job, leftPassword: "secret", rightPassword: nil)
+        XCTAssertEqual(result.transferred, 1)
+        let count = await destination.importCount
+        XCTAssertEqual(count, 1)
+        let events = await timeline.events
+        XCTAssertEqual(events.filter { $0.hasPrefix("export:") }, ["export:SLOW.JPG", "export:KEEP.JPG", "export:SLOW.JPG"])
+    }
+
+    func testDeferredCompanionRetriesWholeGroupAfterOtherFiles() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let raw = SyncFile(relativePath: "SLOW.CR3", size: 5, modifiedAt: date)
+        let sidecar = SyncFile(relativePath: "SLOW.xmp", size: 5, modifiedAt: date)
+        let other = SyncFile(relativePath: "KEEP.JPG", size: 5, modifiedAt: date.addingTimeInterval(-1))
+        let files = [raw, sidecar, other]
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: files)],
+            finalFiles: Dictionary(uniqueKeysWithValues: files.map { ($0.relativePath, $0) }),
+            timeline: timeline, downloadFailures: [sidecar.relativePath: 1]
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let result = try await retryTestEngine(source: source, destination: destination).run(
+            job: partialFailureJob(), leftPassword: "secret", rightPassword: nil
+        )
+        XCTAssertEqual(result.transferred, 2)
+        let stored = await destination.storedFiles
+        XCTAssertEqual(Set(stored.keys), Set(files.map(\.relativePath)))
+        let events = await timeline.events
+        XCTAssertEqual(events.filter { $0.hasPrefix("export:") },
+            ["export:SLOW.CR3", "export:SLOW.xmp", "export:KEEP.JPG", "export:SLOW.CR3", "export:SLOW.xmp"])
+    }
+
+    func testCancellationDuringDeferredRetryRemainsCancellation() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let slow = SyncFile(relativePath: "SLOW.JPG", size: 5, modifiedAt: date)
+        let other = SyncFile(relativePath: "KEEP.JPG", size: 5, modifiedAt: date.addingTimeInterval(-1))
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [], finalFiles: [slow.relativePath: slow, other.relativePath: other],
+            timeline: timeline, downloadFailures: [slow.relativePath: 1], cancelsRetryFor: slow.relativePath
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        do {
+            _ = try await retryTestEngine(source: source, destination: destination).run(
+                job: partialFailureJob(), leftPassword: "secret", rightPassword: nil
+            )
+            XCTFail("Cancellation must escape the retry queue")
+        } catch is CancellationError {}
+        let stored = await destination.storedFiles
+        XCTAssertEqual(stored, [other.relativePath: other])
+        let events = await timeline.events
+        XCTAssertEqual(events.filter { $0 == "export:SLOW.JPG" }.count, 2)
+    }
+
+    func testDisappearingSourceDoesNotBlockRemainingFilesOrRetryWithinRun() async throws {
+        for early in [true, false] {
+            let date = Date(timeIntervalSince1970: 1_800_000_000)
+            let missing = SyncFile(relativePath: "GONE.JPG", size: 5, modifiedAt: date)
+            let remaining = (1...6).map {
+                SyncFile(relativePath: "KEEP\($0).JPG", size: 5, modifiedAt: date.addingTimeInterval(Double(-$0)))
+            }
+            let files = [missing] + remaining
+            let timeline = FastStartTimeline()
+            let source = IncrementalSource(
+                snapshots: early ? [directorySnapshot("", files: files)] : [],
+                finalFiles: Dictionary(uniqueKeysWithValues: files.map { ($0.relativePath, $0) }),
+                timeline: timeline,
+                unavailablePaths: [missing.relativePath]
+            )
+            let destination = ConditionalDestination(timeline: timeline)
+            let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                endpoint.kind.isRemote ? source : destination
+            })
+            do {
+                _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+                XCTFail("The missed file must remain visible in the run summary")
+            } catch let failure as SyncRunFailure {
+                XCTAssertEqual(failure.partialResult.transferred, remaining.count)
+                XCTAssertTrue(failure.completedWithSourceFailures)
+                XCTAssertTrue(failure.failureDescription.contains("GONE.JPG"))
+                XCTAssertTrue(failure.failureDescription.contains("Continued with the remaining files"))
+            }
+            let stored = await destination.storedFiles
+            XCTAssertEqual(Set(stored.keys), Set(remaining.map(\.relativePath)))
+            let events = await timeline.events
+            XCTAssertEqual(events.filter { $0 == "export:GONE.JPG" }.count, 1)
+        }
+    }
+
+    func testDisappearingSourceSidecarDoesNotPublishPrimaryAndContinuesQueue() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let raw = SyncFile(relativePath: "GONE.CR3", size: 5, modifiedAt: date)
+        let sidecar = SyncFile(relativePath: "GONE.xmp", size: 5, modifiedAt: date)
+        let other = SyncFile(relativePath: "KEEP.JPG", size: 5, modifiedAt: date.addingTimeInterval(-1))
+        let files = [raw, sidecar, other]
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: files)],
+            finalFiles: Dictionary(uniqueKeysWithValues: files.map { ($0.relativePath, $0) }),
+            timeline: timeline,
+            unavailablePaths: [sidecar.relativePath]
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+        do {
+            _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+            XCTFail("Missing companion must be reported")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.partialResult.transferred, 1)
+            XCTAssertTrue(failure.failureDescription.contains("GONE.xmp"))
+        }
+        let stored = await destination.storedFiles
+        XCTAssertEqual(stored, [other.relativePath: other])
+    }
+
+    func testDisappearingSourceDuringContentVerificationPreservesExistingDestination() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let missing = SyncFile(relativePath: "GONE.JPG", size: 5, modifiedAt: date)
+        let other = SyncFile(relativePath: "KEEP.JPG", size: 5, modifiedAt: date)
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [],
+            finalFiles: [missing.relativePath: missing, other.relativePath: other],
+            timeline: timeline,
+            unavailablePaths: [missing.relativePath]
+        )
+        let destination = ConditionalDestination(timeline: timeline, initialFiles: [missing.relativePath: missing])
+        let engine = SyncEngine(sessionFactory: { endpoint, _, _ -> any EndpointSession in
+            endpoint.kind.isRemote ? source : destination
+        })
+        var job = partialFailureJob()
+        job.verifiesMatchingFileContents = true
+        do {
+            _ = try await engine.run(job: job, leftPassword: "secret", rightPassword: nil)
+            XCTFail("Missing source must be reported")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.partialResult.transferred, 1)
+            XCTAssertTrue(failure.failureDescription.contains("GONE.JPG"))
+        }
+        let stored = await destination.storedFiles
+        XCTAssertEqual(stored, [missing.relativePath: missing, other.relativePath: other])
+    }
+
+    func testAbsenceRequiresACompleteRecognizedListing() {
+        let check = FTPEndpointSession.listingConfirmsAbsence
+        XCTAssertTrue(check("GONE.JPG", ""))
+        XCTAssertTrue(check("GONE.JPG", "type=file;size=5; KEEP.JPG\r\ntype=cdir; .\r\n"))
+        XCTAssertFalse(check("GONE.JPG", "type=file;size=5; gone.jpg\r\n"))
+        XCTAssertFalse(check("GONE.JPG", "type=file;size=5; KEEP.JPG\r\ntruncated entry"))
+        XCTAssertFalse(check("GONE.JPG", "550 Permission denied"))
+        XCTAssertTrue(check("GONE.JPG", "total 1\n-rw-r--r-- 1 owner group 5 Sep 8 12:00 KEEP.JPG\n"))
+        XCTAssertFalse(check("GONE.JPG", "total 1\n-rw-r--r-- 1 owner group 5 Sep 8 12:00 GONE.JPG\n"))
+    }
+
     func testCompletedDirectoryPublishesBeforeFullScanAndCountsEachFileOnce() async throws {
         let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
         let first = SyncFile(relativePath: "first/NEWS.JPG", size: 5, modifiedAt: baseDate)
@@ -913,6 +1122,16 @@ final class FTPListingTests: XCTestCase {
         XCTAssertNil(try buffer.nextLine(maximumBytes: 64))
     }
 
+    private func retryTestEngine(source: any EndpointSession, destination: any EndpointSession) -> SyncEngine {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ftp-retry-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        return SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("downloads.json")),
+            sessionFactory: { endpoint, _, _ in endpoint.kind.isRemote ? source : destination }
+        )
+    }
+
     private func partialFailureJob() -> SyncJob {
         var job = SyncJob()
         job.left = Endpoint(
@@ -1010,19 +1229,29 @@ private actor IncrementalSource: EndpointSession {
     let timeline: FastStartTimeline
     let failsAfterSnapshots: Bool
     let waitsAfterSnapshots: Bool
+    let unavailablePaths: Set<String>
+    let downloadFailures: [String: Int]
+    let cancelsRetryFor: String?
+    private var exportAttempts: [String: Int] = [:]
 
     init(
         snapshots: [CompletedDirectoryListing],
         finalFiles: [String: SyncFile],
         timeline: FastStartTimeline,
         failsAfterSnapshots: Bool = false,
-        waitsAfterSnapshots: Bool = false
+        waitsAfterSnapshots: Bool = false,
+        unavailablePaths: Set<String> = [],
+        downloadFailures: [String: Int] = [:],
+        cancelsRetryFor: String? = nil
     ) {
         self.snapshots = snapshots
         self.finalFiles = finalFiles
         self.timeline = timeline
         self.failsAfterSnapshots = failsAfterSnapshots
         self.waitsAfterSnapshots = waitsAfterSnapshots
+        self.unavailablePaths = unavailablePaths
+        self.downloadFailures = downloadFailures
+        self.cancelsRetryFor = cancelsRetryFor
     }
 
     nonisolated var supportsCompletedDirectoryListings: Bool { true }
@@ -1048,8 +1277,25 @@ private actor IncrementalSource: EndpointSession {
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
         await timeline.append("export:\(file.relativePath)")
+        exportAttempts[file.relativePath, default: 0] += 1
+        let attempts = exportAttempts[file.relativePath, default: 0]
+        if attempts > 1, file.relativePath == cancelsRetryFor { throw CancellationError() }
+        if attempts <= downloadFailures[file.relativePath, default: 0] {
+            try Data([0]).write(to: temporaryURL)
+            throw FTPDownloadFailure(
+                relativePath: file.relativePath,
+                underlyingError: FTPReadTimeout(address: "localhost:21", seconds: 30, stage: "waiting for RETR")
+            )
+        }
+        if unavailablePaths.contains(file.relativePath) {
+            // Simulate a partial staged read; nothing from this group may publish.
+            try Data([0]).write(to: temporaryURL)
+            throw FTPFileNoLongerListed(relativePath: file.relativePath)
+        }
         try Data(repeating: UInt8(clamping: file.size), count: Int(file.size)).write(to: temporaryURL)
     }
+
+    func close() async { await timeline.append("source-close") }
 
     func importFile(
         from localURL: URL,

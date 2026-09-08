@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class SyncSchedulerTests: XCTestCase {
+    func testMissingSourceFilesKeepNormalPollingInterval() async throws {
+        let scheduler = SyncScheduler()
+        let delegate = SyncSchedulerDelegateSpy()
+        scheduler.delegate = delegate
+        var job = SyncJob(name: "Server cleanup")
+        job.isEnabled = true
+        job.intervalSeconds = 0.05
+        delegate.jobs[job.id] = job
+        delegate.immediateAttempts = [.sourceFilesFailed("Gone"), .sourceFilesFailed("Also gone")]
+        let startedAt = Date()
+        scheduler.restart(with: [job])
+        defer { scheduler.cancel(job.id) }
+
+        let scheduled = await eventually { delegate.nextRunEvents.count >= 2 }
+        XCTAssertTrue(scheduled)
+        for event in delegate.nextRunEvents.prefix(2) {
+            guard case .sourceFilesFailed = event.attempt else {
+                return XCTFail("The missed-file report must accompany the next poll")
+            }
+            XCTAssertLessThan(event.date.timeIntervalSince(startedAt), 1)
+        }
+    }
+
     func testDisabledRunNowStaysBusyUntilManualAttemptCompletesAndIgnoresDuplicateRequest() async {
         let scheduler = SyncScheduler()
         let delegate = SyncSchedulerDelegateSpy()

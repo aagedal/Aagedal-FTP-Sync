@@ -23,6 +23,13 @@ struct FTPReadTimeout: LocalizedError {
     }
 }
 
+struct FTPCommandFailure: LocalizedError {
+    let code: Int
+    let message: String
+
+    var errorDescription: String? { message }
+}
+
 struct BoundedDataAccumulator {
     let maximumBytes: Int
     private(set) var data = Data()
@@ -390,6 +397,12 @@ actor FTPConnection {
 
     func close() async {
         if control != nil { _ = try? await command("QUIT", accepting: 200..<300) }
+        disconnect()
+    }
+
+    // A failed transfer may leave delayed replies on the control connection.
+    // Recovery must start a new session, without waiting for QUIT on the old one.
+    func disconnect() {
         control?.cancel()
         control = nil
     }
@@ -587,8 +600,9 @@ actor FTPConnection {
             }
         }
         guard range.contains(code) else {
-            throw AppError.transferFailed(
-                Self.redactingSecrets(in: lines.joined(separator: "\n"), secrets: [password, escaped(password)])
+            throw FTPCommandFailure(
+                code: code,
+                message: Self.redactingSecrets(in: lines.joined(separator: "\n"), secrets: [password, escaped(password)])
             )
         }
         return FTPReply(code: code, lines: lines)

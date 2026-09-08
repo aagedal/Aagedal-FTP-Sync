@@ -3,6 +3,63 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class RemoteTransportIntegrationTests: XCTestCase {
+    func testFTPCleanupDuringDownloadReconnectsAndPreservesPermissionErrors() async throws {
+        let configuration = try Self.configuration()
+        for kind in [EndpointKind.ftp, .ftps] {
+            for mode in ["GONE", "STALL", "DENIED", "RETRY"] {
+                let session = try makeSession(kind: kind, configuration: configuration)
+                let bytes = Data("photo bytes".utf8)
+                let input = try temporaryFile(containing: bytes)
+                let output = try temporaryFile(containing: Data())
+                defer {
+                    try? FileManager.default.removeItem(at: input)
+                    try? FileManager.default.removeItem(at: output)
+                }
+                let file = SyncFile(
+                    relativePath: "CLEANUP-\(mode)-\(UUID().uuidString).JPG",
+                    size: Int64(bytes.count), modifiedAt: Date()
+                )
+                let survivor = SyncFile(
+                    relativePath: "SURVIVOR-\(UUID().uuidString).JPG",
+                    size: Int64(bytes.count), modifiedAt: Date()
+                )
+                do {
+                    try await session.importFile(from: input, as: file, preserveDate: true, verifySize: true)
+                    try await session.importFile(from: input, as: survivor, preserveDate: true, verifySize: true)
+                    let before = try await session.listFiles()
+                    XCTAssertNotNil(before[file.relativePath])
+                    do {
+                        try await session.exportFile(file, to: output)
+                        XCTFail("The fixture must fail the requested download")
+                    } catch let failure as FTPFileNoLongerListed {
+                        XCTAssertTrue(mode == "GONE" || mode == "STALL")
+                        XCTAssertEqual(failure.relativePath, file.relativePath)
+                    } catch let failure as FTPDownloadFailure {
+                        XCTAssertTrue(mode == "DENIED" || mode == "RETRY")
+                        let reply = try XCTUnwrap(failure.underlyingError as? FTPCommandFailure)
+                        XCTAssertEqual(reply.code, mode == "DENIED" ? 550 : 450)
+                        XCTAssertEqual(failure.relativePath, file.relativePath)
+                    }
+                    try await session.exportFile(survivor, to: output)
+                    XCTAssertEqual(try Data(contentsOf: output), bytes)
+                    let after = try await session.listFiles()
+                    XCTAssertEqual(after[file.relativePath] != nil, mode == "DENIED" || mode == "RETRY")
+                    if mode == "RETRY" {
+                        await session.close()
+                        try await session.exportFile(file, to: output)
+                        XCTAssertEqual(try Data(contentsOf: output), bytes)
+                    }
+                    if mode == "DENIED" || mode == "RETRY" { try await session.removeFile(file) }
+                    try await session.removeFile(survivor)
+                    await session.close()
+                } catch {
+                    await session.close()
+                    throw error
+                }
+            }
+        }
+    }
+
     func testVerifiedSourceRemovalRestoresChangedSourcesAcrossTransports() async throws {
         let configuration = try Self.configuration()
         for kind in [EndpointKind.ftp, .ftps, .sftp] {

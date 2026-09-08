@@ -489,15 +489,18 @@ struct SyncResult: Equatable, Sendable {
 struct SyncRunFailure: LocalizedError, Sendable {
     let failureDescription: String
     let partialResult: SyncResult
+    let completedWithSourceFailures: Bool
 
     init(_ error: any Error, partialResult: SyncResult) {
         failureDescription = error.localizedDescription
         self.partialResult = partialResult
+        completedWithSourceFailures = false
     }
 
-    init(failureDescription: String, partialResult: SyncResult) {
+    init(failureDescription: String, partialResult: SyncResult, completedWithSourceFailures: Bool = false) {
         self.failureDescription = failureDescription
         self.partialResult = partialResult
+        self.completedWithSourceFailures = completedWithSourceFailures
     }
 
     var errorDescription: String? { failureDescription }

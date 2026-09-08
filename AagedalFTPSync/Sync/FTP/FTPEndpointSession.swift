@@ -1,5 +1,22 @@
 import Foundation
 
+struct FTPFileNoLongerListed: LocalizedError, Sendable {
+    let relativePath: String
+
+    var errorDescription: String? {
+        "The FTP source file is no longer listed: \(relativePath). It may have been removed by server cleanup."
+    }
+}
+
+/// The download failed, but a fresh session could still list its folder.
+/// Callers may defer this file without treating the whole server as offline.
+struct FTPDownloadFailure: LocalizedError, Sendable {
+    let relativePath: String
+    let underlyingError: any Error
+
+    var errorDescription: String? { underlyingError.localizedDescription }
+}
+
 struct FTPEndpointSession: EndpointSession, Sendable {
     private let endpoint: Endpoint
     private let connection: FTPConnection
@@ -72,12 +89,59 @@ struct FTPEndpointSession: EndpointSession, Sendable {
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL, maximumSize: Int64?) async throws {
-        try await connection.download(
-            path: remotePath(for: file.relativePath),
-            to: temporaryURL,
-            maximumSize: maximumSize
-        )
+        do {
+            try await connection.download(
+                path: remotePath(for: file.relativePath),
+                to: temporaryURL,
+                maximumSize: maximumSize
+            )
+        } catch is CancellationError {
+            await connection.disconnect()
+            throw CancellationError()
+        } catch {
+            let downloadError = error
+            await connection.disconnect()
+            try Task.checkCancellation()
+            let replyCode = (error as? FTPCommandFailure)?.code
+            guard error is FTPReadTimeout || replyCode == 450 || replyCode == 550 else {
+                throw error
+            }
+            // Check only after a failure: preflighting every file adds latency and
+            // cannot prevent deletion between the check and RETR.
+            let path = remotePath(for: file.relativePath)
+            let listing: String
+            do {
+                listing = try await connection.list(path: (path as NSString).deletingLastPathComponent)
+            } catch is CancellationError {
+                await connection.disconnect()
+                throw CancellationError()
+            } catch {
+                await connection.disconnect()
+                try Task.checkCancellation()
+                throw downloadError
+            }
+            if Self.listingConfirmsAbsence(of: (path as NSString).lastPathComponent, in: listing) {
+                throw FTPFileNoLongerListed(relativePath: file.relativePath)
+            }
+            // Release the probe session; the caller decides when to retry.
+            await connection.disconnect()
+            throw FTPDownloadFailure(relativePath: file.relativePath, underlyingError: downloadError)
+        }
         try FileManager.default.setAttributes([.modificationDate: file.modifiedAt], ofItemAtPath: temporaryURL.path)
+    }
+
+    static func listingConfirmsAbsence(of name: String, in listing: String) -> Bool {
+        // Never infer absence from a partial/unrecognized listing. Ignore only
+        // standard directory-self entries and Unix LIST's optional block total.
+        for line in listing.components(separatedBy: .newlines) where !line.isEmpty {
+            let lower = line.lowercased()
+            if lower.hasPrefix("type=cdir;") || lower.hasPrefix("type=pdir;") { continue }
+            if lower.hasPrefix("total "), Int(line.dropFirst(6)) != nil { continue }
+            let entries = parseMLSD(line)
+            guard entries.count == 1 else { return false }
+            if entries[0].name.caseInsensitiveCompare(name) == .orderedSame { return false }
+        }
+        return true
     }
 
     func importFile(
