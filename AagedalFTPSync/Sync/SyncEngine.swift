@@ -133,11 +133,12 @@ private actor EarlyTransferState {
         changingFiles[file.relativePath] = failure.relativePath
     }
 
-    func record(_ file: SyncFile, outcome: TransferMetadataOutcome) {
+    func record(_ file: SyncFile, outcome: TransferMetadataOutcome, sourceSidecar: SyncFile?) {
         signatures[file.relativePath] = SourceFileSignature(file: file)
         transferred += 1
         if let auditEntry = outcome.auditEntry { metadataReport.append(auditEntry) }
         if outcome.embeddedMetadataApplied { sourceSignaturesToPersist.append(file) }
+        if let sourceSidecar { sourceSignaturesToPersist.append(sourceSidecar) }
         destinationFiles.merge(outcome.publishedDestinationFiles) { _, newest in newest }
     }
 
@@ -251,7 +252,8 @@ struct SyncEngine: Sendable {
                                        sourceEndpoint: Endpoint, destinationEndpoint: Endpoint) async -> any EndpointSession {
         let directory = await downloadManifestRepository.nameMappingsDirectory
         return DownloadNamingSession(source: source, destination: destination, overwriteCaseVariants: job.overwritesCaseVariantDownloads,
-            mappingURL: DownloadNamingSession.mappingURL(directory: directory, job: job, source: sourceEndpoint, destination: destinationEndpoint))
+            mappingURL: DownloadNamingSession.mappingURL(directory: directory, job: job, source: sourceEndpoint, destination: destinationEndpoint),
+            filter: job.filter)
     }
 
     private func performRun(
@@ -277,6 +279,14 @@ struct SyncEngine: Sendable {
         } else if job.direction == .rightToLeft, job.right.kind.isRemote, job.left.kind == .local {
             right = await downloadNamingSession(source: rawRight, destination: rawLeft, job: job, sourceEndpoint: job.right, destinationEndpoint: job.left)
             left = rawLeft
+        } else if job.supportsUploadNaming, let naming = job.uploadNaming, naming.isEnabled {
+            if job.direction == .leftToRight {
+                left = UploadNamingSession(source: rawLeft, naming: naming, filter: job.filter)
+                right = rawRight
+            } else {
+                right = UploadNamingSession(source: rawRight, naming: naming, filter: job.filter)
+                left = rawLeft
+            }
         } else {
             left = rawLeft; right = rawRight
         }
@@ -1222,7 +1232,8 @@ struct SyncEngine: Sendable {
                     publishOnlyIfAbsent: true
                 )
                 try await recordPublishedLocalDownloads(outcome, job: job)
-                await state.record(file, outcome: outcome)
+                await state.record(file, outcome: outcome, sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                    ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] : nil)
             } catch is CancellationError {
                 throw CancellationError()
             } catch let failure as UnavailableSourceFile {
@@ -1294,6 +1305,10 @@ struct SyncEngine: Sendable {
                 .matchesPhotographer(relativePath: file.relativePath) == true
                 && !MetadataWriter.usesXMPSidecar(for: file.relativePath)
             let destinationFile = effectiveDestinationFiles[file.relativePath]
+            let sourceSidecar = MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] : nil
+            let destinationSidecar = sourceSidecar.flatMap { effectiveDestinationFiles[$0.relativePath] }
+            let mayRewriteSidecar = mayGenerateSidecar(file, automation: job.metadataAutomation)
             var destinationNeedsTransfer = needsTransfer(
                 file,
                 destinationFile,
@@ -1302,13 +1317,23 @@ struct SyncEngine: Sendable {
                 savedSourceSignature: savedSignatures[file.relativePath],
                 trackRepeatedDownload: file.tracksRepeatedDownload
             )
+            if !destinationNeedsTransfer, let sourceSidecar {
+                if mayRewriteSidecar, destinationSidecar != nil {
+                    // A metadata-written XMP may differ in size and date. Compare
+                    // its source receipt, including one bootstrap for older jobs.
+                    destinationNeedsTransfer = savedSignatures[sourceSidecar.relativePath]
+                        .map { !$0.matches(sourceSidecar, timestampTolerance: tolerance) } ?? true
+                } else {
+                    destinationNeedsTransfer = needsTransfer(sourceSidecar, destinationSidecar, verifySize: job.verifyFileSizes)
+                }
+            }
             if !destinationNeedsTransfer,
                job.verifiesMatchingFileContents,
                !willRewriteMetadata,
                let destinationFile,
                hasMatchingSizeAndTimestamp(file, destinationFile) {
                 if deferredFiles[file.relativePath] != nil {
-                    deferredComparisons.insert(file.relativePath)
+                    if sourceSidecar == nil { deferredComparisons.insert(file.relativePath) }
                     destinationNeedsTransfer = true
                 } else {
                     do {
@@ -1326,9 +1351,26 @@ struct SyncEngine: Sendable {
                         continue
                     } catch let failure as RetryableSourceFile {
                         deferredFiles[file.relativePath] = failure.failure
-                        deferredComparisons.insert(file.relativePath)
+                        if sourceSidecar == nil { deferredComparisons.insert(file.relativePath) }
                         destinationNeedsTransfer = true
                     }
+                }
+            }
+            if !destinationNeedsTransfer, job.verifiesMatchingFileContents, !mayRewriteSidecar,
+               let sourceSidecar, let destinationSidecar,
+               hasMatchingSizeAndTimestamp(sourceSidecar, destinationSidecar) {
+                do {
+                    destinationNeedsTransfer = !(try await contentsMatch(sourceSidecar, in: source, destinationSidecar, in: destination))
+                } catch let failure as UnavailableSourceFile {
+                    unavailableFiles[file.relativePath] = failure.failure.relativePath
+                    continue
+                } catch let failure as ChangingSourceFile {
+                    changingFiles[file.relativePath] = failure.relativePath
+                    continue
+                } catch let failure as RetryableSourceFile {
+                    // Retry the whole pair even if the unchanged RAW matches.
+                    deferredFiles[file.relativePath] = failure.failure
+                    destinationNeedsTransfer = true
                 }
             }
             if destinationNeedsTransfer
@@ -1486,6 +1528,10 @@ struct SyncEngine: Sendable {
             }
             if outcome.embeddedMetadataApplied || file.tracksRepeatedDownload {
                 pendingSourceSignatures.append(file)
+            }
+            if MetadataWriter.usesXMPSidecar(for: file.relativePath),
+               let sidecar = sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
+                pendingSourceSignatures.append(sidecar)
             }
             if let deferredFailureDescription {
                 do {

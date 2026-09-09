@@ -2,6 +2,12 @@
 
 ## 2.9.1 — 2026-09-09
 
+- Add an optional standardized `_aftpsync` upload suffix and a matching filename-filter toggle for shared-server workflows. Both default off and preserve existing job behavior.
+- Add case-insensitive photographer-initial filters and filename prefix/suffix exclusions, including filtering ignored downloads before case-collision naming.
+- Add optional prefixes and suffixes for one-way uploads, keeping local names, RAW/XMP companions, and repeat-run comparisons consistent. Use matching download exclusions when returning edited files to the same server.
+- Detect source XMP companion updates in one-way photo/RAW jobs even when the RAW itself is unchanged; retain source receipts when automatic metadata rewrites XMP to prevent repeated transfers.
+- Extend FTP, FTPS, and SFTP integration coverage with a shared-server download/upload cycle and rejected-upload size verification.
+
 - Defer source files whose size changes during download until the next sync obtains a fresh listing, while continuing other transfers and showing a waiting warning. Keep strict size limits, existing destination copies, and RAW/XMP groups intact.
 
 - Add an optional per-job setting to overwrite repeated downloads whose names differ only by capitalization, selecting the newest server variant and retaining one local filename. Existing jobs continue to preserve both copies.

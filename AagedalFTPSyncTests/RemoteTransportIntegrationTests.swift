@@ -3,6 +3,115 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class RemoteTransportIntegrationTests: XCTestCase {
+    func testSharedServerDownloadUploadRoundTripExcludesRenamedCopies() async throws {
+        let configuration = try Self.configuration()
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let initials = "TA" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let filename = initials + "_001.JPG"
+            let originalBytes = Data("camera original".utf8)
+            let original = try temporaryFile(containing: originalBytes)
+            defer { try? FileManager.default.removeItem(at: original) }
+            let file = SyncFile(relativePath: filename, size: Int64(originalBytes.count), modifiedAt: Date().addingTimeInterval(-300))
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            func localEndpoint(_ name: String) throws -> Endpoint {
+                let folder = root.appendingPathComponent(name)
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                return Endpoint(kind: .local, localPath: folder.path,
+                    bookmark: try folder.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil))
+            }
+            let downloadFolder = try localEndpoint("downloads")
+            let engine = SyncEngine(
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            do {
+                try await session.importFile(from: original, as: file, preserveDate: true, verifySize: true)
+                var downloadJob = SyncJob(name: "Shared-server download")
+                downloadJob.left = remote
+                downloadJob.right = downloadFolder
+                downloadJob.filter = FileFilter(photographerInitials: initials, excludedFilenameSuffixes: "_EDITED")
+                let downloaded = try await engine.run(job: downloadJob, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(downloaded.transferred, 1, kind.rawValue)
+                let localPhoto = URL(fileURLWithPath: downloadFolder.localPath).appendingPathComponent(filename)
+                XCTAssertEqual(try Data(contentsOf: localPhoto), originalBytes)
+                let editedBytes = Data("edited photo for publication".utf8)
+                try editedBytes.write(to: localPhoto)
+                var uploadJob = SyncJob(name: "Shared-server upload")
+                uploadJob.left = downloadFolder
+                uploadJob.right = remote
+                uploadJob.uploadNaming = UploadNaming(suffix: "_EDITED")
+                let uploaded = try await engine.run(job: uploadJob, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(uploaded.transferred, 1, kind.rawValue)
+                let unchanged = try await engine.run(job: uploadJob, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(unchanged.transferred, 0, kind.rawValue)
+                let editedPath = try XCTUnwrap(uploadJob.uploadNaming).relativePath(for: filename)
+                let remoteFiles = try await session.listFiles()
+                let editedFile = try XCTUnwrap(remoteFiles[editedPath])
+                let check = try temporaryFile(containing: Data())
+                defer { try? FileManager.default.removeItem(at: check) }
+                try await session.exportFile(editedFile, to: check)
+                XCTAssertEqual(try Data(contentsOf: check), editedBytes)
+                // Start with an empty download folder: this proves the exclusion
+                // itself prevents a loop, independently of timestamp comparisons.
+                downloadJob.right = try localEndpoint("fresh-downloads")
+                let downloadedAgain = try await engine.run(job: downloadJob, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(downloadedAgain.transferred, 1, kind.rawValue)
+                XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: downloadJob.right.localPath), [filename])
+                XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: downloadJob.right.localPath).appendingPathComponent(filename)), originalBytes)
+                // Each engine run closes its sessions. Reconnect before fixture cleanup.
+                _ = try await session.listFiles()
+                try await session.removeFile(file)
+                try await session.removeFile(editedFile)
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
+    func testUploadSizeVerificationPreservesExistingFileAcrossTransports() async throws {
+        let configuration = try Self.configuration()
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let original = try temporaryFile(containing: Data("original".utf8))
+            let replacement = try temporaryFile(containing: Data("replacement".utf8))
+            defer {
+                try? FileManager.default.removeItem(at: original)
+                try? FileManager.default.removeItem(at: replacement)
+            }
+            let name = "size-check-\(UUID().uuidString).jpg"
+            let file = SyncFile(relativePath: name, size: 8, modifiedAt: Date())
+            do {
+                try await session.importFile(from: original, as: file, preserveDate: true, verifySize: true)
+                do {
+                    try await session.importFile(from: replacement, as: file, preserveDate: true, verifySize: true)
+                    XCTFail("A mismatched upload must not be published")
+                } catch {
+                    XCTAssertTrue(error.localizedDescription.contains("Size verification failed"), error.localizedDescription)
+                }
+                let downloaded = try temporaryFile(containing: Data())
+                defer { try? FileManager.default.removeItem(at: downloaded) }
+                try await session.exportFile(file, to: downloaded)
+                XCTAssertEqual(try Data(contentsOf: downloaded), Data("original".utf8))
+                try await session.removeFile(file)
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
     func testFTPCleanupDuringDownloadReconnectsAndPreservesPermissionErrors() async throws {
         let configuration = try Self.configuration()
         for kind in [EndpointKind.ftp, .ftps] {

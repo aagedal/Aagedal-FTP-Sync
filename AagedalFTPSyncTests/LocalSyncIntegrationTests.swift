@@ -75,6 +75,47 @@ final class TransactionalRemovalTests: XCTestCase {
 }
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testChangedSourceSidecarReappliesMetadataWithoutRepeatedTransfers() async throws {
+        for preserveDates in [true, false] {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let raw = fixture.left.appendingPathComponent("TA_001.NEF")
+            let sidecar = fixture.left.appendingPathComponent("TA_001.xmp")
+            let date = Date(timeIntervalSince1970: 1_700_000_000)
+            try Data("camera raw".utf8).write(to: raw)
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: raw.path)
+            var xmp = XMPData()
+            xmp.city = "Bergen"
+            try XMPSidecar.write(xmp, to: sidecar)
+            try FileManager.default.setAttributes([.modificationDate: date.addingTimeInterval(10)], ofItemAtPath: sidecar.path)
+            let photographer = PhotographerProfile(name: "Photographer", filenamePrefix: "TA", creator: "Photographer", copyrightNotice: "")
+            let clip = MetadataScheduleClip(photographerID: photographer.id, name: "Assignment",
+                startsAt: date.addingTimeInterval(-60), endsAt: date.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "News"))
+            var job = try fixture.job(direction: .leftToRight)
+            job.preserveModificationDates = preserveDates
+            job.metadataAutomation = MetadataAutomation(isEnabled: true, photographers: [photographer], clips: [clip])
+            let engine = SyncEngine(
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: fixture.root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("manifest.json")))
+            let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(first.metadataReport.applied, 1)
+            let second = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(second.transferred, 0)
+            xmp.city = "Oslo"
+            try XMPSidecar.write(xmp, to: sidecar)
+            try FileManager.default.setAttributes([.modificationDate: date.addingTimeInterval(20)], ofItemAtPath: sidecar.path)
+            let updated = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(updated.transferred, 1)
+            XCTAssertEqual(updated.metadataReport.applied, 1)
+            let result = try XMPSidecar.read(from: fixture.right.appendingPathComponent("TA_001.xmp"))
+            XCTAssertEqual(result.city, "Oslo")
+            XCTAssertEqual(result.headline, "News")
+            let unchanged = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(unchanged.transferred, 0)
+        }
+    }
+
     func testResetRollbackCollisionRetainsRecoveryFilesAndManifest() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }

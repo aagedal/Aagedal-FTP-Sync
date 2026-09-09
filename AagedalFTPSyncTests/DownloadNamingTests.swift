@@ -54,6 +54,61 @@ private actor NamedDownloadSource: DownloadListingSession {
 }
 
 final class DownloadNamingTests: XCTestCase {
+    func testSidecarOnlyChangesDownloadWithPhotosFilter() async throws {
+        let (root, endpoint, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = NamedDownloadSource(["TA_001.NEF": Data("camera raw".utf8), "TA_001.xmp": Data("metadata".utf8)])
+        var job = SyncJob()
+        job.left = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+        job.right = endpoint
+        job.filter.photographerInitials = "TA"
+        let engine = SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+            sessionFactory: { entry, _, _ -> any EndpointSession in entry.kind.isRemote ? source : destination })
+        let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(first.transferred, 1)
+        await source.set("TA_001.xmp", data: Data("updated metadata".utf8))
+        let updated = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(updated.transferred, 1)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: endpoint.localPath).appendingPathComponent("TA_001.xmp")), Data("updated metadata".utf8))
+        let unchanged = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(unchanged.transferred, 0)
+    }
+
+    func testExcludedReturnUploadsDoNotBlockDownloadsOrPublishEarly() async throws {
+        for overwrite in [false, true] {
+            let (root, endpoint, destination) = try fixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = NamedDownloadSource([
+                "TA_001.JPG": Data("camera original".utf8),
+                "TA_001_EDITED.JPG": Data("uploaded edit".utf8),
+                "TA_003_aftpsync.JPG": Data("another user's upload".utf8),
+                "TA_004_aftpsync.NEF": Data(), "TA_004_aftpsync.nef": Data(),
+                "TA_002_EDITED.NEF": Data(), "TA_002_EDITED.nef": Data(),
+                "OTHER.NEF": Data(), "other.nef": Data()
+            ])
+            var job = SyncJob(name: "Filtered downloads")
+            job.left = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+            job.right = endpoint
+            job.overwritesCaseVariantDownloads = overwrite
+            job.filter = FileFilter(photographerInitials: "TA", excludedFilenameSuffixes: "_EDITED")
+            job.filter.ignoresAFTPSyncUploads = true
+            let engine = SyncEngine(
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { entry, _, _ -> any EndpointSession in
+                    entry.kind.isRemote ? source : destination
+                })
+            let result = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(result.transferred, 1)
+            let paths = try await destination.listFiles().keys.sorted()
+            XCTAssertEqual(paths, ["TA_001.JPG"])
+            let reads = await source.downloads
+            XCTAssertEqual(reads, ["TA_001.JPG"])
+        }
+    }
+
     private func fixture() throws -> (URL, Endpoint, LocalEndpointSession) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let local = root.appendingPathComponent("downloads")

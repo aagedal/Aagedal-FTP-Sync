@@ -86,6 +86,19 @@ struct JobDetailEditor: View {
                         Text("Separate extensions with commas or spaces.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    TextField("Photographer initials", text: filenameFilterBinding(\.photographerInitials), prompt: Text("JAD, TA"))
+                    Text("Only sync filenames starting with these initials, using the same matching rule as the photographer library. Separate initials with commas; leave blank for all photographers. Matching ignores capitalization.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("Ignore filename prefixes", text: filenameFilterBinding(\.excludedFilenamePrefixes), prompt: Text("EDITED_"))
+                    TextField("Ignore filename suffixes", text: filenameFilterBinding(\.excludedFilenameSuffixes), prompt: Text("_EDITED, _SENT"))
+                    Text("Separate exclusions with commas. Suffixes match before the extension, for example _EDITED excludes TA_001_EDITED.JPG. Exclusions take priority over initials and also apply to local cleanup.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Ignore _aftpsync uploads", isOn: Binding(
+                        get: { session.draft.filter.ignoresAFTPSyncUploads },
+                        set: { session.draft.filter.ignoresAFTPSyncUploads = $0 }
+                    ))
+                    Text("Skips files ending in _aftpsync before the extension, including uploads from other app users. Off by default.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Include hidden files", isOn: $session.draft.filter.includeHiddenFiles)
                     Picker("File age", selection: recentHoursBinding) {
                         Text("Any age").tag(0)
@@ -96,6 +109,23 @@ struct JobDetailEditor: View {
                         Text("Last 24 hours").tag(24)
                         Text("Last 48 hours").tag(48)
                         Text("Last 7 days").tag(168)
+                    }
+                }
+
+                if draft.supportsUploadNaming || draft.uploadNaming?.isEnabled == true {
+                    Section("Upload filenames") {
+                        Toggle("Add standard _aftpsync suffix", isOn: uploadStandardSuffixBinding)
+                        Text("Adds _aftpsync after any custom suffix and before the extension. Enable “Ignore _aftpsync uploads” on download jobs to exclude marked uploads from all users. Off by default.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        TextField("Upload prefix", text: uploadNamingBinding(\.prefix), prompt: Text("EDITED_"))
+                        TextField("Upload suffix", text: uploadNamingBinding(\.suffix), prompt: Text("_EDITED"))
+                        if let example = try? (draft.uploadNaming ?? UploadNaming()).relativePath(for: "TA_001.JPG") {
+                            LabeledContent("Example", value: "TA_001.JPG → \(example)")
+                        }
+                        Text("Adds text to the server copy, with the suffix before the extension. Local filenames stay unchanged. RAW files and their XMP companions receive the same prefix and suffix. Leave both fields blank and the standard suffix off to keep original names.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("When uploading back to the download server, add the same prefix or suffix to the download job’s filename exclusions to prevent return copies from downloading again. Use separate one-way jobs.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
 
@@ -542,6 +572,35 @@ struct JobDetailEditor: View {
             folderWarning = "Reset will permanently delete \(fileDescription) recorded as downloads created by this job in \(path). Other files and the source will not be changed."
         }
         return "\(folderWarning) Transfer counts, metadata audit entries, error history, and saved source signatures will also be cleared. The job will be stopped and disabled at login. This cannot be undone."
+    }
+
+    private func filenameFilterBinding(_ keyPath: WritableKeyPath<FileFilter, String?>) -> Binding<String> {
+        Binding(
+            get: { session.draft.filter[keyPath: keyPath] ?? "" },
+            set: { session.draft.filter[keyPath: keyPath] = $0.isEmpty ? nil : $0 }
+        )
+    }
+
+    private func uploadNamingBinding(_ keyPath: WritableKeyPath<UploadNaming, String>) -> Binding<String> {
+        Binding(
+            get: { (session.draft.uploadNaming ?? UploadNaming())[keyPath: keyPath] },
+            set: {
+                var naming = session.draft.uploadNaming ?? UploadNaming()
+                naming[keyPath: keyPath] = $0
+                session.draft.uploadNaming = naming.isEnabled ? naming : nil
+            }
+        )
+    }
+
+    private var uploadStandardSuffixBinding: Binding<Bool> {
+        Binding(
+            get: { session.draft.uploadNaming?.addsStandardSuffix ?? false },
+            set: {
+                var naming = session.draft.uploadNaming ?? UploadNaming()
+                naming.addsStandardSuffix = $0
+                session.draft.uploadNaming = naming.isEnabled ? naming : nil
+            }
+        )
     }
 
     private var metadataStatus: String {

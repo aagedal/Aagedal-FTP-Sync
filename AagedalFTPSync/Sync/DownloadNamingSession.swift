@@ -8,6 +8,7 @@ actor DownloadNamingSession: EndpointSession {
     private let destination: any EndpointSession
     private let mappingURL: URL
     private let overwriteCaseVariants: Bool
+    private let filter: FileFilter
     private var replacementDates: [String: Date] = [:]
     private struct ReplacementState: Codable {
         var names: [String: String]
@@ -21,10 +22,12 @@ actor DownloadNamingSession: EndpointSession {
     private var prepared = false
     nonisolated let supportsCompletedDirectoryListings: Bool
 
-    init(source: any EndpointSession, destination: any EndpointSession, overwriteCaseVariants: Bool = false, mappingURL: URL) {
+    init(source: any EndpointSession, destination: any EndpointSession, overwriteCaseVariants: Bool = false, mappingURL: URL,
+         filter: FileFilter = FileFilter()) {
         self.source = source
         self.destination = destination
         self.overwriteCaseVariants = overwriteCaseVariants
+        self.filter = filter
         self.mappingURL = overwriteCaseVariants ? mappingURL.appendingPathExtension("replace") : mappingURL
         supportsCompletedDirectoryListings = !overwriteCaseVariants && source.supportsCompletedDirectoryListings
     }
@@ -92,7 +95,7 @@ actor DownloadNamingSession: EndpointSession {
             if let source = source as? any DownloadListingSession {
                 files = try await source.listDownloadFiles(onCompletedDirectory: nil)
             } else { files = try await source.listFiles() }
-            return try replacingFiles(Array(files.values))
+            return try replacingFiles(files.values.filter { filter.includesFilename(path: $0.relativePath) })
         }
         let callback: @Sendable (CompletedDirectoryListing) async throws -> Void = { listing in
             let mapped = try await self.map(listing)
@@ -105,14 +108,15 @@ actor DownloadNamingSession: EndpointSession {
             files = try await source.listFilesIncrementally(onCompletedDirectory: callback)
         }
         // Some sessions can only report part of the listing incrementally.
-        let missing = files.values.filter { names[$0.relativePath] == nil }
+        let includedFiles = files.values.filter { filter.includesFilename(path: $0.relativePath) }
+        let missing = includedFiles.filter { names[$0.relativePath] == nil }
         for (directory, pending) in Dictionary(grouping: missing, by: { ($0.relativePath as NSString).deletingLastPathComponent }) {
             _ = try map(CompletedDirectoryListing(relativeDirectory: directory,
                 entries: pending.map { RemoteTreeEntry(relativePath: $0.relativePath, file: $0, hasAuthoritativeTimestamp: true) },
                 validatedAncestors: []))
         }
         var result: [String: SyncFile] = [:]
-        for file in files.values {
+        for file in includedFiles {
             let mapped = try localFile(file)
             guard result.updateValue(mapped, forKey: mapped.relativePath) == nil else {
                 throw AppError.transferFailed("The server returned duplicate download files.")
@@ -168,10 +172,13 @@ actor DownloadNamingSession: EndpointSession {
     }
 
     private func map(_ listing: CompletedDirectoryListing) throws -> CompletedDirectoryListing {
+        // Ignore excluded return uploads before allocating names or validating
+        // RAW/XMP aliases; they must not prevent matching originals downloading.
+        let entries = listing.entries.filter { $0.file == nil || filter.includesFilename(path: $0.relativePath) }
         var updated = names
-        let paths = Set(listing.entries.map { PathSafety.localComparisonKey($0.relativePath) })
+        let paths = Set(entries.map { PathSafety.localComparisonKey($0.relativePath) })
         // Preserve existing exact local names before allocating names for newcomers.
-        let files = listing.entries.compactMap(\.file).sorted {
+        let files = entries.compactMap(\.file).sorted {
             let firstExists = occupied.contains($0.relativePath), secondExists = occupied.contains($1.relativePath)
             if firstExists != secondExists { return firstExists }
             return $0.relativePath.utf8.lexicographicallyPrecedes($1.relativePath.utf8)
@@ -224,7 +231,7 @@ actor DownloadNamingSession: EndpointSession {
             names = updated
         }
         return CompletedDirectoryListing(relativeDirectory: listing.relativeDirectory,
-            entries: try listing.entries.map { entry in
+            entries: try entries.map { entry in
                 guard let file = entry.file else { return entry }
                 let mapped = try localFile(file)
                 return RemoteTreeEntry(relativePath: mapped.relativePath, file: mapped, hasAuthoritativeTimestamp: entry.hasAuthoritativeTimestamp)

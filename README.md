@@ -13,6 +13,8 @@ Version 2.9 adds optional metadata calendar sharing through a user-configured HT
 - Per-job schedules from 2 seconds to 5 minutes
 - Quick filters for JPEG, camera RAW, all photos, video, all files, or custom extensions
 - Optional recent-file windows for busy assignment folders
+- Per-job photographer-initial filters and filename prefix/suffix exclusions
+- Optional upload prefixes and suffixes, preserving local filenames and RAW/XMP pairing
 - Optional age-based cleanup of matching files in a one-way job's local target
 - Original filenames and modification dates are preserved when the server supports it
 - Optional SHA-256 comparison detects changed contents even when file size and modification date still match
@@ -89,7 +91,7 @@ Opt-in loopback FTP, trusted implicit-FTPS, and SFTP write/fault tests use OpenS
 Scripts/run-remote-transport-tests.py
 ```
 
-The same loopback suite runs weekly in scheduled CI and can be started manually from the Actions page.
+The same loopback suite runs weekly in scheduled CI and can be started manually from the Actions page. Set `AFTPSYNC_TEST_DERIVED_DATA` to a reusable build directory to speed up local reruns; the server folders and credentials remain disposable for each run.
 
 ## First setup
 
@@ -104,6 +106,16 @@ The same loopback suite runs weekly in scheduled CI and can be started manually 
 The menu-bar panel provides start/stop controls, status, one-click sync, and a per-job quick filter. The settings window contains the full job editor.
 
 ## Synchronization behavior
+
+For a shared convention across app users, enable **Upload filenames → Add standard _aftpsync suffix**. `TA_001.JPG` becomes `TA_001_aftpsync.JPG`; with a custom `_EDITED` suffix, it becomes `TA_001_EDITED_aftpsync.JPG`. Local names stay unchanged, and RAW/XMP companions share the marker. A marker already at the end of the resulting filename stem is not duplicated. On download jobs, enable **File filter → Ignore _aftpsync uploads** to skip marked files from any user, ignoring capitalization. Both options are off by default, including for existing jobs.
+
+Under **File filter**, enter comma-separated **Photographer initials** to sync only filenames that start with one of those initials, matching the photographer library's prefix convention. Leave this blank for all photographers. **Ignore filename prefixes** and **Ignore filename suffixes** exclude matching names, even if their initials match. All these rules ignore capitalization and apply to the filename, not its folders. Suffixes match the stem before the extension. Type, hidden-file, and age filters still apply; filename rules also limit local cleanup and metadata reprocessing.
+
+To download and upload using the same server folder, use two one-way jobs. For example, set the download job's initials to `TA, JAD` and its ignored suffixes to `_EDITED`. On the local-to-server job, set **Upload suffix** to `_EDITED`: `TA_001.JPG` uploads as `TA_001_EDITED.JPG`, and the download job ignores that returned copy. An upload prefix such as `EDITED_` can be used with the corresponding download prefix exclusion instead, or both can be combined. Initials alone do not exclude uploads that still start with those initials. These exclusions are configured on the download job; upload naming does not modify other jobs automatically.
+
+Upload naming preserves folders, extension capitalization, and local source names. RAW files and XMP companions receive matching names. Repeat runs compare against the renamed server paths, and source filename filters run before the upload name is added. Naming is restricted to one-way local-to-server jobs; changing a prefix or suffix creates a new server name and leaves previously uploaded copies in place. Unsafe, reserved, and oversized output names are rejected before upload.
+
+One-way jobs also check a selected RAW file's existing XMP companion for changes, even when the extension filter excludes standalone XMP files. A missing or changed companion transfers with its RAW as one output group. When automatic metadata rewrites the destination XMP, saved source signatures distinguish source edits from the app's own metadata changes.
 
 One-way FTP, FTPS and SFTP downloads automatically give case-colliding filenames distinct local names, so files such as `PHOTO.JPG` and `PHOTO.jpg` can both be downloaded to a Mac. A renamed file receives a stable suffix before its extension, such as `PHOTO~a1b2c3d4e5.jpg`. The app remembers the association for future updates and leaves server names intact. An existing local file keeps its name; new colliding downloads receive a suffix. Under the job’s **Safety** settings, enable **Overwrite repeated filenames with different capitalization** to select the newest server variant and reuse one local filename instead. Timestamp ties use a consistent filename order. The option defaults off, and enabling it does not delete previously renamed copies. Keep the app’s local download-name records when migrating its data. Directory collisions and ambiguous RAW/XMP companion names still require a manual rename; automatic renaming applies to one-way remote-to-local downloads.
 
@@ -121,7 +133,7 @@ For one-way jobs with automatic metadata, processed-file handoff can be enabled 
 
 For one-way jobs with a local target, you can optionally remove matching target files after a chosen age. Cleanup requires a recent-file source window, and its deletion age must be longer than that window—for example, sync files from the last hour and remove matching target files older than two hours. A camera RAW file and its existing or generated XMP sidecar are treated as one output group: every member must still match the expected type and age immediately before removal, and a failed group deletion restores the pair when possible. The app evaluates only target entries and never issues a cleanup delete operation to the source. Cleanup is unavailable for two-way jobs, remote targets, and overlapping local folders.
 
-Local source and destination folders must be separate: identical folders and folders nested inside one another are rejected. Local files are copied to a hidden staging file in the destination directory and then moved into place. Remote uploads use a private sibling file, optionally verify its uploaded size, and publish it by rename with rollback protection for servers that cannot replace an existing path directly. File names are never rewritten.
+Local source and destination folders must be separate: identical folders and folders nested inside one another are rejected. Local files are copied to a hidden staging file in the destination directory and then moved into place. Remote uploads use a private sibling file, optionally verify its uploaded size, and publish it by rename with rollback protection for servers that cannot replace an existing path directly. Upload names are preserved unless an upload prefix or suffix is configured.
 
 ## Protocol notes
 

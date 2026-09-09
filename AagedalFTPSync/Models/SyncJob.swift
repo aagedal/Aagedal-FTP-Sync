@@ -69,6 +69,32 @@ struct FileFilter: Codable, Hashable, Sendable {
     var customExtensions = "jpg, jpeg, png, heic, dng, cr2, cr3, nef, arw, raf"
     var includeHiddenFiles = false
     var recentHours: Int? = nil
+    // Optional to preserve jobs and export packages saved before filename filtering.
+    var photographerInitials: String? = nil
+    var excludedFilenamePrefixes: String? = nil
+    var excludedFilenameSuffixes: String? = nil
+    var ignoreAFTPSyncUploads: Bool? = nil
+
+    var ignoresAFTPSyncUploads: Bool {
+        get { ignoreAFTPSyncUploads ?? false }
+        set { ignoreAFTPSyncUploads = newValue }
+    }
+
+    private func filenameValues(_ value: String?) -> [String] {
+        (value ?? "").split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        }.filter { !$0.isEmpty }
+    }
+
+    func includesFilename(path: String) -> Bool {
+        let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension.uppercased()
+        if ignoresAFTPSyncUploads, stem.hasSuffix(UploadNaming.standardSuffix.uppercased()) { return false }
+        if filenameValues(excludedFilenamePrefixes).contains(where: { stem.hasPrefix($0) }) { return false }
+        if filenameValues(excludedFilenameSuffixes).contains(where: { stem.hasSuffix($0) }) { return false }
+        let initials = filenameValues(photographerInitials)
+        // Match the photographer library's camera-prefix convention.
+        return initials.isEmpty || initials.contains { stem.hasPrefix($0) }
+    }
 
     var allowedExtensions: Set<String>? {
         if preset != .custom { return preset.extensions }
@@ -80,6 +106,7 @@ struct FileFilter: Codable, Hashable, Sendable {
     }
 
     func includesFileType(path: String) -> Bool {
+        guard includesFilename(path: path) else { return false }
         if !includeHiddenFiles, path.split(separator: "/").contains(where: { $0.hasPrefix(".") }) { return false }
         guard let allowedExtensions else { return true }
         return allowedExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
@@ -91,6 +118,56 @@ struct FileFilter: Codable, Hashable, Sendable {
             return false
         }
         return true
+    }
+}
+
+struct UploadNaming: Codable, Hashable, Sendable {
+    static let standardSuffix = "_aftpsync"
+
+    var prefix = ""
+    var suffix = ""
+    // Missing in older jobs: keep the shared marker off.
+    var addStandardSuffix: Bool? = nil
+
+    var addsStandardSuffix: Bool {
+        get { addStandardSuffix ?? false }
+        set { addStandardSuffix = newValue }
+    }
+
+    var isEnabled: Bool { !prefix.isEmpty || !suffix.isEmpty || addsStandardSuffix }
+
+    var validationMessage: String? {
+        let forbidden = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/\\:"))
+        if (prefix + suffix).unicodeScalars.contains(where: { forbidden.contains($0) }) {
+            return "Upload prefixes and suffixes cannot contain slashes, colons, or control characters."
+        }
+        if prefix != prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+            || suffix != suffix.trimmingCharacters(in: .whitespacesAndNewlines) {
+            return "Remove spaces at the start or end of the upload prefix and suffix."
+        }
+        return nil
+    }
+
+    func relativePath(for original: String) throws -> String {
+        if let validationMessage { throw AppError.invalidConfiguration(validationMessage) }
+        guard PathSafety.isSafeRelativePath(original) else {
+            throw AppError.transferFailed("The upload source has an unsafe filename.")
+        }
+        let path = original as NSString
+        let filename = path.lastPathComponent as NSString
+        let ext = filename.pathExtension
+        var stem = prefix + filename.deletingPathExtension + suffix
+        if addsStandardSuffix, !stem.lowercased().hasSuffix(Self.standardSuffix) {
+            stem += Self.standardSuffix
+        }
+        let renamed = stem + (ext.isEmpty ? "" : "." + ext)
+        let directory = path.deletingLastPathComponent
+        let result = directory.isEmpty ? renamed : directory + "/" + renamed
+        guard PathSafety.isSafeServerName(renamed), renamed.utf8.count <= 255,
+              !PathSafety.isInternalStagingPath(result) else {
+            throw AppError.transferFailed("The upload filename is reserved, unsafe, or longer than 255 bytes: \(renamed)")
+        }
+        return result
     }
 }
 
@@ -181,6 +258,7 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var verifyMatchingFileContents: Bool? = false
     // Missing in older jobs: preserve case variants as separate downloads.
     var overwriteCaseVariantDownloads: Bool? = nil
+    var uploadNaming: UploadNaming? = nil
     var targetCleanup: TargetCleanup? = nil
     // Optional so jobs saved by earlier versions continue to decode.
     var processedFolder: Endpoint? = nil
@@ -214,6 +292,10 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var supportsCaseVariantDownloads: Bool {
         (direction == .leftToRight && left.kind.isRemote && right.kind == .local)
             || (direction == .rightToLeft && right.kind.isRemote && left.kind == .local)
+    }
+
+    var supportsUploadNaming: Bool {
+        sourceEndpoint?.kind == .local && destinationEndpoint?.kind.isRemote == true
     }
 
     var movesProcessedFiles: Bool {
@@ -295,6 +377,12 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
         if let message = right.validationMessage { return "Right side: \(message)" }
         if left.kind.isRemote && right.kind.isRemote { return "Version 2.0 supports remote ↔ local and local ↔ local jobs." }
         if intervalSeconds < 5 { return "The interval must be at least 5 seconds." }
+        if let uploadNaming, uploadNaming.isEnabled {
+            guard supportsUploadNaming else {
+                return "Upload filename changes require a one-way job from a local folder to a server. Clear the upload prefix and suffix and turn off the _aftpsync suffix before changing direction."
+            }
+            if let message = uploadNaming.validationMessage { return message }
+        }
         if let targetCleanup {
             guard direction != .bidirectional else { return "Automatic cleanup is only available for one-way jobs." }
             let target = direction == .leftToRight ? right : left

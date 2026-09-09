@@ -24,14 +24,14 @@ ORIGINAL_CONTENT = "published-before-fault\n"
 
 
 def wait_for_services(
-    process: subprocess.Popen[str], ready_file: Path
+    process: subprocess.Popen[str], ready_file: Path, log_file: Path
 ) -> dict[str, object]:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if ready_file.exists():
             return json.loads(ready_file.read_text(encoding="utf-8"))
         if process.poll() is not None:
-            output = process.stdout.read() if process.stdout else ""
+            output = log_file.read_text(encoding="utf-8", errors="replace")
             raise SystemExit(f"Loopback services exited before becoming ready:\n{output}")
         time.sleep(0.1)
     process.terminate()
@@ -130,7 +130,7 @@ def run_xcodebuild(configuration_path: Path) -> None:
         "-destination",
         "platform=macOS",
         "-derivedDataPath",
-        str(configuration_path.parent / "DerivedData"),
+        os.environ.get("AFTPSYNC_TEST_DERIVED_DATA", str(configuration_path.parent / "DerivedData")),
         "CODE_SIGNING_ALLOWED=NO",
         "-only-testing:AagedalFTPSyncTests/RemoteTransportIntegrationTests",
     ]
@@ -194,6 +194,10 @@ def main() -> int:
             )
 
         ready_file = temporary_path / "services.json"
+        # FTP servers log each connection and transfer. An unread PIPE can fill
+        # during round-trip tests and block the server before its next greeting.
+        service_log_path = temporary_path / "services.log"
+        service_log = service_log_path.open("w", encoding="utf-8")
         service = subprocess.Popen(
             [
                 sys.executable,
@@ -217,12 +221,12 @@ def main() -> int:
                 "--sftp-failure-path",
                 FAILURE_FILES["sftp"],
             ],
-            stdout=subprocess.PIPE,
+            stdout=service_log,
             stderr=subprocess.STDOUT,
             text=True,
         )
         try:
-            ready = wait_for_services(service, ready_file)
+            ready = wait_for_services(service, ready_file, service_log_path)
             configuration = {
                 "AFTPSYNC_RUN_REMOTE_TRANSPORT_TESTS": "1",
                 "AFTPSYNC_REMOTE_HOST": str(ready["host"]),
@@ -258,6 +262,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 service.kill()
                 service.wait()
+            service_log.close()
 
     print("FTP, trusted implicit FTPS, and SFTP integration tests passed.")
     return 0
