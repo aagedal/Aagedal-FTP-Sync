@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "id": "development-not-a-release-candidate",
+  "status": "IMPLEMENTING",
+  "commit": null,
+  "version": null,
+  "build": null,
+  "appPath": null,
+  "evidence": "Documentation/3.0-Readiness.md",
+  "note": "Automation setup only. No 3.0 feature or release readiness is claimed. Candidate identity must be frozen before final testing."
+}

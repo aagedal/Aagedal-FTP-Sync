@@ -7,3 +7,7 @@ xcuserdata/
 *.xccheckout
 *.xcscmblueprint
 *.local.xcconfig
+
+# Private manual-test observations persist locally across sessions.
+Documentation/Testing/*.local.json
+Documentation/Testing/*.local.json.lock
