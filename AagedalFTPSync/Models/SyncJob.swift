@@ -109,7 +109,19 @@ struct FileFilter: Codable, Hashable, Sendable {
         guard includesFilename(path: path) else { return false }
         if !includeHiddenFiles, path.split(separator: "/").contains(where: { $0.hasPrefix(".") }) { return false }
         guard let allowedExtensions else { return true }
-        return allowedExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+        let lexicalPath = path as NSString
+        let ext: String
+        switch lexicalPath.lastPathComponent {
+        case "", ".", "..":
+            // Preserve the old current-directory resolution for directory-only
+            // inputs. Valid scanner filenames never take this fallback.
+            ext = URL(fileURLWithPath: path).pathExtension
+        default:
+            // A file extension is lexical: constructing a relative file URL asks
+            // Foundation to resolve the working directory for every scanned file.
+            ext = lexicalPath.pathExtension
+        }
+        return allowedExtensions.contains(ext.lowercased())
     }
 
     func includes(path: String, modifiedAt: Date, now: Date = Date()) -> Bool {

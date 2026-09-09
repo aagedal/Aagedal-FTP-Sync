@@ -53,7 +53,184 @@ private actor NamedDownloadSource: DownloadListingSession {
     func close() {}
 }
 
+private enum NamingCheckpointTestError: Error { case stopListing }
+
+/// Emits many completed directories without networking. The operation hook checks
+/// the persistence boundary from inside the delegated source, before any effects.
+private actor CheckpointDownloadSource: DownloadListingSession {
+    let batches: [[String]]
+    let beforeOperation: @Sendable (SyncFile) throws -> Void
+    var exports: [String] = []
+    var removals: [String] = []
+    nonisolated let supportsCompletedDirectoryListings = true
+
+    init(_ batches: [[String]], beforeOperation: @escaping @Sendable (SyncFile) throws -> Void = { _ in }) {
+        self.batches = batches
+        self.beforeOperation = beforeOperation
+    }
+
+    func listFiles() async throws -> [String: SyncFile] {
+        try await listDownloadFiles(onCompletedDirectory: nil)
+    }
+
+    func listDownloadFiles(onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?) async throws -> [String: SyncFile] {
+        var result: [String: SyncFile] = [:]
+        for paths in batches {
+            try Task.checkCancellation()
+            let files = paths.map { SyncFile(relativePath: $0, size: 0, modifiedAt: Date(timeIntervalSince1970: 1_800_000_000)) }
+            let directory = (paths[0] as NSString).deletingLastPathComponent
+            try await onCompletedDirectory?(CompletedDirectoryListing(relativeDirectory: directory,
+                entries: files.map { RemoteTreeEntry(relativePath: $0.relativePath, file: $0, hasAuthoritativeTimestamp: true) },
+                validatedAncestors: []))
+            for file in files { result[file.relativePath] = file }
+        }
+        return result
+    }
+
+    func exportFile(_ file: SyncFile, to temporaryURL: URL) throws {
+        try beforeOperation(file)
+        exports.append(file.relativePath)
+        try Data().write(to: temporaryURL)
+    }
+    func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool, verifySize: Bool) throws {
+        XCTFail("A download must not upload to its source")
+    }
+    func removeFile(_ file: SyncFile) throws {
+        try beforeOperation(file)
+        removals.append(file.relativePath)
+    }
+    func removeFilesTransactionally(_ files: [SyncFile]) throws {
+        for file in files { try beforeOperation(file) }
+        removals.append(contentsOf: files.map(\.relativePath))
+    }
+    func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) throws {
+        try removeFilesTransactionally(files)
+    }
+    func close() {}
+}
+
 final class DownloadNamingTests: XCTestCase {
+    func testDirectoryDiscoveryCheckpointsOnceAndUnchangedPollDoesNotRewrite() async throws {
+        let (root, _, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mappingURL = root.appendingPathComponent("names.json")
+        let batches = (0..<80).map { ["D\($0)/PHOTO.JPG", "D\($0)/PHOTO.jpg"] }
+        let source = CheckpointDownloadSource(batches)
+        let adapter = DownloadNamingSession(source: source, destination: destination, mappingURL: mappingURL)
+        let files = try await adapter.listFilesIncrementally { _ in
+            XCTAssertFalse(FileManager.default.fileExists(atPath: mappingURL.path),
+                "Directory discovery alone must not repeatedly serialize cumulative mappings")
+        }
+        let saved = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: mappingURL))
+        XCTAssertEqual(saved.count, 160)
+        XCTAssertEqual(Set(saved.values), Set(files.keys))
+        let oldDate = Date(timeIntervalSince1970: 1_000_000_000)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: mappingURL.path)
+        let restarted = DownloadNamingSession(source: source, destination: destination, mappingURL: mappingURL)
+        let again = try await restarted.listFiles()
+        XCTAssertEqual(Set(again.keys), Set(files.keys))
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: mappingURL.path)[.modificationDate] as? Date, oldDate)
+    }
+
+    func testEarlyExportCheckpointsBeforeReadingAndSurvivesInterruptedListing() async throws {
+        let (root, _, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mappingURL = root.appendingPathComponent("names.json")
+        let source = CheckpointDownloadSource([["A/PHOTO.JPG", "A/PHOTO.jpg"], ["B/LATER.JPG"]]) { file in
+            let saved = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: mappingURL))
+            XCTAssertNotNil(saved[file.relativePath], "The delegated source cannot read before its association is durable")
+        }
+        let adapter = DownloadNamingSession(source: source, destination: destination, mappingURL: mappingURL)
+        do {
+            _ = try await adapter.listFilesIncrementally { listing in
+                if listing.relativeDirectory == "B" { throw NamingCheckpointTestError.stopListing }
+                let alias = try XCTUnwrap(listing.entries.compactMap(\.file).first { $0.originalRelativePath == "A/PHOTO.jpg" })
+                try await adapter.exportFile(alias, to: root.appendingPathComponent("staged"), maximumSize: 0)
+            }
+            XCTFail("The fake scanner must interrupt after the first directory")
+        } catch NamingCheckpointTestError.stopListing {}
+        let saved = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: mappingURL))
+        XCTAssertEqual(saved.count, 2, "Unpublished discoveries after the last checkpoint may remain unsaved")
+        let alias = try XCTUnwrap(saved["A/PHOTO.jpg"])
+        let nextSource = CheckpointDownloadSource([["A/PHOTO.jpg"]])
+        let restarted = DownloadNamingSession(source: nextSource, destination: destination, mappingURL: mappingURL)
+        let restored = try await restarted.listFiles()
+        XCTAssertEqual(restored[alias]?.originalRelativePath, "A/PHOTO.jpg")
+        let exports = await source.exports
+        XCTAssertEqual(exports, ["A/PHOTO.jpg"])
+    }
+
+    func testEveryRemovalEntryPointCheckpointsBeforeSourceMutation() async throws {
+        for operation in 0..<3 {
+            let (root, _, destination) = try fixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let mappingURL = root.appendingPathComponent("names.json")
+            let source = CheckpointDownloadSource([["A/PHOTO.JPG", "A/PHOTO.jpg"]]) { file in
+                let saved = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: mappingURL))
+                XCTAssertNotNil(saved[file.relativePath])
+            }
+            let adapter = DownloadNamingSession(source: source, destination: destination, mappingURL: mappingURL)
+            _ = try await adapter.listFilesIncrementally { listing in
+                let file = try XCTUnwrap(listing.entries.compactMap(\.file).first { $0.originalRelativePath != nil })
+                switch operation {
+                case 0: try await adapter.removeFile(file)
+                case 1: try await adapter.removeFilesTransactionally([file])
+                default: try await adapter.removeFilesTransactionally([file], matching: [root.appendingPathComponent("fixture")])
+                }
+            }
+            let removals = await source.removals
+            XCTAssertEqual(removals, ["A/PHOTO.jpg"])
+        }
+    }
+
+    func testFailedEarlyCheckpointPreventsExportAndRemovalAndCanRetry() async throws {
+        let (root, _, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("blocked")
+        try Data().write(to: parent)
+        let mappingURL = parent.appendingPathComponent("names.json")
+        let source = CheckpointDownloadSource([["PHOTO.JPG", "PHOTO.jpg"]])
+        let adapter = DownloadNamingSession(source: source, destination: destination, mappingURL: mappingURL)
+        do {
+            _ = try await adapter.listFilesIncrementally { listing in
+                let file = try XCTUnwrap(listing.entries.compactMap(\.file).first { $0.originalRelativePath != nil })
+                do { try await adapter.exportFile(file, to: root.appendingPathComponent("staged")); XCTFail("Checkpoint must fail") }
+                catch {}
+                do { try await adapter.removeFilesTransactionally([file]); XCTFail("Checkpoint must fail") }
+                catch {}
+                throw NamingCheckpointTestError.stopListing
+            }
+            XCTFail("Expected interrupted listing")
+        } catch NamingCheckpointTestError.stopListing {}
+        let exports = await source.exports, removals = await source.removals
+        XCTAssertTrue(exports.isEmpty)
+        XCTAssertTrue(removals.isEmpty)
+        try FileManager.default.removeItem(at: parent)
+        let files = try await adapter.listFiles()
+        let saved = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: mappingURL))
+        XCTAssertEqual(Set(saved.values), Set(files.keys), "A failed checkpoint must retain dirty state for a safe retry")
+    }
+
+    func testCancelledEarlyOperationCannotCheckpointOrReadSource() async throws {
+        let (root, _, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let mappingURL = root.appendingPathComponent("names.json")
+        let source = CheckpointDownloadSource([["PHOTO.JPG"]])
+        let adapter = DownloadNamingSession(source: source, destination: destination, mappingURL: mappingURL)
+        let task = Task {
+            try await adapter.listFilesIncrementally { listing in
+                let file = try XCTUnwrap(listing.entries.compactMap(\.file).first)
+                withUnsafeCurrentTask { $0?.cancel() }
+                try await adapter.exportFile(file, to: root.appendingPathComponent("staged"))
+            }
+        }
+        do { _ = try await task.value; XCTFail("Cancelled operation must fail") }
+        catch is CancellationError {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mappingURL.path))
+        let exports = await source.exports
+        XCTAssertTrue(exports.isEmpty)
+    }
+
     func testDownloadTimePersistsEarlyDownloadReceiptAcrossRestartAndDetectsResend() async throws {
         let (root, endpoint, destination) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

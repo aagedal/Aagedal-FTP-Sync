@@ -15,6 +15,7 @@ actor DownloadNamingSession: EndpointSession {
         var newestDates: [String: Date]
     }
     private var names: [String: String] = [:]
+    private var namesNeedCheckpoint = false
     private var occupied: Set<String> = []
     private var existingLocalPaths: Set<String> = []
     private var occupiedByKey: [String: String] = [:]
@@ -122,6 +123,9 @@ actor DownloadNamingSession: EndpointSession {
                 throw AppError.transferFailed("The server returned duplicate download files.")
             }
         }
+        // Commit discoveries that did not need an early transfer before exposing
+        // the authoritative listing. Export/removal checkpoint earlier when needed.
+        try checkpointNames()
         return result
     }
 
@@ -172,10 +176,10 @@ actor DownloadNamingSession: EndpointSession {
     }
 
     private func map(_ listing: CompletedDirectoryListing) throws -> CompletedDirectoryListing {
+        try Task.checkCancellation()
         // Ignore excluded return uploads before allocating names or validating
         // RAW/XMP aliases; they must not prevent matching originals downloading.
         let entries = listing.entries.filter { $0.file == nil || filter.includesFilename(path: $0.relativePath) }
-        var updated = names
         let paths = Set(entries.map { PathSafety.localComparisonKey($0.relativePath) })
         // Preserve existing exact local names before allocating names for newcomers.
         let files = entries.compactMap(\.file).sorted {
@@ -184,9 +188,10 @@ actor DownloadNamingSession: EndpointSession {
             return $0.relativePath.utf8.lexicographicallyPrecedes($1.relativePath.utf8)
         }
         for file in files {
+            try Task.checkCancellation()
             let path = file.relativePath
             guard PathSafety.isSafeRelativePath(path) else { throw AppError.transferFailed("Unsafe download name.") }
-            if let saved = updated[path] {
+            if let saved = names[path] {
                 if let existing = occupiedByKey[PathSafety.localComparisonKey(saved)], !PathSafety.hasIdenticalRepresentation(existing, saved) {
                     throw AppError.transferFailed("A local file conflicts with the saved download name \(saved). Rename that local file before syncing.")
                 }
@@ -217,18 +222,15 @@ actor DownloadNamingSession: EndpointSession {
                     counter += 1
                 } while occupiedByKey[PathSafety.localComparisonKey(local)] != nil || paths.contains(PathSafety.localComparisonKey(local))
             }
-            updated[path] = local
+            // Associations are append-only during a normal naming session. Keep
+            // the actor's indexes together without copying the cumulative map for
+            // every directory. No source read/removal can use a new association
+            // until checkpointNames() has durably saved it.
+            names[path] = local
+            namesNeedCheckpoint = true
             occupied.insert(local)
             occupiedByKey[PathSafety.localComparisonKey(local)] = local
             originalByLocal[local] = path
-        }
-        if updated != names {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.sortedKeys]
-            try FileManager.default.createDirectory(at: mappingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            // The durable association must exist before a callback can publish a file.
-            try encoder.encode(updated).write(to: mappingURL, options: .atomic)
-            names = updated
         }
         return CompletedDirectoryListing(relativeDirectory: listing.relativeDirectory,
             entries: try entries.map { entry in
@@ -236,6 +238,20 @@ actor DownloadNamingSession: EndpointSession {
                 let mapped = try localFile(file)
                 return RemoteTreeEntry(relativePath: mapped.relativePath, file: mapped, hasAuthoritativeTimestamp: entry.hasAuthoritativeTimestamp)
             }, validatedAncestors: listing.validatedAncestors)
+    }
+
+    /// Synchronous actor-isolated save: no mapping can change between encoding,
+    /// atomic replacement and clearing the dirty bit. A failure retains the dirty
+    /// state and prevents the delegated source operation from starting. The flat
+    /// JSON format stays compatible with existing installations.
+    private func checkpointNames() throws {
+        try Task.checkCancellation()
+        guard namesNeedCheckpoint else { return }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try FileManager.default.createDirectory(at: mappingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(names).write(to: mappingURL, options: .atomic)
+        namesNeedCheckpoint = false
     }
 
     private func localFile(_ file: SyncFile) throws -> SyncFile {
@@ -255,14 +271,24 @@ actor DownloadNamingSession: EndpointSession {
         try await exportFile(file, to: temporaryURL, maximumSize: nil)
     }
     func exportFile(_ file: SyncFile, to temporaryURL: URL, maximumSize: Int64?) async throws {
-        try await source.exportFile(remoteFile(file), to: temporaryURL, maximumSize: maximumSize)
+        let original = try remoteFile(file)
+        try checkpointNames()
+        try await source.exportFile(original, to: temporaryURL, maximumSize: maximumSize)
     }
-    func removeFile(_ file: SyncFile) async throws { try await source.removeFile(remoteFile(file)) }
+    func removeFile(_ file: SyncFile) async throws {
+        let original = try remoteFile(file)
+        try checkpointNames()
+        try await source.removeFile(original)
+    }
     func removeFilesTransactionally(_ files: [SyncFile]) async throws {
-        try await source.removeFilesTransactionally(files.map(remoteFile))
+        let originals = try files.map(remoteFile)
+        try checkpointNames()
+        try await source.removeFilesTransactionally(originals)
     }
     func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) async throws {
-        try await source.removeFilesTransactionally(files.map(remoteFile), matching: contents)
+        let originals = try files.map(remoteFile)
+        try checkpointNames()
+        try await source.removeFilesTransactionally(originals, matching: contents)
     }
     func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool, verifySize: Bool) async throws {
         throw AppError.invalidConfiguration("Download filename mappings cannot be used for uploads.")

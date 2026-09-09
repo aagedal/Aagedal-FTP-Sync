@@ -143,14 +143,19 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
         let sourceForRun: any EndpointSession = keepSourceOpen
             ? NonClosingEndpointSession(base: source)
             : source
-        let signatureURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("delivery-benchmark-\(UUID().uuidString).json")
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("delivery-benchmark-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
         defer {
-            try? FileManager.default.removeItem(at: signatureURL)
-            try? FileManager.default.removeItem(at: signatureURL.appendingPathExtension("backup"))
+            try? FileManager.default.removeItem(at: stateDirectory)
         }
         let engine = SyncEngine(
-            sourceSignatureRepository: SourceSignatureRepository(fileURL: signatureURL),
+            sourceSignatureRepository: SourceSignatureRepository(
+                fileURL: stateDirectory.appendingPathComponent("signatures.json")
+            ),
+            downloadManifestRepository: DownloadManifestRepository(
+                fileURL: stateDirectory.appendingPathComponent("manifest.json")
+            ),
             sessionFactory: { requestedEndpoint, _, _ in
                 requestedEndpoint.kind.isRemote ? sourceForRun : destination
             }

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import TextIO
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
@@ -88,13 +89,16 @@ def seed_tree(
     return total, newest_path
 
 
-def wait_for_services(process: subprocess.Popen[str], ready_file: Path) -> dict[str, object]:
+def wait_for_services(
+    process: subprocess.Popen[str], ready_file: Path, service_log: TextIO
+) -> dict[str, object]:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if ready_file.exists():
             return json.loads(ready_file.read_text(encoding="utf-8"))
         if process.poll() is not None:
-            output = process.stdout.read() if process.stdout else ""
+            service_log.seek(0)
+            output = service_log.read(16_384)
             raise SystemExit(f"Loopback services exited before becoming ready:\n{output}")
         time.sleep(0.1)
     process.terminate()
@@ -133,7 +137,7 @@ def run_xcodebuild() -> tuple[dict[str, object], str]:
             or line.startswith("** TEST")
             or " error: " in line
         ):
-            print(line, end="")
+            print(line, end="", flush=True)
         marker = line.find(RESULT_PREFIX)
         if marker >= 0:
             payload = json.loads(line[marker + len(RESULT_PREFIX) :])
@@ -216,7 +220,18 @@ def write_report(
             )
 
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
-    report = f"""# Aagedal FTP Sync 2.7 delivery-latency benchmark
+    matches_baseline = (
+        arguments.directories, arguments.subdirectories, arguments.files,
+        arguments.iterations
+    ) == (100, 10, 100, 5)
+    comparison = (
+        "Negative values are improvements.\n\n"
+        "| Protocol | Connection | Metric | Median change | p95 change |\n"
+        "|---|---|---|---:|---:|\n" + os.linesep.join(comparison_rows)
+        if matches_baseline else
+        "Not compared: this run differs from the historical 100,000-file, five-sample fixture."
+    )
+    report = f"""# Aagedal FTP Sync delivery-latency benchmark
 
 Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using the Debug configuration.
 
@@ -227,7 +242,7 @@ Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using th
 - One JPEG had a current modification date and all other files used 2000-01-01. The sync job's one-hour recent-file filter therefore published exactly one file.
 - Each cell used one unrecorded warm-up and {payload['iterations']} measured iterations. Cold means a new protocol connection for each iteration; warm means a reused authenticated connection. Both states benefit from the host filesystem cache after warm-up.
 - Full scan measures `EndpointSession.listFiles()`. First publication is timestamped when the destination accepts the newest file; the benchmark still lets the authoritative full scan and reconciliation finish before starting another sample.
-- The comparison baseline was recorded on September 1, 2026 before completed-directory publication was implemented, using the same fixture and five-sample method.
+- The historical comparison baseline was recorded on September 1, 2026 before completed-directory publication was implemented, using 100,000 files and five measured samples. Comparisons are shown only for matching fixture parameters.
 
 ## Results (seconds)
 
@@ -237,13 +252,9 @@ Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using th
 
 ## Change from pre-implementation baseline
 
-Negative values are improvements.
+{comparison}
 
-| Protocol | Connection | Metric | Median change | p95 change |
-|---|---|---|---:|---:|
-{os.linesep.join(comparison_rows)}
-
-With five samples, p95 is the slowest observed iteration (nearest-rank method). Loopback absolute timings are informational and should be compared only with runs using the same fixture and build configuration.
+p95 uses the nearest-rank method; with five or fewer samples it is the slowest observed iteration. This run used {payload['iterations']} measured samples per cell. Loopback absolute timings are informational and should be compared only with runs using the same fixture and build configuration.
 """
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
@@ -270,6 +281,9 @@ def main() -> int:
             root, arguments.directories, arguments.subdirectories, arguments.files
         )
         ready_file = temporary_path / "services.json"
+        # FTP directory/session logs can fill an unread PIPE during a large-tree run.
+        # A temporary file keeps diagnostics available without blocking either server.
+        service_log = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
         service = subprocess.Popen(
             [
                 sys.executable,
@@ -283,12 +297,12 @@ def main() -> int:
                 "--sftp-port",
                 "0",
             ],
-            stdout=subprocess.PIPE,
+            stdout=service_log,
             stderr=subprocess.STDOUT,
             text=True,
         )
         try:
-            ready = wait_for_services(service, ready_file)
+            ready = wait_for_services(service, ready_file, service_log)
             configuration = {
                     "AFTPSYNC_RUN_DELIVERY_BENCHMARK": "1",
                     "AFTPSYNC_BENCHMARK_ITERATIONS": str(arguments.iterations),
@@ -316,6 +330,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 service.kill()
                 service.wait()
+            service_log.close()
 
     traversal_directories = 1 + arguments.directories + (
         arguments.directories * arguments.subdirectories

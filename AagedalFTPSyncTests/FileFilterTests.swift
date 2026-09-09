@@ -2,6 +2,42 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FileFilterTests: XCTestCase {
+    func testLexicalFileExtensionsPreserveFilenameAndPathEdges() {
+        let filter = FileFilter(preset: .jpeg, includeHiddenFiles: true)
+        for path in ["photo.JPG", "folder/photo.jpeg", "/folder/photo.JpG", "photo.jpg/", "photo.jpg//",
+                     "folder.jpg/", "./photo.jpg", "../photo.jpg", "folder/.hidden.jpg", ".hidden.JPG",
+                     "photo..jpg", "....jpg", "folder.with.dots/東京 é🎞️.JPG", "folder/Cafe\u{301}.jpeg",
+                     "photo?#%.jpg", "photo%2Fname.jpg", "folder/photo\\name.jpg", "photo:name.jpg"] {
+            XCTAssertTrue(filter.includesFileType(path: path), path)
+        }
+        for path in ["photo", "folder.jpg/photo", "photo.jpg.", ".jpg", "..jpg", "...jpg",
+                     "photo.jpg?query", "photo.jpg#fragment", "photo.jpg%20", "photo.%6apg",
+                     "photo.jpg.txt", "photo.ｊｐｇ", "/"] {
+            XCTAssertFalse(filter.includesFileType(path: path), path)
+        }
+        let visible = FileFilter(preset: .jpeg)
+        for path in [".hidden.jpg", ".folder/photo.jpg", "./photo.jpg", "../photo.jpg"] {
+            XCTAssertFalse(visible.includesFileType(path: path), path)
+        }
+    }
+
+    func testExtensionExtractionMatchesLegacyURLForDirectoryOnlyAndUnusualInputs() {
+        // These inputs are outside normal scanner filenames, but the filter API
+        // previously resolved terminal dot components/current-directory inputs.
+        // Compare to that behavior without assuming the test runner's directory.
+        let paths = ["", ".", "..", "./", "../", "/", "//", "folder.jpg/.", "folder.jpg/.//",
+                     "folder.jpg/sub/..", "folder.jpg/sub/../", "folder.jpg/./.", "folder.jpg/./..",
+                     "/folder.jpg/sub/..", "a.JPG/../../..", "~/photo.jpg", "file:///photo.jpg"]
+        for preset in [FilterPreset.jpeg, .photos, .custom] {
+            let filter = FileFilter(preset: preset, customExtensions: "jpg, jpeg, aagedal", includeHiddenFiles: true)
+            let extensions = filter.allowedExtensions!
+            for path in paths {
+                let previous = extensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
+                XCTAssertEqual(filter.includesFileType(path: path), previous, path)
+            }
+        }
+    }
+
     func testStandardUploadExclusionIsOptInAndCaseInsensitive() throws {
         var filter = FileFilter(photographerInitials: "TA")
         XCTAssertFalse(filter.ignoresAFTPSyncUploads)
