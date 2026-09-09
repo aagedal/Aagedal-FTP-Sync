@@ -2,13 +2,13 @@
 
 ## Supported release
 
-Security fixes are currently developed for the 2.8 release line and the next feature release. Older builds should be upgraded to the latest available 2.8.x version.
+Security fixes are currently developed for the 2.9 release line and the next feature release. Older builds should be upgraded to the latest available 2.9.x version.
 
 Please report a suspected vulnerability privately to the repository owner rather than opening a public issue with exploit details. Include the affected version, protocol, reproduction steps, and any crash report that does not contain credentials or private file contents.
 
 ## Dependency security baseline
 
-The 2.8 source tree deliberately vendors the SSH packages under `Vendor/` because Citadel 0.12.1 requires APIs from the Wellz26 SwiftNIO SSH fork that are not available in Apple's upstream package.
+The source tree deliberately vendors the SSH packages under `Vendor/` because Citadel 0.12.1 requires APIs from the Wellz26 SwiftNIO SSH fork that are not available in Apple's upstream package.
 
 | Component | Baseline | Local security treatment |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ The vendored copies retain their original license and attribution files. See `Ve
 
 Run the security baseline guard and all test suites before shipping:
 
-The release-identity guard derives the current values from `project.yml`. During a release cut, pass the intended marketing version and build number explicitly (for example, `Scripts/check-release-identity.sh 2.8.0 33`) so an incomplete version bump fails the check.
+The release-identity guard derives the current values from `project.yml`. During a release cut, pass the intended marketing version and build number explicitly (for example, `Scripts/check-release-identity.sh 2.9.0 35`) so an incomplete version bump fails the check.
 
 ```sh
 Scripts/check-release-identity.sh

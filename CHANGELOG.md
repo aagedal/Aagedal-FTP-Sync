@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## 2.9.0 — 2026-09-09
 
 - Share metadata calendars or selected dates through a user-configured HTTPS PHP/MySQL server, with editor/read-only invitations, automatic polling, offline edits and explicit conflict resolution.
-- Open calendar sharing from Metadata Timeline. Receive into a chosen local job, with an option to duplicate populated jobs while preserving the original programming and disabling automatic running on both jobs.
+- Open calendar sharing from Metadata Timeline. Receive into a chosen local job, with an option to duplicate populated jobs while preserving the original programming and disabling automatic running and launch startup on both jobs.
 - Preserve local programming and pause sync if a calendar's shared date range or time zone changes, or the server returns an older revision after a backup restore.
 - Allow manual `.aftpsync` imports containing overlapping metadata clips, keeping the clips and showing a warning. Live calendar sync and normal schedule validation retain their overlap checks.
 - Run the disposable PHP/MySQL calendar integration suite in release CI.

@@ -1,8 +1,8 @@
-# Aagedal FTP Sync 2.8
+# Aagedal FTP Sync 2.9
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.8 strengthens unattended operation with safer job recovery, bounded SFTP operations, manifest-backed download resets, and indexed source-signature storage. It also expands the Photographer Map with per-day tracks, a compact schedule overview, and all-location framing. The app has no hard-coded server and does not bundle rclone.
+Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports now retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
 ## What is new
 
@@ -41,7 +41,7 @@ Version 2.8 strengthens unattended operation with safer job recovery, bounded SF
 
 ## Optional metadata calendar sync
 
-The development build includes calendar sharing through a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, editor/read-only invitations, offline edits and explicit conflict resolution. Configure it under **Settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. See the [server installation and behavior guide](Server/MetadataSync/README.md) for deployment steps, date-range boundaries, limits and the current hosting-trial status.
+Calendar sharing uses a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, editor/read-only invitations, offline edits and explicit conflict resolution. Configure it under **Settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. See the [server installation and behavior guide](Server/MetadataSync/README.md) for deployment steps, date-range boundaries, limits and deployment verification.
 
 ## Requirements
 
