@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 2.9.2 — 2026-09-09
 
-- Sync saved metadata edits after a short debounce, resume when drafts are saved or closed, and queue refresh requests made while another calendar operation is running.
+- Sync saved metadata edits after a short pause in editing instead of waiting for the next polling cycle. Resume when drafts are saved or closed, and queue refresh requests made while another calendar operation is running.
 - Distinguish saved changes waiting to sync from connection failures, retain the last successful sync time, and offer Retry Now when the server cannot be reached.
+- Add regression coverage for rapid edits, open drafts, offline recovery, queued refreshes, and edits saved during an upload. Keep local processing preferences out of calendar sync requests.
 - Show an explicit source modification time/download time choice for local downloads, retaining existing job preferences.
 - Apply the job's modification-time choice to processed JPEG, RAW, and XMP copies as well as downloads.
 - Track source signatures for download-time jobs so a newer local date does not hide subsequent same-name deliveries or sidecar updates. Existing copies without a receipt may be downloaded once to establish source history.
