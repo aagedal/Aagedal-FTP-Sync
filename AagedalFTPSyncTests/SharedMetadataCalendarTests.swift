@@ -162,6 +162,71 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         XCTAssertFalse(sync.busy, "The receive operation should finish")
     }
 
+    private func assertUnsafeRemotePreservesLocal(
+        baseline: SharedMetadataCalendar, remote: SharedMetadataCalendar, expectedMessage: String
+    ) async throws {
+        // Exercise polling and both choices on an already-saved conflict. None may
+        // reinterpret hidden/older records as deletions, even after restarting.
+        for keepLocal in [nil, false, true] as [Bool?] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            var job = SyncJob(name: "Local calendar")
+            job.metadataAutomation = baseline.document.automation
+            let store = try makeStore(root: root, job: job)
+            let originalJobs = store.jobs
+            let account = MetadataSyncAccount(id: UUID(), address: "https://sync.example.org/", registered: true)
+            let binding = MetadataCalendarBinding(accountID: account.id, jobID: job.id, snapshot: baseline,
+                conflict: keepLocal == nil ? nil : remote)
+            let repository = MetadataCalendarRepository(url: root.appendingPathComponent("sync.json"))
+            try repository.save(MetadataCalendarState(accounts: [account], activeAccountID: account.id, bindings: [binding]))
+            let server = CalendarTransportFixture(calendar: remote)
+            let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+            let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
+            sync.start(store: store, polling: false)
+            if let keepLocal {
+                sync.resolve(binding, keepLocal: keepLocal)
+                try await finishOperation(sync)
+                XCTAssertTrue(sync.message.contains(expectedMessage), sync.message)
+            } else {
+                await sync.refresh()
+                XCTAssertTrue(sync.bindingMessages[binding.id]?.contains(expectedMessage) == true)
+            }
+            XCTAssertEqual(store.jobs, originalJobs)
+            XCTAssertEqual(try repository.load().bindings, [binding])
+            let writes = await server.writes
+            XCTAssertEqual(writes, 0)
+        }
+    }
+
+    func testChangedSharingScopeOrTimeZonePreservesLocalProgramming() async throws {
+        let (root, _, _, _, calendar) = try receiveFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var narrower = calendar
+        narrower.rangeStart = calendar.document.clips[0].endsAt
+        narrower.rangeEnd = narrower.rangeStart!.addingTimeInterval(86_400)
+        narrower.document = SharedMetadataDocument(MetadataAutomation())
+        try await assertUnsafeRemotePreservesLocal(baseline: calendar, remote: narrower, expectedMessage: "date range")
+
+        var scoped = calendar
+        scoped.rangeStart = calendar.document.clips[0].startsAt
+        scoped.rangeEnd = calendar.document.clips[0].endsAt
+        try await assertUnsafeRemotePreservesLocal(baseline: scoped, remote: calendar, expectedMessage: "date range")
+
+        var changedZone = calendar
+        changedZone.timeZone = "America/New_York"
+        try await assertUnsafeRemotePreservesLocal(baseline: calendar, remote: changedZone, expectedMessage: "time zone")
+    }
+
+    func testRestoredOlderServerSnapshotPreservesLocalProgramming() async throws {
+        let (root, _, _, _, remote) = try receiveFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var baseline = remote
+        baseline.revision += 1
+        baseline.document.clips[0].name = "New programming absent from the backup"
+        try await assertUnsafeRemotePreservesLocal(baseline: baseline, remote: remote, expectedMessage: "older calendar revision")
+    }
+
     func testPopulatedJobRequiresConsentThenPreservesOriginalAndReceivesIntoPausedCopy() async throws {
         let (root, store, sync, repository, calendar) = try receiveFixture()
         defer { try? FileManager.default.removeItem(at: root) }

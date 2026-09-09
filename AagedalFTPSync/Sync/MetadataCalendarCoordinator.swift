@@ -228,6 +228,17 @@ final class MetadataCalendarCoordinator: ObservableObject {
         }
     }
 
+    private func validateRemote(_ remote: SharedMetadataCalendar, for binding: MetadataCalendarBinding) throws {
+        // A new membership can hide records without deleting them. Never merge that
+        // filtered snapshot against a baseline saved under different access rules.
+        guard remote.range == binding.snapshot.range, remote.timeZone == binding.snapshot.timeZone else {
+            throw MetadataSyncFailure(message: "The shared date range or calendar time zone changed. Sync is paused and local programming is retained. Detach this calendar, then receive it again to review the new scope.")
+        }
+        guard remote.revision >= binding.snapshot.revision else {
+            throw MetadataSyncFailure(message: "The server returned an older calendar revision, possibly after a backup restore. Sync is paused and local programming is retained. Restore a current server backup, or detach and publish the local calendar as a new calendar.")
+        }
+    }
+
     private func sync(_ original: MetadataCalendarBinding, account: MetadataSyncAccount) async throws {
         var binding = original
         var get = MetadataCalendarRequest(action: binding.snapshot.revision == 0 ? "createCalendar" : "getCalendar", calendarID: binding.id)
@@ -236,6 +247,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         }
         guard var remote = try await request(get, account: account).calendar else { throw MetadataSyncServerError.invalidResponse }
         for _ in 0..<3 {
+            try validateRemote(remote, for: binding)
             guard store?.metadataDraftsBeingEdited.contains(binding.jobID) != true else {
                 bindingMessages[binding.id] = "Waiting for the open metadata draft to be saved."
                 return
@@ -266,6 +278,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             let put = MetadataCalendarRequest(action: "putCalendar", calendarID: binding.id, document: merged, expectedRevision: remote.revision)
             let result = try await request(put, account: account)
             guard let response = result.calendar else { throw MetadataSyncServerError.invalidResponse }
+            try validateRemote(response, for: binding)
             // An acknowledged write becomes the merge base for any newer local edits.
             if result.error == nil {
                 binding.snapshot = response
@@ -405,6 +418,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             let reviewedLocal = try self.localDocument(original)
             guard let account = self.state.accounts.first(where: { $0.id == original.accountID }),
                   let current = try await self.request(MetadataCalendarRequest(action: "getCalendar", calendarID: original.id), account: account).calendar else { throw MetadataSyncServerError.invalidResponse }
+            try self.validateRemote(current, for: original)
             // Resolve only the version the user saw, so newer edits cannot be silently discarded.
             guard current == original.conflict else {
                 var updated = original; updated.conflict = current; try self.replace(updated)

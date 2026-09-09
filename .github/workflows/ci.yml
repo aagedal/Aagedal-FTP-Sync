@@ -11,6 +11,25 @@ permissions:
   contents: read
 
 jobs:
+  metadata-server-tests:
+    name: Metadata calendar server integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run disposable PHP and MySQL integration suite
+        run: >-
+          docker compose -p aftpsync-hosting-check
+          -f Server/MetadataSync/tests/compose.yaml
+          up --build --abort-on-container-exit --exit-code-from test
+      - name: Remove integration containers
+        if: always()
+        run: >-
+          docker compose -p aftpsync-hosting-check
+          -f Server/MetadataSync/tests/compose.yaml down
+
   security-baseline:
     name: Security baseline
     runs-on: macos-26
