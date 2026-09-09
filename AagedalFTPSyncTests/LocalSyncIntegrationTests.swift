@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import SwiftMediaMetadata
 import XCTest
@@ -259,6 +260,108 @@ final class LocalSyncIntegrationTests: XCTestCase {
             FileManager.default.attributesOfItem(atPath: fixture.right.appendingPathComponent("arrival.jpg").path)[.modificationDate] as? Date
         )
         XCTAssertGreaterThanOrEqual(replacementDate, replacementStart.addingTimeInterval(-1))
+    }
+
+    func testDownloadTimeStillDetectsChangedSourcesWithoutMetadataAutomation() async throws {
+        for verifySizes in [true, false] {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let relativePaths = ["resend.jpg", "resend.CR3", "resend.xmp"]
+            let sourceDate = Date(timeIntervalSince1970: 1_700_000_000)
+            for path in relativePaths {
+                let source = fixture.left.appendingPathComponent(path)
+                try Data("old".utf8).write(to: source)
+                try FileManager.default.setAttributes([.modificationDate: sourceDate], ofItemAtPath: source.path)
+            }
+            var job = try fixture.job(direction: .leftToRight)
+            job.preserveModificationDates = false
+            job.verifyFileSizes = verifySizes
+            let engine = SyncEngine()
+            let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            let unchanged = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(first.transferred, 2)
+            XCTAssertEqual(unchanged.transferred, 0)
+
+            // Both resends still have a source date older than the local download.
+            // The RAW stays unchanged; only its existing companion is resent.
+            for path in ["resend.jpg", "resend.xmp"] {
+                let source = fixture.left.appendingPathComponent(path)
+                try Data("new".utf8).write(to: source)
+                try FileManager.default.setAttributes(
+                    [.modificationDate: sourceDate.addingTimeInterval(30)], ofItemAtPath: source.path
+                )
+            }
+            let downloadStart = Date()
+            let updated = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            let downloadEnd = Date()
+            let unchangedAgain = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(updated.transferred, 2)
+            XCTAssertEqual(unchangedAgain.transferred, 0)
+            for path in relativePaths {
+                let destination = fixture.right.appendingPathComponent(path)
+                XCTAssertEqual(try Data(contentsOf: destination), Data((path.hasSuffix("CR3") ? "old" : "new").utf8))
+                try checkModificationDate(
+                    at: destination, sourceDate: sourceDate, preserveDates: false,
+                    downloadStart: downloadStart, downloadEnd: downloadEnd
+                )
+            }
+        }
+    }
+
+    func testDirectoryWatcherSeesFinalModificationTimeOnNewAndReplacedFiles() async throws {
+        for preserveDates in [true, false] {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let input = fixture.outside.appendingPathComponent("input.jpg")
+            let destination = fixture.right.appendingPathComponent("watched.jpg")
+            let session = try LocalEndpointSession(endpoint: fixture.endpoint(for: fixture.right))
+            for version in 0..<2 {
+                let contents = Data("version-\(version)".utf8)
+                try contents.write(to: input)
+                let sourceDate = Date(timeIntervalSince1970: 1_700_000_000 + Double(version) * 60)
+                // The incoming temporary file deliberately has a different date.
+                try FileManager.default.setAttributes(
+                    [.modificationDate: sourceDate.addingTimeInterval(-3_600)], ofItemAtPath: input.path
+                )
+                let observed = expectation(description: "Folder watcher sees published version \(version)")
+                observed.assertForOverFulfill = false
+                let descriptor = open(fixture.right.path, O_EVTONLY)
+                guard descriptor >= 0 else { return XCTFail("Could not watch the destination folder") }
+                let queue = DispatchQueue(label: "AagedalSyncTests.modification-date-watcher")
+                let watcher = DispatchSource.makeFileSystemObjectSource(
+                    fileDescriptor: descriptor, eventMask: .write, queue: queue
+                )
+                let downloadStart = Date()
+                watcher.setEventHandler {
+                    // Staging events and the previous version do not count as publication.
+                    guard (try? Data(contentsOf: destination)) == contents else { return }
+                    let date = (try? FileManager.default.attributesOfItem(atPath: destination.path))?[.modificationDate] as? Date
+                    if let date {
+                        if preserveDates {
+                            XCTAssertEqual(date.timeIntervalSince1970, sourceDate.timeIntervalSince1970, accuracy: 0.001)
+                        } else {
+                            XCTAssertGreaterThanOrEqual(date, downloadStart.addingTimeInterval(-0.001))
+                            XCTAssertLessThanOrEqual(date, Date().addingTimeInterval(0.001))
+                        }
+                    } else {
+                        XCTFail("The published file has no modification date")
+                    }
+                    observed.fulfill()
+                }
+                watcher.setCancelHandler { close(descriptor) }
+                watcher.resume()
+                defer {
+                    watcher.cancel()
+                    queue.sync {}
+                }
+                try await session.importFile(
+                    from: input,
+                    as: SyncFile(relativePath: "watched.jpg", size: Int64(contents.count), modifiedAt: sourceDate),
+                    preserveDate: preserveDates, verifySize: true
+                )
+                await fulfillment(of: [observed], timeout: 5)
+            }
+        }
     }
 
     func testTransactionalLocalPairRemovalRollsBackWhenSecondStageFails() async throws {
@@ -971,6 +1074,12 @@ final class LocalSyncIntegrationTests: XCTestCase {
     }
 
     func testSuccessfulMetadataWriteMovesTaggedFileToPerJobProcessedFolder() async throws {
+        for preserveDates in [true, false] {
+            try await checkProcessedJPEGModificationDate(preserveDates: preserveDates)
+        }
+    }
+
+    private func checkProcessedJPEGModificationDate(preserveDates: Bool) async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
         let source = fixture.left.appendingPathComponent("incoming/JAD_0001.jpg")
@@ -1017,8 +1126,11 @@ final class LocalSyncIntegrationTests: XCTestCase {
             )]
         )
         job.processedFolder = try fixture.endpoint(for: fixture.processed)
+        job.preserveModificationDates = preserveDates
 
+        let downloadStart = Date()
         let firstResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let downloadEnd = Date()
         let secondResult = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
 
         XCTAssertEqual(firstResult.processed, 1)
@@ -1032,6 +1144,12 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: processed.path))
         XCTAssertEqual(try ImageMetadata.read(from: destination).iptc.headline, "Ready for desk")
         XCTAssertEqual(try ImageMetadata.read(from: processed).iptc.headline, "Ready for desk")
+        for url in [destination, processed] {
+            try checkModificationDate(
+                at: url, sourceDate: timestamp, preserveDates: preserveDates,
+                downloadStart: downloadStart, downloadEnd: downloadEnd
+            )
+        }
     }
 
     func testMetadataSkipLeavesSourceOutsideProcessedFolder() async throws {
@@ -1088,6 +1206,12 @@ final class LocalSyncIntegrationTests: XCTestCase {
     }
 
     func testSuccessfulRawMetadataMovesRawAndGeneratedSidecarToProcessedFolder() async throws {
+        for preserveDates in [true, false] {
+            try await checkProcessedRAWModificationDates(preserveDates: preserveDates)
+        }
+    }
+
+    private func checkProcessedRAWModificationDates(preserveDates: Bool) async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
         let relativePath = "incoming/JAD_0002.CR3"
@@ -1120,8 +1244,11 @@ final class LocalSyncIntegrationTests: XCTestCase {
             )]
         )
         job.processedFolder = try fixture.endpoint(for: fixture.processed)
+        job.preserveModificationDates = preserveDates
 
+        let downloadStart = Date()
         let result = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+        let downloadEnd = Date()
 
         XCTAssertEqual(result.processed, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
@@ -1139,6 +1266,34 @@ final class LocalSyncIntegrationTests: XCTestCase {
             ).headline,
             "Processed RAW"
         )
+        for url in [
+            processedRaw, processedSidecar,
+            fixture.right.appendingPathComponent(relativePath),
+            fixture.right.appendingPathComponent(MetadataWriter.sidecarRelativePath(for: relativePath)),
+        ] {
+            try checkModificationDate(
+                at: url, sourceDate: timestamp, preserveDates: preserveDates,
+                downloadStart: downloadStart, downloadEnd: downloadEnd
+            )
+        }
+    }
+
+    private func checkModificationDate(
+        at url: URL, sourceDate: Date, preserveDates: Bool,
+        downloadStart: Date, downloadEnd: Date,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        let date = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date,
+            file: file, line: line
+        )
+        if preserveDates {
+            XCTAssertEqual(date.timeIntervalSince1970, sourceDate.timeIntervalSince1970,
+                           accuracy: 0.001, url.path, file: file, line: line)
+        } else {
+            XCTAssertGreaterThanOrEqual(date, downloadStart.addingTimeInterval(-0.001), url.path, file: file, line: line)
+            XCTAssertLessThanOrEqual(date, downloadEnd.addingTimeInterval(0.001), url.path, file: file, line: line)
+        }
     }
 
     func testProcessedSidecarCollisionDoesNotLeavePartialRawCopy() async throws {

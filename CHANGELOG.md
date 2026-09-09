@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Show an explicit source modification time/download time choice for local downloads, retaining existing job preferences.
+- Apply the job's modification-time choice to processed JPEG, RAW, and XMP copies as well as downloads.
+- Track source signatures for download-time jobs so a newer local date does not hide subsequent same-name deliveries or sidecar updates. Existing copies without a receipt may be downloaded once to establish source history.
+- Verify that folder watchers see finalized modification times for new files and replacements, and document Adobe Bridge sorting diagnostics.
+
 ## 2.9.1 — 2026-09-09
 
 - Add an optional standardized `_aftpsync` upload suffix and a matching filename-filter toggle for shared-server workflows. Both default off and preserve existing job behavior.

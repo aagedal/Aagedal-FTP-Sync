@@ -179,6 +179,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                         )
                     }
                 }
+                // Set the final date before publication; watchers may cache their first view.
                 try fileManager.setAttributes(
                     [.modificationDate: preserveDate ? item.file.modifiedAt : Date()],
                     ofItemAtPath: staging.path
@@ -257,6 +258,8 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                     )
                 }
             }
+            // Keep this on the hidden staging file, before either move or replacement.
+            // Touching the visible file later can leave a watcher's sort order stale.
             try fileManager.setAttributes(
                 [.modificationDate: preserveDate ? file.modifiedAt : localArrivalTime],
                 ofItemAtPath: staging.path

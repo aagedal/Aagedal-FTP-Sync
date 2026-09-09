@@ -17,6 +17,7 @@ Version 2.9 adds optional metadata calendar sharing through a user-configured HT
 - Optional upload prefixes and suffixes, preserving local filenames and RAW/XMP pairing
 - Optional age-based cleanup of matching files in a one-way job's local target
 - Original filenames and modification dates are preserved when the server supports it
+- Choose source modification time or local download time for downloaded files and processed copies
 - Optional SHA-256 comparison detects changed contents even when file size and modification date still match
 - Passwords are kept in macOS Keychain, never in the jobs file
 - Named FTP, FTPS, and SFTP server profiles can be reused by jobs with independent remote paths
@@ -44,6 +45,14 @@ Version 2.9 adds optional metadata calendar sharing through a user-configured HT
 ## Optional metadata calendar sync
 
 Calendar sharing uses a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, editor/read-only invitations, offline edits and explicit conflict resolution. Configure it under **Settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. See the [server installation and behavior guide](Server/MetadataSync/README.md) for deployment steps, date-range boundaries, limits and deployment verification.
+
+## Modification times and watched folders
+
+For a one-way job with a local destination, choose **Safety → File modification time → Download time** to sort downloaded files by local arrival. **Source modification time** is the default. This is the same saved setting as the earlier **Preserve modification dates** toggle (off means download time), and applies to new downloads, replacements, and processed copies. Dates change when files are downloaded or replaced; there is no separate retimestamping pass. Source signatures track later resends even when the local download date is newer than the source date; older downloads without a saved signature may be downloaded once to establish that history.
+
+Files are downloaded and metadata is written in temporary storage. Local publication sets the final filesystem modification time on a hidden staging file before moving or replacing the final filename. It does not subsequently touch the visible file to change its date. Camera capture dates and embedded EXIF/XMP dates are separate from this filesystem timestamp and are not rewritten by this setting.
+
+Adobe Bridge maintains its own [thumbnail and metadata cache](https://helpx.adobe.com/ro/bridge/using/centrally-manage-bridge-cache.html). If the displayed modification date and sorting order disagree, compare the filesystem modification date in Finder with Bridge's date, confirm **Date Modified** sorting, and refresh the folder view. Record whether a refresh or clearing that folder's Bridge cache fixes the order. A correct filesystem timestamp alone cannot force another application's cached view to re-sort. See the [timestamp investigation](Documentation/Modification-Time-Investigation.md) for verification results and a focused reproduction checklist.
 
 ## Requirements
 

@@ -133,11 +133,14 @@ private actor EarlyTransferState {
         changingFiles[file.relativePath] = failure.relativePath
     }
 
-    func record(_ file: SyncFile, outcome: TransferMetadataOutcome, sourceSidecar: SyncFile?) {
+    func record(
+        _ file: SyncFile, outcome: TransferMetadataOutcome, sourceSidecar: SyncFile?,
+        trackSourceSignature: Bool
+    ) {
         signatures[file.relativePath] = SourceFileSignature(file: file)
         transferred += 1
         if let auditEntry = outcome.auditEntry { metadataReport.append(auditEntry) }
-        if outcome.embeddedMetadataApplied { sourceSignaturesToPersist.append(file) }
+        if outcome.embeddedMetadataApplied || trackSourceSignature { sourceSignaturesToPersist.append(file) }
         if let sourceSidecar { sourceSignaturesToPersist.append(sourceSidecar) }
         destinationFiles.merge(outcome.publishedDestinationFiles) { _, newest in newest }
     }
@@ -1232,8 +1235,12 @@ struct SyncEngine: Sendable {
                     publishOnlyIfAbsent: true
                 )
                 try await recordPublishedLocalDownloads(outcome, job: job)
-                await state.record(file, outcome: outcome, sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
-                    ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] : nil)
+                await state.record(
+                    file, outcome: outcome,
+                    sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                        ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] : nil,
+                    trackSourceSignature: job.usesDownloadModificationTime
+                )
             } catch is CancellationError {
                 throw CancellationError()
             } catch let failure as UnavailableSourceFile {
@@ -1315,14 +1322,14 @@ struct SyncEngine: Sendable {
                 verifySize: job.verifyFileSizes,
                 metadataMayRewriteDestination: willRewriteMetadata,
                 savedSourceSignature: savedSignatures[file.relativePath],
-                trackRepeatedDownload: file.tracksRepeatedDownload
+                compareSourceSignature: file.tracksRepeatedDownload || job.usesDownloadModificationTime
             )
             if !destinationNeedsTransfer, let sourceSidecar {
-                if mayRewriteSidecar, destinationSidecar != nil {
-                    // A metadata-written XMP may differ in size and date. Compare
-                    // its source receipt, including one bootstrap for older jobs.
+                if (mayRewriteSidecar || job.usesDownloadModificationTime), destinationSidecar != nil {
+                    // Rewritten XMP and download-time copies can differ in size or date.
+                    // Compare the source receipt, including one bootstrap for older jobs.
                     destinationNeedsTransfer = savedSignatures[sourceSidecar.relativePath]
-                        .map { !$0.matches(sourceSidecar, timestampTolerance: tolerance) } ?? true
+                        .map { !$0.matches(sourceSidecar, timestampTolerance: job.usesDownloadModificationTime ? 0 : tolerance) } ?? true
                 } else {
                     destinationNeedsTransfer = needsTransfer(sourceSidecar, destinationSidecar, verifySize: job.verifyFileSizes)
                 }
@@ -1526,7 +1533,7 @@ struct SyncEngine: Sendable {
             if earlySnapshot.signatures[file.relativePath] == nil {
                 transferred += 1
             }
-            if outcome.embeddedMetadataApplied || file.tracksRepeatedDownload {
+            if outcome.embeddedMetadataApplied || file.tracksRepeatedDownload || job.usesDownloadModificationTime {
                 pendingSourceSignatures.append(file)
             }
             if MetadataWriter.usesXMPSidecar(for: file.relativePath),
@@ -1725,10 +1732,10 @@ struct SyncEngine: Sendable {
         verifySize: Bool,
         metadataMayRewriteDestination: Bool = false,
         savedSourceSignature: SourceFileSignature? = nil,
-        trackRepeatedDownload: Bool = false
+        compareSourceSignature: Bool = false
     ) -> Bool {
         guard let destination else { return true }
-        if trackRepeatedDownload {
+        if compareSourceSignature {
             // Successful source receipts distinguish newer resends even when the
             // local copy uses arrival time or metadata rewrites its size.
             return savedSourceSignature.map { !$0.matches(source, timestampTolerance: 0) } ?? true
@@ -2136,7 +2143,8 @@ struct SyncEngine: Sendable {
                             try await importProcessedFile(
                                 from: output.localURL,
                                 as: output.file,
-                                to: processedDestination
+                                to: processedDestination,
+                                preserveDate: preserveDate
                             )
                             importedProcessedFiles.append(output.file)
                         }
@@ -2212,12 +2220,13 @@ struct SyncEngine: Sendable {
     private func importProcessedFile(
         from localURL: URL,
         as file: SyncFile,
-        to processedDestination: any EndpointSession
+        to processedDestination: any EndpointSession,
+        preserveDate: Bool
     ) async throws {
         try await processedDestination.importFileIfAbsent(
             from: localURL,
             as: file,
-            preserveDate: true,
+            preserveDate: preserveDate,
             verifySize: true
         )
     }

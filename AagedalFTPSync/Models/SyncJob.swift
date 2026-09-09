@@ -331,6 +331,10 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
         }
     }
 
+    var usesDownloadModificationTime: Bool {
+        destinationEndpoint?.kind == .local && !preserveModificationDates
+    }
+
     var localDestinationSubdirectory: String? {
         usesManagedFolderStructure ? ManagedOutputFolder.syncedFiles.directoryName : nil
     }

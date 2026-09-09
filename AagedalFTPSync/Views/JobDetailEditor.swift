@@ -238,7 +238,16 @@ struct JobDetailEditor: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
 
-                    Toggle("Preserve modification dates", isOn: $session.draft.preserveModificationDates)
+                    if hasLocalOneWayTarget {
+                        Picker("File modification time", selection: $session.draft.preserveModificationDates) {
+                            Text("Source modification time").tag(true)
+                            Text("Download time").tag(false)
+                        }
+                        Text("Download time uses the time each file is saved locally, including processed copies, so date-modified sorting follows arrivals. Existing files without saved source history may be downloaded once.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Toggle("Preserve modification dates", isOn: $session.draft.preserveModificationDates)
+                    }
                     Toggle("Verify file sizes", isOn: $session.draft.verifyFileSizes)
                     Toggle(
                         "Compare contents when size and date match",

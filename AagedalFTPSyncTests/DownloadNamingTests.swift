@@ -54,6 +54,42 @@ private actor NamedDownloadSource: DownloadListingSession {
 }
 
 final class DownloadNamingTests: XCTestCase {
+    func testDownloadTimePersistsEarlyDownloadReceiptAcrossRestartAndDetectsResend() async throws {
+        let (root, endpoint, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = NamedDownloadSource([:])
+        let sourceDate = Date(timeIntervalSince1970: 1_700_000_000)
+        await source.set("PHOTO.JPG", data: Data("old".utf8), date: sourceDate)
+        var job = SyncJob()
+        job.left = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+        job.right = endpoint
+        job.preserveModificationDates = false
+        func engine() -> SyncEngine {
+            SyncEngine(
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { entry, _, _ -> any EndpointSession in entry.kind.isRemote ? source : destination }
+            )
+        }
+        let first = try await engine().run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(first.transferred, 1)
+        let restarted = try await engine().run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(restarted.transferred, 0)
+
+        // A same-size resend is still older than the local arrival timestamp.
+        await source.set("PHOTO.JPG", data: Data("new".utf8), date: sourceDate.addingTimeInterval(1))
+        let updated = try await engine().run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(updated.transferred, 1)
+        let unchanged = try await engine().run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(unchanged.transferred, 0)
+        let downloads = await source.downloads
+        XCTAssertEqual(downloads, ["PHOTO.JPG", "PHOTO.JPG"])
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: endpoint.localPath).appendingPathComponent("PHOTO.JPG")),
+            Data("new".utf8)
+        )
+    }
+
     func testSidecarOnlyChangesDownloadWithPhotosFilter() async throws {
         let (root, endpoint, destination) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -268,7 +304,8 @@ extension DownloadNamingTests {
                     })
             }
             let first = try await engine().run(job: job, leftPassword: nil, rightPassword: nil)
-            XCTAssertEqual(first.transferred, 1)
+            // Download-time jobs establish a source receipt once for the preexisting OTHER.JPG.
+            XCTAssertEqual(first.transferred, reverse ? 2 : 1)
             let initial = try await destination.listFiles()
             XCTAssertEqual(Set(initial.keys), ["PHOTO.jpg", "OTHER.JPG"])
             let target = URL(fileURLWithPath: endpoint.localPath).appendingPathComponent("PHOTO.jpg")
@@ -287,7 +324,7 @@ extension DownloadNamingTests {
             XCTAssertEqual(fourth.transferred, 0)
             XCTAssertEqual(try Data(contentsOf: target), Data("newest".utf8))
             let downloads = await source.downloads
-            XCTAssertEqual(downloads, ["PHOTO.jpg", "PHOTO.JPG"])
+            XCTAssertEqual(downloads, reverse ? ["PHOTO.jpg", "OTHER.JPG", "PHOTO.JPG"] : ["PHOTO.jpg", "PHOTO.JPG"])
         }
     }
 
