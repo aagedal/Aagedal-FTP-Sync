@@ -1,0 +1,35 @@
+{
+  "status": "design-only; not executed",
+  "request": {
+    "headers": {
+      "X-Aagedal-Protocol": "3"
+    },
+    "body": {
+      "action": "getCapabilities",
+      "capabilities": [
+        "metadata-templates-v1"
+      ]
+    }
+  },
+  "response": {
+    "httpStatus": 200,
+    "body": {
+      "service": "aagedal-metadata-sync",
+      "protocolVersion": 3,
+      "capabilities": [
+        "metadata-templates-v1"
+      ],
+      "documentSchemaVersions": [
+        1,
+        3
+      ],
+      "templateLanguageVersions": [
+        1
+      ]
+    }
+  },
+  "expected": [
+    "No document is transmitted by this probe.",
+    "A v1/v2 or missing-capability response blocks shared template publication."
+  ]
+}

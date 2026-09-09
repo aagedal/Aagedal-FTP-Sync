@@ -1,0 +1,25 @@
+{
+  "status": "design-only; not executed",
+  "request": {
+    "headers": {
+      "X-Aagedal-Protocol": "3"
+    },
+    "body": {
+      "action": "getCalendar",
+      "calendarID": "33333333-3333-4333-8333-333333333333",
+      "capabilities": []
+    }
+  },
+  "response": {
+    "httpStatus": 426,
+    "body": {
+      "service": "aagedal-metadata-sync",
+      "protocolVersion": 3,
+      "error": "client_upgrade_required"
+    }
+  },
+  "expected": [
+    "No calendar document is serialized.",
+    "Protocol header alone does not authorize template transport."
+  ]
+}
