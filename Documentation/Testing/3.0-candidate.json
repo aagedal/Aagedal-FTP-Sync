@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Automation setup only. No 3.0 feature or release readiness is claimed. Candidate identity must be frozen before final testing."
+  "note": "Compatibility probes and the isolated template core are implemented; app integration and release validation remain incomplete. Candidate identity must be frozen before final testing."
 }
