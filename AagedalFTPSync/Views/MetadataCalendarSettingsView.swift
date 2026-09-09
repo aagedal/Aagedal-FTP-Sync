@@ -56,7 +56,9 @@ struct MetadataCalendarSettingsView: View {
                     Text("Linked to “\(binding.snapshot.name)”").font(.headline)
                     Text(activity.detail).textSelection(.enabled)
                     if let date = activity.lastSuccess { Text("Last successful sync: \(date.formatted())").font(.caption) }
-                    Button("Sync Now") { Task { await sync.refresh(jobID: binding.jobID) } }.disabled(sync.busy)
+                    Button(activity.phase == .offline || activity.phase == .failed ? "Retry Now" : "Sync Now") {
+                        Task { await sync.refresh(jobID: binding.jobID) }
+                    }.disabled(activity.phase.isActive)
                     if binding.conflict != nil {
                         Button("Resolve Conflicts…") {
                             do { resolution = try sync.conflictReview(binding); reviewError = nil }
@@ -72,7 +74,7 @@ struct MetadataCalendarSettingsView: View {
                     Text("Choose a shared calendar or create one from this job, then activate sync.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                Text("Saved changes sync automatically about every 10 seconds while the app is running. Offline edits sync after reconnecting, even when automatic file transfers are off.")
+                Text("Saved changes sync shortly after editing. Updates from other Macs are checked about every 10 seconds while the app is running. Offline edits are kept on this Mac and retried automatically, even when automatic file transfers are off.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("View Sync Activity & Errors…") { showDiagnostics = true }
             }
@@ -226,7 +228,7 @@ struct MetadataCalendarSettingsView: View {
                 if let calendarID { sync.attach(calendarID: calendarID, jobID: jobID) }
                 else { sync.publish(jobID: jobID, name: calendarName, range: publicationRange) }
             }.disabled(sync.busy || jobID == nil || activationUnavailable)
-            Text("Sync runs about every 10 seconds while the app is open. Only calendar metadata is shared; file transfer settings, passwords and work hours stay on this Mac.")
+            Text("Saved edits sync shortly after editing; updates from other Macs are checked about every 10 seconds while the app is open. Only calendar metadata is shared; file transfer settings, passwords and work hours stay on this Mac.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }

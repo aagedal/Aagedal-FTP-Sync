@@ -36,7 +36,7 @@ struct MetadataClipPositionUpdate: Equatable, Sendable {
 final class AppStore: ObservableObject {
     @Published var settingsTab: AppSettingsTab = .servers
     @Published var metadataSyncSettingsTab: MetadataSyncSettingsTab = .calendars
-    var metadataDraftsBeingEdited: Set<UUID> = []
+    @Published var metadataDraftsBeingEdited: Set<UUID> = []
     @Published private(set) var jobs: [SyncJob]
     @Published private(set) var metadataPresets: [MetadataPreset]
     @Published private(set) var photographerLibrary: [PhotographerProfile]

@@ -1,26 +1,29 @@
 import Foundation
 
 enum MetadataSyncPhase: String {
-    case waiting, fetching, sending, current, paused, conflict, failed
+    case waiting, pending, fetching, sending, current, paused, conflict, offline, failed
 
     var title: String {
         switch self {
         case .waiting: "Waiting to sync"
+        case .pending: "Changes waiting to sync"
         case .fetching: "Fetching calendar…"
         case .sending: "Sending changes…"
         case .current: "Up to date"
         case .paused: "Sync paused"
         case .conflict: "Conflict needs review"
+        case .offline: "Waiting for connection"
         case .failed: "Sync needs attention"
         }
     }
     var symbol: String {
         switch self {
-        case .waiting: "clock"
+        case .waiting, .pending: "clock"
         case .fetching: "arrow.down.circle"
         case .sending: "arrow.up.circle"
         case .current: "checkmark.circle"
         case .paused: "pause.circle"
+        case .offline: "wifi.slash"
         case .conflict, .failed: "exclamationmark.triangle"
         }
     }
@@ -29,7 +32,7 @@ enum MetadataSyncPhase: String {
 
 struct MetadataSyncActivity {
     var phase: MetadataSyncPhase = .waiting
-    var detail = "Saved changes sync about every 10 seconds while the app is running."
+    var detail = "Saved changes sync shortly after editing. Updates from other Macs are checked about every 10 seconds."
     var lastSuccess: Date?
 }
 

@@ -91,9 +91,23 @@ private actor CalendarTransportFixture {
     var calendar: SharedMetadataCalendar
     var failAfterCommit = false
     var writes = 0
+    var requests: [String] = []
+    var offline = false
+    private var suspendedAction: String?
+    private var suspendedRequest: CheckedContinuation<Void, Never>?
     init(calendar: SharedMetadataCalendar) { self.calendar = calendar }
     func loseNextResponse() { failAfterCommit = true }
-    func send(_ body: MetadataCalendarRequest) throws -> MetadataCalendarResponse {
+    func setOffline(_ value: Bool) { offline = value }
+    func suspendNextRequest(_ action: String) { suspendedAction = action }
+    var isSuspended: Bool { suspendedRequest != nil }
+    func resumeRequest() { suspendedRequest?.resume(); suspendedRequest = nil }
+    func send(_ body: MetadataCalendarRequest) async throws -> MetadataCalendarResponse {
+        requests.append(body.action)
+        if suspendedAction == body.action {
+            suspendedAction = nil
+            await withCheckedContinuation { suspendedRequest = $0 }
+        }
+        if offline { throw URLError(.notConnectedToInternet) }
         if body.action == "listCalendars" {
             return MetadataCalendarResponse(service: "aagedal-metadata-sync", protocolVersion: 2, calendars: [])
         }
@@ -152,7 +166,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         let server = CalendarTransportFixture(calendar: calendar)
         let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
         let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
-        sync.start(store: store, polling: false)
+        sync.start(store: store, polling: false, observingChanges: false)
         return (root, store, sync, repository, calendar)
     }
 
@@ -160,6 +174,177 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         let deadline = Date().addingTimeInterval(5)
         while sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(sync.busy, "The receive operation should finish")
+    }
+
+    private func liveFixture() throws -> (URL, AppStore, MetadataCalendarCoordinator, CalendarTransportFixture) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let profile = PhotographerProfile(name: "Example", filenamePrefix: "EX", creator: "Example", copyrightNotice: "")
+        let clip = MetadataScheduleClip(photographerID: profile.id, name: "Original",
+            startsAt: Date(timeIntervalSince1970: 1_800_000_000), endsAt: Date(timeIntervalSince1970: 1_800_000_100))
+        var job = SyncJob(name: "Live calendar")
+        job.metadataAutomation = MetadataAutomation(photographers: [profile], photographerTracks: [], clips: [clip])
+        let store = try makeStore(root: root, job: job)
+        let account = MetadataSyncAccount(id: UUID(), address: "https://sync.example.org/", registered: true)
+        let calendar = SharedMetadataCalendar(id: UUID(), name: "Example", timeZone: "Etc/UTC", revision: 1,
+            role: "editor", document: SharedMetadataDocument(job.metadataAutomation!))
+        let repository = MetadataCalendarRepository(url: root.appendingPathComponent("sync.json"))
+        try repository.save(MetadataCalendarState(accounts: [account], activeAccountID: account.id,
+            bindings: [MetadataCalendarBinding(accountID: account.id, jobID: job.id, snapshot: calendar)]))
+        let server = CalendarTransportFixture(calendar: calendar)
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, changeDebounce: .milliseconds(100),
+            transport: { body, _, _, _, _ in try await server.send(body) })
+        sync.start(store: store, polling: false)
+        return (root, store, sync, server)
+    }
+
+    private func eventually(file: StaticString = #filePath, line: UInt = #line,
+                            _ condition: () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Expected sync to make progress", file: file, line: line)
+    }
+
+    func testSavedEditsSyncWithoutPollingAndRapidChangesCoalesce() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await sync.refresh(jobID: id)
+        var edited = store.jobs[0].metadataAutomation!
+        edited.clips[0].name = "First edit"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await eventually { sync.activity(for: id).phase == .pending }
+        let before = await server.writes
+        XCTAssertEqual(before, 0)
+        edited.clips[0].name = "Latest edit"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await eventually { await server.writes == 1 && sync.activity(for: id).phase == .current }
+        let remote = await server.calendar
+        XCTAssertEqual(remote.document.clips[0].name, "Latest edit")
+        XCTAssertEqual(sync.state.bindings[0].snapshot, remote)
+        try await Task.sleep(for: .milliseconds(200))
+        let requests = await server.requests
+        XCTAssertEqual(requests, ["getCalendar", "getCalendar", "putCalendar"], "Applying sync results must not create an echo request")
+    }
+
+    func testLocalProcessingPolicyChangesDoNotTriggerCalendarRequests() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await sync.refresh(jobID: id)
+        var edited = store.jobs[0].metadataAutomation!
+        edited.timestampPolicy = edited.timestampPolicy == .localArrival ? .cameraCapture : .localArrival
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await Task.sleep(for: .milliseconds(200))
+        let requests = await server.requests
+        XCTAssertEqual(requests, ["getCalendar"])
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
+    }
+
+    func testClosingUnchangedDraftAutomaticallyReceivesWaitingRemoteEdit() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await sync.refresh(jobID: id)
+        let original = store.jobs[0].metadataAutomation!
+        store.metadataDraftsBeingEdited.insert(id)
+        try await eventually { sync.activity(for: id).phase == .paused }
+        var incoming = SharedMetadataDocument(original)
+        incoming.clips[0].name = "Another Mac's edit"
+        await server.replaceRemote(incoming)
+        await sync.refresh(jobID: id)
+        XCTAssertEqual(store.jobs[0].metadataAutomation, original)
+        store.metadataDraftsBeingEdited.remove(id)
+        try await eventually { sync.activity(for: id).phase == .current }
+        XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), incoming)
+        let writes = await server.writes
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testRefreshRequestsDuringFetchAreCoalescedAndRunAfterItFinishes() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await server.suspendNextRequest("getCalendar")
+        let running = Task { await sync.refresh(jobID: id) }
+        try await eventually { await server.isSuspended }
+        await sync.refresh(jobID: id)
+        await sync.refresh(jobID: id)
+        await sync.refresh(jobID: id)
+        let blockedRequests = await server.requests
+        XCTAssertEqual(blockedRequests, ["getCalendar"])
+        await server.resumeRequest()
+        await running.value
+        try await eventually { await server.requests.count == 2 && !sync.busy }
+        let requests = await server.requests
+        XCTAssertEqual(requests, ["getCalendar", "getCalendar"])
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
+    }
+
+    func testSavedEditDuringAnotherOperationSyncsWhenThatOperationFinishes() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await server.suspendNextRequest("listCalendars")
+        sync.perform { _ = try await server.send(MetadataCalendarRequest(action: "listCalendars")) }
+        try await eventually { await server.isSuspended }
+        var edited = store.jobs[0].metadataAutomation!
+        edited.clips[0].name = "Saved while busy"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await eventually { sync.activity(for: id).phase == .pending }
+        // Keep the other operation in flight beyond the save debounce.
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertTrue(sync.busy)
+        await server.resumeRequest()
+        try await eventually { await server.writes == 1 && sync.activity(for: id).phase == .current }
+        let remote = await server.calendar
+        XCTAssertEqual(remote.document.clips[0].name, "Saved while busy")
+    }
+
+    func testNewEditDuringUploadIsSentWithoutOverwritingItOrCreatingConflict() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await server.suspendNextRequest("putCalendar")
+        var edited = store.jobs[0].metadataAutomation!
+        edited.clips[0].name = "First saved edit"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await eventually { await server.isSuspended }
+        edited.clips[0].name = "Edited during upload"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        await server.resumeRequest()
+        try await eventually { await server.writes == 2 && sync.activity(for: id).phase == .current }
+        XCTAssertNil(sync.state.bindings[0].conflict)
+        let remote = await server.calendar
+        XCTAssertEqual(remote.document.clips[0].name, "Edited during upload")
+        XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), remote.document)
+    }
+
+    func testOfflineEditsStaySavedAndRetryRestoresCurrentStatus() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await sync.refresh(jobID: id)
+        let lastSuccess = sync.activity(for: id).lastSuccess
+        await server.setOffline(true)
+        var edited = store.jobs[0].metadataAutomation!
+        edited.clips[0].name = "Saved offline"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await eventually { sync.activity(for: id).phase == .offline }
+        XCTAssertEqual(sync.activity(for: id).lastSuccess, lastSuccess)
+        XCTAssertTrue(sync.activity(for: id).detail.contains("retries automatically"))
+        let saved = try JobRepository(fileURL: root.appendingPathComponent("jobs.json")).load()
+        XCTAssertEqual(saved[0].metadataAutomation?.clips[0].name, "Saved offline")
+        await server.setOffline(false)
+        await sync.refresh(jobID: id)
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
+        XCTAssertNil(sync.state.bindings[0].conflict)
+        let remote = await server.calendar
+        XCTAssertEqual(remote.document.clips[0].name, "Saved offline")
     }
 
     private func assertUnsafeRemotePreservesLocal(
@@ -183,7 +368,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
             let server = CalendarTransportFixture(calendar: remote)
             let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
             let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
-            sync.start(store: store, polling: false)
+            sync.start(store: store, polling: false, observingChanges: false)
             if let keepLocal {
                 let review = try sync.conflictReview(binding)
                 let choices = Dictionary(uniqueKeysWithValues: try review.plan().conflicts.map {
@@ -264,7 +449,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         let storeB = try makeStore(root: root.appendingPathComponent("b"), job: jobB)
         let a = MetadataCalendarCoordinator(repository: MetadataCalendarRepository(url: root.appendingPathComponent("a/sync.json")), keychain: keychain, transport: transport)
         let b = MetadataCalendarCoordinator(repository: MetadataCalendarRepository(url: root.appendingPathComponent("b/sync.json")), keychain: keychain, transport: transport)
-        a.start(store: storeA, polling: false); b.start(store: storeB, polling: false)
+        a.start(store: storeA, polling: false, observingChanges: false); b.start(store: storeB, polling: false, observingChanges: false)
         a.register(address: "https://sync.example.org/", deviceName: "Mac A", setupKey: String(repeating: "a", count: 64), invite: nil)
         try await finishOperation(a)
         XCTAssertEqual(a.account?.registered, true, a.message)
@@ -336,7 +521,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         let jobC = SyncJob(name: "Limited receiving job")
         let storeC = try makeStore(root: root.appendingPathComponent("c"), job: jobC)
         let c = MetadataCalendarCoordinator(repository: MetadataCalendarRepository(url: root.appendingPathComponent("c/sync.json")), keychain: keychain, transport: transport)
-        c.start(store: storeC, polling: false)
+        c.start(store: storeC, polling: false, observingChanges: false)
         c.register(address: "https://sync.example.org/", deviceName: "Mac C", setupKey: nil, invite: a.invitation)
         try await finishOperation(c)
         c.attach(calendarID: calendar.id, jobID: jobC.id)
@@ -447,7 +632,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         let server = CalendarTransportFixture(calendar: calendar)
         let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
         let restarted = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
-        restarted.start(store: store, polling: false)
+        restarted.start(store: store, polling: false, observingChanges: false)
         await restarted.refresh()
         XCTAssertEqual(store.jobs.count, 2)
         XCTAssertNil(try repository.load().pendingReceive)
@@ -504,12 +689,12 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
         let transport: MetadataCalendarCoordinator.Transport = { body, _, _, _, _ in try await server.send(body) }
         let first = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: transport)
-        first.start(store: store, polling: false)
+        first.start(store: store, polling: false, observingChanges: false)
         await server.loseNextResponse()
         await first.refresh()
         XCTAssertEqual(try repository.load().bindings[0].snapshot.revision, 1)
         let second = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: transport)
-        second.start(store: store, polling: false)
+        second.start(store: store, polling: false, observingChanges: false)
         await second.refresh()
         XCTAssertNil(second.state.bindings[0].conflict)
         XCTAssertEqual(second.state.bindings[0].snapshot.document, changed)
@@ -781,7 +966,7 @@ extension MetadataCalendarCoordinatorTests {
         let server = CalendarTransportFixture(calendar: remote)
         let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
         let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
-        sync.start(store: store, polling: false)
+        sync.start(store: store, polling: false, observingChanges: false)
         return (root, store, sync, repository, server)
     }
 
@@ -856,10 +1041,10 @@ extension MetadataCalendarCoordinatorTests {
         sync.resolve(review, choices: choices)
         try await finishOperation(sync)
         XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), expected)
-        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .failed)
+        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .offline)
         let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
         let restarted = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
-        restarted.start(store: store, polling: false)
+        restarted.start(store: store, polling: false, observingChanges: false)
         await restarted.refresh()
         XCTAssertNil(restarted.state.bindings[0].conflict)
         XCTAssertEqual(restarted.state.bindings[0].snapshot.document, expected)

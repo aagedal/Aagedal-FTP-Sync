@@ -80,14 +80,22 @@ final class MetadataCalendarCoordinator: ObservableObject {
     private let transport: Transport
     private weak var store: AppStore?
     private var loop: Task<Void, Never>?
+    private var changeObservation: AnyCancellable?
+    private var changeTask: Task<Void, Never>?
+    private var queuedRefreshTask: Task<Void, Never>?
+    private var queuedJobIDs: Set<UUID> = []
+    private var refreshAllQueued = false
+    private let changeDebounce: Duration
 
     var account: MetadataSyncAccount? { state.accounts.first { $0.id == state.activeAccountID } }
 
     init(repository: MetadataCalendarRepository = MetadataCalendarRepository(), keychain: KeychainStore = KeychainStore(),
+         changeDebounce: Duration = .milliseconds(500),
          transport: @escaping Transport = { body, address, id, key, setup in
              try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup)
          }) {
         self.transport = transport
+        self.changeDebounce = changeDebounce
         self.repository = repository
         self.eventRepository = MetadataSyncEventRepository(url: repository.url.deletingLastPathComponent().appendingPathComponent("metadata-sync-events-v1.json"))
         self.events = eventRepository.load()
@@ -96,15 +104,81 @@ final class MetadataCalendarCoordinator: ObservableObject {
         catch { storageFailed = true; message = "Sync state could not be read. It has been left intact: \(error.localizedDescription)" }
     }
 
-    func start(store: AppStore, polling: Bool = true) {
-        guard loop == nil else { return }
+    func start(store: AppStore, polling: Bool = true, observingChanges: Bool = true) {
         self.store = store
-        guard polling else { return }
+        if observingChanges, changeObservation == nil {
+            changeObservation = store.$jobs
+                .map { jobs in Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0.metadataAutomation ?? MetadataAutomation()) }) }
+                .removeDuplicates()
+                .combineLatest(store.$metadataDraftsBeingEdited.removeDuplicates())
+                .sink { [weak self] _, _ in
+                    // Published values arrive before AppStore's setters finish. Read
+                    // after the save and any sync-baseline update have completed.
+                    self?.changeTask?.cancel()
+                    self?.changeTask = Task { @MainActor [weak self] in
+                        guard !Task.isCancelled, let self else { return }
+                        let jobIDs = self.jobsNeedingSyncAfterEdit()
+                        do { try await Task.sleep(for: self.changeDebounce) } catch { return }
+                        self.changeTask = nil
+                        for id in jobIDs { await self.refresh(jobID: id) }
+                    }
+                }
+        }
+        guard polling, loop == nil else { return }
         loop = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
+                // A slow request already checks for updates. Only user requests
+                // and saved edits need to queue work while another sync is busy.
+                if self?.busy == false { await self?.refresh() }
                 do { try await Task.sleep(for: .seconds(10)) } catch { break }
             }
+        }
+    }
+
+    func stop() {
+        loop?.cancel(); loop = nil
+        changeObservation = nil
+        changeTask?.cancel(); changeTask = nil
+        queuedRefreshTask?.cancel(); queuedRefreshTask = nil
+        queuedJobIDs = []; refreshAllQueued = false
+    }
+
+    private func jobsNeedingSyncAfterEdit() -> [UUID] {
+        guard !storageFailed else { return [] }
+        return state.bindings.compactMap { binding in
+            guard binding.conflict == nil else { return nil }
+            let phase = activities[binding.jobID]?.phase
+            // syncOnce rereads this job after every request; its own received
+            // changes must not schedule another round trip.
+            guard phase?.isActive != true else { return nil }
+            if store?.metadataDraftsBeingEdited.contains(binding.jobID) == true {
+                setActivity(.paused, jobID: binding.jobID, detail: "Waiting for the metadata draft to save. If autosave is blocked, fix the validation warning in the editor.")
+                return nil
+            }
+            let changed = (try? localDocument(binding)) != binding.snapshot.document
+            guard changed || phase == .paused || phase == .pending else { return nil }
+            if phase != .failed && phase != .offline {
+                setActivity(.pending, jobID: binding.jobID, detail: "Saved on this Mac. Changes will sync shortly.")
+            }
+            return binding.jobID
+        }
+    }
+
+    private func finishBusyOperation() {
+        busy = false
+        guard refreshAllQueued || !queuedJobIDs.isEmpty else { return }
+        // Coalesce requests made during a network operation, including saves to a
+        // job already visited by this polling pass. Never silently discard them.
+        guard queuedRefreshTask == nil else { return }
+        queuedRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.queuedRefreshTask = nil
+            let all = self.refreshAllQueued
+            let ids = self.queuedJobIDs
+            self.refreshAllQueued = false
+            self.queuedJobIDs = []
+            if all { await self.refresh() }
+            else { for id in ids { await self.refresh(jobID: id) } }
         }
     }
 
@@ -128,6 +202,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
         if phase == .current { activity.lastSuccess = Date() }
         activities[jobID] = activity
         if let binding = binding(for: jobID) { bindingMessages[binding.id] = detail }
+    }
+
+    private func setFailureActivity(_ error: Error, jobID: UUID) {
+        let connectionError = (error as? URLError).map {
+            [URLError.notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains($0.code)
+        } ?? false
+        setActivity(connectionError ? .offline : .failed, jobID: jobID,
+                    detail: connectionError ? "The server could not be reached. Saved metadata stays on this Mac; sync retries automatically. " + error.localizedDescription : error.localizedDescription)
     }
 
     private func record(_ event: MetadataSyncEvent) {
@@ -231,7 +313,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         busy = true
         message = ""
         Task { @MainActor in
-            defer { busy = false }
+            defer { finishBusyOperation() }
             do { try await operation() }
             catch {
                 message = error.localizedDescription
@@ -275,9 +357,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     func refresh(jobID: UUID? = nil) async {
-        guard !busy, !storageFailed else { return }
+        guard !storageFailed, !Task.isCancelled else { return }
+        guard !busy else {
+            if let jobID { queuedJobIDs.insert(jobID) }
+            else { refreshAllQueued = true }
+            return
+        }
         busy = true
-        defer { busy = false }
+        defer { finishBusyOperation() }
         if let pending = state.pendingReceive {
             do { try finishReceive(pending) }
             catch { message = "Receiving into the copy is pending: " + error.localizedDescription }
@@ -348,11 +435,11 @@ final class MetadataCalendarCoordinator: ObservableObject {
             try await syncOnce(original, account: account)
             if activities[original.jobID]?.phase == .current, message == previous?.detail { message = "" }
             if activities[original.jobID]?.phase == .current,
-               previous?.lastSuccess == nil || previous?.phase == .failed || original.snapshot != binding(for: original.jobID)?.snapshot {
+               previous?.lastSuccess == nil || previous?.phase == .failed || previous?.phase == .offline || original.snapshot != binding(for: original.jobID)?.snapshot {
                 record(MetadataSyncEvent(jobID: original.jobID, operation: "Calendar sync", detail: "Local and server calendars are up to date.", revision: binding(for: original.jobID)?.snapshot.revision))
             }
         } catch {
-            setActivity(.failed, jobID: original.jobID, detail: error.localizedDescription)
+            setFailureActivity(error, jobID: original.jobID)
             record(MetadataSyncEvent(jobID: original.jobID, operation: "Calendar sync", detail: MetadataSyncEvent.errorDetail(error), isError: true))
             throw error
         }
@@ -550,8 +637,11 @@ final class MetadataCalendarCoordinator: ObservableObject {
         perform {
             do { try await self.resolveReview(review, choices: choices) }
             catch {
-                self.setActivity(self.binding(for: review.binding.jobID)?.conflict == nil ? .failed : .conflict,
-                                 jobID: review.binding.jobID, detail: error.localizedDescription)
+                if self.binding(for: review.binding.jobID)?.conflict != nil {
+                    self.setActivity(.conflict, jobID: review.binding.jobID, detail: error.localizedDescription)
+                } else {
+                    self.setFailureActivity(error, jobID: review.binding.jobID)
+                }
                 throw error
             }
         }

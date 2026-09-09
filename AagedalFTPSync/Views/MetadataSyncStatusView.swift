@@ -25,14 +25,15 @@ struct MetadataSyncStatusView: View {
                 }
             }
             .buttonStyle(.plain)
+            .help(binding == nil ? "Activate calendar sync" : activity.detail)
             .accessibilityIdentifier("metadata-sync-status")
             .popover(isPresented: $showDetails) { details.padding(20).frame(width: 390) }
             Spacer()
             if let jobID, binding != nil {
-                Button("Sync Now") {
+                Button(activity.phase == .offline || activity.phase == .failed ? "Retry Now" : "Sync Now") {
                     beforeSync()
                     Task { await sync.refresh(jobID: jobID) }
-                }.disabled(sync.busy)
+                }.disabled(activity.phase.isActive)
             }
             Button { showDiagnostics = true } label: {
                 Label("Sync Activity…", systemImage: "list.bullet.rectangle")
@@ -60,7 +61,7 @@ struct MetadataSyncStatusView: View {
                 HStack { Text("Last successful sync:"); Text(date, style: .relative); Text("ago") }
                     .font(.caption)
             }
-            Text("Saved changes sync about every 10 seconds while the app is open, even when automatic file transfers are off. Offline edits sync after reconnecting.")
+            Text("Saved changes sync shortly after editing. Updates from other Macs are checked about every 10 seconds while the app is open, even when automatic file transfers are off. Offline edits are kept on this Mac and retried automatically.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("View Activity & Errors…") { showDetails = false; showDiagnostics = true }

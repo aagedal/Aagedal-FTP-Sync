@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Sync saved metadata edits after a short debounce, resume when drafts are saved or closed, and queue refresh requests made while another calendar operation is running.
+- Distinguish saved changes waiting to sync from connection failures, retain the last successful sync time, and offer Retry Now when the server cannot be reached.
 - Show an explicit source modification time/download time choice for local downloads, retaining existing job preferences.
 - Apply the job's modification-time choice to processed JPEG, RAW, and XMP copies as well as downloads.
 - Track source signatures for download-time jobs so a newer local date does not hide subsequent same-name deliveries or sidecar updates. Existing copies without a receipt may be downloaded once to establish source history.
