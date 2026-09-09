@@ -536,30 +536,60 @@ final class MetadataCalendarCoordinator: ObservableObject {
         } catch { message = error.localizedDescription }
     }
 
-    func resolve(_ original: MetadataCalendarBinding, keepLocal: Bool) {
-        perform {
-            guard self.store?.metadataDraftsBeingEdited.contains(original.jobID) != true else {
-                throw MetadataSyncFailure(message: "Save or close the open metadata draft before resolving this conflict.")
-            }
-            let reviewedLocal = try self.localDocument(original)
-            guard let account = self.state.accounts.first(where: { $0.id == original.accountID }),
-                  let current = try await self.request(MetadataCalendarRequest(action: "getCalendar", calendarID: original.id), account: account).calendar else { throw MetadataSyncServerError.invalidResponse }
-            try self.validateRemote(current, for: original)
-            // Resolve only the version the user saw, so newer edits cannot be silently discarded.
-            guard current == original.conflict else {
-                var updated = original; updated.conflict = current; try self.replace(updated)
-                throw MetadataSyncFailure(message: "The server changed again. Review the updated revision before resolving.")
-            }
-            guard try self.localDocument(original) == reviewedLocal,
-                  self.store?.metadataDraftsBeingEdited.contains(original.jobID) != true else {
-                throw MetadataSyncFailure(message: "The local calendar changed while resolving. Review it again before choosing a version.")
-            }
-            var binding = original
-            if !keepLocal { try self.apply(current.document, binding: binding) }
-            binding.snapshot = current; binding.conflict = nil
-            try self.replace(binding)
-            try await self.sync(binding, account: account)
+    func conflictReview(_ binding: MetadataCalendarBinding) throws -> MetadataCalendarConflictReview {
+        guard state.bindings.contains(binding), let remote = binding.conflict else {
+            throw MetadataSyncFailure(message: "This conflict changed. Open its current review again.")
         }
+        guard store?.metadataDraftsBeingEdited.contains(binding.jobID) != true else {
+            throw MetadataSyncFailure(message: "Save the open metadata draft before reviewing conflicts.")
+        }
+        return MetadataCalendarConflictReview(binding: binding, local: try localDocument(binding), remote: remote)
+    }
+
+    func resolve(_ review: MetadataCalendarConflictReview, choices: [String: MetadataConflictChoice]) {
+        perform {
+            do { try await self.resolveReview(review, choices: choices) }
+            catch {
+                self.setActivity(self.binding(for: review.binding.jobID)?.conflict == nil ? .failed : .conflict,
+                                 jobID: review.binding.jobID, detail: error.localizedDescription)
+                throw error
+            }
+        }
+    }
+
+    private func resolveReview(_ review: MetadataCalendarConflictReview, choices: [String: MetadataConflictChoice]) async throws {
+        let original = review.binding
+        guard state.bindings.contains(original), store?.metadataDraftsBeingEdited.contains(original.jobID) != true,
+              try localDocument(original) == review.local else {
+            throw MetadataSyncFailure(message: "The local calendar changed. Refresh the conflict review before applying your choices.")
+        }
+        guard let account = state.accounts.first(where: { $0.id == original.accountID }),
+              let current = try await request(MetadataCalendarRequest(action: "getCalendar", calendarID: original.id), account: account).calendar else {
+            throw MetadataSyncServerError.invalidResponse
+        }
+        try validateRemote(current, for: original)
+        guard state.bindings.contains(original) else {
+            throw MetadataSyncFailure(message: "The calendar link changed. Open its current conflict review again.")
+        }
+        guard current == review.remote else {
+            var updated = original; updated.conflict = current; try replace(updated)
+            throw MetadataSyncFailure(message: "The server changed again. Refresh the conflict review before applying your choices.")
+        }
+        guard try localDocument(original) == review.local,
+              store?.metadataDraftsBeingEdited.contains(original.jobID) != true else {
+            throw MetadataSyncFailure(message: "The local calendar changed. Refresh the conflict review before applying your choices.")
+        }
+        let resolved = try review.plan(choices: choices).resolved()
+        if current.role == "reader", resolved != current.document {
+            throw MetadataSyncFailure(message: "This calendar is read-only. Choose the server values for local changes.")
+        }
+        var binding = original
+        // The job remains the durable queue; only the reviewed conflicts are resolved.
+        try apply(resolved, binding: binding)
+        binding.snapshot = current; binding.conflict = nil
+        try replace(binding)
+        record(MetadataSyncEvent(jobID: binding.jobID, operation: "Resolve conflicts", detail: "Selected conflicts resolved; independent changes retained."))
+        try await sync(binding, account: account)
     }
 
     func createInvite(calendarID: UUID, role: String, range: MetadataSharingRange?) {

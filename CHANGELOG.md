@@ -7,6 +7,7 @@
 - Simplify calendar setup with a single Activate Sync action for new or existing shared calendars, support for pasting a complete invitation, and a clear note about the approximately ten-second sync interval. After receiving, select the linked job in the Metadata window.
 - Show per-job calendar sync status, fetching/sending activity, last successful sync, manual retry and saved diagnostic history directly from the Metadata window.
 - Save pending metadata clip deletions before switching jobs. Deleting the last clip disables automatic metadata processing so the empty calendar can be saved; failed saves retain the current draft, and undo restores the prior processing setting.
+- Merge independent clip and field edits automatically. Resolve competing edits or deletion-versus-edit conflicts per clip while keeping unrelated changes; review overlapping schedules together and reject stale resolutions if the calendar changes again.
 - Preserve local programming and pause sync if a calendar's shared date range or time zone changes, or the server returns an older revision after a backup restore.
 - Allow manual `.aftpsync` imports containing overlapping metadata clips, keeping the clips and showing a warning. Live calendar sync and normal schedule validation retain their overlap checks.
 - Run the disposable PHP/MySQL calendar integration suite in release CI.

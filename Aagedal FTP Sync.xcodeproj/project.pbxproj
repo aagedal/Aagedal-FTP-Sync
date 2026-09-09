@@ -37,6 +37,7 @@
 		41FAF788C416FBC243B52EBD /* MetadataAuditTrailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AF30957A97DA611D3EF011D /* MetadataAuditTrailView.swift */; };
 		4251AC983A19E2B72A16D6F1 /* MetadataAuditRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11EEAAEEA8F25FFA2893352E /* MetadataAuditRepository.swift */; };
 		42674EE8F66813EA860B4A7B /* MetadataPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC0FC21B2F27B7B2EDD14FE /* MetadataPresetTests.swift */; };
+		461067BAB3C6EAB6B24624C3 /* MetadataCalendarConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FF089E5B1C4518A479C331C /* MetadataCalendarConflictView.swift */; };
 		49FF023ECBFBE4B27037A37D /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BEBFCBDD620232A1D0C014 /* SyncEngine.swift */; };
 		510304BA75E7B2E1F74A37B2 /* MetadataCalendarClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B07ADB5A0D82B2900ADF5DB /* MetadataCalendarClient.swift */; };
 		52E139C2169CE507A045D79D /* PathSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = D100CDE9EC3EF2B672A4EC7E /* PathSafety.swift */; };
@@ -102,6 +103,7 @@
 		EF49DF30560E2C2A87147711 /* SourceSignatureRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 679AE22A6DA5596AB0D08913 /* SourceSignatureRepository.swift */; };
 		F740FAA73212115FCB852FAE /* SyncScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C577F4C00B53FEE0AEAEC4 /* SyncScheduler.swift */; };
 		F9587CBD6566871E67AB6A61 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288034277BC7727C71C3304 /* ServerProfileRepository.swift */; };
+		FB1A07E51A16C9E7FD4F322D /* MetadataCalendarMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */; };
 		FD6B4E4D3B7906C933964D9C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2745B822AD45CDF06BB3463 /* Assets.xcassets */; };
 		FFAAC76304EE632FFD35DC19 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */; };
 		FFE30C3E978D3DA849C1A90A /* ConfigurationTransferView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44DC5631E8E1F2C557CA626F /* ConfigurationTransferView.swift */; };
@@ -176,6 +178,7 @@
 		73E4E8584F7A5AFA53BC9190 /* ConfigurationTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransfer.swift; sourceTree = "<group>"; };
 		78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSchedulerTests.swift; sourceTree = "<group>"; };
 		7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		7FF089E5B1C4518A479C331C /* MetadataCalendarConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarConflictView.swift; sourceTree = "<group>"; };
 		821EDDD4C943D4CCD4CB022D /* MetadataProgrammingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingView.swift; sourceTree = "<group>"; };
 		8710C0C84C0F5CABFAC80B85 /* SharedMetadataCalendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedMetadataCalendar.swift; sourceTree = "<group>"; };
 		890826A7102C45494742574C /* MetadataLibraryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataLibraryCoordinator.swift; sourceTree = "<group>"; };
@@ -223,6 +226,7 @@
 		EDFDBE6187BE47D3DA7E605E /* SSHHostKeyFingerprintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHHostKeyFingerprintTests.swift; sourceTree = "<group>"; };
 		EE20E0C1B29F4F92DD057885 /* AppPersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistenceCoordinator.swift; sourceTree = "<group>"; };
 		F02E14B784149DDFFF502ADA /* MetadataAutomation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomation.swift; sourceTree = "<group>"; };
+		F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarMerge.swift; sourceTree = "<group>"; };
 		F3A2D6F5AD2A2701FD04AA11 /* MetadataSyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncSettingsView.swift; sourceTree = "<group>"; };
 		F488B465A35870C5148449F4 /* Citadel */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Citadel; path = Vendor/Citadel; sourceTree = SOURCE_ROOT; };
 		FC5DD7F9670E3114DCB8DD33 /* MetadataCalendarCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarCoordinator.swift; sourceTree = "<group>"; };
@@ -283,6 +287,7 @@
 				937FD9EED413E474E9F6903E /* Endpoint.swift */,
 				8DF972CA42278237F9D4F9F1 /* MetadataAudit.swift */,
 				F02E14B784149DDFFF502ADA /* MetadataAutomation.swift */,
+				F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */,
 				2E65EC551E128F2CEA855514 /* MetadataPreset.swift */,
 				1827F74FB21B975949149778 /* MetadataSyncActivity.swift */,
 				586353B7AF5F95DB24C2CF28 /* MetadataSyncServer.swift */,
@@ -371,6 +376,7 @@
 				AED8A942C6CBC2911165A52D /* JobsWindowView.swift */,
 				FE6F803C3B092319AAFD4845 /* MenuBarView.swift */,
 				4AF30957A97DA611D3EF011D /* MetadataAuditTrailView.swift */,
+				7FF089E5B1C4518A479C331C /* MetadataCalendarConflictView.swift */,
 				30978DC45B262D8C7E18A029 /* MetadataCalendarSettingsView.swift */,
 				312739F289E7DEE5475728B9 /* MetadataPhotographerViews.swift */,
 				A7D1E5EDE9A608C2C40F07A4 /* MetadataPreviewViews.swift */,
@@ -681,7 +687,9 @@
 				41FAF788C416FBC243B52EBD /* MetadataAuditTrailView.swift in Sources */,
 				956B364A51DE2F3F84CD18BD /* MetadataAutomation.swift in Sources */,
 				510304BA75E7B2E1F74A37B2 /* MetadataCalendarClient.swift in Sources */,
+				461067BAB3C6EAB6B24624C3 /* MetadataCalendarConflictView.swift in Sources */,
 				3FC3B92D73172536B5F71B13 /* MetadataCalendarCoordinator.swift in Sources */,
+				FB1A07E51A16C9E7FD4F322D /* MetadataCalendarMerge.swift in Sources */,
 				419BC164587DE64BDE6DC3D5 /* MetadataCalendarSettingsView.swift in Sources */,
 				7C2A82E72FDC2C0AB1F73C5D /* MetadataLibraryCoordinator.swift in Sources */,
 				5FD9FAE8DB564E8AB7B74237 /* MetadataPhotographerViews.swift in Sources */,

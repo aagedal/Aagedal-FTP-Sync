@@ -17,7 +17,8 @@ struct SharedMetadataDocument: Codable, Equatable, Sendable {
             PhotographerProfile(id: profile.id, name: profile.name, filenamePrefix: profile.filenamePrefix,
                                 creator: profile.creator, copyrightNotice: profile.copyrightNotice)
         }.sorted { $0.id.uuidString < $1.id.uuidString }
-        photographerTracks = automation.photographerTracks
+        let rows = Dictionary(grouping: automation.photographerTracks, by: \.date)
+        photographerTracks = rows.keys.sorted().flatMap { rows[$0] ?? [] }
         clips = automation.clips.map { clip in
             var clip = clip
             clip.startsAt = Self.millisecondDate(clip.startsAt)
@@ -58,41 +59,7 @@ struct SharedMetadataDocument: Codable, Equatable, Sendable {
 
     /// Three-way merge treats deletion as a value, so an offline edit cannot resurrect a deletion silently.
     static func merge(base: Self, local: Self, remote: Self) throws -> Self {
-        var result = local
-        result.photographers = try mergeRecords(base.photographers, local.photographers, remote.photographers, id: \.id, label: "photographer")
-            .sorted { $0.id.uuidString < $1.id.uuidString }
-        result.clips = try mergeRecords(base.clips, local.clips, remote.clips, id: \.id, label: "clip")
-            .sorted { $0.id.uuidString < $1.id.uuidString }
-        // The ordering of rows within a day is one editable value.
-        let b = Dictionary(grouping: base.photographerTracks, by: \.date)
-        let l = Dictionary(grouping: local.photographerTracks, by: \.date)
-        let r = Dictionary(grouping: remote.photographerTracks, by: \.date)
-        result.photographerTracks = try Set(b.keys).union(l.keys).union(r.keys).sorted().flatMap { key in
-            try mergeValue(b[key], l[key], r[key], label: "day's photographer rows") ?? []
-        }
-        return try result.validated()
-    }
-
-    private static func mergeRecords<T: Equatable, ID: Hashable>(
-        _ base: [T], _ local: [T], _ remote: [T], id: KeyPath<T, ID>, label: String
-    ) throws -> [T] {
-        func indexed(_ values: [T]) throws -> [ID: T] {
-            var result: [ID: T] = [:]
-            for value in values {
-                guard result.updateValue(value, forKey: value[keyPath: id]) == nil else {
-                    throw MetadataSyncFailure(message: "Duplicate \(label) identifier.")
-                }
-            }
-            return result
-        }
-        let b = try indexed(base), l = try indexed(local), r = try indexed(remote)
-        return try Set(b.keys).union(l.keys).union(r.keys).compactMap { try mergeValue(b[$0], l[$0], r[$0], label: label) }
-    }
-
-    static func mergeValue<T: Equatable>(_ base: T, _ local: T, _ remote: T, label: String) throws -> T {
-        if local == base { return remote }
-        if remote == base || remote == local { return local }
-        throw MetadataSyncFailure(message: "Both devices changed the same \(label). Local edits have been kept. Resolve the conflict in Metadata Sync settings.")
+        try MetadataCalendarMerge.plan(base: base, local: local, remote: remote).resolved()
     }
 
     /// Keeps processing policies and private work hours on this Mac.

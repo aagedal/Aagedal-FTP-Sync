@@ -185,7 +185,11 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
             let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
             sync.start(store: store, polling: false)
             if let keepLocal {
-                sync.resolve(binding, keepLocal: keepLocal)
+                let review = try sync.conflictReview(binding)
+                let choices = Dictionary(uniqueKeysWithValues: try review.plan().conflicts.map {
+                    ($0.id, keepLocal ? MetadataConflictChoice.local : .server)
+                })
+                sync.resolve(review, choices: choices)
                 try await finishOperation(sync)
                 XCTAssertTrue(sync.message.contains(expectedMessage), sync.message)
             } else {
@@ -297,6 +301,33 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         XCTAssertFalse(a.diagnosticText().contains("Edit from Mac A"))
         XCTAssertFalse(b.diagnosticText().contains("sync.example.org"))
         XCTAssertFalse(b.diagnosticText().contains(a.invitation))
+
+        // Competing edits to one clip require one choice; other clips and fields survive.
+        var competingA = storeA.jobs[0].metadataAutomation!
+        var competingB = storeB.jobs[0].metadataAutomation!
+        let ai = competingA.clips.firstIndex { $0.id == first.id }!
+        let bi = competingB.clips.firstIndex { $0.id == first.id }!
+        competingA.clips[ai].fields.description = "Description chosen from A"
+        competingB.clips[bi].fields.description = "Description chosen from B"
+        competingB.clips[bi].fields.keywords = ["Independent B keyword"]
+        competingA.clips[competingA.clips.firstIndex { $0.id == second.id }!].name = "Independent A clip name"
+        XCTAssertTrue(storeA.applySyncedMetadataAutomation(competingA, for: jobA.id))
+        XCTAssertTrue(storeB.applySyncedMetadataAutomation(competingB, for: jobB.id))
+        await a.refresh(jobID: jobA.id)
+        await b.refresh(jobID: jobB.id)
+        let conflictBinding = try XCTUnwrap(b.binding(for: jobB.id))
+        XCTAssertNotNil(conflictBinding.conflict)
+        let review = try b.conflictReview(conflictBinding)
+        XCTAssertEqual(try review.plan().conflicts.count, 1)
+        b.resolve(review, choices: ["clip/\(first.id)": .server])
+        try await finishOperation(b)
+        await a.refresh(jobID: jobA.id)
+        let resolvedA = SharedMetadataDocument(storeA.jobs[0].metadataAutomation!)
+        XCTAssertEqual(resolvedA, SharedMetadataDocument(storeB.jobs[0].metadataAutomation!))
+        XCTAssertEqual(resolvedA.clips.first { $0.id == first.id }?.fields.description, "Description chosen from A")
+        XCTAssertEqual(resolvedA.clips.first { $0.id == first.id }?.fields.keywords, ["Independent B keyword"])
+        XCTAssertEqual(resolvedA.clips.first { $0.id == second.id }?.name, "Independent A clip name")
+        XCTAssertNil(b.binding(for: jobB.id)?.conflict)
 
         // A date-limited third device can edit its clip without seeing or replacing
         // the other dates on the same shared calendar.
@@ -600,5 +631,312 @@ final class MetadataSyncFeedbackTests: XCTestCase {
         XCTAssertEqual(loaded.count, 200)
         XCTAssertEqual(loaded.first?.revision, 5)
         XCTAssertEqual(loaded.last?.revision, 204)
+    }
+}
+
+extension SharedMetadataCalendarTests {
+    func testDifferentFieldsOnSameClipMergeAutomatically() throws {
+        let base = SharedMetadataDocument(fixture())
+        var local = base, remote = base
+        local.clips[0].fields.headline = "Local headline"
+        remote.clips[0].fields.description = "Server description"
+        let merged = try SharedMetadataDocument.merge(base: base, local: local, remote: remote)
+        XCTAssertEqual(merged.clips[0].fields.headline, "Local headline")
+        XCTAssertEqual(merged.clips[0].fields.description, "Server description")
+    }
+
+    func testChoicesPerClipKeepUncontestedFieldsAndOtherClips() throws {
+        let base = SharedMetadataDocument(fixture())
+        var local = base, remote = base
+        for index in base.clips.indices {
+            local.clips[index].fields.headline = "Local \(index)"
+            remote.clips[index].fields.headline = "Server \(index)"
+        }
+        local.clips[0].fields.description = "Independent local description"
+        remote.clips[0].fields.keywords = ["Independent server keyword"]
+        remote.clips[1].name = "Independent server name"
+        let initial = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote)
+        XCTAssertEqual(initial.conflicts.count, 2)
+        XCTAssertEqual(initial.unresolvedCount, 2)
+        XCTAssertThrowsError(try initial.resolved())
+        let choices: [String: MetadataConflictChoice] = ["clip/\(base.clips[0].id)": .local, "clip/\(base.clips[1].id)": .server]
+        let resolved = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote, choices: choices).resolved()
+        XCTAssertEqual(resolved.clips[0].fields.headline, "Local 0")
+        XCTAssertEqual(resolved.clips[1].fields.headline, "Server 1")
+        XCTAssertEqual(resolved.clips[0].fields.description, local.clips[0].fields.description)
+        XCTAssertEqual(resolved.clips[0].fields.keywords, remote.clips[0].fields.keywords)
+        XCTAssertEqual(resolved.clips[1].name, remote.clips[1].name)
+    }
+
+    func testDeletingConflictingClipDoesNotDiscardUnrelatedServerEdits() throws {
+        let base = SharedMetadataDocument(fixture())
+        var local = base, remote = base
+        let deleted = local.clips.removeFirst()
+        remote.clips[0].fields.description = "Edited before deletion arrived"
+        remote.clips[1].name = "Unrelated edit"
+        for choice in [MetadataConflictChoice.local, .server] {
+            let plan = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote, choices: ["clip/\(deleted.id)": choice])
+            let result = try plan.resolved()
+            XCTAssertEqual(plan.conflicts.count, 1)
+            XCTAssertEqual(result.clips.contains { $0.id == deleted.id }, choice == .server)
+            XCTAssertEqual(result.clips.first { $0.id == remote.clips[1].id }?.name, "Unrelated edit")
+            if choice == .server { XCTAssertTrue(result.clips.contains(remote.clips[0])) }
+        }
+    }
+
+    func testConcurrentAdditionWithSameIDRequiresChoice() throws {
+        let full = SharedMetadataDocument(fixture())
+        var base = full, local = full, remote = full
+        base.clips.removeFirst()
+        local.clips[0].name = "Local addition"
+        remote.clips[0].name = "Remote addition"
+        let plan = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote)
+        XCTAssertEqual(plan.conflicts.count, 1)
+        XCTAssertThrowsError(try plan.resolved())
+        let result = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote, choices: [plan.conflicts[0].id: .server]).resolved()
+        XCTAssertEqual(result, remote)
+    }
+
+    func testOverlapResolutionKeepsIndependentlyMergedText() throws {
+        let base = SharedMetadataDocument(fixture())
+        let first = base.clips.firstIndex { $0.name == "First" }!, second = base.clips.firstIndex { $0.name == "Second" }!
+        var local = base, remote = base
+        local.clips[first].endsAt = base.clips[first].startsAt.addingTimeInterval(180)
+        remote.clips[second].startsAt = base.clips[first].startsAt.addingTimeInterval(150)
+        local.clips[second].fields.description = "Keep this local description"
+        remote.clips[first].fields.headline = "Keep this server headline"
+        let initial = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote)
+        XCTAssertEqual(initial.conflicts.count, 1)
+        XCTAssertTrue(initial.conflicts[0].id.hasPrefix("overlap/"))
+        for choice in [MetadataConflictChoice.local, .server] {
+            let result = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote, choices: [initial.conflicts[0].id: choice]).resolved()
+            XCTAssertEqual(result.clips[first].fields.headline, remote.clips[first].fields.headline)
+            XCTAssertEqual(result.clips[second].fields.description, local.clips[second].fields.description)
+            let side = choice == .local ? local : remote
+            XCTAssertEqual(result.clips[first].endsAt, side.clips[first].endsAt)
+            XCTAssertEqual(result.clips[second].startsAt, side.clips[second].startsAt)
+        }
+    }
+
+    func testReadOnlyReviewRequiresServerChoicesForEveryLocalEdit() throws {
+        let base = SharedMetadataDocument(fixture())
+        var local = base, remote = base
+        local.clips[0].fields.headline = "Local change"
+        remote.clips[1].fields.description = "Incoming change"
+        let initial = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote, readOnly: true)
+        XCTAssertEqual(initial.conflicts.count, 1)
+        XCTAssertThrowsError(try initial.resolved())
+        XCTAssertThrowsError(try MetadataCalendarMerge.plan(base: base, local: local, remote: remote,
+            choices: [initial.conflicts[0].id: .local], readOnly: true).resolved())
+        let result = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote,
+            choices: [initial.conflicts[0].id: .server], readOnly: true).resolved()
+        XCTAssertEqual(result, remote)
+    }
+
+    func testPhotographerDeletionAndNewClipRequireDependencyChoice() throws {
+        let full = SharedMetadataDocument(fixture())
+        var base = full, local = full
+        base.clips = []; local.clips = []
+        local.photographers = []
+        let initial = try MetadataCalendarMerge.plan(base: base, local: local, remote: full)
+        XCTAssertEqual(initial.conflicts.count, 1)
+        XCTAssertTrue(initial.conflicts[0].id.hasPrefix("reference/"))
+        let retained = try MetadataCalendarMerge.plan(base: base, local: local, remote: full,
+            choices: [initial.conflicts[0].id: .server]).resolved()
+        XCTAssertEqual(retained, full)
+        let deleted = try MetadataCalendarMerge.plan(base: base, local: local, remote: full,
+            choices: [initial.conflicts[0].id: .local]).resolved()
+        XCTAssertEqual(deleted, local)
+    }
+
+    func testInvalidDuplicateRecordsAreRejectedBeforeMerge() {
+        let base = SharedMetadataDocument(fixture())
+        var invalid = base
+        invalid.clips.append(invalid.clips[0])
+        XCTAssertThrowsError(try MetadataCalendarMerge.plan(base: base, local: invalid, remote: base))
+    }
+}
+
+extension MetadataCalendarCoordinatorTests {
+    private func conflictFixture(syncGate: ReceiveSaveGate? = nil) throws
+        -> (URL, AppStore, MetadataCalendarCoordinator, MetadataCalendarRepository, CalendarTransportFixture) {
+        let (root, store, _, repository, initial) = try receiveFixture(syncGate: syncGate)
+        var baseline = initial
+        let first = baseline.document.clips[0]
+        baseline.document.clips.append(MetadataScheduleClip(photographerID: first.photographerID, name: "Independent clip",
+            startsAt: first.endsAt.addingTimeInterval(600), endsAt: first.endsAt.addingTimeInterval(900)))
+        baseline.document = try baseline.document.validated()
+        var local = baseline.document, remote = baseline
+        let index = local.clips.firstIndex { $0.id == first.id }!
+        local.clips[index].fields.headline = "Local headline"
+        local.clips[index].fields.description = "Independent local description"
+        remote.document.clips[index].fields.headline = "Server headline"
+        remote.document.clips[1 - index].name = "Independent server clip"
+        remote.revision += 1
+        XCTAssertTrue(store.applySyncedMetadataAutomation(local.automation, for: store.jobs[0].id))
+        var state = try repository.load()
+        let account = state.accounts[0]
+        state.bindings = [MetadataCalendarBinding(accountID: account.id, jobID: store.jobs[0].id, snapshot: baseline, conflict: remote)]
+        try repository.save(state)
+        let server = CalendarTransportFixture(calendar: remote)
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
+        sync.start(store: store, polling: false)
+        return (root, store, sync, repository, server)
+    }
+
+    func testConflictResolutionPersistsAndSendsOnlySelectedConflictingValues() async throws {
+        let (root, store, sync, repository, server) = try conflictFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let review = try sync.conflictReview(sync.state.bindings[0])
+        let conflict = try XCTUnwrap(review.plan().conflicts.first)
+        sync.resolve(review, choices: [conflict.id: .server])
+        try await finishOperation(sync)
+        let result = SharedMetadataDocument(store.jobs[0].metadataAutomation!)
+        let resolved = try XCTUnwrap(result.clips.first { $0.name == "Shared programming" })
+        XCTAssertEqual(resolved.fields.headline, "Server headline")
+        XCTAssertEqual(resolved.fields.description, "Independent local description")
+        XCTAssertTrue(result.clips.contains { $0.name == "Independent server clip" })
+        let serverDocument = await server.calendar.document
+        XCTAssertEqual(result, serverDocument)
+        XCTAssertEqual(try repository.load().bindings[0].snapshot.document, result)
+        XCTAssertNil(sync.state.bindings[0].conflict)
+        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .current)
+    }
+
+    func testLocalChangeAfterReviewOpensRequiresFreshChoices() async throws {
+        let (root, store, sync, repository, server) = try conflictFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let binding = sync.state.bindings[0]
+        let review = try sync.conflictReview(binding)
+        let conflict = try XCTUnwrap(review.plan().conflicts.first)
+        var changed = store.jobs[0].metadataAutomation!
+        changed.clips[0].fields.keywords = ["New edit while reviewing"]
+        XCTAssertTrue(store.applySyncedMetadataAutomation(changed, for: store.jobs[0].id))
+        sync.resolve(review, choices: [conflict.id: .server])
+        try await finishOperation(sync)
+        XCTAssertTrue(sync.message.contains("local calendar changed"), sync.message)
+        XCTAssertEqual(store.jobs[0].metadataAutomation, changed)
+        XCTAssertEqual(try repository.load().bindings, [binding])
+        let writes = await server.writes
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testRemoteChangeAfterReviewOpensRequiresFreshChoices() async throws {
+        let (root, store, sync, repository, server) = try conflictFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let originalJobs = store.jobs
+        let review = try sync.conflictReview(sync.state.bindings[0])
+        let conflict = try XCTUnwrap(review.plan().conflicts.first)
+        var changed = review.remote.document
+        changed.clips[0].fields.keywords = ["New remote edit"]
+        await server.replaceRemote(changed)
+        sync.resolve(review, choices: [conflict.id: .server])
+        try await finishOperation(sync)
+        XCTAssertTrue(sync.message.contains("server changed again"), sync.message)
+        XCTAssertEqual(store.jobs, originalJobs)
+        XCTAssertEqual(try repository.load().bindings[0].conflict?.document, changed)
+        let writes = await server.writes
+        XCTAssertEqual(writes, 0)
+        let refreshed = try sync.conflictReview(sync.state.bindings[0])
+        let choices = Dictionary(uniqueKeysWithValues: try refreshed.plan().conflicts.map { ($0.id, MetadataConflictChoice.server) })
+        sync.resolve(refreshed, choices: choices)
+        try await finishOperation(sync)
+        XCTAssertNil(sync.state.bindings[0].conflict)
+        XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!).clips[0].fields.keywords, ["New remote edit"])
+    }
+
+    func testResolvedChangesSurviveLostResponseAndRestart() async throws {
+        let (root, store, sync, repository, server) = try conflictFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let review = try sync.conflictReview(sync.state.bindings[0])
+        let choices = Dictionary(uniqueKeysWithValues: try review.plan().conflicts.map { ($0.id, MetadataConflictChoice.local) })
+        let expected = try review.plan(choices: choices).resolved()
+        await server.loseNextResponse()
+        sync.resolve(review, choices: choices)
+        try await finishOperation(sync)
+        XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), expected)
+        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .failed)
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let restarted = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: { body, _, _, _, _ in try await server.send(body) })
+        restarted.start(store: store, polling: false)
+        await restarted.refresh()
+        XCTAssertNil(restarted.state.bindings[0].conflict)
+        XCTAssertEqual(restarted.state.bindings[0].snapshot.document, expected)
+        let writes = await server.writes
+        XCTAssertEqual(writes, 1)
+    }
+
+    func testFailedBaselineSaveRetainsResolvedJobAndOriginalConflict() async throws {
+        let gate = ReceiveSaveGate()
+        let (root, store, sync, repository, server) = try conflictFixture(syncGate: gate)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let binding = sync.state.bindings[0]
+        let review = try sync.conflictReview(binding)
+        let choices = Dictionary(uniqueKeysWithValues: try review.plan().conflicts.map { ($0.id, MetadataConflictChoice.local) })
+        let expected = try review.plan(choices: choices).resolved()
+        gate.failNext()
+        sync.resolve(review, choices: choices)
+        try await finishOperation(sync)
+        XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), expected)
+        XCTAssertEqual(try repository.load().bindings, [binding])
+        let writes = await server.writes
+        XCTAssertEqual(writes, 0)
+        let refreshed = try sync.conflictReview(binding)
+        sync.resolve(refreshed, choices: choices)
+        try await finishOperation(sync)
+        XCTAssertNil(sync.state.bindings[0].conflict)
+        let document = await server.calendar.document
+        XCTAssertEqual(document, expected)
+    }
+}
+
+extension SharedMetadataCalendarTests {
+    func testOverlapChoicesIncludeSchedulesTheyWouldOtherwiseCollideWith() throws {
+        var automation = fixture()
+        let start = automation.clips[0].startsAt
+        automation.clips.append(MetadataScheduleClip(photographerID: automation.photographers[0].id, name: "Third",
+            startsAt: start.addingTimeInterval(400), endsAt: start.addingTimeInterval(500)))
+        let base = SharedMetadataDocument(automation)
+        var local = base, remote = base
+        let a = base.clips.firstIndex { $0.name == "First" }!
+        let b = base.clips.firstIndex { $0.name == "Second" }!
+        let c = base.clips.firstIndex { $0.name == "Third" }!
+        local.clips[a].startsAt = start.addingTimeInterval(1000)
+        local.clips[a].endsAt = start.addingTimeInterval(1100)
+        local.clips[c].startsAt = start.addingTimeInterval(50)
+        local.clips[c].endsAt = start.addingTimeInterval(150)
+        remote.clips[b].startsAt = start.addingTimeInterval(1050)
+        remote.clips[b].endsAt = start.addingTimeInterval(1150)
+        let initial = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote)
+        XCTAssertEqual(initial.conflicts.count, 1)
+        let conflict = try XCTUnwrap(initial.conflicts.first)
+        for clip in base.clips { XCTAssertTrue(conflict.id.contains(clip.id.uuidString)) }
+        for choice in [MetadataConflictChoice.local, .server] {
+            let resolved = try MetadataCalendarMerge.plan(base: base, local: local, remote: remote, choices: [conflict.id: choice]).resolved()
+            XCTAssertEqual(resolved, choice == .local ? local : remote)
+        }
+    }
+}
+
+extension SharedMetadataCalendarTests {
+    func testRowDatesAreCanonicalButOrderWithinEachDayRemainsEditable() throws {
+        var automation = fixture()
+        let p = automation.photographers[0].id
+        let second = PhotographerProfile(name: "Another photographer", filenamePrefix: "AN", creator: "Another", copyrightNotice: "Example")
+        automation.photographers.append(second)
+        let day = PhotographerWorkDate(automation.clips[0].startsAt)
+        let next = PhotographerWorkDate(automation.clips[0].startsAt.addingTimeInterval(86_400))
+        let early = MetadataPhotographerTrack(photographerID: p, date: day)
+        let late = MetadataPhotographerTrack(photographerID: p, date: next)
+        let another = MetadataPhotographerTrack(photographerID: second.id, date: day)
+        automation.photographerTracks = [late, another, early]
+        let document = SharedMetadataDocument(automation)
+        XCTAssertEqual(document.photographerTracks, [another, early, late])
+        var wire = document
+        wire.photographerTracks = [late, another, early]
+        let result = try MetadataCalendarMerge.plan(base: wire, local: document, remote: wire, readOnly: true)
+        XCTAssertTrue(result.conflicts.isEmpty)
+        XCTAssertEqual(try result.resolved(), document)
     }
 }

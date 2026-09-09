@@ -16,7 +16,8 @@ struct MetadataCalendarSettingsView: View {
     @State private var start = Calendar.current.startOfDay(for: Date())
     @State private var end = Calendar.current.startOfDay(for: Date())
     @State private var role = "editor"
-    @State private var resolution: MetadataCalendarBinding?
+    @State private var resolution: MetadataCalendarConflictReview?
+    @State private var reviewError: String?
     @State private var hasChosenCalendar = false
     @State private var showDiagnostics = false
     @State private var inviteLimited = false
@@ -57,7 +58,11 @@ struct MetadataCalendarSettingsView: View {
                     if let date = activity.lastSuccess { Text("Last successful sync: \(date.formatted())").font(.caption) }
                     Button("Sync Now") { Task { await sync.refresh(jobID: binding.jobID) } }.disabled(sync.busy)
                     if binding.conflict != nil {
-                        Button("Resolve Conflict…") { resolution = binding }.disabled(sync.busy)
+                        Button("Resolve Conflicts…") {
+                            do { resolution = try sync.conflictReview(binding); reviewError = nil }
+                            catch { reviewError = error.localizedDescription }
+                        }.disabled(sync.busy)
+                        if let reviewError { Text(reviewError).foregroundStyle(.secondary) }
                     }
                     DisclosureGroup("Stop sharing this job") {
                         Button("Detach and Keep Local Metadata") { sync.detach(binding) }.disabled(sync.busy)
@@ -156,45 +161,9 @@ struct MetadataCalendarSettingsView: View {
             .frame(width: 570)
             .disabled(sync.busy)
         }
-        .sheet(item: $resolution) { binding in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Resolve \(binding.snapshot.name)").font(.headline)
-                Text("Choosing a version replaces the shared portion of this calendar. Detaching keeps your local version without sending it.")
-                if let remote = binding.conflict {
-                    Text("Server revision \(remote.revision): \(remote.document.clips.count) clips, \(remote.document.photographers.count) photographers.")
-                    HStack(alignment: .top, spacing: 20) {
-                        conflictPreview("Local version", document: SharedMetadataDocument(store.jobs.first(where: { $0.id == binding.jobID })?.metadataAutomation ?? MetadataAutomation()).restricted(to: binding.range, timeZone: binding.snapshot.timeZone))
-                        conflictPreview("Server version", document: remote.document)
-                    }.frame(height: 300)
-                }
-                HStack {
-                    Button("Cancel") { resolution = nil }
-                    Button("Use Server Version") { sync.resolve(binding, keepLocal: false); resolution = nil }
-                    if binding.snapshot.role != "reader" {
-                        Button("Keep Local Version") { sync.resolve(binding, keepLocal: true); resolution = nil }
-                    }
-                }
-            }.padding().frame(width: 800)
+        .sheet(item: $resolution) { review in
+            MetadataCalendarConflictView(review: review)
         }
-    }
-
-    private func conflictPreview(_ title: String, document: SharedMetadataDocument) -> some View {
-        VStack(alignment: .leading) {
-            Text(title).font(.headline)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(document.photographers) { profile in
-                        Text("\(profile.creator) · \(profile.filenamePrefix)\n\(profile.copyrightNotice)")
-                    }
-                    ForEach(document.clips) { clip in
-                        Text("\(clip.name)\n\(clip.startsAt.formatted()) – \(clip.endsAt.formatted())\n\(clip.fields.headline)\n\(clip.fields.description)\n\(clip.fields.keywords.joined(separator: ", "))")
-                        if let gps = clip.gpsPosition {
-                            Text("Location: \(gps.label ?? "") \(gps.latitude), \(gps.longitude)")
-                        }
-                    }
-                }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var serverPicker: some View {
