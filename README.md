@@ -4,6 +4,8 @@ A native macOS menu-bar utility for getting newsroom files where they need to go
 
 Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports now retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
+The [version 3.0 implementation plan](Documentation/3.0-Implementation-Plan.md) covers metadata variables, automatic reverse geocoding, and local face recognition. These features are planned and are not part of the current release.
+
 ## What is new
 
 - Any number of independent sync jobs
