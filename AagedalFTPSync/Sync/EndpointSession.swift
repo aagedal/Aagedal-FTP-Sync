@@ -65,6 +65,7 @@ enum RemoteFileSize {
 enum RemoteTreeWalker {
     static func listFiles(
         root: String,
+        allowFileCaseCollisions: Bool = false,
         join: @Sendable (String, String) -> String,
         listDirectory: @Sendable (String) async throws -> [RemoteDirectoryEntry],
         onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?
@@ -80,7 +81,11 @@ enum RemoteTreeWalker {
             let entries = try await listDirectory(directory.remote)
                 .filter { !PathSafety.isInternalStagingPath($0.name) }
 
-            if let collision = PathSafety.localPathCollision(in: entries.map(\.name)) {
+            let groups = Dictionary(grouping: entries, by: { PathSafety.localComparisonKey($0.name) })
+            let unsafeEntries = groups.values.filter { group in
+                !allowFileCaseCollisions || group.contains { $0.isDirectory }
+            }.flatMap { $0 }
+            if let collision = PathSafety.localPathCollision(in: unsafeEntries.map(\.name)) {
                 let directoryLabel = directory.relative.isEmpty ? "/" : directory.relative
                 throw AppError.transferFailed(
                     "Two server entries cannot safely coexist at \(directoryLabel): \(collision[0]) and \(collision[1]). Rename one before syncing."
@@ -287,6 +292,12 @@ protocol EndpointSession: Sendable {
     func removeFilesTransactionally(_ files: [SyncFile]) async throws
     func removeFilesTransactionally(_ files: [SyncFile], matching contents: [URL]) async throws
     func close() async
+}
+
+/// Only the one-way download adapter may request distinct case-sensitive file names.
+/// Directory aliases and duplicate/Unicode-equivalent records remain rejected.
+protocol DownloadListingSession: EndpointSession {
+    func listDownloadFiles(onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?) async throws -> [String: SyncFile]
 }
 
 protocol EndpointFileLookupSession: EndpointSession {

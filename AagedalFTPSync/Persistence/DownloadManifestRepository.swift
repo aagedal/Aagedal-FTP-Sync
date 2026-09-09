@@ -28,6 +28,8 @@ actor DownloadManifestRepository {
     private let fileURL: URL
     private var cachedKeys: Set<Key>?
 
+    var nameMappingsDirectory: URL { fileURL.deletingLastPathComponent().appendingPathComponent("download-names-v1", isDirectory: true) }
+
     private var backupURL: URL {
         fileURL.appendingPathExtension("backup")
     }

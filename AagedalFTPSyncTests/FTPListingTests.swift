@@ -904,14 +904,14 @@ final class FTPListingTests: XCTestCase {
             endpoint.kind.isRemote ? source : destination
         })
 
-        do {
-            _ = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
-            XCTFail("The case-equivalent collision must fail")
-        } catch {
-            XCTAssertTrue(error.localizedDescription.contains("cannot safely coexist"))
-        }
+        let result = try await engine.run(job: partialFailureJob(), leftPassword: "secret", rightPassword: nil)
+        XCTAssertEqual(result.transferred, 1)
         let storedFiles = await destination.storedFiles
-        XCTAssertEqual(storedFiles, [existing.relativePath: existing])
+        XCTAssertEqual(storedFiles[existing.relativePath], existing)
+        let renamed = try XCTUnwrap(storedFiles.values.first { $0.relativePath != existing.relativePath })
+        XCTAssertTrue(renamed.relativePath.hasPrefix("NEWS~"))
+        XCTAssertTrue(renamed.relativePath.hasSuffix(".JPG"))
+        XCTAssertEqual(renamed.size, incoming.size)
     }
 
     func testEarlyCompanionFailureRollsBackPrimary() async throws {

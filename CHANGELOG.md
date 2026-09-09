@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.1 — 2026-09-09
+
+- Add an optional per-job setting to overwrite repeated downloads whose names differ only by capitalization, selecting the newest server variant and retaining one local filename. Existing jobs continue to preserve both copies.
+- Automatically give case-colliding files distinct, remembered local names during one-way FTP/FTPS/SFTP downloads. Preserve both files and original server names, including across retries and restarts. Ambiguous RAW/XMP companions and colliding directories retain their safety checks.
+
 ## 2.9.0 — 2026-09-09
 
 - Share metadata calendars or selected dates through a user-configured HTTPS PHP/MySQL server, with editor/read-only invitations, automatic polling, offline edits and explicit conflict resolution.

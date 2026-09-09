@@ -233,6 +233,13 @@ struct SyncEngine: Sendable {
         }
     }
 
+    private func downloadNamingSession(source: any EndpointSession, destination: any EndpointSession, job: SyncJob,
+                                       sourceEndpoint: Endpoint, destinationEndpoint: Endpoint) async -> any EndpointSession {
+        let directory = await downloadManifestRepository.nameMappingsDirectory
+        return DownloadNamingSession(source: source, destination: destination, overwriteCaseVariants: job.overwritesCaseVariantDownloads,
+            mappingURL: DownloadNamingSession.mappingURL(directory: directory, job: job, source: sourceEndpoint, destination: destinationEndpoint))
+    }
+
     private func performRun(
         job: SyncJob,
         leftPassword: String?,
@@ -246,8 +253,19 @@ struct SyncEngine: Sendable {
         let rightManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .leftToRight
             ? .syncedFiles
             : nil
-        let left = try sessionFactory(job.left, leftPassword, leftManagedFolder)
-        let right = try sessionFactory(job.right, rightPassword, rightManagedFolder)
+        let rawLeft = try sessionFactory(job.left, leftPassword, leftManagedFolder)
+        let rawRight = try sessionFactory(job.right, rightPassword, rightManagedFolder)
+        let left: any EndpointSession
+        let right: any EndpointSession
+        if job.direction == .leftToRight, job.left.kind.isRemote, job.right.kind == .local {
+            left = await downloadNamingSession(source: rawLeft, destination: rawRight, job: job, sourceEndpoint: job.left, destinationEndpoint: job.right)
+            right = rawRight
+        } else if job.direction == .rightToLeft, job.right.kind.isRemote, job.left.kind == .local {
+            right = await downloadNamingSession(source: rawRight, destination: rawLeft, job: job, sourceEndpoint: job.right, destinationEndpoint: job.left)
+            left = rawLeft
+        } else {
+            left = rawLeft; right = rawRight
+        }
         let processedDestination: (any EndpointSession)?
         let processedDestinationKind: EndpointKind?
         switch job.movesProcessedFiles ? job.effectiveProcessedFilesLocation : nil {
@@ -700,6 +718,7 @@ struct SyncEngine: Sendable {
         )
         let destinationFiles = try await destination.listFiles()
         let sourceFiles = try await sourceFilesForReprocessing(
+            destination: destination,
             job: job,
             automation: automation,
             leftPassword: leftPassword,
@@ -904,6 +923,7 @@ struct SyncEngine: Sendable {
     }
 
     private func sourceFilesForReprocessing(
+        destination: any EndpointSession,
         job: SyncJob,
         automation: MetadataAutomation,
         leftPassword: String?,
@@ -926,7 +946,11 @@ struct SyncEngine: Sendable {
 
         let source: any EndpointSession
         do {
-            source = try sessionFactory(sourceEndpoint, password, nil)
+            let rawSource = try sessionFactory(sourceEndpoint, password, nil)
+            if sourceEndpoint.kind.isRemote, let target = job.destinationEndpoint {
+                source = await downloadNamingSession(source: rawSource, destination: destination, job: job,
+                    sourceEndpoint: sourceEndpoint, destinationEndpoint: target)
+            } else { source = rawSource }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -979,7 +1003,7 @@ struct SyncEngine: Sendable {
         job: SyncJob
     ) throws {
         let eligible = sourceFiles.values.filter {
-            job.filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt)
+            job.filter.includes(path: $0.filterPath, modifiedAt: $0.modifiedAt)
         }
         let handledSidecars = Set(eligible.compactMap { file -> String? in
             guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return nil }
@@ -1128,7 +1152,7 @@ struct SyncEngine: Sendable {
                     && job.metadataAutomation?.timestampPolicy == .sourceModification)
             : false
         let eligible = directoryFiles.values.filter { file in
-            job.filter.includes(path: file.relativePath, modifiedAt: file.modifiedAt)
+            job.filter.includes(path: file.filterPath, modifiedAt: file.modifiedAt)
                 && (!requiresAuthoritativeTimestamp || authoritativePaths.contains(file.relativePath))
         }
         let handledSourceSidecars = Set(eligible.compactMap { file -> String? in
@@ -1240,7 +1264,7 @@ struct SyncEngine: Sendable {
         }
         for file in sourceFiles.values {
             guard unavailableFiles[file.relativePath] == nil else { continue }
-            guard job.filter.includes(path: file.relativePath, modifiedAt: file.modifiedAt) else { continue }
+            guard job.filter.includes(path: file.filterPath, modifiedAt: file.modifiedAt) else { continue }
             if let earlySignature = earlySnapshot.signatures[file.relativePath],
                earlySignature.matches(file, timestampTolerance: tolerance) {
                 continue
@@ -1254,7 +1278,8 @@ struct SyncEngine: Sendable {
                 destinationFile,
                 verifySize: job.verifyFileSizes,
                 metadataMayRewriteDestination: willRewriteMetadata,
-                savedSourceSignature: savedSignatures[file.relativePath]
+                savedSourceSignature: savedSignatures[file.relativePath],
+                trackRepeatedDownload: file.tracksRepeatedDownload
             )
             if !destinationNeedsTransfer,
                job.verifiesMatchingFileContents,
@@ -1427,7 +1452,7 @@ struct SyncEngine: Sendable {
             if earlySnapshot.signatures[file.relativePath] == nil {
                 transferred += 1
             }
-            if outcome.embeddedMetadataApplied {
+            if outcome.embeddedMetadataApplied || file.tracksRepeatedDownload {
                 pendingSourceSignatures.append(file)
             }
             if let deferredFailureDescription {
@@ -1609,9 +1634,15 @@ struct SyncEngine: Sendable {
         _ destination: SyncFile?,
         verifySize: Bool,
         metadataMayRewriteDestination: Bool = false,
-        savedSourceSignature: SourceFileSignature? = nil
+        savedSourceSignature: SourceFileSignature? = nil,
+        trackRepeatedDownload: Bool = false
     ) -> Bool {
         guard let destination else { return true }
+        if trackRepeatedDownload {
+            // Successful source receipts distinguish newer resends even when the
+            // local copy uses arrival time or metadata rewrites its size.
+            return savedSourceSignature.map { !$0.matches(source, timestampTolerance: 0) } ?? true
+        }
         if source.modifiedAt > destination.modifiedAt.addingTimeInterval(tolerance) { return true }
         guard verifySize else { return false }
         if metadataMayRewriteDestination, let savedSourceSignature {

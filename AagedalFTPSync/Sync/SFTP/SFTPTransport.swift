@@ -61,12 +61,20 @@ actor SFTPTransport {
         }
     }
 
+    func listDownloadFiles(onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?) async throws -> [String: SyncFile] {
+        try await perform(operation: "listing") {
+            try await self.walkFiles(allowFileCaseCollisions: true, onCompletedDirectory: onCompletedDirectory)
+        }
+    }
+
     private func walkFiles(
+        allowFileCaseCollisions: Bool = false,
         onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?
     ) async throws -> [String: SyncFile] {
         let sftp = try await connect()
         return try await RemoteTreeWalker.listFiles(
             root: try await resolvedRoot(using: sftp),
+            allowFileCaseCollisions: allowFileCaseCollisions,
             join: { root, child in
                 root.hasSuffix("/") ? root + child : root + "/" + child
             },

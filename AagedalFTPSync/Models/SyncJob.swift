@@ -179,6 +179,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var verifyFileSizes = true
     // Optional so jobs saved by earlier versions retain metadata-only comparisons.
     var verifyMatchingFileContents: Bool? = false
+    // Missing in older jobs: preserve case variants as separate downloads.
+    var overwriteCaseVariantDownloads: Bool? = nil
     var targetCleanup: TargetCleanup? = nil
     // Optional so jobs saved by earlier versions continue to decode.
     var processedFolder: Endpoint? = nil
@@ -202,6 +204,16 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var verifiesMatchingFileContents: Bool {
         get { verifyMatchingFileContents ?? false }
         set { verifyMatchingFileContents = newValue }
+    }
+
+    var overwritesCaseVariantDownloads: Bool {
+        get { overwriteCaseVariantDownloads ?? false }
+        set { overwriteCaseVariantDownloads = newValue }
+    }
+
+    var supportsCaseVariantDownloads: Bool {
+        (direction == .leftToRight && left.kind.isRemote && right.kind == .local)
+            || (direction == .rightToLeft && right.kind.isRemote && left.kind == .local)
     }
 
     var movesProcessedFiles: Bool {
@@ -380,6 +392,9 @@ struct SyncFile: Hashable, Sendable {
     let relativePath: String
     let size: Int64
     let modifiedAt: Date
+    var originalRelativePath: String? = nil
+    var tracksRepeatedDownload = false
+    var filterPath: String { originalRelativePath ?? relativePath }
 }
 
 enum JobPhase: Equatable, Sendable {

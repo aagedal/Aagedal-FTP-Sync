@@ -17,7 +17,7 @@ struct FTPDownloadFailure: LocalizedError, Sendable {
     var errorDescription: String? { underlyingError.localizedDescription }
 }
 
-struct FTPEndpointSession: EndpointSession, Sendable {
+struct FTPEndpointSession: DownloadListingSession, Sendable {
     private let endpoint: Endpoint
     private let connection: FTPConnection
 
@@ -46,11 +46,17 @@ struct FTPEndpointSession: EndpointSession, Sendable {
         try await walkFiles(onCompletedDirectory: onCompletedDirectory)
     }
 
+    func listDownloadFiles(onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?) async throws -> [String: SyncFile] {
+        try await walkFiles(allowFileCaseCollisions: true, onCompletedDirectory: onCompletedDirectory)
+    }
+
     private func walkFiles(
+        allowFileCaseCollisions: Bool = false,
         onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?
     ) async throws -> [String: SyncFile] {
         try await RemoteTreeWalker.listFiles(
             root: normalizedRoot,
+            allowFileCaseCollisions: allowFileCaseCollisions,
             join: { root, child in
                 root.hasSuffix("/") ? root + child : root + "/" + child
             },

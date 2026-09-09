@@ -2,7 +2,7 @@ import Foundation
 
 // Implemented with Citadel in SFTPEndpointSession+Citadel.swift. Keeping the
 // endpoint wrapper separate makes the sync engine independent of SSH details.
-struct SFTPEndpointSession: EndpointSession, Sendable {
+struct SFTPEndpointSession: DownloadListingSession, Sendable {
     private let transport: SFTPTransport
 
     var supportsCompletedDirectoryListings: Bool { true }
@@ -23,6 +23,10 @@ struct SFTPEndpointSession: EndpointSession, Sendable {
         onCompletedDirectory: @escaping @Sendable (CompletedDirectoryListing) async throws -> Void
     ) async throws -> [String: SyncFile] {
         try await transport.listFilesIncrementally(onCompletedDirectory: onCompletedDirectory)
+    }
+
+    func listDownloadFiles(onCompletedDirectory: (@Sendable (CompletedDirectoryListing) async throws -> Void)?) async throws -> [String: SyncFile] {
+        try await transport.listDownloadFiles(onCompletedDirectory: onCompletedDirectory)
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {

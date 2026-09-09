@@ -199,6 +199,15 @@ struct JobDetailEditor: View {
                 }
 
                 Section("Safety") {
+                    if draft.supportsCaseVariantDownloads {
+                        Toggle("Overwrite repeated filenames with different capitalization", isOn: Binding(
+                            get: { session.draft.overwritesCaseVariantDownloads },
+                            set: { session.draft.overwritesCaseVariantDownloads = $0 }
+                        ))
+                        Text("Uses the newest server file for names such as PHOTO.JPG and PHOTO.jpg, keeping one local filename. Equal timestamps use a consistent filename order. When off, both files are kept. Existing renamed copies are not removed. RAW/XMP companion conflicts still require manual renaming.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+
                     Toggle("Preserve modification dates", isOn: $session.draft.preserveModificationDates)
                     Toggle("Verify file sizes", isOn: $session.draft.verifyFileSizes)
                     Toggle(

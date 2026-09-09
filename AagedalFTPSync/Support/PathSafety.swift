@@ -22,9 +22,7 @@ enum PathSafety {
     static func localPathCollision(in paths: [String]) -> [String]? {
         var originalPathByComparisonKey: [String: String] = [:]
         for path in paths.sorted(by: { Array($0.utf8).lexicographicallyPrecedes(Array($1.utf8)) }) {
-            let comparisonKey = path
-                .precomposedStringWithCanonicalMapping
-                .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            let comparisonKey = localComparisonKey(path)
             if let originalPath = originalPathByComparisonKey[comparisonKey],
                !hasIdenticalRepresentation(originalPath, path) {
                 return [originalPath, path]
@@ -32,6 +30,11 @@ enum PathSafety {
             originalPathByComparisonKey[comparisonKey] = path
         }
         return nil
+    }
+
+    static func localComparisonKey(_ path: String) -> String {
+        path.precomposedStringWithCanonicalMapping
+            .folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 
     static func hasIdenticalRepresentation(_ first: String, _ second: String) -> Bool {

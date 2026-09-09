@@ -15,6 +15,7 @@
 		0AC37DE8ECE3F49643FBBA65 /* SyncJobValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95047C158288E644416B7E05 /* SyncJobValidationTests.swift */; };
 		0C318FACD47BB1ECC0C86E37 /* DownloadManifestRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */; };
 		0F49E4F6EC05AB6395A4F2FA /* ConfigurationTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0EAD657F152BADDBE31F18A /* ConfigurationTransferTests.swift */; };
+		17E233B3702C9E630DB8CA3A /* DownloadNamingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */; };
 		1905562AD67C12F229EEF2DD /* MetadataSyncServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 607698C48EA810DCC39628D4 /* MetadataSyncServerTests.swift */; };
 		192D43F2E6579A284084377B /* SyncRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E93E3863E7CE51C640F3CCF /* SyncRuntimeSupport.swift */; };
 		199442414D584BE62BC63D41 /* ServerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D340066C59960A94C5981FE /* ServerSettingsView.swift */; };
@@ -57,6 +58,7 @@
 		6CC969F2ED2B6A88E4DC0B2D /* MetadataSyncStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15B915A3B64E4F58BDA5FD73 /* MetadataSyncStatusView.swift */; };
 		7217A36321EAD9ECD0CC69FE /* SSHHostKeyFingerprintTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDFDBE6187BE47D3DA7E605E /* SSHHostKeyFingerprintTests.swift */; };
 		7256FA98B119B810B339DDB9 /* ServerProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7AF60A3923F21701F379868 /* ServerProfile.swift */; };
+		72E6F264811DA36174421586 /* DownloadNamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3283323167DA6CED1DA4D42 /* DownloadNamingTests.swift */; };
 		76B434A2DBF3769A17310DE3 /* AppPersistenceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE20E0C1B29F4F92DD057885 /* AppPersistenceCoordinator.swift */; };
 		7783E7951621289631F1B98A /* SSHHostKeyFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CCB321C1FE43CEDC8865882 /* SSHHostKeyFingerprint.swift */; };
 		78FA1B86AA36E6601A1CD68E /* MetadataAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07B39CBB757E875BE7C71E39 /* MetadataAuditTests.swift */; };
@@ -140,6 +142,7 @@
 		15B915A3B64E4F58BDA5FD73 /* MetadataSyncStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncStatusView.swift; sourceTree = "<group>"; };
 		1827F74FB21B975949149778 /* MetadataSyncActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncActivity.swift; sourceTree = "<group>"; };
 		21199D2C1CA349452587E48F /* FTPListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPListingTests.swift; sourceTree = "<group>"; };
+		21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNamingSession.swift; sourceTree = "<group>"; };
 		2153155F850DC3D8E89847FE /* MetadataPreviewAndRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreviewAndRecoveryTests.swift; sourceTree = "<group>"; };
 		25C577F4C00B53FEE0AEAEC4 /* SyncScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncScheduler.swift; sourceTree = "<group>"; };
 		299A6C29AB74842C2E8A91AA /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
@@ -194,6 +197,7 @@
 		A020FD65B833FE80CEB305B3 /* AagedalFTPSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AagedalFTPSyncApp.swift; sourceTree = "<group>"; };
 		A2AEF7D0A53A78EB585175E2 /* RemoteTransportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTransportIntegrationTests.swift; sourceTree = "<group>"; };
 		A2BEBFCBDD620232A1D0C014 /* SyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngine.swift; sourceTree = "<group>"; };
+		A3283323167DA6CED1DA4D42 /* DownloadNamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNamingTests.swift; sourceTree = "<group>"; };
 		A38A09C0D87C85E49CD89FF8 /* LocalEndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalEndpointSession.swift; sourceTree = "<group>"; };
 		A5995C30E1D15D202FBAEE40 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
 		A76827BE4BCD54BAAE42FE36 /* JobDetailEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobDetailEditor.swift; sourceTree = "<group>"; };
@@ -353,6 +357,7 @@
 		A78DF5C99E07B72F45BC7186 /* Sync */ = {
 			isa = PBXGroup;
 			children = (
+				21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */,
 				B6F8355FC14D367480034FA8 /* EndpointSession.swift */,
 				A38A09C0D87C85E49CD89FF8 /* LocalEndpointSession.swift */,
 				3B07ADB5A0D82B2900ADF5DB /* MetadataCalendarClient.swift */,
@@ -408,6 +413,7 @@
 				61206E0435FCE509729F69A0 /* ConfigurationTransferCoordinatorTests.swift */,
 				D0EAD657F152BADDBE31F18A /* ConfigurationTransferTests.swift */,
 				12EC7ADB08DA171C5517C6D0 /* DeliveryLatencyBenchmarkTests.swift */,
+				A3283323167DA6CED1DA4D42 /* DownloadNamingTests.swift */,
 				BC25AACD3C7F08B23B371518 /* FileFilterTests.swift */,
 				21199D2C1CA349452587E48F /* FTPListingTests.swift */,
 				E29CC609150B77D9F9FCA70E /* JobRepositoryTests.swift */,
@@ -621,6 +627,7 @@
 				5662C3ECC707EE19CDE34F51 /* ConfigurationTransferCoordinatorTests.swift in Sources */,
 				0F49E4F6EC05AB6395A4F2FA /* ConfigurationTransferTests.swift in Sources */,
 				269D04476AEC3E54C0FF8A90 /* DeliveryLatencyBenchmarkTests.swift in Sources */,
+				72E6F264811DA36174421586 /* DownloadNamingTests.swift in Sources */,
 				EA92EB4FBB105356154EC1DA /* FTPListingTests.swift in Sources */,
 				643C37FA6F70828858D71250 /* FileFilterTests.swift in Sources */,
 				02ECC949E0CD2F017A4C7D26 /* JobRepositoryTests.swift in Sources */,
@@ -668,6 +675,7 @@
 				DA9400038E9517D826EB6884 /* ConfigurationTransferCoordinator.swift in Sources */,
 				FFE30C3E978D3DA849C1A90A /* ConfigurationTransferView.swift in Sources */,
 				0C318FACD47BB1ECC0C86E37 /* DownloadManifestRepository.swift in Sources */,
+				17E233B3702C9E630DB8CA3A /* DownloadNamingSession.swift in Sources */,
 				9BE974E35F14A02DD16B33DC /* Endpoint.swift in Sources */,
 				CA34F3079F56DC562248F942 /* EndpointEditor.swift in Sources */,
 				232530E47CDEBD0A8D35EA9D /* EndpointSession.swift in Sources */,
@@ -783,7 +791,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -804,7 +812,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.9.0;
+				MARKETING_VERSION = 2.9.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -927,7 +935,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 35;
+				CURRENT_PROJECT_VERSION = 36;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
@@ -942,7 +950,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 2.9.0;
+				MARKETING_VERSION = 2.9.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
