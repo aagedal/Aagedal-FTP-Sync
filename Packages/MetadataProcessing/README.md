@@ -6,11 +6,34 @@ clock, perform lookups, or write fields.
 
 ## Version 1 template contract
 
-The caller checks its persisted activation and language-version marker **before**
-parsing. Old/inactive strings remain literal and must bypass the parser, including
-braces and escapes. Unsupported versions must be rejected by the caller. A parsed
-`MetadataTemplate` retains its source and exposes `requiredVariables` so integration
-can schedule only necessary services. Parsing a draft does not activate it.
+`MetadataTemplateText` and `MetadataTemplateKeywords` keep source and the optional
+language-version marker as an immutable, equatable pair. Create `.literal(source)`
+for legacy data or `try .activated(source)` after an explicit activation decision.
+The throwing `init(source:templateVersion:)` accepts nil (literal) or integer 1
+(active), rejecting other versions and validating active syntax before constructing
+the replacement. An invalid replacement leaves the previously assigned value intact;
+keep editor drafts separately. There are no independent source/marker setters.
+Equality includes activation, so merge logic can compare the entire pair.
+
+Literal values bypass parsing and resolve to the exact source, including braces,
+escapes, and keyword blanks/duplicates/order. Active text delegates to the parser;
+active keywords validate and resolve the complete array together. Both types expose
+`requiredVariables`, empty for literals. Literal values bypass the template safety
+bounds too; integration must retain its existing literal field validation and
+normalization policies. `MetadataTemplate.parse` remains available for validating
+editor drafts without committing activation.
+
+The types' strict Codable **core envelope** is `{"source":"…","templateVersion":1}`
+(Keywords uses an array for `source`). A missing marker means literal and encodes
+without the marker. Explicit null, booleans, wrong source shapes, unsupported
+versions and unknown envelope keys reject rather than falling back to literal.
+Unknown-key rejection applies to this core envelope only. It is not the proposed
+app/calendar wire format: adapters must map Headline/Description/Keywords markers
+and Copyright's marker to complete values while enforcing their own schema gates.
+Decoding and encoding never replace persisted source with a resolved sample.
+App storage migration, per-field marker adapters, package/calendar compatibility
+and UI activation remain unimplemented; using these value types alone does not
+establish those compatibility guarantees.
 
 Supported tokens are `{photographer}`, `{gps:city}`, `{gps:country}`, `{persons}`,
 `{date:YYYY-MM-DD}`, and `{dateCaptured:YYYY-MM-DD}`. The only date-format alias is
@@ -42,7 +65,7 @@ No capture date fallback to the processing date occurs. Unsupported years (outsi
 1–9999 CE) and nonfinite instants return a typed preservation outcome.
 
 ```swift
-let template = try MetadataTemplate.parse("Photo: {photographer}, {date:YYYY-MM-DD}")
+let template = try MetadataTemplateText.activated("Photo: {photographer}, {date:YYYY-MM-DD}")
 switch template.resolve(using: frozenContext) {
 case .resolved(let text):
     // Propose this entire field, subject to the existing metadata write policy.
@@ -76,5 +99,6 @@ formats, recursive field references and missing-value removal.
 Run `swift test --package-path Packages/MetadataProcessing` from the repository
 root. Pure unit tests cover syntax, Unicode and byte bounds, escaping, dates and
 zone provenance, missing values, single-pass substitution, keyword atomicity and
-normalization. App integration and real metadata/GUI behavior require separate
+normalization, strict activation decoding, unchanged legacy literals, source/version
+round trips and failed atomic replacements. App integration and real metadata/GUI behavior require separate
 verification and are not established by these tests.
