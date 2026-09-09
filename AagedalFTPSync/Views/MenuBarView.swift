@@ -293,8 +293,8 @@ private struct MenuJobRow: View {
 
     private var statusSymbol: String {
         if case .failed = phase { return "xmark.octagon.fill" }
-        if case .succeeded(_, _, _, _, let conflicts, let metadataReport, _) = phase,
-           !conflicts.isEmpty || metadataReport.failed > 0 {
+        if case .succeeded(_, _, _, _, let conflicts, let metadataReport, _, let pendingSourceFiles) = phase,
+           !conflicts.isEmpty || metadataReport.failed > 0 || !pendingSourceFiles.isEmpty {
             return "exclamationmark.triangle.fill"
         }
         if case .syncing = phase { return "arrow.triangle.2.circlepath" }
@@ -309,8 +309,8 @@ private struct MenuJobRow: View {
 
     private var statusColor: Color {
         if case .failed = phase { return .red }
-        if case .succeeded(_, _, _, _, let conflicts, let metadataReport, _) = phase,
-           !conflicts.isEmpty || metadataReport.failed > 0 {
+        if case .succeeded(_, _, _, _, let conflicts, let metadataReport, _, let pendingSourceFiles) = phase,
+           !conflicts.isEmpty || metadataReport.failed > 0 || !pendingSourceFiles.isEmpty {
             return .orange
         }
         return .secondary

@@ -27,6 +27,17 @@ struct RemoteDirectoryEntry: Sendable {
     let hasAuthoritativeTimestamp: Bool
 }
 
+struct DownloadSizeMismatch: LocalizedError, Sendable {
+    let expectedBytes: Int64
+    var actualBytes: Int64? = nil
+    var errorDescription: String? {
+        if let actualBytes {
+            return "The downloaded file changed size: listed as \(expectedBytes) bytes, received \(actualBytes) bytes."
+        }
+        return "The downloaded file exceeded its advertised size of \(expectedBytes) bytes."
+    }
+}
+
 struct TransferSizeLimit: Sendable {
     let maximumBytes: Int64
     private(set) var receivedBytes: Int64 = 0
@@ -42,9 +53,7 @@ struct TransferSizeLimit: Sendable {
         guard byteCount >= 0,
               let count = Int64(exactly: byteCount),
               count <= maximumBytes - receivedBytes else {
-            throw AppError.transferFailed(
-                "The downloaded file exceeded its advertised size of \(maximumBytes) bytes."
-            )
+            throw DownloadSizeMismatch(expectedBytes: maximumBytes)
         }
         receivedBytes += count
     }

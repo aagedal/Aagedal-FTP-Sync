@@ -408,7 +408,8 @@ enum JobPhase: Equatable, Sendable {
         processed: Int,
         conflicts: [String],
         metadataReport: MetadataRunReport,
-        nextRun: Date?
+        nextRun: Date?,
+        pendingSourceFiles: [String] = []
     )
     case failed(String, retryAt: Date?)
 
@@ -417,7 +418,7 @@ enum JobPhase: Equatable, Sendable {
         case .stopped: return "Stopped"
         case .waiting: return "Waiting"
         case .syncing: return "Syncing…"
-        case .succeeded(_, let transferred, let deleted, let processed, let conflicts, let metadataReport, _):
+        case .succeeded(_, let transferred, let deleted, let processed, let conflicts, let metadataReport, _, let pendingSourceFiles):
             let transferText = transferred == 1 ? "1 file transferred" : "\(transferred) files transferred"
             var parts = [transferText]
             if deleted > 0 { parts.append("\(deleted) deleted") }
@@ -430,6 +431,11 @@ enum JobPhase: Equatable, Sendable {
                 parts.append(
                     "metadata: \(metadataReport.applied) applied, \(metadataReport.skipped) skipped, \(metadataReport.failed) failed"
                 )
+            }
+            if !pendingSourceFiles.isEmpty {
+                parts.append(pendingSourceFiles.count == 1
+                    ? "1 changing source file deferred until next sync"
+                    : "\(pendingSourceFiles.count) changing source files deferred until next sync")
             }
             return parts.joined(separator: ", ")
         case .failed(let message, let retryAt):
@@ -445,19 +451,22 @@ struct SyncResult: Equatable, Sendable {
     let processed: Int
     let conflicts: [String]
     let metadataReport: MetadataRunReport
+    let pendingSourceFiles: [String]
 
     init(
         transferred: Int,
         deleted: Int,
         processed: Int = 0,
         conflicts: [String] = [],
-        metadataReport: MetadataRunReport = .empty
+        metadataReport: MetadataRunReport = .empty,
+        pendingSourceFiles: [String] = []
     ) {
         self.transferred = transferred
         self.deleted = deleted
         self.processed = processed
         self.conflicts = conflicts
         self.metadataReport = metadataReport
+        self.pendingSourceFiles = pendingSourceFiles
     }
 
     var hasActivity: Bool {
@@ -466,6 +475,7 @@ struct SyncResult: Equatable, Sendable {
             || processed > 0
             || !conflicts.isEmpty
             || metadataReport.hasActivity
+            || !pendingSourceFiles.isEmpty
     }
 
     var summary: String? {
@@ -490,6 +500,9 @@ struct SyncResult: Equatable, Sendable {
                 ? "1 metadata decision recorded"
                 : "\(metadataReport.entries.count) metadata decisions recorded")
         }
+        if !pendingSourceFiles.isEmpty {
+            parts.append("\(pendingSourceFiles.count) changing source file(s) deferred until next sync")
+        }
         return parts.joined(separator: ", ")
     }
 
@@ -501,7 +514,8 @@ struct SyncResult: Equatable, Sendable {
             deleted: deleted + other.deleted,
             processed: processed + other.processed,
             conflicts: Array(Set(conflicts).union(other.conflicts)).sorted(),
-            metadataReport: combinedMetadataReport
+            metadataReport: combinedMetadataReport,
+            pendingSourceFiles: Array(Set(pendingSourceFiles).union(other.pendingSourceFiles)).sorted()
         )
     }
 }

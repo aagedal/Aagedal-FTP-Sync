@@ -76,6 +76,11 @@ private struct RetryableSourceFile: LocalizedError {
     var errorDescription: String? { failure.localizedDescription }
 }
 
+private struct ChangingSourceFile: LocalizedError {
+    let relativePath: String
+    var errorDescription: String? { "The source file changed during download: \(relativePath). Waiting for the next sync." }
+}
+
 private struct EarlyTransferSnapshot: Sendable {
     let signatures: [String: SourceFileSignature]
     let result: SyncResult
@@ -83,6 +88,7 @@ private struct EarlyTransferSnapshot: Sendable {
     let destinationFiles: [String: SyncFile]
     let unavailableFiles: [String: String]
     let deferredFiles: [String: FTPDownloadFailure]
+    let changingFiles: [String: String]
 
     static let empty = EarlyTransferSnapshot(
         signatures: [:],
@@ -90,7 +96,8 @@ private struct EarlyTransferSnapshot: Sendable {
         sourceSignaturesToPersist: [],
         destinationFiles: [:],
         unavailableFiles: [:],
-        deferredFiles: [:]
+        deferredFiles: [:],
+        changingFiles: [:]
     )
 }
 
@@ -100,6 +107,7 @@ private actor EarlyTransferState {
     private var transferred = 0
     private var unavailableFiles: [String: String] = [:]
     private var deferredFiles: [String: FTPDownloadFailure] = [:]
+    private var changingFiles: [String: String] = [:]
     private var metadataReport = MetadataRunReport.empty
     private var sourceSignaturesToPersist: [SyncFile] = []
     private var destinationFiles: [String: SyncFile] = [:]
@@ -109,7 +117,7 @@ private actor EarlyTransferState {
     }
 
     func claim(_ candidates: [SyncFile]) -> [SyncFile] {
-        let remaining = max(0, maximumTransfers - signatures.count - unavailableFiles.count - deferredFiles.count)
+        let remaining = max(0, maximumTransfers - signatures.count - unavailableFiles.count - deferredFiles.count - changingFiles.count)
         return Array(candidates.prefix(remaining))
     }
 
@@ -119,6 +127,10 @@ private actor EarlyTransferState {
 
     func recordDeferred(_ file: SyncFile, failure: RetryableSourceFile) {
         deferredFiles[file.relativePath] = failure.failure
+    }
+
+    func recordChanging(_ file: SyncFile, failure: ChangingSourceFile) {
+        changingFiles[file.relativePath] = failure.relativePath
     }
 
     func record(_ file: SyncFile, outcome: TransferMetadataOutcome) {
@@ -135,12 +147,14 @@ private actor EarlyTransferState {
             result: SyncResult(
                 transferred: transferred,
                 deleted: 0,
-                metadataReport: metadataReport
+                metadataReport: metadataReport,
+                pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
             ),
             sourceSignaturesToPersist: sourceSignaturesToPersist,
             destinationFiles: destinationFiles,
             unavailableFiles: unavailableFiles,
-            deferredFiles: deferredFiles
+            deferredFiles: deferredFiles,
+            changingFiles: changingFiles
         )
     }
 }
@@ -426,7 +440,7 @@ struct SyncEngine: Sendable {
             case .bidirectional:
                 break
             }
-            let transferResult: (transferred: Int, processed: Int, metadataReport: MetadataRunReport)
+            let transferResult: (transferred: Int, processed: Int, metadataReport: MetadataRunReport, pendingSourceFiles: [String])
             let conflicts: [String]
             let earlySnapshot = await earlyTransferState.snapshot()
             switch job.direction {
@@ -467,7 +481,7 @@ struct SyncEngine: Sendable {
                     job: job,
                     runID: runID
                 )
-                transferResult = (result.transferred, 0, .empty)
+                transferResult = (result.transferred, 0, .empty, result.pendingSourceFiles)
                 conflicts = result.conflicts
             }
             let completedTransfers = SyncResult(
@@ -475,7 +489,8 @@ struct SyncEngine: Sendable {
                 deleted: 0,
                 processed: transferResult.processed,
                 conflicts: conflicts,
-                metadataReport: transferResult.metadataReport
+                metadataReport: transferResult.metadataReport,
+                pendingSourceFiles: transferResult.pendingSourceFiles
             )
             let deleted: Int
             do {
@@ -1212,6 +1227,8 @@ struct SyncEngine: Sendable {
                 throw CancellationError()
             } catch let failure as UnavailableSourceFile {
                 await state.recordUnavailable(file, failure: failure)
+            } catch let failure as ChangingSourceFile {
+                await state.recordChanging(file, failure: failure)
             } catch let failure as RetryableSourceFile {
                 await state.recordDeferred(file, failure: failure)
             } catch {
@@ -1246,7 +1263,7 @@ struct SyncEngine: Sendable {
         job: SyncJob,
         runID: UUID,
         earlySnapshot: EarlyTransferSnapshot = .empty
-    ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport) {
+    ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport, pendingSourceFiles: [String]) {
         let savedSignatures = try await sourceSignatureRepository.signatures(
             jobID: job.id,
             sourceEndpoint: sourceEndpoint,
@@ -1258,12 +1275,16 @@ struct SyncEngine: Sendable {
         var preliminaryCandidates: [SyncFile] = []
         var unavailableFiles = earlySnapshot.unavailableFiles
         var deferredFiles = earlySnapshot.deferredFiles
+        var changingFiles = earlySnapshot.changingFiles
+        let earlyChangingPaths = Set(changingFiles.keys.flatMap { path in
+            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation) } ?? [path]
+        })
         var deferredComparisons: Set<String> = []
         for path in deferredFiles.keys where sourceFiles[path] == nil {
             unavailableFiles[path] = path
         }
         for file in sourceFiles.values {
-            guard unavailableFiles[file.relativePath] == nil else { continue }
+            guard unavailableFiles[file.relativePath] == nil, !earlyChangingPaths.contains(file.relativePath) else { continue }
             guard job.filter.includes(path: file.filterPath, modifiedAt: file.modifiedAt) else { continue }
             if let earlySignature = earlySnapshot.signatures[file.relativePath],
                earlySignature.matches(file, timestampTolerance: tolerance) {
@@ -1300,6 +1321,9 @@ struct SyncEngine: Sendable {
                     } catch let failure as UnavailableSourceFile {
                         unavailableFiles[file.relativePath] = failure.failure.relativePath
                         continue
+                    } catch let failure as ChangingSourceFile {
+                        changingFiles[file.relativePath] = failure.relativePath
+                        continue
                     } catch let failure as RetryableSourceFile {
                         deferredFiles[file.relativePath] = failure.failure
                         deferredComparisons.insert(file.relativePath)
@@ -1317,8 +1341,11 @@ struct SyncEngine: Sendable {
             let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
             return sourceFiles[sidecarPath] == nil ? nil : sidecarPath
         })
+        let changingPaths = Set(changingFiles.keys.flatMap { path in
+            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation) } ?? [path]
+        })
         let candidates = preliminaryCandidates
-            .filter { !handledSourceSidecars.contains($0.relativePath) }
+            .filter { !handledSourceSidecars.contains($0.relativePath) && !changingPaths.contains($0.relativePath) }
             .sorted { $0.modifiedAt > $1.modifiedAt }
         try validateGeneratedSidecarOutputPaths(
             candidates: candidates,
@@ -1403,6 +1430,9 @@ struct SyncEngine: Sendable {
             } catch let failure as UnavailableSourceFile {
                 unavailableFiles[file.relativePath] = failure.failure.relativePath
                 continue
+            } catch let failure as ChangingSourceFile {
+                changingFiles[file.relativePath] = failure.relativePath
+                continue
             } catch let failure as RetryableSourceFile {
                 if isRetry {
                     exhaustedFiles[file.relativePath] = failure.localizedDescription
@@ -1429,7 +1459,8 @@ struct SyncEngine: Sendable {
                             transferred: transferred,
                             deleted: 0,
                             processed: processed,
-                            metadataReport: metadataReport
+                            metadataReport: metadataReport,
+                            pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
                         )
                     )
                 }
@@ -1439,7 +1470,8 @@ struct SyncEngine: Sendable {
                         transferred: transferred,
                         deleted: 0,
                         processed: processed,
-                        metadataReport: metadataReport
+                        metadataReport: metadataReport,
+                        pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
                     )
                 )
             }
@@ -1470,7 +1502,8 @@ struct SyncEngine: Sendable {
                             transferred: transferred,
                             deleted: 0,
                             processed: processed,
-                            metadataReport: metadataReport
+                            metadataReport: metadataReport,
+                            pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
                         )
                     )
                 }
@@ -1480,7 +1513,8 @@ struct SyncEngine: Sendable {
                         transferred: transferred,
                         deleted: 0,
                         processed: processed,
-                        metadataReport: metadataReport
+                        metadataReport: metadataReport,
+                        pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
                     )
                 )
             }
@@ -1498,7 +1532,8 @@ struct SyncEngine: Sendable {
                     transferred: transferred,
                     deleted: 0,
                     processed: processed,
-                    metadataReport: metadataReport
+                    metadataReport: metadataReport,
+                    pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
                 )
             )
         }
@@ -1518,12 +1553,13 @@ struct SyncEngine: Sendable {
                     transferred: transferred,
                     deleted: 0,
                     processed: processed,
-                    metadataReport: metadataReport
+                    metadataReport: metadataReport,
+                    pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
                 ),
                 completedWithSourceFailures: true
             )
         }
-        return (transferred, processed, metadataReport)
+        return (transferred, processed, metadataReport, Array(Set(changingFiles.values)).sorted())
     }
 
     private func recordPublishedLocalDownloads(
@@ -1546,7 +1582,7 @@ struct SyncEngine: Sendable {
         rightFiles: [String: SyncFile],
         job: SyncJob,
         runID: UUID
-    ) async throws -> (transferred: Int, conflicts: [String]) {
+    ) async throws -> (transferred: Int, conflicts: [String], pendingSourceFiles: [String]) {
         let paths = Set(leftFiles.keys).union(rightFiles.keys)
         var actions: [(
             file: SyncFile,
@@ -1558,6 +1594,7 @@ struct SyncEngine: Sendable {
             destinationKind: EndpointKind
         )] = []
         var conflicts: [String] = []
+        var changingFiles: [String] = []
         for path in paths {
             let leftFile = leftFiles[path]
             let rightFile = rightFiles[path]
@@ -1576,11 +1613,14 @@ struct SyncEngine: Sendable {
                     // Equal timestamps with different sizes are ambiguous. Keep both by refusing to overwrite.
                     conflicts.append(path)
                     continue
-                } else if job.verifiesMatchingFileContents,
-                          hasMatchingSizeAndTimestamp(leftFile, rightFile),
-                          !(try await contentsMatch(leftFile, in: left, rightFile, in: right)) {
-                    // Equal metadata with different content is also ambiguous in a two-way job.
-                    conflicts.append(path)
+                } else if job.verifiesMatchingFileContents, hasMatchingSizeAndTimestamp(leftFile, rightFile) {
+                    do {
+                        if !(try await contentsMatch(leftFile, in: left, rightFile, in: right, secondIsSource: true)) {
+                            conflicts.append(path)
+                        }
+                    } catch let failure as ChangingSourceFile {
+                        changingFiles.append(failure.relativePath)
+                    }
                     continue
                 }
             default:
@@ -1613,6 +1653,9 @@ struct SyncEngine: Sendable {
                     runID: runID
                 )
                 transferred += 1
+            } catch let failure as ChangingSourceFile {
+                changingFiles.append(failure.relativePath)
+                continue
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -1621,12 +1664,13 @@ struct SyncEngine: Sendable {
                     partialResult: SyncResult(
                         transferred: transferred,
                         deleted: 0,
-                        conflicts: conflicts.sorted()
+                        conflicts: conflicts.sorted(),
+                        pendingSourceFiles: Array(Set(changingFiles)).sorted()
                     )
                 )
             }
         }
-        return (transferred, conflicts.sorted())
+        return (transferred, conflicts.sorted(), Array(Set(changingFiles)).sorted())
     }
 
     private func needsTransfer(
@@ -1662,11 +1706,26 @@ struct SyncEngine: Sendable {
             && abs(first.modifiedAt.timeIntervalSince(second.modifiedAt)) <= tolerance
     }
 
+    private func downloadSource(_ file: SyncFile, from source: any EndpointSession, to url: URL, verifySize: Bool) async throws {
+        do {
+            try await source.exportFile(file, to: url, maximumSize: verifySize ? file.size : nil)
+            if verifySize {
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                if let actual = (attributes[.size] as? NSNumber)?.int64Value, actual != file.size {
+                    throw DownloadSizeMismatch(expectedBytes: file.size, actualBytes: actual)
+                }
+            }
+        } catch is DownloadSizeMismatch {
+            throw ChangingSourceFile(relativePath: file.filterPath)
+        }
+    }
+
     private func contentsMatch(
         _ first: SyncFile,
         in firstSession: any EndpointSession,
         _ second: SyncFile,
-        in secondSession: any EndpointSession
+        in secondSession: any EndpointSession,
+        secondIsSource: Bool = false
     ) async throws -> Bool {
         let firstURL = try makeTemporaryURL(for: first)
         let secondURL = try makeTemporaryURL(for: second)
@@ -1676,7 +1735,7 @@ struct SyncEngine: Sendable {
         do {
             try Task.checkCancellation()
             do {
-                try await firstSession.exportFile(first, to: firstURL, maximumSize: first.size)
+                try await downloadSource(first, from: firstSession, to: firstURL, verifySize: true)
             } catch let failure as FTPFileNoLongerListed {
                 throw UnavailableSourceFile(failure: failure)
             } catch let failure as FTPDownloadFailure {
@@ -1685,12 +1744,15 @@ struct SyncEngine: Sendable {
             let firstDigest = try contentDigest(at: firstURL)
             try? FileManager.default.removeItem(at: firstURL)
             try Task.checkCancellation()
-            try await secondSession.exportFile(second, to: secondURL, maximumSize: second.size)
+            if secondIsSource { try await downloadSource(second, from: secondSession, to: secondURL, verifySize: true) }
+            else { try await secondSession.exportFile(second, to: secondURL, maximumSize: second.size) }
             let secondDigest = try contentDigest(at: secondURL)
             return firstDigest == secondDigest
         } catch is CancellationError {
             throw CancellationError()
         } catch let failure as UnavailableSourceFile {
+            throw failure
+        } catch let failure as ChangingSourceFile {
             throw failure
         } catch let failure as RetryableSourceFile {
             throw failure
@@ -1756,17 +1818,9 @@ struct SyncEngine: Sendable {
             itemCount: sourceItemCount
         ))
         do {
-            try await source.exportFile(
-                file,
-                to: temporaryURL,
-                maximumSize: verifySize ? file.size : nil
-            )
+            try await downloadSource(file, from: source, to: temporaryURL, verifySize: verifySize)
             if let sourceSidecar {
-                try await source.exportFile(
-                    sourceSidecar,
-                    to: temporarySidecarURL,
-                    maximumSize: verifySize ? sourceSidecar.size : nil
-                )
+                try await downloadSource(sourceSidecar, from: source, to: temporarySidecarURL, verifySize: verifySize)
             }
             eventLogger.record(SyncLogEvent(
                 runID: runID,

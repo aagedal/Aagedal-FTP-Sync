@@ -282,9 +282,9 @@ struct MenuBarActivityState: Equatable {
         }
         warningJobCount = phases.count { phase in
             guard case .succeeded(
-                _, _, _, _, let conflicts, let metadataReport, _
+                _, _, _, _, let conflicts, let metadataReport, _, let pendingSourceFiles
             ) = phase else { return false }
-            return !conflicts.isEmpty || metadataReport.failed > 0
+            return !conflicts.isEmpty || metadataReport.failed > 0 || !pendingSourceFiles.isEmpty
         }
         syncingJobCount = phases.count { $0 == .syncing }
     }

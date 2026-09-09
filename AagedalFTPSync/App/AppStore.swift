@@ -1025,7 +1025,8 @@ final class AppStore: ObservableObject {
                 processed: result.processed,
                 conflicts: result.conflicts,
                 metadataReport: result.metadataReport,
-                nextRun: nil
+                nextRun: nil,
+                pendingSourceFiles: result.pendingSourceFiles
             )
             failureNotificationCoordinator.recordSuccess(jobID: jobID)
             attempt = .succeeded
@@ -1225,7 +1226,8 @@ extension AppStore: SyncSchedulerDelegate {
                 let processed,
                 let conflicts,
                 let metadataReport,
-                _
+                _,
+                let pendingSourceFiles
             ) = phases[jobID] {
                 phases[jobID] = .succeeded(
                     completedAt,
@@ -1234,7 +1236,8 @@ extension AppStore: SyncSchedulerDelegate {
                     processed: processed,
                     conflicts: conflicts,
                     metadataReport: metadataReport,
-                    nextRun: date
+                    nextRun: date,
+                    pendingSourceFiles: pendingSourceFiles
                 )
             }
         case .failed(let message), .sourceFilesFailed(let message):

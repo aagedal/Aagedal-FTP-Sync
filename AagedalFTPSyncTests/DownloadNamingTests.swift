@@ -7,6 +7,8 @@ private actor NamedDownloadSource: DownloadListingSession {
     var dates: [String: Date] = [:]
     var downloads: [String] = []
     var removals: [String] = []
+    var changesOnRead: [String: Data] = [:]
+    func changeOnNextRead(_ path: String, data: Data) { changesOnRead[path] = data }
     nonisolated var supportsCompletedDirectoryListings: Bool { true }
     init(_ contents: [String: Data]) { self.contents = contents }
     func set(_ path: String, data: Data?, date: Date = Date(timeIntervalSince1970: 1_900_000_000)) {
@@ -23,8 +25,20 @@ private actor NamedDownloadSource: DownloadListingSession {
             join: { $0 + $1 }, listDirectory: { _ in entries }, onCompletedDirectory: callback)
     }
     func exportFile(_ file: SyncFile, to temporaryURL: URL) throws {
+        try exportFile(file, to: temporaryURL, maximumSize: nil)
+    }
+    func exportFile(_ file: SyncFile, to temporaryURL: URL, maximumSize: Int64?) throws {
+        if let changed = changesOnRead.removeValue(forKey: file.relativePath) { contents[file.relativePath] = changed }
         guard let data = contents[file.relativePath] else { throw AppError.transferFailed("Missing exact server name") }
         downloads.append(file.relativePath)
+        if let maximumSize {
+            var limit = try TransferSizeLimit(maximumBytes: maximumSize)
+            // Leave staged partial bytes, just as a streaming read can before growth is detected.
+            let initial = min(data.count, Int(maximumSize))
+            try data.prefix(initial).write(to: temporaryURL)
+            try limit.record(initial)
+            try limit.record(data.count - initial)
+        }
         try data.write(to: temporaryURL)
     }
     func importFile(from localURL: URL, as file: SyncFile, preserveDate: Bool, verifySize: Bool) throws {
@@ -277,5 +291,87 @@ extension DownloadNamingTests {
         XCTAssertTrue(restored.overwritesCaseVariantDownloads)
         job.direction = .bidirectional
         XCTAssertFalse(job.supportsCaseVariantDownloads)
+    }
+}
+
+extension DownloadNamingTests {
+    func testGrowingDownloadDefersUntilFreshListingAndOtherFilesContinue() async throws {
+        for kind in [EndpointKind.ftp, .sftp] {
+            let (root, endpoint, destination) = try fixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = NamedDownloadSource(["GROWING.JPG": Data("part".utf8), "READY.JPG": Data("complete".utf8)])
+            await source.changeOnNextRead("GROWING.JPG", data: Data("complete upload".utf8))
+            var job = SyncJob(name: "Growing uploads")
+            job.left = Endpoint(kind: kind, host: "sync.example.org", username: "example")
+            job.left.hostKeyFingerprint = "SHA256:" + Data(repeating: 1, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
+            job.right = endpoint
+            let engine = SyncEngine(sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { entry, _, _ -> any EndpointSession in if entry.kind.isRemote { return source }; return destination })
+            let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(first.transferred, 1)
+            XCTAssertEqual(first.pendingSourceFiles, ["GROWING.JPG"])
+            XCTAssertTrue(first.summary?.contains("deferred") == true)
+            let initialFiles = try await destination.listFiles()
+            XCTAssertEqual(Set(initialFiles.keys), ["READY.JPG"])
+            let initialDownloads = await source.downloads
+            XCTAssertEqual(initialDownloads.filter { $0 == "GROWING.JPG" }.count, 1, "Do not retry against the same stale size")
+            let second = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(second.transferred, 1)
+            XCTAssertTrue(second.pendingSourceFiles.isEmpty)
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: endpoint.localPath).appendingPathComponent("GROWING.JPG")), Data("complete upload".utf8))
+        }
+    }
+
+    func testShortDownloadPreservesPreviousCompleteLocalCopy() async throws {
+        let (root, endpoint, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = URL(fileURLWithPath: endpoint.localPath).appendingPathComponent("PHOTO.JPG")
+        try Data("previous complete local copy".utf8).write(to: target)
+        let source = NamedDownloadSource(["PHOTO.JPG": Data("new upload advertised length".utf8)])
+        await source.changeOnNextRead("PHOTO.JPG", data: Data("short".utf8))
+        var job = SyncJob(name: "Changing upload")
+        job.left = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+        job.right = endpoint
+        let engine = SyncEngine(sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+            sessionFactory: { entry, _, _ -> any EndpointSession in if entry.kind.isRemote { return source }; return destination })
+        let result = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(result.transferred, 0)
+        XCTAssertEqual(result.pendingSourceFiles, ["PHOTO.JPG"])
+        XCTAssertEqual(try Data(contentsOf: target), Data("previous complete local copy".utf8))
+        let removed = await source.removals
+        XCTAssertTrue(removed.isEmpty)
+    }
+
+    func testGrowingSidecarDefersEntireRAWGroup() async throws {
+        let (root, endpoint, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = NamedDownloadSource(["PHOTO.NEF": Data("raw".utf8), "PHOTO.xmp": Data("part".utf8)])
+        await source.changeOnNextRead("PHOTO.xmp", data: Data("complete sidecar".utf8))
+        var job = SyncJob(name: "RAW upload")
+        job.left = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+        job.right = endpoint
+        let engine = SyncEngine(sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+            sessionFactory: { entry, _, _ -> any EndpointSession in if entry.kind.isRemote { return source }; return destination })
+        let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(first.transferred, 0)
+        XCTAssertEqual(first.pendingSourceFiles, ["PHOTO.xmp"])
+        let initial = try await destination.listFiles()
+        XCTAssertTrue(initial.isEmpty, "Neither the RAW nor its companion should be published alone")
+        let second = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(second.transferred, 1)
+        let complete = try await destination.listFiles()
+        XCTAssertEqual(Set(complete.keys), ["PHOTO.NEF", "PHOTO.xmp"])
+    }
+
+    func testDeferredSourceStatusSurvivesCombiningResultsAndShowsAsWarning() {
+        let pending = SyncResult(transferred: 0, deleted: 0, pendingSourceFiles: ["PHOTO.JPG"])
+        let combined = pending.adding(SyncResult(transferred: 2, deleted: 1))
+        XCTAssertEqual(combined.pendingSourceFiles, ["PHOTO.JPG"])
+        let phase = JobPhase.succeeded(Date(), transferred: 2, deleted: 1, processed: 0, conflicts: [], metadataReport: .empty,
+            nextRun: Date().addingTimeInterval(5), pendingSourceFiles: combined.pendingSourceFiles)
+        XCTAssertTrue(phase.label.contains("deferred until next sync"))
     }
 }
