@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Back off automatic calendar-sync retries after connection failures, skip redundant requests to the same unavailable account, and retain immediate manual Retry Now. Refresh the calendar picker less often without slowing healthy linked-calendar updates.
+- Avoid duplicate network-failure diagnostic entries and explain connection error codes without exposing addresses or credentials.
+
 ## 2.9.2 — 2026-09-09
 
 - Sync saved metadata edits after a short pause in editing instead of waiting for the next polling cycle. Resume when drafts are saved or closed, and queue refresh requests made while another calendar operation is running.

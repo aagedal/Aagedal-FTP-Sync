@@ -52,7 +52,18 @@ struct MetadataSyncEvent: Codable, Identifiable {
         if let failure = error as? MetadataSyncFailure {
             return failure.diagnosticCode ?? "Calendar validation or local storage failed. Review the current sync status for details."
         }
-        if let urlError = error as? URLError { return "Network request failed (URL error \(urlError.code.rawValue))." }
+        if let urlError = error as? URLError {
+            let reason: String
+            switch urlError.code {
+            case .notConnectedToInternet: reason = "macOS reports no internet connection"
+            case .cannotConnectToHost: reason = "could not connect to the server"
+            case .timedOut: reason = "the request timed out"
+            case .cannotFindHost, .dnsLookupFailed: reason = "the server name could not be resolved"
+            case .networkConnectionLost: reason = "the connection was interrupted"
+            default: reason = "network request failed"
+            }
+            return "Network request failed: \(reason) (URL error \(urlError.code.rawValue))."
+        }
         if error is DecodingError { return "The server response could not be decoded. Check app/server compatibility." }
         if let serverError = error as? MetadataSyncServerError { return serverError.localizedDescription }
         return "Sync failed. Review the current sync status for details."

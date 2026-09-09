@@ -84,18 +84,29 @@ final class MetadataCalendarCoordinator: ObservableObject {
     private var changeTask: Task<Void, Never>?
     private var queuedRefreshTask: Task<Void, Never>?
     private var queuedJobIDs: Set<UUID> = []
+    private var queuedManualJobIDs: Set<UUID> = []
     private var refreshAllQueued = false
+    private var refreshAllManual = false
     private let changeDebounce: Duration
+    private let now: () -> Date
+    private struct ConnectionRetry {
+        var failures: Int
+        var retryAfter: Date
+    }
+    private var connectionRetries: [UUID: ConnectionRetry] = [:]
+    private var lastCalendarList: [UUID: Date] = [:]
 
     var account: MetadataSyncAccount? { state.accounts.first { $0.id == state.activeAccountID } }
 
     init(repository: MetadataCalendarRepository = MetadataCalendarRepository(), keychain: KeychainStore = KeychainStore(),
          changeDebounce: Duration = .milliseconds(500),
+         now: @escaping () -> Date = Date.init,
          transport: @escaping Transport = { body, address, id, key, setup in
              try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup)
          }) {
         self.transport = transport
         self.changeDebounce = changeDebounce
+        self.now = now
         self.repository = repository
         self.eventRepository = MetadataSyncEventRepository(url: repository.url.deletingLastPathComponent().appendingPathComponent("metadata-sync-events-v1.json"))
         self.events = eventRepository.load()
@@ -120,7 +131,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
                         let jobIDs = self.jobsNeedingSyncAfterEdit()
                         do { try await Task.sleep(for: self.changeDebounce) } catch { return }
                         self.changeTask = nil
-                        for id in jobIDs { await self.refresh(jobID: id) }
+                        for id in jobIDs { await self.refresh(jobID: id, automatic: true) }
                     }
                 }
         }
@@ -129,7 +140,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             while !Task.isCancelled {
                 // A slow request already checks for updates. Only user requests
                 // and saved edits need to queue work while another sync is busy.
-                if self?.busy == false { await self?.refresh() }
+                if self?.busy == false { await self?.refresh(automatic: true) }
                 do { try await Task.sleep(for: .seconds(10)) } catch { break }
             }
         }
@@ -141,6 +152,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         changeTask?.cancel(); changeTask = nil
         queuedRefreshTask?.cancel(); queuedRefreshTask = nil
         queuedJobIDs = []; refreshAllQueued = false
+        queuedManualJobIDs = []; refreshAllManual = false
     }
 
     private func jobsNeedingSyncAfterEdit() -> [UUID] {
@@ -175,10 +187,21 @@ final class MetadataCalendarCoordinator: ObservableObject {
             self.queuedRefreshTask = nil
             let all = self.refreshAllQueued
             let ids = self.queuedJobIDs
+            let manualIDs = self.queuedManualJobIDs
+            let allManual = self.refreshAllManual
             self.refreshAllQueued = false
             self.queuedJobIDs = []
-            if all { await self.refresh() }
-            else { for id in ids { await self.refresh(jobID: id) } }
+            self.queuedManualJobIDs = []
+            self.refreshAllManual = false
+            if all {
+                await self.refresh(automatic: !allManual)
+                // A queued per-job Retry Now must still bypass a background cooldown.
+                if !allManual {
+                    for id in manualIDs { await self.refresh(jobID: id) }
+                }
+            } else {
+                for id in ids { await self.refresh(jobID: id, automatic: !manualIDs.contains(id)) }
+            }
         }
     }
 
@@ -204,10 +227,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
         if let binding = binding(for: jobID) { bindingMessages[binding.id] = detail }
     }
 
-    private func setFailureActivity(_ error: Error, jobID: UUID) {
-        let connectionError = (error as? URLError).map {
+    private static func isConnectionError(_ error: Error) -> Bool {
+        (error as? URLError).map {
             [URLError.notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains($0.code)
         } ?? false
+    }
+
+    private func setFailureActivity(_ error: Error, jobID: UUID) {
+        let connectionError = Self.isConnectionError(error)
         setActivity(connectionError ? .offline : .failed, jobID: jobID,
                     detail: connectionError ? "The server could not be reached. Saved metadata stays on this Mac; sync retries automatically. " + error.localizedDescription : error.localizedDescription)
     }
@@ -348,28 +375,53 @@ final class MetadataCalendarCoordinator: ObservableObject {
             var next = state; next.activeAccountID = id
             try persist(next)
             calendars = []; members = []; invitation = ""; suggestedCalendarID = nil
+            lastCalendarList[id] = nil
         } catch { message = error.localizedDescription }
     }
 
     private func loadCalendars() async throws {
         guard let account, account.registered else { return }
         calendars = try await request(MetadataCalendarRequest(action: "listCalendars"), account: account).calendars ?? []
+        lastCalendarList[account.id] = now()
     }
 
-    func refresh(jobID: UUID? = nil) async {
+    func refresh(jobID: UUID? = nil, automatic: Bool = false) async {
         guard !storageFailed, !Task.isCancelled else { return }
         guard !busy else {
-            if let jobID { queuedJobIDs.insert(jobID) }
-            else { refreshAllQueued = true }
+            if let jobID {
+                queuedJobIDs.insert(jobID)
+                if !automatic { queuedManualJobIDs.insert(jobID) }
+            } else {
+                refreshAllQueued = true
+                if !automatic { refreshAllManual = true }
+            }
             return
         }
         busy = true
         defer { finishBusyOperation() }
+        var attemptedAccounts: Set<UUID> = []
+        var connectionFailures: [UUID: Error] = [:]
+        func canAttempt(_ id: UUID) -> Bool {
+            connectionFailures[id] == nil && (!automatic || (connectionRetries[id]?.retryAfter ?? .distantPast) <= now())
+        }
+        defer {
+            for id in attemptedAccounts {
+                if connectionFailures[id] != nil {
+                    let failures = min((connectionRetries[id]?.failures ?? 0) + 1, 6)
+                    let delay = min(10 * pow(2, Double(failures - 1)), 300)
+                    connectionRetries[id] = ConnectionRetry(failures: failures, retryAfter: now().addingTimeInterval(delay))
+                } else {
+                    connectionRetries[id] = nil
+                }
+            }
+        }
         if let pending = state.pendingReceive {
             do { try finishReceive(pending) }
             catch { message = "Receiving into the copy is pending: " + error.localizedDescription }
         }
-        if jobID == nil {
+        if jobID == nil, let account, account.registered, canAttempt(account.id),
+           !automatic || now().timeIntervalSince(lastCalendarList[account.id] ?? .distantPast) >= 60 {
+            attemptedAccounts.insert(account.id)
             do {
                 try await loadCalendars()
                 if message == calendarListError { message = "" }
@@ -377,13 +429,23 @@ final class MetadataCalendarCoordinator: ObservableObject {
             } catch {
                 calendarListError = error.localizedDescription
                 message = error.localizedDescription
+                if Self.isConnectionError(error) { connectionFailures[account.id] = error }
             }
         }
         for binding in state.bindings where jobID == nil || binding.jobID == jobID {
             guard binding.conflict == nil,
                   let account = state.accounts.first(where: { $0.id == binding.accountID && $0.registered }) else { continue }
+            if let error = connectionFailures[account.id] {
+                setFailureActivity(error, jobID: binding.jobID)
+                continue
+            }
+            guard !Task.isCancelled, canAttempt(account.id) else { continue }
+            attemptedAccounts.insert(account.id)
             do { try await sync(binding, account: account) }
-            catch { bindingMessages[binding.id] = error.localizedDescription }
+            catch {
+                bindingMessages[binding.id] = error.localizedDescription
+                if Self.isConnectionError(error) { connectionFailures[account.id] = error }
+            }
         }
     }
 
@@ -440,7 +502,11 @@ final class MetadataCalendarCoordinator: ObservableObject {
             }
         } catch {
             setFailureActivity(error, jobID: original.jobID)
-            record(MetadataSyncEvent(jobID: original.jobID, operation: "Calendar sync", detail: MetadataSyncEvent.errorDetail(error), isError: true))
+            // The request already recorded this network failure. A second event
+            // both exaggerates the incident and prevents repeated-event coalescing.
+            if !Self.isConnectionError(error) {
+                record(MetadataSyncEvent(jobID: original.jobID, operation: "Calendar sync", detail: MetadataSyncEvent.errorDetail(error), isError: true))
+            }
             throw error
         }
     }
