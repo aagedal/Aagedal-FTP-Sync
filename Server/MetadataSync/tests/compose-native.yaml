@@ -1,0 +1,6 @@
+# Optional loopback endpoint for native Swift/PHP compatibility tests.
+# Combine with compose.yaml; the ordinary server suite exposes no ports.
+services:
+  server:
+    ports:
+      - "127.0.0.1:18087:8080"

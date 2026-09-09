@@ -50,6 +50,7 @@ struct AagedalFTPSyncApp: App {
         Window("Metadata Programming", id: "metadata-programming") {
             MetadataProgrammingView()
                 .environmentObject(store)
+                .environmentObject(metadataSync)
                 .applyingUITestDynamicTypeSize()
                 .background(RegularWindowTracker(windowID: "metadata-programming"))
         }

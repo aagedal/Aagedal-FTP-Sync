@@ -605,6 +605,134 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.playhead)
     }
 
+    private func switchFixture(clipCount: Int = 2, beforeSave: @escaping @Sendable () throws -> Void = {}) throws -> (URL, AppStore, JobRepository, MetadataProgrammingCoordinator, UUID, UUID) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("metadata-switch-\(UUID())")
+        let photographer = PhotographerProfile(name: "Example", filenamePrefix: "EX", creator: "Example", copyrightNotice: "")
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var source = SyncJob(name: "Source job")
+        source.isEnabled = false
+        source.startsOnAppLaunch = false
+        source.left = Endpoint(kind: .local, localPath: root.appendingPathComponent("input").path, bookmark: Data([1]))
+        source.right = Endpoint(kind: .local, localPath: root.appendingPathComponent("output").path, bookmark: Data([1]))
+        source.metadataAutomation = MetadataAutomation(isEnabled: true, photographers: [photographer], clips: (0..<clipCount).map {
+            MetadataScheduleClip(photographerID: photographer.id, name: "Clip \($0)",
+                startsAt: start.addingTimeInterval(Double($0 * 200)), endsAt: start.addingTimeInterval(Double($0 * 200 + 100)))
+        })
+        var target = source
+        target.id = UUID()
+        target.name = "Target job"
+        target.metadataAutomation = nil
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"), beforeSave: beforeSave)
+        try repository.save([source, target])
+        let store = AppStore(repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(fileURL: root.appendingPathComponent("photographers.json")),
+            serverProfileRepository: ServerProfileRepository(fileURL: root.appendingPathComponent("servers.json")),
+            metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
+            syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")))
+        let coordinator = MetadataProgrammingCoordinator()
+        store.selectedJobID = source.id
+        coordinator.loadSelectedJob(from: store)
+        return (root, store, repository, coordinator, source.id, target.id)
+    }
+
+    func testDeletingClipsThenImmediatelySwitchingJobsPersistsTheOriginalJob() throws {
+        for deleteAll in [false, true] {
+            let (root, store, repository, coordinator, source, target) = try switchFixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let removed = deleteAll ? Set(coordinator.draft.clips.map(\.id)) : [coordinator.draft.clips[0].id]
+            coordinator.selectedClipIDs = removed
+            coordinator.deleteSelectedClips()
+            coordinator.scheduleAutosave(in: store)
+            // No delay: switch before the 600 ms autosave can execute.
+            store.selectedJobID = target
+            coordinator.loadSelectedJob(from: store)
+            let saved = try XCTUnwrap(repository.load().first { $0.id == source }?.metadataAutomation)
+            XCTAssertTrue(Set(saved.clips.map(\.id)).isDisjoint(with: removed))
+            XCTAssertEqual(saved.clips.count, deleteAll ? 0 : 1)
+            XCTAssertEqual(saved.isEnabled, !deleteAll)
+            XCTAssertNil(saved.validationMessage)
+            XCTAssertEqual(coordinator.loadedJobID, target)
+            XCTAssertNil(try repository.load().first { $0.id == target }?.metadataAutomation)
+            XCTAssertFalse(store.metadataDraftsBeingEdited.contains(source))
+        }
+    }
+
+    func testDeletingLastClipAtPlayheadSavesBeforeAutosaveNotificationArrives() throws {
+        let (root, store, repository, coordinator, source, target) = try switchFixture(clipCount: 1)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clip = coordinator.draft.clips[0]
+        coordinator.playhead = TimelinePlayhead(photographerID: clip.photographerID, date: clip.startsAt)
+        coordinator.deleteClipAtPlayhead()
+        // SwiftUI has not called scheduleAutosave yet.
+        store.selectedJobID = target
+        coordinator.loadSelectedJob(from: store)
+        let saved = try XCTUnwrap(repository.load().first { $0.id == source }?.metadataAutomation)
+        XCTAssertTrue(saved.clips.isEmpty)
+        XCTAssertFalse(saved.isEnabled)
+        XCTAssertEqual(coordinator.loadedJobID, target)
+    }
+
+    func testJobSwitchRetainsInvalidDraftInsteadOfDiscardingItsDeletion() throws {
+        let (root, store, repository, coordinator, source, target) = try switchFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        coordinator.selectedClipIDs = [coordinator.draft.clips[0].id]
+        coordinator.deleteSelectedClips()
+        coordinator.draft.clips[0].name = ""
+        let pending = coordinator.draft
+        store.selectedJobID = target
+        coordinator.loadSelectedJob(from: store)
+        XCTAssertEqual(coordinator.loadedJobID, source)
+        XCTAssertEqual(store.selectedJobID, source)
+        XCTAssertEqual(coordinator.draft, pending)
+        XCTAssertTrue(store.metadataDraftsBeingEdited.contains(source))
+        XCTAssertNotNil(store.alertMessage)
+        XCTAssertEqual(try repository.load().first { $0.id == source }?.metadataAutomation?.clips.count, 2)
+        // A callback caused by restoring the selection must also retain the draft.
+        coordinator.loadSelectedJob(from: store)
+        XCTAssertEqual(coordinator.draft, pending)
+    }
+
+    func testWriteFailureKeepsDeletionOpenAndAllowsRetryBeforeSwitching() throws {
+        let gate = MetadataDraftWriteFailure()
+        let (root, store, repository, coordinator, source, target) = try switchFixture(beforeSave: { try gate.check() })
+        defer { try? FileManager.default.removeItem(at: root) }
+        coordinator.selectedClipIDs = [coordinator.draft.clips[0].id]
+        coordinator.deleteSelectedClips()
+        let pending = coordinator.draft
+        gate.setFailing(true)
+        store.selectedJobID = target
+        coordinator.loadSelectedJob(from: store)
+        XCTAssertEqual(store.selectedJobID, source)
+        XCTAssertEqual(coordinator.loadedJobID, source)
+        XCTAssertEqual(coordinator.draft, pending)
+        XCTAssertTrue(store.metadataDraftsBeingEdited.contains(source))
+        XCTAssertEqual(try repository.load().first { $0.id == source }?.metadataAutomation?.clips.count, 2)
+        XCTAssertNotNil(store.alertMessage)
+        gate.setFailing(false)
+        store.selectedJobID = target
+        coordinator.loadSelectedJob(from: store)
+        XCTAssertEqual(coordinator.loadedJobID, target)
+        XCTAssertEqual(try repository.load().first { $0.id == source }?.metadataAutomation?.clips, pending.clips)
+        XCTAssertFalse(store.metadataDraftsBeingEdited.contains(source))
+    }
+
+    func testUndoLastClipDeletionRestoresAutomaticMetadataSetting() throws {
+        let (root, _, _, coordinator, _, _) = try switchFixture(clipCount: 1)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let before = coordinator.draft
+        coordinator.selectedClipIDs = [before.clips[0].id]
+        coordinator.deleteSelectedClips()
+        XCTAssertFalse(coordinator.draft.isEnabled)
+        coordinator.undoTimelineEdit()
+        XCTAssertEqual(coordinator.draft, before)
+        coordinator.redoTimelineEdit()
+        XCTAssertTrue(coordinator.draft.clips.isEmpty)
+        XCTAssertFalse(coordinator.draft.isEnabled)
+    }
+
     func testCopiedDaySurvivesJobSwitchAndAddsItsMissingPhotographerTrack() throws {
         let calendar = utcCalendar
         let root = FileManager.default.temporaryDirectory
@@ -1022,5 +1150,14 @@ private actor PreviewSequence {
             folderName: "Current",
             result: MetadataPreviewResult(items: [])
         )
+    }
+}
+
+private final class MetadataDraftWriteFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failing = false
+    func setFailing(_ value: Bool) { lock.withLock { failing = value } }
+    func check() throws {
+        if lock.withLock({ failing }) { throw CocoaError(.fileWriteUnknown) }
     }
 }

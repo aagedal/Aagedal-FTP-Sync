@@ -2,6 +2,7 @@ import Foundation
 
 struct MetadataSyncFailure: LocalizedError {
     let message: String
+    var diagnosticCode: String? = nil
     var errorDescription: String? { message }
 }
 

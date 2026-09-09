@@ -78,29 +78,18 @@ struct MetadataProgrammingView: View {
     }
     private var isPreviewingMetadata: Bool { coordinator.isPreviewingMetadata }
 
-    var body: some View {
-        alertContent
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        flushAutosave()
-                        store.settingsTab = .metadataSync
-                        store.metadataSyncSettingsTab = .calendars
-                        RegularWindowController.shared.prepareForOpening()
-                        openSettings()
-                    } label: {
-                        Label("Sharing & Sync…", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .help("Open calendar sharing and sync settings")
-                    .accessibilityIdentifier("metadata-sharing-sync")
-                }
-            }
-    }
+    var body: some View { alertContent }
 
     private var mainContent: some View {
         VStack(spacing: 0) {
             windowHeader
+            MetadataSyncStatusView(jobID: selectedJob?.id, beforeSync: { flushAutosave() }) {
+                flushAutosave()
+                store.settingsTab = .metadataSync
+                store.metadataSyncSettingsTab = .calendars
+                RegularWindowController.shared.prepareForOpening()
+                openSettings()
+            }
             Divider()
 
             if selectedJob == nil {
@@ -136,8 +125,6 @@ struct MetadataProgrammingView: View {
             if let id = coordinator.loadedJobID { store.metadataDraftsBeingEdited.remove(id) }
         }
         .onChange(of: store.selectedJobID) { _, _ in
-            flushAutosave()
-            if let id = coordinator.loadedJobID { store.metadataDraftsBeingEdited.remove(id) }
             loadSelectedJob()
         }
         .onChange(of: selectedJob?.metadataAutomation) { _, _ in
@@ -927,6 +914,7 @@ struct MetadataProgrammingView: View {
                 // Publish the change after that update has finished.
                 DispatchQueue.main.async {
                     guard store.selectedJobID != jobID else { return }
+                    guard coordinator.flushAutosave(in: store) else { return }
                     store.selectedJobID = jobID
                 }
             }

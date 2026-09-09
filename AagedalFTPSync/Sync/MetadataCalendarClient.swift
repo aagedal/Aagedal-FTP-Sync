@@ -116,7 +116,12 @@ struct MetadataCalendarClient: Sendable {
             case "already_member": message = "This device already has access to that calendar."
             default: message = "Calendar sync failed (HTTP \(statusCode)). Check the server installation and calendar limits. Local edits are retained."
             }
-            throw MetadataSyncFailure(message: message)
+            let knownCodes: Set<String> = ["bootstrap_disabled", "invalid_invite", "unauthorized", "access_denied", "read_only",
+                "range_profiles_read_only", "outside_range", "overlapping_clips", "already_member", "duplicate_prefix",
+                "invalid_text", "invalid_date", "invalid_reference", "calendar_limit", "invite_limit", "calendar_too_large",
+                "request_too_large", "owner_required", "sync_unavailable", "invalid_time_zone", "unknown_fields"]
+            let code = result.error.flatMap { knownCodes.contains($0) ? $0 : nil } ?? "unexpected_response"
+            throw MetadataSyncFailure(message: message, diagnosticCode: "HTTP \(statusCode): \(code)")
         }
         if var calendar = result.calendar {
             guard calendar.id == calendarID, calendar.revision > 0,

@@ -38,16 +38,17 @@ HTTPS protects transport. Calendar contents are stored as ordinary JSON in the d
    If the host uses another layout, change only `$configPath` in the **deployed** `index.php` to point at the actual private filesystem path. FTP-relative paths may differ from server filesystem paths. Keep provider-specific changes in ignored local artifacts. Do not rely on a hidden filename or `.php` extension alone to protect configuration.
 5. Add `'bootstrap_enabled' => true,` to the private configuration temporarily. Keep its existing `setup_key_sha256` hash. See `config.example.php` for all options.
 6. Open **Settings → Metadata Sync → Hosting Checks**. Save the HTTPS base URL, check the server, and optionally check the database with the temporary hosting-check key. Redirects are refused; enter the final address directly.
-7. In **Calendar Sync**, enter the same URL and a device name. Expand **First device on a new server**, paste the setup key, and choose **Register First Device**.
+7. In **Calendar Sync**, enter the same URL and a device name. Expand **Server administrator: connect the first Mac**, paste the setup key, and choose **Connect First Mac**.
 8. Set both `bootstrap_enabled` and `hosting_checks_enabled` to `false` in the private configuration and re-upload it. The setup key is no longer used during normal sync. Do not send it to other participants.
 
 Public GET discovery remains protocol 1 (`stage: hosting-check`) for compatibility. Calendar requests select protocol 2 with an HTTP header. A successful hosting check alone does not establish that the new tables and API were installed.
 
 ## Use in the app
 
-- **Publish:** Select an existing local job, name the calendar, optionally select dates, and publish. Only the shared metadata subset is transmitted. A job can link to one calendar. Saved edits synchronize automatically; unsaved or invalid editor drafts pause incoming updates for that job.
+- **Activate a new calendar:** Select an existing local job, choose **New shared calendar from this job** under **Calendar to sync**, name it, optionally select dates, and choose **Activate Sync**. Only the shared metadata subset is transmitted. A job can link to one calendar. Saved edits synchronize automatically; unsaved or invalid editor drafts pause incoming updates for that job.
 - **Invite:** The owner selects a server calendar, editor/read-only permission and optional date range, then creates an invitation. Copy and privately share the server URL and invitation. Each invitation expires in 24 hours and can enroll one device. Make a separate invitation for each Mac, including additional Macs used by the owner.
-- **Receive:** On the other Mac, join with the invitation, select the calendar and a local job, then choose **Receive Calendar…**. Empty metadata programming receives directly. If the job already has programming or a calendar link, the app offers **Duplicate and Receive**. The confirmation names the original and new jobs before anything changes. The copy retains connections, folder bookmarks and local processing policies, and receives only the shared calendar content. The original retains its programming. Automatic running and startup at app launch are disabled on both jobs; review and enable the copy when ready. Transfer history stays with the original job. Cancelling the confirmation leaves it unchanged.
+- **Activate an existing calendar:** On the other Mac, paste the complete copied invitation into **Paste invitation** and choose **Join Calendar**. A code alone also works when the server URL is entered separately. Joining grants access; it does not yet link a job. Select the shared calendar under **Calendar to sync** and choose a local job, then choose **Activate Sync**. Editor access synchronizes saved changes both ways; read-only invitations only fetch changes. Empty metadata programming receives directly. If the job already has programming or a calendar link, the app offers **Duplicate & Activate Sync**. The confirmation names the original and new jobs before anything changes. The copy retains connections, folder bookmarks and local processing policies, and receives only the shared calendar content. The original retains its programming. Automatic running and startup at app launch are disabled on both jobs; review and enable the copy when ready. Transfer history stays with the original job. Cancelling the confirmation leaves it unchanged. After receiving, the Metadata window selects the linked job so the received calendar is visible.
+- **Monitor:** The Metadata window shows whether the selected job is linked, current fetching/sending activity, and errors or conflicts requiring attention. Click the status for details and the last successful sync. **Sync Now** retries the selected job; **Sync Activity…** opens the last 200 diagnostic entries, retained across restarts. Copied diagnostics omit calendar content, job names, server addresses, credentials and invitations. Diagnostic write failures do not stop calendar sync.
 - **Resolve:** Changes to different clips merge automatically. Competing changes to the same clip/profile/day rows, deletion versus edit, or a merged invalid schedule pause sync. The local job and remote version remain saved. Review both versions in settings and explicitly choose one. This choice replaces the shared portion as a whole; edit the chosen version afterward to incorporate other changes.
 - **Detach:** Stops syncing that job and keeps its local programming. It does not delete the server calendar or revoke membership.
 - **Revoke:** Owners can revoke a device's membership or invalidate invitations. Revocation prevents future sync; it cannot erase copies already downloaded. Revoking invitations does not remove existing memberships.
@@ -102,3 +103,19 @@ xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' \
   -only-testing:AagedalFTPSyncTests/MetadataProgrammingCoordinatorTests \
   CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
 ```
+
+For Swift/PHP compatibility, use a fresh disposable database and the optional loopback port. From the repository root:
+
+```sh
+docker compose -p aftpsync-native -f Server/MetadataSync/tests/compose.yaml \
+  -f Server/MetadataSync/tests/compose-native.yaml up -d --build --wait database server
+TEST_RUNNER_AFTPSYNC_METADATA_TEST_URL=http://127.0.0.1:18087/index.php \
+  xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' -scheme AagedalFTPSync \
+  -destination 'platform=macOS' \
+  -only-testing:AagedalFTPSyncTests/MetadataCalendarCoordinatorTests/testTwoDevicesAgainstPHPServer \
+  CODE_SIGNING_ALLOWED=NO
+docker compose -p aftpsync-native -f Server/MetadataSync/tests/compose.yaml \
+  -f Server/MetadataSync/tests/compose-native.yaml down
+```
+
+This exercises invitation registration, receiving into a differently named job, offline edits from two independent coordinators, and a third editor with date-limited access. The test uses the production JSON encoder/decoder with a test-only loopback HTTP transport; normal app connections still require HTTPS. Run the cleanup command even if a test fails, and start fresh before rerunning because first-device registration is single-use.

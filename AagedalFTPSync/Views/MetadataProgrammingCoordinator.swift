@@ -354,6 +354,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     private struct TimelineEditState {
+        var metadataEnabled: Bool
         var clips: [MetadataScheduleClip]
         let tracks: [MetadataPhotographerTrack]
         let day: Date
@@ -380,6 +381,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     private var timelineEditState: TimelineEditState {
         TimelineEditState(
+            metadataEnabled: draft.isEnabled,
             clips: draft.clips, tracks: draft.photographerTracks,
             day: selectedDate, playhead: playhead, selectedIDs: selectedClipIDs,
             photographerID: selectedPhotographerID, photographerIDs: selectedPhotographerIDs,
@@ -405,20 +407,21 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     func undoTimelineEdit() {
         guard let edit = undoTimelineEdits.popLast() else { return }
-        restoreTimelineEdit(edit.before)
+        restoreTimelineEdit(edit.before, restoreEnabled: edit.before.metadataEnabled != edit.after.metadataEnabled)
         redoTimelineEdits.append(edit)
     }
 
     func redoTimelineEdit() {
         guard let edit = redoTimelineEdits.popLast() else { return }
-        restoreTimelineEdit(edit.after)
+        restoreTimelineEdit(edit.after, restoreEnabled: edit.before.metadataEnabled != edit.after.metadataEnabled)
         undoTimelineEdits.append(edit)
     }
 
-    private func restoreTimelineEdit(_ state: TimelineEditState) {
+    private func restoreTimelineEdit(_ state: TimelineEditState, restoreEnabled: Bool) {
         isRestoringTimelineEdit = true
         defer { isRestoringTimelineEdit = false }
         var restored = draft
+        if restoreEnabled { restored.isEnabled = state.metadataEnabled }
         restored.clips = state.clips
         restored.photographerTracks = state.tracks
         draft = restored
@@ -433,6 +436,15 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func loadSelectedJob(from store: AppStore) {
+        // Save the loaded job before replacing its draft, even if selection already
+        // changed elsewhere or SwiftUI has not scheduled the debounce yet.
+        if let loadedJobID {
+            if store.jobs.contains(where: { $0.id == loadedJobID }), !flushAutosave(in: store) {
+                if store.selectedJobID != loadedJobID { store.selectedJobID = loadedJobID }
+                return
+            }
+            store.metadataDraftsBeingEdited.remove(loadedJobID)
+        }
         undoTimelineEdits = []
         redoTimelineEdits = []
         autosaveTask?.cancel()
@@ -482,11 +494,21 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         }
     }
 
-    func flushAutosave(in store: AppStore) {
+    @discardableResult
+    func flushAutosave(in store: AppStore) -> Bool {
         autosaveTask?.cancel()
         autosaveTask = nil
-        guard draft != lastSavedDraft else { return }
-        _ = save(in: store)
+        guard draft != lastSavedDraft else { return true }
+        guard save(in: store) else {
+            if let loadedJobID { store.metadataDraftsBeingEdited.insert(loadedJobID) }
+            if let validation = draft.validationMessage {
+                store.alertMessage = "Your metadata edits have been kept open because they could not be saved. " + validation
+            } else if store.alertMessage == nil {
+                store.alertMessage = "Your metadata edits could not be saved and have been kept open. Review the job’s metadata settings before switching jobs."
+            }
+            return false
+        }
+        return true
     }
 
     func refreshDraftPhotographers(from store: AppStore) {
@@ -778,6 +800,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         defer { endTimelineEdit() }
         guard let clip = clipAtPlayhead else { return }
         draft.clips.removeAll { $0.id == clip.id }
+        if draft.clips.isEmpty { draft.isEnabled = false }
         selectedClipIDs.remove(clip.id)
         if editingClipID == clip.id { editingClipID = nil }
         rangeSelectionAnchor = nil
@@ -788,6 +811,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         defer { endTimelineEdit() }
         guard !selectedClipIDs.isEmpty else { return }
         draft.clips.removeAll { selectedClipIDs.contains($0.id) }
+        if draft.clips.isEmpty { draft.isEnabled = false }
         selectedClipIDs = []
     }
 

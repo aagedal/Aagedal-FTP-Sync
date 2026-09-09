@@ -4,6 +4,9 @@
 
 - Share metadata calendars or selected dates through a user-configured HTTPS PHP/MySQL server, with editor/read-only invitations, automatic polling, offline edits and explicit conflict resolution.
 - Open calendar sharing from Metadata Timeline. Receive into a chosen local job, with an option to duplicate populated jobs while preserving the original programming and disabling automatic running and launch startup on both jobs.
+- Simplify calendar setup with a single Activate Sync action for new or existing shared calendars, support for pasting a complete invitation, and a clear note about the approximately ten-second sync interval. After receiving, select the linked job in the Metadata window.
+- Show per-job calendar sync status, fetching/sending activity, last successful sync, manual retry and saved diagnostic history directly from the Metadata window.
+- Save pending metadata clip deletions before switching jobs. Deleting the last clip disables automatic metadata processing so the empty calendar can be saved; failed saves retain the current draft, and undo restores the prior processing setting.
 - Preserve local programming and pause sync if a calendar's shared date range or time zone changes, or the server returns an older revision after a backup restore.
 - Allow manual `.aftpsync` imports containing overlapping metadata clips, keeping the clips and showing a warning. Live calendar sync and normal schedule validation retain their overlap checks.
 - Run the disposable PHP/MySQL calendar integration suite in release CI.

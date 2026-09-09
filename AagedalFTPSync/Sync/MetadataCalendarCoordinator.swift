@@ -66,7 +66,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
     @Published var invitation = ""
     @Published var receiveProposal: MetadataCalendarReceiveProposal?
     @Published private(set) var receivedJobID: UUID?
+    @Published private(set) var activities: [UUID: MetadataSyncActivity] = [:]
+    @Published private(set) var events: [MetadataSyncEvent] = []
+    @Published private(set) var eventStorageError = ""
+    @Published private(set) var currentOperation: String?
+    @Published private(set) var suggestedCalendarID: UUID?
+    private let eventRepository: MetadataSyncEventRepository
     private var storageFailed = false
+    private var calendarListError: String?
     private let repository: MetadataCalendarRepository
     private let keychain: KeychainStore
     typealias Transport = @Sendable (MetadataCalendarRequest, String, UUID, String, String?) async throws -> MetadataCalendarResponse
@@ -82,6 +89,8 @@ final class MetadataCalendarCoordinator: ObservableObject {
          }) {
         self.transport = transport
         self.repository = repository
+        self.eventRepository = MetadataSyncEventRepository(url: repository.url.deletingLastPathComponent().appendingPathComponent("metadata-sync-events-v1.json"))
+        self.events = eventRepository.load()
         self.keychain = keychain
         do { state = try repository.load() }
         catch { storageFailed = true; message = "Sync state could not be read. It has been left intact: \(error.localizedDescription)" }
@@ -99,6 +108,51 @@ final class MetadataCalendarCoordinator: ObservableObject {
         }
     }
 
+    func binding(for jobID: UUID?) -> MetadataCalendarBinding? {
+        state.bindings.first { $0.jobID == jobID }
+    }
+
+    func activity(for jobID: UUID) -> MetadataSyncActivity {
+        if storageFailed { return MetadataSyncActivity(phase: .failed, detail: message) }
+        if let activity = activities[jobID] { return activity }
+        if binding(for: jobID)?.conflict != nil {
+            return MetadataSyncActivity(phase: .conflict, detail: "Both versions are retained. Open sync settings to review the conflict.")
+        }
+        return MetadataSyncActivity()
+    }
+
+    private func setActivity(_ phase: MetadataSyncPhase, jobID: UUID, detail: String) {
+        var activity = activities[jobID] ?? MetadataSyncActivity()
+        activity.phase = phase
+        activity.detail = detail
+        if phase == .current { activity.lastSuccess = Date() }
+        activities[jobID] = activity
+        if let binding = binding(for: jobID) { bindingMessages[binding.id] = detail }
+    }
+
+    private func record(_ event: MetadataSyncEvent) {
+        if let last = events.last, last.jobID == event.jobID, last.operation == event.operation,
+           last.detail == event.detail, last.revision == event.revision, last.isError == event.isError {
+            events[events.count - 1].date = event.date
+            events[events.count - 1].occurrences += 1
+        } else {
+            events.append(event)
+            events = Array(events.suffix(200))
+        }
+        do { try eventRepository.save(events); eventStorageError = "" }
+        catch { eventStorageError = "Sync diagnostics could not be saved. Current-session entries are still available here." }
+    }
+
+    func diagnosticText(jobID: UUID? = nil) -> String {
+        let formatter = ISO8601DateFormatter()
+        let selected = events.filter { jobID == nil || $0.jobID == jobID || $0.jobID == nil }
+        return (["Metadata calendar sync diagnostics", "Calendar content, server addresses and credentials are excluded."] + selected.map {
+            "\(formatter.string(from: $0.date)) [\($0.isError ? "ERROR" : "INFO")] \($0.operation): \($0.detail)"
+                + ($0.revision.map { " (revision \($0))" } ?? "")
+                + ($0.occurrences > 1 ? " (\($0.occurrences) occurrences)" : "")
+        }).joined(separator: "\n")
+    }
+
     private func persist(_ next: MetadataCalendarState) throws {
         guard !storageFailed else { throw MetadataSyncFailure(message: "Sync is paused because its saved state could not be read.") }
         try repository.save(next)
@@ -114,10 +168,41 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func request(_ body: MetadataCalendarRequest, account: MetadataSyncAccount, setupKey: String? = nil) async throws -> MetadataCalendarResponse {
-        guard let key = try keychain.password(for: account.credentialID) else {
-            throw MetadataSyncFailure(message: "This device's sync key is missing from Keychain. Sync is paused; local metadata is retained.")
+        let jobID = state.bindings.first { $0.accountID == account.id && $0.id == body.calendarID }?.jobID
+        let operation: String
+        switch body.action {
+        case "getCalendar": operation = "Fetch calendar"
+        case "putCalendar": operation = "Send changes"
+        case "createCalendar": operation = "Publish calendar"
+        case "listCalendars": operation = "List calendars"
+        case "bootstrap": operation = "Connect first device"
+        case "acceptInvite": operation = "Join invitation"
+        case "createInvite": operation = "Create invitation"
+        case "listMembers": operation = "List members"
+        case "revokeMember": operation = "Revoke member"
+        case "revokeInvites": operation = "Revoke invitations"
+        default: operation = "Calendar request"
         }
-        return try await transport(body, account.address, account.id, key, setupKey)
+        currentOperation = operation
+        defer { currentOperation = nil }
+        if let jobID, ["getCalendar", "putCalendar", "createCalendar"].contains(body.action) {
+            let sending = body.action == "putCalendar" || body.action == "createCalendar"
+            setActivity(sending ? .sending : .fetching, jobID: jobID, detail: sending ? "Sending saved metadata changes…" : "Checking for calendar updates…")
+        }
+        do {
+            guard let key = try keychain.password(for: account.credentialID) else {
+                throw MetadataSyncFailure(message: "This device's sync key is missing from Keychain. Sync is paused; local metadata is retained.", diagnosticCode: "Device key missing from Keychain")
+            }
+            let result = try await transport(body, account.address, account.id, key, setupKey)
+            if body.action != "listCalendars" && body.action != "getCalendar" {
+                record(MetadataSyncEvent(jobID: jobID, operation: operation,
+                    detail: result.error == "revision_conflict" ? "A newer server revision arrived; merging before retry." : "Request completed.", revision: result.calendar?.revision))
+            }
+            return result
+        } catch {
+            record(MetadataSyncEvent(jobID: jobID, operation: operation, detail: MetadataSyncEvent.errorDetail(error), isError: true))
+            throw error
+        }
     }
 
     private func prepareAccount(address: String) throws -> MetadataSyncAccount {
@@ -144,25 +229,34 @@ final class MetadataCalendarCoordinator: ObservableObject {
     func perform(_ operation: @escaping @MainActor () async throws -> Void) {
         guard !busy, !storageFailed else { return }
         busy = true
+        message = ""
         Task { @MainActor in
             defer { busy = false }
             do { try await operation() }
-            catch { message = error.localizedDescription }
+            catch {
+                message = error.localizedDescription
+                self.record(MetadataSyncEvent(operation: "Setup or calendar action", detail: MetadataSyncEvent.errorDetail(error), isError: true))
+            }
         }
     }
 
     func register(address: String, deviceName: String, setupKey: String?, invite: String?) {
         perform {
-            let account = try self.prepareAccount(address: address)
+            let parsed = try invite.map(MetadataSyncInvitation.init)
+            let account = try self.prepareAccount(address: parsed?.address ?? address)
+            let previousIDs = Set(self.calendars.map(\.id))
             var request = MetadataCalendarRequest(action: invite == nil ? "bootstrap" : "acceptInvite")
             request.deviceName = deviceName
-            request.inviteToken = invite
-            _ = try await self.request(request, account: account, setupKey: setupKey)
+            request.inviteToken = parsed?.token
+            _ = try await self.request(request, account: account, setupKey: setupKey?.trimmingCharacters(in: .whitespacesAndNewlines))
             var next = self.state
             if let i = next.accounts.firstIndex(where: { $0.id == account.id }) { next.accounts[i].registered = true }
             try self.persist(next)
-            self.message = "Device connected. The setup key is no longer needed for normal sync."
             try await self.loadCalendars()
+            let newCalendars = self.calendars.filter { !previousIDs.contains($0.id) }
+            self.suggestedCalendarID = newCalendars.count == 1 ? newCalendars[0].id : (self.calendars.count == 1 ? self.calendars[0].id : nil)
+            self.message = invite == nil ? "Server connected. Choose a local job and activate sync." : "Invitation accepted. Choose a local job and activate sync with the shared calendar."
+
         }
     }
 
@@ -171,7 +265,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         do {
             var next = state; next.activeAccountID = id
             try persist(next)
-            calendars = []; members = []; invitation = ""
+            calendars = []; members = []; invitation = ""; suggestedCalendarID = nil
         } catch { message = error.localizedDescription }
     }
 
@@ -180,7 +274,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         calendars = try await request(MetadataCalendarRequest(action: "listCalendars"), account: account).calendars ?? []
     }
 
-    func refresh() async {
+    func refresh(jobID: UUID? = nil) async {
         guard !busy, !storageFailed else { return }
         busy = true
         defer { busy = false }
@@ -188,8 +282,17 @@ final class MetadataCalendarCoordinator: ObservableObject {
             do { try finishReceive(pending) }
             catch { message = "Receiving into the copy is pending: " + error.localizedDescription }
         }
-        do { try await loadCalendars() } catch { message = error.localizedDescription }
-        for binding in state.bindings {
+        if jobID == nil {
+            do {
+                try await loadCalendars()
+                if message == calendarListError { message = "" }
+                calendarListError = nil
+            } catch {
+                calendarListError = error.localizedDescription
+                message = error.localizedDescription
+            }
+        }
+        for binding in state.bindings where jobID == nil || binding.jobID == jobID {
             guard binding.conflict == nil,
                   let account = state.accounts.first(where: { $0.id == binding.accountID && $0.registered }) else { continue }
             do { try await sync(binding, account: account) }
@@ -240,6 +343,22 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func sync(_ original: MetadataCalendarBinding, account: MetadataSyncAccount) async throws {
+        let previous = activities[original.jobID]
+        do {
+            try await syncOnce(original, account: account)
+            if activities[original.jobID]?.phase == .current, message == previous?.detail { message = "" }
+            if activities[original.jobID]?.phase == .current,
+               previous?.lastSuccess == nil || previous?.phase == .failed || original.snapshot != binding(for: original.jobID)?.snapshot {
+                record(MetadataSyncEvent(jobID: original.jobID, operation: "Calendar sync", detail: "Local and server calendars are up to date.", revision: binding(for: original.jobID)?.snapshot.revision))
+            }
+        } catch {
+            setActivity(.failed, jobID: original.jobID, detail: error.localizedDescription)
+            record(MetadataSyncEvent(jobID: original.jobID, operation: "Calendar sync", detail: MetadataSyncEvent.errorDetail(error), isError: true))
+            throw error
+        }
+    }
+
+    private func syncOnce(_ original: MetadataCalendarBinding, account: MetadataSyncAccount) async throws {
         var binding = original
         var get = MetadataCalendarRequest(action: binding.snapshot.revision == 0 ? "createCalendar" : "getCalendar", calendarID: binding.id)
         if binding.snapshot.revision == 0 {
@@ -249,7 +368,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         for _ in 0..<3 {
             try validateRemote(remote, for: binding)
             guard store?.metadataDraftsBeingEdited.contains(binding.jobID) != true else {
-                bindingMessages[binding.id] = "Waiting for the open metadata draft to be saved."
+                setActivity(.paused, jobID: binding.jobID, detail: "Waiting for the open metadata draft to be saved. Fix any validation warning in the editor to resume sync.")
                 return
             }
             // Read the latest job after every suspension; never overwrite edits made during a request.
@@ -259,12 +378,13 @@ final class MetadataCalendarCoordinator: ObservableObject {
             catch {
                 binding.conflict = remote
                 try replace(binding)
-                bindingMessages[binding.id] = error.localizedDescription
+                setActivity(.conflict, jobID: binding.jobID, detail: error.localizedDescription)
+                record(MetadataSyncEvent(jobID: binding.jobID, operation: "Merge calendar", detail: "Competing edits require conflict resolution. Both versions are retained.", isError: true))
                 return
             }
             if merged != remote.document && remote.role == "reader" {
                 binding.conflict = remote; try replace(binding)
-                bindingMessages[binding.id] = "This calendar is read-only. Local changes have been retained."
+                setActivity(.conflict, jobID: binding.jobID, detail: "This calendar is read-only. Local changes have been retained.")
                 return
             }
             // Save the merge locally first. The job is the durable queue for offline changes.
@@ -272,7 +392,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             binding.snapshot = remote
             try replace(binding)
             if merged == remote.document {
-                bindingMessages[binding.id] = "Up to date · revision \(remote.revision)"
+                setActivity(.current, jobID: binding.jobID, detail: "Up to date · revision \(remote.revision)")
                 return
             }
             let put = MetadataCalendarRequest(action: "putCalendar", calendarID: binding.id, document: merged, expectedRevision: remote.revision)
@@ -287,7 +407,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             // A lost response is also safe: the next GET merges against the last persisted baseline.
             remote = response
         }
-        bindingMessages[binding.id] = "New changes arrived during sync; retrying shortly."
+        setActivity(.waiting, jobID: binding.jobID, detail: "New changes arrived during sync; retrying shortly.")
     }
 
     func publish(jobID: UUID, name: String, range: MetadataSharingRange?) {
@@ -352,6 +472,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             try self.replace(binding)
             try await self.sync(binding, account: account)
             self.receivedJobID = jobID
+            store.selectedJobID = jobID
         }
     }
 
@@ -382,6 +503,9 @@ final class MetadataCalendarCoordinator: ObservableObject {
         next.pendingReceive = nil
         try persist(next)
         receivedJobID = proposal.duplicate.id
+        store.selectedJobID = proposal.duplicate.id
+        setActivity(.waiting, jobID: proposal.duplicate.id, detail: "Calendar received. Checking for newer changes shortly.")
+        record(MetadataSyncEvent(jobID: proposal.duplicate.id, operation: "Receive calendar", detail: "Calendar linked to a paused copy of the local job.", revision: proposal.calendar.revision))
         message = "Received into “\(proposal.duplicate.name)”. The original calendar is preserved. Automatic running and launch startup are off for both jobs; review the copy and enable it when ready."
     }
 
@@ -406,6 +530,8 @@ final class MetadataCalendarCoordinator: ObservableObject {
             var next = state
             next.bindings.removeAll { $0.id == binding.id && $0.accountID == binding.accountID }
             try persist(next)
+            activities.removeValue(forKey: binding.jobID)
+            record(MetadataSyncEvent(jobID: binding.jobID, operation: "Detach calendar", detail: "Sync stopped; local programming retained."))
             message = "Calendar detached. Local programming and server access are retained."
         } catch { message = error.localizedDescription }
     }

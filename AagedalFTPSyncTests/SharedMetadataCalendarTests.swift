@@ -227,6 +227,101 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         try await assertUnsafeRemotePreservesLocal(baseline: baseline, remote: remote, expectedMessage: "older calendar revision")
     }
 
+    func testTwoDevicesAgainstPHPServer() async throws {
+        guard let address = ProcessInfo.processInfo.environment["AFTPSYNC_METADATA_TEST_URL"],
+              let endpoint = URL(string: address), endpoint.scheme == "http", endpoint.host == "127.0.0.1" else {
+            throw XCTSkip("Set AFTPSYNC_METADATA_TEST_URL to the disposable loopback PHP server endpoint.")
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport: MetadataCalendarCoordinator.Transport = { body, _, id, key, setup in
+            // Loopback HTTP is confined to this test transport. Production requires HTTPS.
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.httpBody = try MetadataCalendarClient.encoder().encode(body)
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("2", forHTTPHeaderField: "X-Aagedal-Protocol")
+            request.setValue(id.uuidString, forHTTPHeaderField: "X-Aagedal-Device-ID")
+            request.setValue(key, forHTTPHeaderField: "X-Aagedal-Device-Key")
+            if let setup { request.setValue(setup, forHTTPHeaderField: "X-Aagedal-Setup-Key") }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            return try MetadataCalendarClient.decodeResponse(data, statusCode: (response as! HTTPURLResponse).statusCode, calendarID: body.calendarID)
+        }
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let profile = PhotographerProfile(name: "Example ÆØÅ", filenamePrefix: "EX", creator: "Example", copyrightNotice: "Example")
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = MetadataScheduleClip(photographerID: profile.id, name: "First", startsAt: start, endsAt: start.addingTimeInterval(100))
+        let second = MetadataScheduleClip(photographerID: profile.id, name: "Second", startsAt: start.addingTimeInterval(200), endsAt: start.addingTimeInterval(300))
+        var jobA = SyncJob(name: "Publishing job")
+        jobA.metadataAutomation = MetadataAutomation(photographers: [profile], photographerTracks: [], clips: [first, second])
+        let jobB = SyncJob(name: "Different receiving job")
+        let storeA = try makeStore(root: root.appendingPathComponent("a"), job: jobA)
+        let storeB = try makeStore(root: root.appendingPathComponent("b"), job: jobB)
+        let a = MetadataCalendarCoordinator(repository: MetadataCalendarRepository(url: root.appendingPathComponent("a/sync.json")), keychain: keychain, transport: transport)
+        let b = MetadataCalendarCoordinator(repository: MetadataCalendarRepository(url: root.appendingPathComponent("b/sync.json")), keychain: keychain, transport: transport)
+        a.start(store: storeA, polling: false); b.start(store: storeB, polling: false)
+        a.register(address: "https://sync.example.org/", deviceName: "Mac A", setupKey: String(repeating: "a", count: 64), invite: nil)
+        try await finishOperation(a)
+        XCTAssertEqual(a.account?.registered, true, a.message)
+        a.publish(jobID: jobA.id, name: "Wire test", range: nil)
+        try await finishOperation(a)
+        let calendar = try XCTUnwrap(a.calendars.first, a.message)
+        a.createInvite(calendarID: calendar.id, role: "editor", range: nil)
+        try await finishOperation(a)
+        XCTAssertFalse(a.invitation.isEmpty, a.message)
+        b.register(address: "", deviceName: "Mac B", setupKey: nil,
+                   invite: "Server: https://sync.example.org/\nInvitation: \(a.invitation)\n")
+        try await finishOperation(b)
+        XCTAssertEqual(b.account?.registered, true, b.message)
+        XCTAssertEqual(b.suggestedCalendarID, calendar.id)
+        b.attach(calendarID: calendar.id, jobID: jobB.id)
+        try await finishOperation(b)
+        XCTAssertEqual(SharedMetadataDocument(storeB.jobs[0].metadataAutomation!), SharedMetadataDocument(jobA.metadataAutomation!), b.message)
+
+        // Both devices edit different clips offline, then reconnect in sequence.
+        var editA = storeA.jobs[0].metadataAutomation!
+        var editB = storeB.jobs[0].metadataAutomation!
+        editA.clips[editA.clips.firstIndex { $0.id == first.id }!].fields.headline = "Edit from Mac A"
+        editB.clips[editB.clips.firstIndex { $0.id == second.id }!].fields.headline = "Edit from Mac B"
+        XCTAssertTrue(storeA.applySyncedMetadataAutomation(editA, for: jobA.id))
+        XCTAssertTrue(storeB.applySyncedMetadataAutomation(editB, for: jobB.id))
+        await a.refresh(jobID: jobA.id)
+        await b.refresh(jobID: jobB.id)
+        await a.refresh(jobID: jobA.id)
+        XCTAssertEqual(a.activity(for: jobA.id).phase, .current, a.activity(for: jobA.id).detail)
+        XCTAssertEqual(b.activity(for: jobB.id).phase, .current, b.activity(for: jobB.id).detail)
+        let finalA = SharedMetadataDocument(storeA.jobs[0].metadataAutomation!)
+        XCTAssertEqual(finalA, SharedMetadataDocument(storeB.jobs[0].metadataAutomation!))
+        XCTAssertEqual(Set(finalA.clips.map(\.fields.headline)), ["Edit from Mac A", "Edit from Mac B"])
+        XCTAssertFalse(a.diagnosticText().contains("Edit from Mac A"))
+        XCTAssertFalse(b.diagnosticText().contains("sync.example.org"))
+        XCTAssertFalse(b.diagnosticText().contains(a.invitation))
+
+        // A date-limited third device can edit its clip without seeing or replacing
+        // the other dates on the same shared calendar.
+        a.createInvite(calendarID: calendar.id, role: "editor", range: MetadataSharingRange(start: first.startsAt, end: first.endsAt))
+        try await finishOperation(a)
+        let jobC = SyncJob(name: "Limited receiving job")
+        let storeC = try makeStore(root: root.appendingPathComponent("c"), job: jobC)
+        let c = MetadataCalendarCoordinator(repository: MetadataCalendarRepository(url: root.appendingPathComponent("c/sync.json")), keychain: keychain, transport: transport)
+        c.start(store: storeC, polling: false)
+        c.register(address: "https://sync.example.org/", deviceName: "Mac C", setupKey: nil, invite: a.invitation)
+        try await finishOperation(c)
+        c.attach(calendarID: calendar.id, jobID: jobC.id)
+        try await finishOperation(c)
+        var limited = try XCTUnwrap(storeC.jobs[0].metadataAutomation, c.message)
+        XCTAssertEqual(limited.clips.map(\.id), [first.id])
+        limited.clips[0].fields.headline = "Limited editor update"
+        XCTAssertTrue(storeC.applySyncedMetadataAutomation(limited, for: jobC.id))
+        await c.refresh(jobID: jobC.id)
+        XCTAssertEqual(c.activity(for: jobC.id).phase, .current, c.activity(for: jobC.id).detail)
+        await a.refresh(jobID: jobA.id)
+        let afterLimitedEdit = storeA.jobs[0].metadataAutomation!
+        XCTAssertEqual(afterLimitedEdit.clips.first { $0.id == first.id }?.fields.headline, "Limited editor update")
+        XCTAssertEqual(afterLimitedEdit.clips.first { $0.id == second.id }?.fields.headline, "Edit from Mac B")
+    }
+
     func testPopulatedJobRequiresConsentThenPreservesOriginalAndReceivesIntoPausedCopy() async throws {
         let (root, store, sync, repository, calendar) = try receiveFixture()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -263,6 +358,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         XCTAssertEqual(copy.metadataAutomation?.timestampPolicy, .cameraCapture)
         XCTAssertEqual(SharedMetadataDocument(copy.metadataAutomation!), calendar.document)
         XCTAssertEqual(try repository.load().bindings.first?.jobID, copy.id)
+        XCTAssertEqual(store.selectedJobID, copy.id, "The Metadata window should show the job that received the calendar")
         XCTAssertNil(try repository.load().pendingReceive)
     }
 
@@ -386,6 +482,8 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         await second.refresh()
         XCTAssertNil(second.state.bindings[0].conflict)
         XCTAssertEqual(second.state.bindings[0].snapshot.document, changed)
+        XCTAssertEqual(second.activity(for: job.id).phase, .current)
+        XCTAssertNotNil(second.activity(for: job.id).lastSuccess)
         let writes = await server.writes
         XCTAssertEqual(writes, 1)
         XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), changed)
@@ -395,6 +493,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         store.metadataDraftsBeingEdited.insert(job.id)
         await second.refresh()
         XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), changed)
+        XCTAssertEqual(second.activity(for: job.id).phase, .paused)
         store.metadataDraftsBeingEdited.remove(job.id)
         await second.refresh()
         XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), incoming)
@@ -405,6 +504,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         await server.replaceRemote(remote)
         await second.refresh()
         XCTAssertNotNil(second.state.bindings[0].conflict)
+        XCTAssertEqual(second.activity(for: job.id).phase, .conflict)
         XCTAssertEqual(SharedMetadataDocument(store.jobs[0].metadataAutomation!), local)
         XCTAssertEqual(try repository.load().bindings[0].conflict?.document, remote)
     }
@@ -468,5 +568,37 @@ private final class ReceiveSaveGate: @unchecked Sendable {
             }
             remaining = count - 1
         }
+    }
+}
+
+final class MetadataSyncFeedbackTests: XCTestCase {
+    func testInvitationAcceptsCopiedTextAndWhitespaceWithoutRelaxingServerValidation() throws {
+        let token = String(repeating: "a", count: 64)
+        let parsed = try MetadataSyncInvitation("Server: https://SYNC.example.org/calendar/\r\nInvitation: \(token)\r\n")
+        XCTAssertEqual(parsed.address, "https://sync.example.org/calendar/")
+        XCTAssertEqual(parsed.token, token)
+        XCTAssertEqual(try MetadataSyncInvitation(" \(token)\n").token, token)
+        XCTAssertThrowsError(try MetadataSyncInvitation("Server: http://sync.example.org/\nInvitation: \(token)"))
+        XCTAssertThrowsError(try MetadataSyncInvitation("not an invitation"))
+    }
+
+    func testDiagnosticsDoNotStoreRawNetworkOrCalendarErrors() {
+        let privateText = "https://private.example.org/secret?key=secret-key"
+        let error = URLError(.cannotConnectToHost, userInfo: [NSLocalizedDescriptionKey: privateText])
+        XCTAssertFalse(MetadataSyncEvent.errorDetail(error).contains(privateText))
+        XCTAssertFalse(MetadataSyncEvent.errorDetail(MetadataSyncFailure(message: privateText)).contains(privateText))
+        XCTAssertTrue(MetadataSyncEvent.errorDetail(error).contains("-1004"))
+    }
+
+    func testDiagnosticHistoryIsBoundedAndSurvivesRestart() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = MetadataSyncEventRepository(url: root.appendingPathComponent("events.json"))
+        let events = (0..<205).map { MetadataSyncEvent(operation: "Fetch calendar", detail: "Request completed.", revision: Int64($0)) }
+        try repository.save(events)
+        let loaded = repository.load()
+        XCTAssertEqual(loaded.count, 200)
+        XCTAssertEqual(loaded.first?.revision, 5)
+        XCTAssertEqual(loaded.last?.revision, 204)
     }
 }
