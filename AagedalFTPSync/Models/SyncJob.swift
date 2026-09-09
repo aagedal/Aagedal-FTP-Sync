@@ -157,6 +157,12 @@ enum ManagedOutputFolder: Sendable {
 }
 
 struct SyncJob: Codable, Identifiable, Hashable, Sendable {
+    var hasMetadataProgramming: Bool {
+        guard let metadataAutomation else { return false }
+        return !metadataAutomation.clips.isEmpty || !metadataAutomation.photographerTracks.isEmpty
+            || !metadataAutomation.photographers.isEmpty
+    }
+
     var id = UUID()
     var name = "Newsroom photos"
     var left = Endpoint.remote

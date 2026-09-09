@@ -343,14 +343,64 @@ final class ConfigurationTransferCoordinatorTests: XCTestCase {
         XCTAssertEqual(second.result.unchangedClips, 2)
     }
 
-    func testMetadataMergeRejectsOverlapWithRetainedLocalClip() throws {
+    func testMetadataMergePreservesOverlapsWithRetainedLocalClipsAndWarns() throws {
         let fixture = makeFixture(jobName: "Desk", prefix: "AD")
         var source = fixture.job
         source.metadataAutomation?.clips[0].id = UUID()
         let transfer = ConfigurationTransfer(scope: .metadata, jobs: [source],
             metadataPresets: [], photographers: [])
-        XCTAssertThrowsError(try coordinator.prepareImport(transfer,
-            currentState: ConfigurationTransferState(jobs: [fixture.job], metadataPresets: [], photographers: [])))
+        let prepared = try coordinator.prepareImport(transfer,
+            currentState: ConfigurationTransferState(jobs: [fixture.job], metadataPresets: [], photographers: []))
+        XCTAssertEqual(prepared.state.jobs[0].metadataAutomation?.clips,
+                       fixture.job.metadataAutomation!.clips + source.metadataAutomation!.clips)
+        XCTAssertEqual(prepared.result.addedClips, 1)
+        XCTAssertEqual(prepared.result.overlapWarnings.count, 1)
+        XCTAssertTrue(prepared.result.summary.contains("Warning: overlapping clips were kept."))
+        XCTAssertTrue(prepared.result.overlapWarnings[0].contains("Desk:"))
+        let repeated = try coordinator.prepareImport(transfer, currentState: prepared.state)
+        XCTAssertEqual(repeated.state, prepared.state)
+        XCTAssertEqual(repeated.result.addedClips, 0)
+        XCTAssertEqual(repeated.result.overlapWarnings, prepared.result.overlapWarnings)
+    }
+
+    func testManualMetadataAndPackageImportsAcceptOverlapsAlreadyInTheFile() throws {
+        let fixture = makeFixture(jobName: "Example job", prefix: "EX")
+        var source = fixture.job
+        var overlap = source.metadataAutomation!.clips[0]
+        overlap.id = UUID()
+        overlap.name = "Overlapping assignment"
+        source.metadataAutomation?.clips.append(overlap)
+        for scope in [ConfigurationTransferScope.metadata, .package] {
+            let data = try coordinator.exportData(scope: scope, password: "example-test-password",
+                state: ConfigurationTransferState(jobs: [source], metadataPresets: [], photographers: []))
+            let current = scope == .metadata
+                ? ConfigurationTransferState(jobs: [fixture.job], metadataPresets: [], photographers: [])
+                : emptyState
+            let prepared = try coordinator.prepareImport(from: data, password: "example-test-password", currentState: current)
+            let imported = try XCTUnwrap(prepared.state.jobs[0].metadataAutomation)
+            XCTAssertEqual(Set(imported.clips), Set(source.metadataAutomation!.clips))
+            XCTAssertEqual(prepared.result.overlapWarnings.count, 1)
+            XCTAssertNotNil(imported.validationMessage, "Standard validation remains unchanged outside manual import")
+            XCTAssertNil(imported.manualImportValidationMessage)
+        }
+    }
+
+    func testManualImportStillRejectsInvalidDatesReferencesAndGPSWithOverlaps() throws {
+        let fixture = makeFixture(jobName: "Example job", prefix: "EX")
+        for invalidCase in 0..<3 {
+            var source = fixture.job
+            var clip = source.metadataAutomation!.clips[0]
+            clip.id = UUID()
+            source.metadataAutomation?.clips.append(clip)
+            switch invalidCase {
+            case 0: source.metadataAutomation?.clips[0].endsAt = clip.startsAt
+            case 1: source.metadataAutomation?.clips[0].photographerID = UUID()
+            default: source.metadataAutomation?.clips[0].gpsPosition = ScheduledGPSPosition(latitude: 100, longitude: 0)
+            }
+            XCTAssertThrowsError(try coordinator.prepareImport(
+                ConfigurationTransfer(scope: .metadata, jobs: [source], metadataPresets: [], photographers: []),
+                currentState: ConfigurationTransferState(jobs: [fixture.job], metadataPresets: [], photographers: [])))
+        }
     }
 
     func testMetadataImportRejectsDuplicateClipIDs() throws {

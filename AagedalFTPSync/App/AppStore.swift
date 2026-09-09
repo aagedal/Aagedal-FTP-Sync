@@ -3,6 +3,14 @@ import Combine
 import Foundation
 import ServiceManagement
 
+enum AppSettingsTab: Hashable {
+    case servers, photographers, metadataSync
+}
+
+enum MetadataSyncSettingsTab: Hashable {
+    case calendars, hostingChecks
+}
+
 enum MetadataReprocessPhase: Equatable, Sendable {
     case idle
     case running
@@ -26,6 +34,9 @@ struct MetadataClipPositionUpdate: Equatable, Sendable {
 
 @MainActor
 final class AppStore: ObservableObject {
+    @Published var settingsTab: AppSettingsTab = .servers
+    @Published var metadataSyncSettingsTab: MetadataSyncSettingsTab = .calendars
+    var metadataDraftsBeingEdited: Set<UUID> = []
     @Published private(set) var jobs: [SyncJob]
     @Published private(set) var metadataPresets: [MetadataPreset]
     @Published private(set) var photographerLibrary: [PhotographerProfile]
@@ -322,6 +333,16 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// A received calendar only updates its linked job, not the global photographer library.
+    @discardableResult
+    func applySyncedMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
+        guard let index = jobs.firstIndex(where: { $0.id == jobID }), automation.validationMessage == nil else { return false }
+        if jobs[index].metadataAutomation == automation { return true }
+        var updated = jobs
+        updated[index].metadataAutomation = automation
+        return persistAndPublishJobs(updated, errorPrefix: "Synced metadata could not be saved")
+    }
+
     @discardableResult
     func updateMetadataClipPosition(
         _ position: ScheduledGPSPosition,
@@ -574,6 +595,48 @@ final class AppStore: ObservableObject {
             alertMessage = "The metadata preset could not be removed: \(error.localizedDescription)"
             return false
         }
+    }
+
+    func validateCalendarReceiveCopy(source: SyncJob, duplicate: SyncJob) throws {
+        guard source.id != duplicate.id, !jobs.contains(where: { $0.id == duplicate.id }),
+              jobs.first(where: { $0.id == source.id }) == source else {
+            throw MetadataSyncFailure(message: "The original job changed. Select Receive again to review a fresh copy.")
+        }
+        guard !metadataDraftsBeingEdited.contains(source.id) else {
+            throw MetadataSyncFailure(message: "Save or close the open metadata draft before creating the copy.")
+        }
+        guard !resettingJobs.contains(source.id), metadataReprocessTasks[source.id] == nil,
+              resetTasks[source.id] == nil else {
+            throw MetadataSyncFailure(message: "Wait for the original job's reset or metadata reprocessing to finish, then try again.")
+        }
+        guard !duplicate.isEnabled, !duplicate.startsOnAppLaunch else {
+            throw MetadataSyncFailure(message: "The receiving copy must start with automatic running disabled.")
+        }
+        if let message = duplicate.metadataAutomation?.validationMessage {
+            throw MetadataSyncFailure(message: message)
+        }
+    }
+
+    /// Both job changes share one atomic jobs-file write. Endpoint credential references
+    /// are retained; password editing/removal already accounts for references from other jobs.
+    @discardableResult
+    func installCalendarReceiveCopy(source: SyncJob, duplicate: SyncJob) throws -> SyncJob {
+        // The receipt journal may replay after jobs were saved but the link was not.
+        if let existing = jobs.first(where: { $0.id == duplicate.id }) { return existing }
+        try validateCalendarReceiveCopy(source: source, duplicate: duplicate)
+        guard let index = jobs.firstIndex(where: { $0.id == source.id }) else {
+            throw MetadataSyncFailure(message: "The original job no longer exists.")
+        }
+        var updated = jobs
+        updated[index].isEnabled = false
+        updated[index].startsOnAppLaunch = false
+        updated.insert(duplicate, at: index + 1)
+        try persistenceCoordinator.saveJobs(updated)
+        jobs = updated
+        scheduler.cancel(source.id)
+        phases[source.id] = .stopped
+        phases[duplicate.id] = .stopped
+        return duplicate
     }
 
     func setEnabled(_ enabled: Bool, for jobID: UUID) {

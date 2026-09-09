@@ -3,13 +3,17 @@ import Foundation
 import ServiceManagement
 import SwiftUI
 
-/// Launch plumbing used only by the isolated UI-test target. The opt-in marker
-/// and per-run session identifier keep test persistence away from the user's
-/// Application Support files and prevent test credentials from reaching Keychain.
+/// Isolated launch plumbing for UI tests and hosted unit tests. Neither test host
+/// may start the user's normal jobs or load their Keychain credentials.
 enum UITestSupport {
     static let enabled = ProcessInfo.processInfo.environment["AAGEDAL_UI_TESTING"] == "1"
+    private static let hostedUnitTests = NSClassFromString("XCTestCase") != nil
+        || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
     private static var sessionID: String? {
+        if hostedUnitTests && !enabled {
+            return "unit-\(ProcessInfo.processInfo.processIdentifier)"
+        }
         guard enabled,
               let rawValue = ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_SESSION"] else {
             return nil
@@ -98,7 +102,7 @@ enum UITestSupport {
             .makeKeyAndOrderFront(nil)
     }
 
-    private static var rootURL: URL? {
+    static var rootURL: URL? {
         guard let sessionID else { return nil }
         return FileManager.default.temporaryDirectory
             .appendingPathComponent("AagedalFTPSyncUITests", isDirectory: true)

@@ -466,6 +466,10 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func scheduleAutosave(in store: AppStore) {
+        if let loadedJobID {
+            if draft != lastSavedDraft { store.metadataDraftsBeingEdited.insert(loadedJobID) }
+            else { store.metadataDraftsBeingEdited.remove(loadedJobID) }
+        }
         autosaveTask?.cancel()
         saveConfirmation = false
         guard draft != lastSavedDraft, canAutosaveDraft(in: store) else { return }
@@ -1095,8 +1099,31 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         }
     }
 
+    func refreshSavedMetadata(in store: AppStore) {
+        guard let loadedJobID, draft == lastSavedDraft,
+              let latest = store.jobs.first(where: { $0.id == loadedJobID })?.metadataAutomation,
+              latest != draft else { return }
+        draft = latest
+        lastSavedDraft = latest
+        store.metadataDraftsBeingEdited.remove(loadedJobID)
+    }
+
     @discardableResult
     func save(in store: AppStore) -> Bool {
+        // Also protect the short interval before SwiftUI publishes the draft's dirty flag.
+        if let loadedJobID, let base = lastSavedDraft,
+           let latest = store.jobs.first(where: { $0.id == loadedJobID })?.metadataAutomation,
+           latest != base {
+            do {
+                let merged = try SharedMetadataDocument.merge(base: SharedMetadataDocument(base),
+                    local: SharedMetadataDocument(draft), remote: SharedMetadataDocument(latest))
+                draft = try merged.applying(to: draft, replacing: SharedMetadataDocument(base), range: nil, timeZone: TimeZone.current.identifier)
+            } catch {
+                store.alertMessage = "The calendar changed while this draft was open. Your draft is retained; the newer saved version has not been overwritten. " + error.localizedDescription
+                saveConfirmation = false
+                return false
+            }
+        }
         guard canAutosaveDraft(in: store),
               let loadedJobID,
               store.saveMetadataAutomation(draft, for: loadedJobID) else {
@@ -1104,6 +1131,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             return false
         }
         lastSavedDraft = draft
+        store.metadataDraftsBeingEdited.remove(loadedJobID)
         saveConfirmation = true
         return true
     }

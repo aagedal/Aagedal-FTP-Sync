@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-// This endpoint is a hosting preflight, not a calendar sync implementation.
+// Protocol 1 hosting checks and protocol 2 calendar sync share this endpoint.
 // PHP errors must never expose database credentials or server paths to clients.
 ini_set('display_errors', '0');
 header('Content-Type: application/json; charset=utf-8');
@@ -11,10 +11,12 @@ header('X-Content-Type-Options: nosniff');
 function respond(int $status, array $checks = [], ?string $error = null): never
 {
     http_response_code($status);
+    $isCalendarRequest = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
+        && ($_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] ?? '') === '2';
     $body = [
         'service' => 'aagedal-metadata-sync',
-        'protocolVersion' => 1,
-        'stage' => 'hosting-check',
+        'protocolVersion' => $isCalendarRequest ? 2 : 1,
+        'stage' => $isCalendarRequest ? 'calendar-sync' : 'hosting-check',
         'checks' => $checks,
     ];
     if ($error !== null) {
@@ -49,6 +51,13 @@ try {
         respond(503, [], 'not_configured');
     }
     $config = require $configPath;
+    if (is_array($config) && ($_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] ?? '') === '2') {
+        if (!is_file(__DIR__ . '/live.php')) {
+            respond(503, [], 'live_api_missing');
+        }
+        require __DIR__ . '/live.php';
+        liveRun($config);
+    }
     if (!is_array($config) || ($config['hosting_checks_enabled'] ?? false) !== true) {
         respond(404, [], 'hosting_check_disabled');
     }

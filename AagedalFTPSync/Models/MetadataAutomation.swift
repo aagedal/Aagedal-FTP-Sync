@@ -928,6 +928,16 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
     }
 
     var validationMessage: String? {
+        validationMessage(allowingOverlappingClips: false)
+    }
+
+    /// Manual package import preserves overlapping records and reports them separately.
+    /// Normal editing, processing and live-sync validation keep their existing rules.
+    var manualImportValidationMessage: String? {
+        validationMessage(allowingOverlappingClips: true)
+    }
+
+    private func validationMessage(allowingOverlappingClips: Bool) -> String? {
         if isEnabled, photographers.isEmpty {
             return "Add at least one photographer before enabling automatic metadata."
         }
@@ -974,14 +984,16 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
             return "Every clip location must use valid latitude and longitude coordinates."
         }
 
-        for photographerID in photographerIDs {
+        return allowingOverlappingClips ? nil : overlapWarning
+    }
+
+    var overlapWarning: String? {
+        for photographer in photographers {
             let photographerClips = clips
-                .filter { $0.photographerID == photographerID }
+                .filter { $0.photographerID == photographer.id }
                 .sorted { $0.startsAt < $1.startsAt }
             for pair in zip(photographerClips, photographerClips.dropFirst()) where pair.0.endsAt > pair.1.startsAt {
-                let photographerName = photographers.first(where: { $0.id == photographerID })?.photographerName
-                    ?? "A photographer"
-                return "\(photographerName) has overlapping metadata clips."
+                return "\(photographer.photographerName) has overlapping metadata clips."
             }
         }
         return nil

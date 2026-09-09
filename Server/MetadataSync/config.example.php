@@ -10,4 +10,6 @@ return [
     'setup_key_sha256' => 'REPLACE_WITH_SHA256_HASH',
     // Set false after the hosting trial; public GET remains available.
     'hosting_checks_enabled' => true,
+    // Enable only to register the first owner device, then set false.
+    'bootstrap_enabled' => false,
 ];

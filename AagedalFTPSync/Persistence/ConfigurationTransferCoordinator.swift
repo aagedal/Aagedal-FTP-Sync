@@ -37,6 +37,7 @@ struct ConfigurationImportResult: Equatable, Sendable {
     var addedClips = 0
     var updatedClips = 0
     var unchangedClips = 0
+    var overlapWarnings: [String] = []
 
     var summary: String {
         var parts: [String] = []
@@ -70,9 +71,14 @@ struct ConfigurationImportResult: Equatable, Sendable {
                     : "\(skippedMetadataProgramming) unmatched programmings skipped"
             )
         }
-        let summary = parts.isEmpty ? "The package contained no changes." : "Imported " + parts.joined(separator: ", ") + "."
-        guard importedMetadataProgramming > 0 else { return summary }
-        return summary + " Clips: \(addedClips) added, \(updatedClips) updated, \(unchangedClips) unchanged."
+        var summary = parts.isEmpty ? "The package contained no changes." : "Imported " + parts.joined(separator: ", ") + "."
+        if importedMetadataProgramming > 0 {
+            summary += " Clips: \(addedClips) added, \(updatedClips) updated, \(unchangedClips) unchanged."
+        }
+        if !overlapWarnings.isEmpty {
+            summary += "\n\nWarning: overlapping clips were kept.\n" + overlapWarnings.joined(separator: "\n")
+        }
+        return summary
     }
 }
 
@@ -249,7 +255,7 @@ struct ConfigurationTransferCoordinator {
                 skippedProgramming += 1
                 continue
             }
-            if let message = programming.automation.validationMessage {
+            if let message = programming.automation.manualImportValidationMessage {
                 throw AppError.invalidConfiguration("\(programming.jobName): \(message)")
             }
             let incoming = programming.automation
@@ -289,7 +295,7 @@ struct ConfigurationTransferCoordinator {
             } else {
                 addedClips += incoming.clips.count
             }
-            if let message = merged.validationMessage {
+            if let message = merged.manualImportValidationMessage {
                 throw AppError.invalidConfiguration("\(programming.jobName): \(message)")
             }
             updatedJobs[index].metadataAutomation = merged
@@ -335,6 +341,7 @@ struct ConfigurationTransferCoordinator {
         let normalizedPhotographersByID = Dictionary(
             uniqueKeysWithValues: normalizedImportedPhotographers.map { ($0.id, $0) }
         )
+        var affectedJobIDs = targetedJobIDs.union(importedJobIDs.values)
         for jobIndex in updatedJobs.indices {
             guard var automation = updatedJobs[jobIndex].metadataAutomation else { continue }
             var changed = false
@@ -345,10 +352,15 @@ struct ConfigurationTransferCoordinator {
                 changed = true
             }
             guard changed else { continue }
-            if let message = automation.validationMessage {
+            if let message = automation.manualImportValidationMessage {
                 throw AppError.invalidConfiguration("\(updatedJobs[jobIndex].name): \(message)")
             }
             updatedJobs[jobIndex].metadataAutomation = automation
+            affectedJobIDs.insert(updatedJobs[jobIndex].id)
+        }
+        let overlapWarnings = updatedJobs.compactMap { job -> String? in
+            guard affectedJobIDs.contains(job.id), let warning = job.metadataAutomation?.overlapWarning else { return nil }
+            return "\(job.name): \(warning)"
         }
 
         var presetsByID = Dictionary(
@@ -383,7 +395,8 @@ struct ConfigurationTransferCoordinator {
                 importedServerProfiles: transfer.serverProfiles.count,
                 addedClips: addedClips,
                 updatedClips: updatedClips,
-                unchangedClips: unchangedClips
+                unchangedClips: unchangedClips,
+                overlapWarnings: overlapWarnings
             ),
             selectedJobID: selectedJobID,
             importedJobIDs: importedJobIDs

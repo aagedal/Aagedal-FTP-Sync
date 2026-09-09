@@ -4,9 +4,20 @@ import SwiftUI
 @main
 struct AagedalFTPSyncApp: App {
     @StateObject private var store: AppStore
+    @StateObject private var metadataSync: MetadataCalendarCoordinator
 
     init() {
-        _store = StateObject(wrappedValue: UITestSupport.makeStore() ?? AppStore())
+        let testStore = UITestSupport.makeStore()
+        let store = testStore ?? AppStore()
+        let syncRepository = UITestSupport.rootURL.map {
+            MetadataCalendarRepository(url: $0.appendingPathComponent("metadata-sync-v1.json"))
+        } ?? MetadataCalendarRepository()
+        let metadataSync = MetadataCalendarCoordinator(repository: syncRepository)
+        _store = StateObject(wrappedValue: store)
+        _metadataSync = StateObject(wrappedValue: metadataSync)
+        if testStore == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            metadataSync.start(store: store)
+        }
     }
 
     var body: some Scene {
@@ -69,13 +80,17 @@ struct AagedalFTPSyncApp: App {
         .defaultSize(width: 780, height: 560)
 
         Settings {
-            TabView {
+            TabView(selection: $store.settingsTab) {
                 ServerSettingsView()
                     .tabItem { Label("Servers", systemImage: "server.rack") }
+                    .tag(AppSettingsTab.servers)
                 PhotographerSettingsView()
                     .tabItem { Label("Photographers", systemImage: "person.2") }
+                    .tag(AppSettingsTab.photographers)
                 MetadataSyncSettingsView()
+                    .environmentObject(metadataSync)
                     .tabItem { Label("Metadata Sync", systemImage: "arrow.triangle.2.circlepath") }
+                    .tag(AppSettingsTab.metadataSync)
             }
             .environmentObject(store)
             .applyingUITestDynamicTypeSize()

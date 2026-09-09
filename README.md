@@ -39,6 +39,10 @@ Version 2.8 strengthens unattended operation with safer job recovery, bounded SF
 - Processed pictures can optionally be sorted into sanitized `Photographer Name (INITIALS)` sub-folders while preserving their source-relative paths
 - Sync jobs, their referenced server profiles, and metadata programming can be exported separately or together in `.aftpsync` packages, with password protection enabled by default
 
+## Optional metadata calendar sync
+
+The development build includes calendar sharing through a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, editor/read-only invitations, offline edits and explicit conflict resolution. Configure it under **Settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. See the [server installation and behavior guide](Server/MetadataSync/README.md) for deployment steps, date-range boundaries, limits and the current hosting-trial status.
+
 ## Requirements
 
 - An Apple silicon Mac running macOS 14 Sonoma or newer
@@ -131,6 +135,9 @@ Dependency security and release verification are documented in [`SECURITY.md`](S
 Jobs are stored as readable JSON under the app’s Application Support container. Secrets are referenced by random credential IDs and live only in Keychain.
 
 Portable `.aftpsync` packages never contain Keychain passwords or security-scoped folder bookmarks. Referenced server profiles are included with fresh profile and credential identifiers so shared connections remain intact without exposing passwords. Password protection is enabled by default and uses PBKDF2-HMAC-SHA256 with AES-256-GCM authenticated encryption, but it can be turned off for non-sensitive transfers. Unencrypted packages expose server addresses, usernames, paths, and metadata programming to anyone who can read the file. Imported jobs are disabled and receive fresh identifiers, so folder permissions and server passwords must be configured again before syncing.
+
+Manual `.aftpsync` imports preserve overlapping metadata clips and report a warning in the import summary, including overlaps with retained local clips. Other malformed metadata still blocks import. This exception applies only to manual import; normal calendar validation and live-sync conflict checks are unchanged.
+
 
 ## License
 

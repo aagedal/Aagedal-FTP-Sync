@@ -6,6 +6,7 @@ struct MetadataProgrammingView: View {
     @Environment(\.controlActiveState) private var controlActiveState
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @StateObject private var coordinator = MetadataProgrammingCoordinator()
     @FocusState private var timelineFocused: Bool
     @State private var pendingConfigurationTransfer: PendingConfigurationTransfer?
@@ -79,6 +80,22 @@ struct MetadataProgrammingView: View {
 
     var body: some View {
         alertContent
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        flushAutosave()
+                        store.settingsTab = .metadataSync
+                        store.metadataSyncSettingsTab = .calendars
+                        RegularWindowController.shared.prepareForOpening()
+                        openSettings()
+                    } label: {
+                        Label("Sharing & Sync…", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .help("Open calendar sharing and sync settings")
+                    .accessibilityIdentifier("metadata-sharing-sync")
+                }
+            }
     }
 
     private var mainContent: some View {
@@ -116,10 +133,15 @@ struct MetadataProgrammingView: View {
         .onAppear(perform: loadSelectedJob)
         .onDisappear {
             flushAutosave()
+            if let id = coordinator.loadedJobID { store.metadataDraftsBeingEdited.remove(id) }
         }
         .onChange(of: store.selectedJobID) { _, _ in
             flushAutosave()
+            if let id = coordinator.loadedJobID { store.metadataDraftsBeingEdited.remove(id) }
             loadSelectedJob()
+        }
+        .onChange(of: selectedJob?.metadataAutomation) { _, _ in
+            coordinator.refreshSavedMetadata(in: store)
         }
         .onChange(of: draft) { _, _ in
             scheduleAutosave()

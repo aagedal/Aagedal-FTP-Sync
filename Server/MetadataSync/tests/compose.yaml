@@ -10,6 +10,7 @@ services:
       - /var/lib/mysql
     volumes:
       - ../schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+      - ../schema-live-sync.sql:/docker-entrypoint-initdb.d/schema-live-sync.sql:ro
     healthcheck:
       test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
       interval: 2s

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MetadataSyncSettingsView: View {
+    @EnvironmentObject private var store: AppStore
     @AppStorage("metadataSync.serverURL") private var savedAddress = ""
     @State private var address = ""
     @State private var setupKey = ""
@@ -10,6 +11,27 @@ struct MetadataSyncSettingsView: View {
     @State private var requestID: UUID?
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("Metadata sync section", selection: $store.metadataSyncSettingsTab) {
+                Text("Calendar Sync").tag(MetadataSyncSettingsTab.calendars)
+                Text("Hosting Checks").tag(MetadataSyncSettingsTab.hostingChecks)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 360)
+            .padding()
+            .accessibilityIdentifier("metadata-sync-section")
+
+            switch store.metadataSyncSettingsTab {
+            case .calendars:
+                MetadataCalendarSettingsView()
+            case .hostingChecks:
+                hostingForm
+            }
+        }.frame(minWidth: 680, minHeight: 600)
+    }
+
+    private var hostingForm: some View {
         Form {
             Section("Metadata Sync Server") {
                 Text("Connect to a server hosted by you or your organization.")
@@ -33,7 +55,7 @@ struct MetadataSyncSettingsView: View {
                 }
             }
             Section("Hosting Compatibility") {
-                Text("This prototype checks the hosting connection. Calendar sharing and automatic metadata sync are not available yet.")
+                Text("Check PHP and database compatibility before connecting a calendar.")
                     .foregroundStyle(.secondary)
                 SecureField("Hosting check key", text: $setupKey)
                     .disabled(requestID != nil)
@@ -73,7 +95,7 @@ struct MetadataSyncSettingsView: View {
         do {
             let server = try MetadataSyncServer(address: address)
             savedAddress = server.baseURL.absoluteString
-            message = "Server address saved. Calendar sync is not enabled."
+            message = "Server address saved. Open Calendar Sync to register or join."
         } catch { message = error.localizedDescription }
     }
 
@@ -93,7 +115,7 @@ struct MetadataSyncSettingsView: View {
                     let expected = database ? ["PHP runtime", "MySQL driver", "Database read/write", "Transaction rollback", "Unicode metadata"] : ["PHP runtime", "MySQL driver"]
                     let passed = expected.allSatisfy { name in info.checks.contains { $0.name == name && $0.passed } }
                     message = passed
-                        ? (database ? "Hosting checks passed. This server is a candidate for the next sync prototype." : "Server reached. Run Check Database to verify MySQL access.")
+                        ? (database ? "Hosting checks passed. Install the live sync schema and connect from Calendar Sync." : "Server reached. Run Check Database to verify MySQL access.")
                         : "The server responded, but some required hosting checks did not pass."
                 } catch {
                     guard requestID == id else { return }

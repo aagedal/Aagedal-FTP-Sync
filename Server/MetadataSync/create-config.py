@@ -35,6 +35,7 @@ def main():
         f"    'database_password' => {php_string(password)},",
         f"    'setup_key_sha256' => '{hashlib.sha256(key.encode()).hexdigest()}',",
         "    'hosting_checks_enabled' => true,",
+        "    'bootstrap_enabled' => false,",
     ]) + '\n];\n'
     for path, contents in [(config_path, config), (key_path, key + '\n')]:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

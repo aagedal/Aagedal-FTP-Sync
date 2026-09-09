@@ -8,4 +8,5 @@ return [
     'database_password' => 'local-test-only',
     'setup_key_sha256' => hash('sha256', str_repeat('a', 64)),
     'hosting_checks_enabled' => true,
+    'bootstrap_enabled' => true,
 ];
