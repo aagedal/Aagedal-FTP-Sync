@@ -99,6 +99,112 @@ final class Version3SignatureConversionTests: XCTestCase {
         try assertNoStages(root)
     }
 
+    func testVersion3ValidationPreservesExactBytesAndHistoricalReferences() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let converted = try Conversion.convert(.standaloneSnapshot(legacy(in: root)), temporaryDirectory: root)
+        let before = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+        let input = (Data([0, 1, 2]) + converted.data).dropFirst(3)
+        XCTAssertNotEqual(input.startIndex, 0)
+        let validation = try Conversion.validateVersion3Snapshot(input, temporaryDirectory: root)
+        XCTAssertEqual(validation.data, input)
+        XCTAssertEqual(validation.recordCount, 1)
+        XCTAssertEqual(validation.referencedJobIDs, [UUID(uuidString: sample.job)!])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), before)
+        let empty = try Conversion.convert(.noLegacyStore, temporaryDirectory: root)
+        XCTAssertEqual(try Conversion.validateVersion3Snapshot(empty.data, temporaryDirectory: root,
+            limits: .init(maximumRecords: 0)), empty)
+    }
+
+    func testVersion3ValidationAcceptsExplicitlyStandaloneWALHeaderWithoutRewritingIt() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let converted = try Conversion.convert(.standaloneSnapshot(legacy(in: root)), temporaryDirectory: root)
+        let url = root.appendingPathComponent("closed-v3.sqlite3")
+        try converted.data.write(to: url)
+        try connection(url) { try execute("PRAGMA journal_mode = WAL", in: $0) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-wal"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-shm"))
+        let bytes = try Data(contentsOf: url)
+        XCTAssertEqual(bytes[18], 2)
+        let before = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+        let validation = try Conversion.validateVersion3Snapshot(bytes, temporaryDirectory: root)
+        XCTAssertEqual(validation.data, bytes)
+        XCTAssertEqual(validation.recordCount, 1)
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), before)
+    }
+
+    func testVersion3ValidationRejectsLegacyFutureIdentityAndExtraSchemaWithoutRepair() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = "PRAGMA application_id = \(SourceSignatureRepository.version3ApplicationID); PRAGMA user_version = 3;"
+        for (alter, expected) in [
+            ("", Conversion.Failure.wrongApplicationID(0)),
+            (identity + "PRAGMA user_version = 4", .unsupportedVersion(4)),
+            (identity + "PRAGMA application_id = 77", .wrongApplicationID(77)),
+            (identity + "CREATE TABLE extra(value TEXT)", .incompatibleSchema),
+            (identity + "ANALYZE", .incompatibleSchema)
+        ] {
+            let bytes = try legacy(in: root, alter: alter)
+            let before = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+            XCTAssertThrowsError(try Conversion.validateVersion3Snapshot(bytes, temporaryDirectory: root)) {
+                XCTAssertEqual($0 as? Conversion.Failure, expected)
+            }
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), before)
+        }
+    }
+
+    func testVersion3ValidationSharesStrictRowChecksWithLegacyConversion() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = "PRAGMA application_id = \(SourceSignatureRepository.version3ApplicationID); PRAGMA user_version = 3;"
+        for alteration in ["job_id = 'bad'", "source_key = 'bad'", "relative_path = '../escape'",
+                           "relative_path = char(10) || 'photo.jpg'", "relative_path = CAST(x'ff' AS TEXT)",
+                           "relative_path = 'a' || char(0) || 'b'", "size = -1", "size = 1.5",
+                           "modified_at = 1e999", "last_seen_at = 'text'"] {
+            let bytes = try legacy(in: root, alter: identity + "UPDATE source_signatures SET " + alteration)
+            XCTAssertThrowsError(try Conversion.validateVersion3Snapshot(bytes, temporaryDirectory: root)) {
+                XCTAssertEqual($0 as? Conversion.Failure, .invalidRow, alteration)
+            }
+        }
+        try assertNoStages(root)
+    }
+
+    func testVersion3ValidationBoundsMalformedInputAndCancellationLeaveNoStage() async throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bytes = try Conversion.convert(.standaloneSnapshot(legacy(in: root)), temporaryDirectory: root).data
+        let before = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+        for input in [Data(), Data("[]".utf8), Data(bytes.prefix(99)), Data(bytes.dropLast()), bytes + Data([1])] {
+            XCTAssertThrowsError(try Conversion.validateVersion3Snapshot(input, temporaryDirectory: root))
+        }
+        for (limits, expected) in [
+            (Conversion.Limits(maximumBytes: 1), Conversion.Failure.inputLimit),
+            (.init(maximumRecords: 0), .recordLimit),
+            (.init(maximumTextBytes: 1), .textLimit),
+            (.init(timeout: .leastNonzeroMagnitude), .deadlineExceeded),
+            (.init(timeout: .infinity), .invalidLimits)
+        ] {
+            XCTAssertThrowsError(try Conversion.validateVersion3Snapshot(bytes, temporaryDirectory: root, limits: limits)) {
+                XCTAssertEqual($0 as? Conversion.Failure, expected)
+            }
+        }
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try Conversion.validateVersion3Snapshot(bytes, temporaryDirectory: root)
+        }
+        do { _ = try await task.value; XCTFail("Cancelled admission must fail") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), before)
+        let linked = root.appendingPathComponent("linked-stage-root")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: root)
+        XCTAssertThrowsError(try Conversion.validateVersion3Snapshot(bytes, temporaryDirectory: linked)) {
+            XCTAssertEqual($0 as? Conversion.Failure, .unsafeTemporaryDirectory)
+        }
+        try assertNoStages(root)
+    }
+
     private func jsonRecord(job: String = "AE5B40F5-6C9C-4FDC-89C8-B9D802DB20C1",
                             username: String = "Åse", path: String = "folder/東京\\photo.jpg",
                             size: Int64 = Int64.max - 1, milliseconds: Double = -123_456_125) -> [String: Any] {

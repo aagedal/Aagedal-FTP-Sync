@@ -417,4 +417,162 @@ final class Version3JSONStoreConversionTests: XCTestCase {
         XCTAssertEqual(result.summary.trackInference?.adaptedObjects, 0)
         for (name, bytes) in input { XCTAssertEqual(Data(try payload(name, result).utf8), bytes, name) }
     }
+
+    private func currentEnvelope(_ bytes: Data, store: VersionedStoreCodec.Store) -> Data {
+        Data("{\"format\":\"AagedalFTPSync.store\",\"schemaVersion\":3,\"store\":\"\(store.rawValue)\",\"payload\":".utf8) + bytes + Data("}".utf8)
+    }
+
+    func testCurrentValidationAcceptsCompleteSetPreservesInputAndReportsCurrentCredentials() throws {
+        let (job, profile, state) = fixture()
+        let converted = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [jobsName: encode([job], iso: true),
+            "server-profiles-v1.json": encode([profile]), calendarName: encode(state, calendar: true)])
+        var current = converted.stores
+        current["source-signatures.sqlite"] = Data("caller-owned opaque bytes".utf8)
+        let original = current
+        let result = try Version3JSONStoreConversion.validateCurrentStores(current)
+        XCTAssertEqual(current, original)
+        XCTAssertEqual(result.summary.recordCounts, converted.summary.recordCounts)
+        XCTAssertEqual(result.retainedCredentialIDs, converted.retainedCredentialIDs)
+        XCTAssertEqual(Set(result.summary.selectedSourceSHA256.keys), Version3JSONStoreConversion.primaryFilenames)
+        XCTAssertTrue(result.summary.initializedAbsentStores.isEmpty)
+        XCTAssertNil(result.summary.trackInference)
+        // Current provenance hashes envelopes; conversion provenance hashes legacy payloads.
+        XCTAssertNotEqual(result.summary.selectedSourceSHA256[jobsName], converted.summary.selectedSourceSHA256[jobsName])
+    }
+
+    func testCurrentValidationRequiresEveryStoreAndStrictHeadersWithinTotalBound() throws {
+        let current = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [:]).stores
+        for name in Version3JSONStoreConversion.primaryFilenames {
+            var missing = current
+            missing.removeValue(forKey: name)
+            XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(missing)) {
+                XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .missingCurrentStore(name))
+            }
+        }
+        for invalid in [
+            #"{"format":"AagedalFTPSync.store","schemaVersion":4,"store":"jobs","payload":[]}"#,
+            #"{"format":"AagedalFTPSync.store","schemaVersion":null,"store":"jobs","payload":[]}"#,
+            #"{"format":"AagedalFTPSync.store","schemaVersion":3,"store":"photographers","payload":[]}"#,
+            #"{"format":"wrong","schemaVersion":3,"store":"jobs","payload":[]}"#,
+            #"{"format":"AagedalFTPSync.store","schemaVersion":3,"store":"jobs","payload":[],"payload":[]}"#,
+            #"{"format":"AagedalFTPSync.store","schemaVersion":3,"store":"jobs"}"#,
+            "[]", "malformed"
+        ] {
+            var changed = current
+            changed[jobsName] = Data(invalid.utf8)
+            XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(changed))
+        }
+        let total = current.values.reduce(0) { $0 + $1.count }
+        XCTAssertNoThrow(try Version3JSONStoreConversion.validateCurrentStores(current, maximumInputBytes: total))
+        XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(current, maximumInputBytes: total - 1)) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .inputLimitExceeded)
+        }
+    }
+
+    func testCurrentValidationRejectsNonemptyImplicitTracksBeforeModelDecodeAndAllowsEmptyDefaults() throws {
+        let (job, profile, state) = fixture()
+        let converted = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [jobsName: encode([job], iso: true),
+            "server-profiles-v1.json": encode([profile]), calendarName: encode(state, calendar: true)])
+        var rawJobs = try XCTUnwrap(JSONSerialization.jsonObject(with: encode([job], iso: true)) as? [[String: Any]])
+        var automation = try XCTUnwrap(rawJobs[0]["metadataAutomation"] as? [String: Any])
+        automation.removeValue(forKey: "photographerTracks")
+        var clips = try XCTUnwrap(automation["clips"] as? [[String: Any]])
+        clips[0]["startsAt"] = "0001-01-01T00:00:00Z"
+        clips[0]["endsAt"] = "9999-12-31T00:00:00Z"
+        for values in [clips, []] {
+            automation["clips"] = values
+            rawJobs[0]["metadataAutomation"] = automation
+            var current = converted.stores
+            current[jobsName] = currentEnvelope(try JSONSerialization.data(withJSONObject: rawJobs), store: .jobs)
+            if values.isEmpty {
+                XCTAssertNoThrow(try Version3JSONStoreConversion.validateCurrentStores(current))
+            } else {
+                XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(current)) {
+                    XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .explicitPhotographerTracksRequired(self.jobsName))
+                }
+            }
+        }
+        var current = converted.stores
+        current[calendarName] = currentEnvelope(try implicit(encode(state, calendar: true)), store: .metadataCalendar)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(current)) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .explicitPhotographerTracksRequired(self.calendarName))
+        }
+    }
+
+    func testCurrentValidationChecksLiveCrossReferencesAndDuplicateIdentities() throws {
+        let (job, profile, state) = fixture()
+        let current = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [jobsName: encode([job], iso: true),
+            "server-profiles-v1.json": encode([profile]), calendarName: encode(state, calendar: true)]).stores
+        var changed = current
+        changed["server-profiles-v1.json"] = currentEnvelope(Data("[]".utf8), store: .serverProfiles)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(changed)) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .invalidReference("job server profile"))
+        }
+        changed = current
+        changed[jobsName] = currentEnvelope(try encode([job, job], iso: true), store: .jobs)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(changed)) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .duplicateIdentity("jobs"))
+        }
+        changed = current
+        var brokenCalendar = state
+        brokenCalendar.bindings[0].accountID = UUID()
+        changed[calendarName] = currentEnvelope(try encode(brokenCalendar, calendar: true), store: .metadataCalendar)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(changed))
+    }
+
+    func testCurrentValidationRetainsHistoricalAndDetachedReferences() throws {
+        let (_, _, state) = fixture()
+        let deletedID = state.bindings[0].jobID
+        let failure = SyncFailureRecord(jobID: deletedID, message: "{historical literal}")
+        let event = MetadataSyncEvent(jobID: deletedID, operation: "Old event", detail: "{retained}")
+        let converted = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [calendarName: encode(state, calendar: true),
+            "sync-errors-v1.json": encode([failure], iso: true), "metadata-sync-events-v1.json": encode([event])])
+        let current = try Version3JSONStoreConversion.validateCurrentStores(converted.stores)
+        XCTAssertEqual(current.summary.calendarBindingJobIDsWithoutCurrentJob, [deletedID])
+        XCTAssertEqual(current.summary.historicalJobIDsWithoutCurrentJob, converted.summary.historicalJobIDsWithoutCurrentJob)
+    }
+
+    func testCurrentValidationChecksPendingReceiptPhaseAndInstalledIdentity() throws {
+        let (source, profile, initial) = fixture()
+        var duplicate = source
+        duplicate.id = UUID()
+        duplicate.isEnabled = false
+        duplicate.startsOnAppLaunch = false
+        var state = initial
+        state.bindings = []
+        state.pendingReceive = MetadataCalendarReceiveProposal(accountID: state.accounts[0].id, source: source,
+            duplicate: duplicate, calendar: initial.bindings[0].snapshot)
+        var current = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [jobsName: encode([source], iso: true),
+            "server-profiles-v1.json": encode([profile]), calendarName: encode(state, calendar: true)]).stores
+        XCTAssertEqual(try Version3JSONStoreConversion.validateCurrentStores(current).summary.pendingReceiptPhase, .beforeInstallation)
+        var paused = source
+        paused.isEnabled = false
+        paused.startsOnAppLaunch = false
+        current[jobsName] = currentEnvelope(try encode([paused, duplicate], iso: true), store: .jobs)
+        XCTAssertEqual(try Version3JSONStoreConversion.validateCurrentStores(current).summary.pendingReceiptPhase, .jobsInstalled)
+        duplicate.name = "Unexpected installed copy"
+        current[jobsName] = currentEnvelope(try encode([paused, duplicate], iso: true), store: .jobs)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(current)) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .invalidPendingReceipt)
+        }
+    }
+
+    func testCurrentValidationRejectsCalendarDatesThatWouldTrapOnLaterSave() throws {
+        let (_, _, state) = fixture()
+        var current = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [calendarName: encode(state, calendar: true)]).stores
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encode(state, calendar: true)) as? [String: Any])
+        var bindings = try XCTUnwrap(object["bindings"] as? [[String: Any]])
+        var snapshot = try XCTUnwrap(bindings[0]["snapshot"] as? [String: Any])
+        var document = try XCTUnwrap(snapshot["document"] as? [String: Any])
+        var clips = try XCTUnwrap(document["clips"] as? [[String: Any]])
+        clips[0]["startsAt"] = 1e50
+        document["clips"] = clips
+        snapshot["document"] = document
+        bindings[0]["snapshot"] = snapshot
+        object["bindings"] = bindings
+        current[calendarName] = currentEnvelope(try JSONSerialization.data(withJSONObject: object), store: .metadataCalendar)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.validateCurrentStores(current)) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .invalidRecord("calendar date"))
+        }
+    }
 }

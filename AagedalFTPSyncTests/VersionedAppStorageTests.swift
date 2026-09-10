@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import AagedalFTPSync
 
@@ -376,4 +377,248 @@ final class VersionedAppStorageTests: XCTestCase {
             }, currentStorePaths: { _ in paths })
         }
     }
+
+    /// Materialize a closed crash-style main/WAL/SHM set while leaving no writer
+    /// connected to the files that migration will inspect.
+    private func sqliteFixture(_ root: URL, name: String = "signatures.sqlite3") throws -> [String: Data] {
+        let live = root.appendingPathComponent("fixture-\(UUID().uuidString).sqlite3")
+        var pointer: OpaquePointer?
+        guard sqlite3_open(live.path, &pointer) == SQLITE_OK, let pointer else { throw Injected.invalidSchema }
+        defer {
+            sqlite3_close(pointer)
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: live.path + suffix) }
+        }
+        let sql = SourceSignatureRepository.version3TableSQL + ";" + SourceSignatureRepository.version3IndexSQL + ";PRAGMA user_version = 2;"
+            + "PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;"
+            + "INSERT INTO source_signatures VALUES ('AE5B40F5-6C9C-4FDC-89C8-B9D802DB20C1','5:local8:/fixture0:1:00:0:','photo.jpg',42,-123456.125,1700000000.875)"
+        guard sqlite3_exec(pointer, sql, nil, nil, nil) == SQLITE_OK else { throw Injected.invalidSchema }
+        var bytes: [String: Data] = [:]
+        for suffix in ["", "-wal", "-shm"] {
+            let data = try Data(contentsOf: URL(fileURLWithPath: live.path + suffix))
+            let relative = name + suffix
+            try data.write(to: root.appendingPathComponent(relative))
+            bytes[relative] = data
+        }
+        return bytes
+    }
+    private var sqlitePaths: [String] {
+        ["signatures.sqlite3", "signatures.sqlite3-wal", "signatures.sqlite3-shm", "signatures.sqlite3-journal"]
+    }
+    private var sqlitePlan: VersionedAppStorage.Plan { .init(legacyFiles: plan.legacyFiles + sqlitePaths) }
+
+    func testAcquiredWALMigrationRetainsRawCompanionsAndConvertsCommittedRow() throws {
+        try fixture { root, storage in
+            let raw = try sqliteFixture(root)
+            let receipt = try storage.acquireLegacySQLite(relativePath: "signatures.sqlite3", temporaryDirectory: root)
+            XCTAssertEqual(receipt.output.recordCount, 1)
+            let v3Bytes = try Version3SignatureConversion.convert(.standaloneSnapshot(receipt.output.data), temporaryDirectory: root)
+            XCTAssertEqual(v3Bytes.recordCount, 1)
+            let v3 = try storage.openOrMigrate(plan: sqlitePlan, convert: { files in
+                for (path, data) in raw { XCTAssertEqual(files[path], data) }
+                XCTAssertEqual(files["signatures.sqlite3"]?[18], 2)
+                XCTAssertNil(files["signatures.sqlite3-journal"])
+                return ["jobs.json": validStore, "signatures.sqlite3": v3Bytes.data]
+            }, validate: { files in
+                try validate(files)
+                XCTAssertEqual(files["signatures.sqlite3"], v3Bytes.data)
+            }, sqliteAcquisitions: ["signatures.sqlite3": receipt])
+            XCTAssertEqual(try Data(contentsOf: v3.appendingPathComponent("signatures.sqlite3")), v3Bytes.data)
+            let archive = try XCTUnwrap(archives(root).first)
+            for (path, data) in raw {
+                XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(path)), data)
+                XCTAssertEqual(try Data(contentsOf: archive.appendingPathComponent("legacy/" + path)), data)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: archive.appendingPathComponent("legacy/signatures.sqlite3-journal").path))
+            _ = try storage.openOrMigrate(plan: sqlitePlan, convert: { _ in XCTFail("Committed open must not acquire or convert"); return [:] }, validate: validate)
+        }
+    }
+
+    func testSQLiteReceiptRequiresCompleteInventoryAndExactRootAndKey() throws {
+        try fixture { root, storage in
+            _ = try sqliteFixture(root)
+            let receipt = try storage.acquireLegacySQLite(relativePath: "signatures.sqlite3", temporaryDirectory: root)
+            for omitted in sqlitePaths {
+                let incomplete = VersionedAppStorage.Plan(legacyFiles: sqlitePlan.legacyFiles.filter { $0 != omitted })
+                XCTAssertThrowsError(try storage.openOrMigrate(plan: incomplete, convert: { _ in XCTFail(); return [:] }, validate: validate,
+                    sqliteAcquisitions: ["signatures.sqlite3": receipt])) {
+                    XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidSQLiteAcquisition("signatures.sqlite3"))
+                }
+            }
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: sqlitePlan, convert: { _ in XCTFail(); return [:] }, validate: validate,
+                sqliteAcquisitions: ["other.sqlite3": receipt]))
+            let otherRoot = root.appendingPathComponent("other")
+            try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: false)
+            let other = VersionedAppStorage(root: otherRoot)
+            XCTAssertThrowsError(try other.openOrMigrate(plan: sqlitePlan, convert: { _ in XCTFail(); return [:] }, validate: validate,
+                sqliteAcquisitions: ["signatures.sqlite3": receipt])) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidSQLiteAcquisition("signatures.sqlite3"))
+            }
+            // No receipt still means the existing blanket WAL refusal.
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: sqlitePlan, convert: { _ in XCTFail(); return [:] }, validate: validate)) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .sqliteNotQuiescent("signatures.sqlite3"))
+            }
+            XCTAssertTrue(try archives(root).isEmpty)
+        }
+    }
+
+    func testSQLiteReceiptRejectsChangedBytesRemovedCompanionAndSameBytesReplacementBeforeConversion() throws {
+        for change in 0..<3 {
+            try fixture { root, storage in
+                let raw = try sqliteFixture(root)
+                let receipt = try storage.acquireLegacySQLite(relativePath: "signatures.sqlite3", temporaryDirectory: root)
+                let wal = root.appendingPathComponent("signatures.sqlite3-wal")
+                if change == 0 {
+                    var data = try XCTUnwrap(raw["signatures.sqlite3-wal"]); data.append(0)
+                    try data.write(to: wal)
+                } else if change == 1 {
+                    try FileManager.default.removeItem(at: wal)
+                } else {
+                    try XCTUnwrap(raw["signatures.sqlite3-wal"]).write(to: wal, options: .atomic)
+                }
+                XCTAssertThrowsError(try storage.openOrMigrate(plan: sqlitePlan, convert: { _ in XCTFail("Stale receipt must fail before converter"); return [:] },
+                    validate: validate, sqliteAcquisitions: ["signatures.sqlite3": receipt])) {
+                    XCTAssertEqual($0 as? VersionedAppStorage.Failure, .inputChanged("signatures.sqlite3-wal"))
+                }
+                XCTAssertTrue(try archives(root).isEmpty)
+            }
+        }
+    }
+
+    func testSQLiteReceiptBindsAbsentCompanionsAndRechecksTailBeforeBoundary() throws {
+        for phase in 0..<3 {
+            try fixture { root, storage in
+                _ = try sqliteFixture(root)
+                if phase == 0 { try FileManager.default.removeItem(at: root.appendingPathComponent("signatures.sqlite3-shm")) }
+                let receipt = try storage.acquireLegacySQLite(relativePath: "signatures.sqlite3", temporaryDirectory: root)
+                if phase == 0 { try Data(repeating: 0, count: 32768).write(to: root.appendingPathComponent("signatures.sqlite3-shm")) }
+                if phase == 1 { try Data([1]).write(to: root.appendingPathComponent("signatures.sqlite3-journal")) }
+                var converted = false
+                XCTAssertThrowsError(try storage.openOrMigrate(plan: sqlitePlan, convert: { _ in
+                    converted = true; return ["jobs.json": validStore]
+                }, validate: validate, sqliteAcquisitions: ["signatures.sqlite3": receipt], checkpoint: { point in
+                    if phase == 2, case .stageValidated = point {
+                        let wal = root.appendingPathComponent("signatures.sqlite3-wal")
+                        var data = try Data(contentsOf: wal); data.append(0)
+                        try data.write(to: wal)
+                    }
+                }))
+                XCTAssertEqual(converted, phase == 2)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".v3-storage-boundary.json").path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("v3").path))
+            }
+        }
+    }
+
+    func testPreparedSQLiteMigrationRecoversFrozenWALConversionWithoutReacquisition() throws {
+        try fixture { root, storage in
+            let raw = try sqliteFixture(root)
+            let receipt = try storage.acquireLegacySQLite(relativePath: "signatures.sqlite3", temporaryDirectory: root)
+            let converted = try Version3SignatureConversion.convert(.standaloneSnapshot(receipt.output.data), temporaryDirectory: root)
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: sqlitePlan, convert: { _ in
+                ["jobs.json": validStore, "signatures.sqlite3": converted.data]
+            }, validate: validate, sqliteAcquisitions: ["signatures.sqlite3": receipt], checkpoint: {
+                if case .boundaryPrepared = $0 { throw Injected.interruption }
+            }))
+            // Simulate later old-app writes/damage. Recovery must use archived
+            // originals/install bytes and never read a new signature snapshot.
+            try Data("changed WAL after prepared boundary".utf8).write(to: root.appendingPathComponent("signatures.sqlite3-wal"))
+            let v3 = try storage.recoverPreparedInstallation(validate: validate)
+            XCTAssertEqual(try Data(contentsOf: v3.appendingPathComponent("signatures.sqlite3")), converted.data)
+            let archive = try XCTUnwrap(archives(root).first)
+            for (path, data) in raw { XCTAssertEqual(try Data(contentsOf: archive.appendingPathComponent("legacy/" + path)), data) }
+            try Data("altered retained WAL".utf8).write(to: archive.appendingPathComponent("legacy/signatures.sqlite3-wal"))
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: sqlitePlan, convert: { _ in XCTFail(); return [:] }, validate: validate)) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidManifest)
+            }
+        }
+    }
+
+
+    func testImmutableInitialProvenanceStaysFrozenWhileMutableStoresChange() throws {
+        try fixture { root, storage in
+            let path = "migration-source-selection-v3.json"
+            let provenance = Data("{\"version\":3,\"source\":\"primary\"}".utf8)
+            let v3 = try storage.openOrMigrate(plan: plan, convert: { _ in
+                ["jobs.json": validStore, path: provenance]
+            }, validate: validate, immutableStorePaths: [path])
+            let mutable = Data("{\"version\":3,\"headline\":\"later edit\"}".utf8)
+            try mutable.write(to: v3.appendingPathComponent("jobs.json"))
+            _ = try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] }, validate: validate,
+                immutableStorePaths: [path])
+            try Data("{\"version\":3,\"source\":\"backup\"}".utf8).write(to: v3.appendingPathComponent(path))
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] }, validate: validate,
+                currentStorePaths: { _ in [path] }, immutableStorePaths: [path])) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidManifest)
+            }
+            XCTAssertThrowsError(try storage.recoverPreparedInstallation(validate: validate, immutableStorePaths: [path])) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidManifest)
+            }
+            XCTAssertEqual(try Data(contentsOf: v3.appendingPathComponent("jobs.json")), mutable)
+        }
+    }
+
+    func testImmutableProvenanceMustBelongToInitialManifestIncludingOnRecovery() throws {
+        let path = "migration-source-selection-v3.json"
+        try fixture { root, storage in
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] },
+                validate: validate, immutableStorePaths: [path])) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidManifest)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".v3-storage-boundary.json").path))
+        }
+        try fixture { root, storage in
+            let v3 = try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate)
+            try Data("{}".utf8).write(to: v3.appendingPathComponent(path))
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] }, validate: validate,
+                currentStorePaths: { _ in [path] }, immutableStorePaths: [path])) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidManifest)
+            }
+        }
+        try fixture { _, storage in
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate,
+                checkpoint: { if case .boundaryPrepared = $0 { throw Injected.interruption } }))
+            XCTAssertThrowsError(try storage.recoverPreparedInstallation(validate: validate, immutableStorePaths: [path])) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidManifest)
+            }
+        }
+    }
+
+
+    func testPreparedStagedAndInstalledSQLiteRejectUnlistedWALBeforeRecovery() throws {
+        for installed in [false, true] {
+            try fixture { root, storage in
+                let sqlite = try Version3SignatureConversion.convert(.noLegacyStore, temporaryDirectory: root).data
+                XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in
+                    ["jobs.json": validStore, "signatures.sqlite3": sqlite]
+                }, validate: validate, checkpoint: { point in
+                    if installed, case .installed = point { throw Injected.interruption }
+                    if !installed, case .boundaryPrepared = point { throw Injected.interruption }
+                }))
+                let directory: URL
+                if installed { directory = root.appendingPathComponent("v3") }
+                else { directory = try XCTUnwrap(archives(root).first).appendingPathComponent("install") }
+                let boundaryURL = root.appendingPathComponent(".v3-storage-boundary.json")
+                let preparedBoundary = try Data(contentsOf: boundaryURL)
+                let walURL = directory.appendingPathComponent("signatures.sqlite3-wal")
+                try Data([1, 2, 3]).write(to: walURL)
+                XCTAssertThrowsError(try storage.recoverPreparedInstallation(validate: { _ in
+                    XCTFail("Companions must be rejected before semantic Data validation")
+                })) {
+                    guard let failure = $0 as? VersionedAppStorage.Failure, case .sqliteNotQuiescent(let path) = failure else {
+                        return XCTFail("Expected standalone SQLite refusal, got \($0)")
+                    }
+                    XCTAssertTrue(path.hasSuffix("/signatures.sqlite3"))
+                }
+                if installed {
+                    XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] }, validate: { _ in XCTFail() }))
+                }
+                XCTAssertEqual(try Data(contentsOf: boundaryURL), preparedBoundary)
+                XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("signatures.sqlite3")), sqlite)
+                XCTAssertEqual(try Data(contentsOf: walURL), Data([1, 2, 3]))
+                try FileManager.default.removeItem(at: walURL)
+                _ = try storage.recoverPreparedInstallation(validate: validate)
+            }
+        }
+    }
+
 }

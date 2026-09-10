@@ -21,6 +21,12 @@ enum Version3JSONStoreConversion {
         let summary: ValidationSummary
     }
 
+    struct CurrentValidation: Sendable {
+        let summary: ValidationSummary
+        /// Current JSON stores only; retained archives require separate accounting.
+        let retainedCredentialIDs: Set<String>
+    }
+
     struct ValidationSummary: Sendable {
         let recordCounts: [String: Int]
         let selectedSourceSHA256: [String: String]
@@ -43,7 +49,7 @@ enum Version3JSONStoreConversion {
 
     enum PendingReceiptPhase: String, Sendable { case none, beforeInstallation, jobsInstalled }
     enum ConversionError: Error, Equatable {
-        case unsupportedSource(String), inputLimitExceeded, duplicateIdentity(String)
+        case unsupportedSource(String), missingCurrentStore(String), inputLimitExceeded, duplicateIdentity(String)
         case invalidReference(String), invalidPendingReceipt, invalidRecord(String)
         case explicitPhotographerTracksRequired(String)
         case unsupportedJSONEncoding(String)
@@ -51,14 +57,61 @@ enum Version3JSONStoreConversion {
     }
 
     private static let layout = AppStorageLayout(root: URL(fileURLWithPath: "/", isDirectory: true))
-    static var primaryFilenames: Set<String> {
-        Set([layout.jobs, layout.metadataPresets, layout.photographers, layout.serverProfiles,
-             layout.metadataCalendar, layout.metadataSyncEvents, layout.metadataAudit,
-             layout.syncFailures, layout.downloadManifest].map(\.lastPathComponent))
+    private static var storeIdentifiers: [String: VersionedStoreCodec.Store] {
+        [layout.jobs.lastPathComponent: .jobs, layout.metadataPresets.lastPathComponent: .metadataPresets,
+         layout.photographers.lastPathComponent: .photographers, layout.serverProfiles.lastPathComponent: .serverProfiles,
+         layout.metadataCalendar.lastPathComponent: .metadataCalendar, layout.metadataSyncEvents.lastPathComponent: .metadataSyncEvents,
+         layout.metadataAudit.lastPathComponent: .metadataAudit, layout.syncFailures.lastPathComponent: .syncFailures,
+         layout.downloadManifest.lastPathComponent: .downloadManifest]
+    }
+    static var primaryFilenames: Set<String> { Set(storeIdentifiers.keys) }
+
+    /// Validates the complete current JSON set without writing, converting or
+    /// reserializing its payloads. Other store families in `stores` belong to the
+    /// caller's separate validators and are ignored here. The caller excludes all
+    /// writers and accounts for credentials reachable from retained archives.
+    /// All headers and raw payload spans are checked before any domain decoding;
+    /// nonempty implicit tracks are forbidden. Empty legacy automation retains
+    /// the converter's compatible default without entering the day-inference loop.
+    static func validateCurrentStores(_ stores: [String: Data], maximumInputBytes: Int = 256 * 1024 * 1024) throws -> CurrentValidation {
+        guard maximumInputBytes > 0 else { throw ConversionError.inputLimitExceeded }
+        var payloads: [String: Data] = [:]
+        var sourceHashes: [String: String] = [:]
+        var remaining = maximumInputBytes
+        for name in primaryFilenames.sorted() {
+            guard let bytes = stores[name] else { throw ConversionError.missingCurrentStore(name) }
+            guard bytes.count <= remaining else { throw ConversionError.inputLimitExceeded }
+            remaining -= bytes.count
+            try validateSourceEncoding(bytes, source: name)
+            // This generic value cannot run MetadataAutomation's legacy inference.
+            _ = try VersionedStoreCodec(format: .version3, store: storeIdentifiers[name]!)
+                .decode(PreflightValue.self, from: bytes, decoder: JSONDecoder())
+            var scanner = RawScanner(bytes: Array(bytes))
+            let root = try scanner.parse()
+            guard let members = root.members,
+                  Set(members.map(\.key)).count == members.count,
+                  let payload = members.first(where: { $0.key == "payload" }) else {
+                throw VersionedStoreCodec.HeaderError.invalidEnvelope
+            }
+            payloads[name] = Data(scanner.bytes[payload.value.range])
+            sourceHashes[name] = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        }
+        let validated = try process(selectedLegacyPrimaries: payloads, maximumInputBytes: maximumInputBytes,
+            implicitTrackCalendar: nil, maximumInferredDayIterations: 50_000, emitStores: false,
+            sourceHashes: sourceHashes)
+        return CurrentValidation(summary: validated.summary, retainedCredentialIDs: validated.retainedCredentialIDs)
     }
 
     static func convert(selectedLegacyPrimaries input: [String: Data], maximumInputBytes: Int = 256 * 1024 * 1024,
                         implicitTrackCalendar: Calendar? = nil, maximumInferredDayIterations: Int = 50_000) throws -> Result {
+        try process(selectedLegacyPrimaries: input, maximumInputBytes: maximumInputBytes,
+            implicitTrackCalendar: implicitTrackCalendar, maximumInferredDayIterations: maximumInferredDayIterations,
+            emitStores: true, sourceHashes: nil)
+    }
+
+    private static func process(selectedLegacyPrimaries input: [String: Data], maximumInputBytes: Int,
+                                implicitTrackCalendar: Calendar?, maximumInferredDayIterations: Int,
+                                emitStores: Bool, sourceHashes: [String: String]?) throws -> Result {
         guard maximumInputBytes > 0 else { throw ConversionError.inputLimitExceeded }
         guard (1...50_000).contains(maximumInferredDayIterations) else { throw ConversionError.invalidTrackInferenceOptions }
         var adapter = TrackAdapter(calendar: implicitTrackCalendar, remainingDays: maximumInferredDayIterations)
@@ -141,6 +194,8 @@ enum Version3JSONStoreConversion {
         var output: [String: Data] = [:]
         var counts: [String: Int] = [:]
         func write<T: Codable>(_ value: T, at url: URL, store: VersionedStoreCodec.Store, policy: DatePolicy, count: Int) throws {
+            counts[url.lastPathComponent] = count
+            guard emitStores else { return }
             let encoded = try VersionedStoreCodec(format: .version3, store: store).encode(value, encoder: policy.encoder)
             if let original = selected[url.lastPathComponent] {
                 // The header fields are fixed identifiers, never user-supplied text.
@@ -150,7 +205,6 @@ enum Version3JSONStoreConversion {
                 _ = try VersionedStoreCodec(format: .version3, store: store).decode(T.self, from: wrapped, decoder: policy.decoder)
                 output[url.lastPathComponent] = wrapped
             } else { output[url.lastPathComponent] = encoded }
-            counts[url.lastPathComponent] = count
         }
         try write(jobs, at: layout.jobs, store: .jobs, policy: .iso8601, count: jobs.count)
         try write(presets, at: layout.metadataPresets, store: .metadataPresets, policy: .iso8601, count: presets.count)
@@ -167,7 +221,7 @@ enum Version3JSONStoreConversion {
                        layout.metadataSyncEvents.lastPathComponent: Set(events.compactMap(\.jobID)).subtracting(jobIDs)]
         return Result(stores: output, retainedCredentialIDs: credentials, summary: ValidationSummary(
             recordCounts: counts,
-            selectedSourceSHA256: input.mapValues { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() },
+            selectedSourceSHA256: sourceHashes ?? input.mapValues { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() },
             initializedAbsentStores: primaryFilenames.subtracting(input.keys),
             historicalJobIDsWithoutCurrentJob: history,
             calendarBindingJobIDsWithoutCurrentJob: Set(calendar.bindings.map(\.jobID)).subtracting(jobIDs),
@@ -410,9 +464,10 @@ enum Version3JSONStoreConversion {
         while let value = pending.popLast() {
             switch value {
             case .object(let object):
-                if let clipsValue = object["clips"], case .array(let clips) = clipsValue, !clips.isEmpty,
-                   object["photographerTracks"] == nil || object["photographerTracks"]?.isNull == true {
-                    throw ConversionError.explicitPhotographerTracksRequired(source)
+                if object["photographerTracks"] == nil || object["photographerTracks"]?.isNull == true {
+                    if let clipsValue = object["clips"], case .array(let clips) = clipsValue, !clips.isEmpty {
+                        throw ConversionError.explicitPhotographerTracksRequired(source)
+                    }
                 }
             case .array: break
             case .null, .scalar: break
@@ -478,9 +533,26 @@ enum Version3JSONStoreConversion {
         // missing names/prefixes or disabled/incomplete connection settings.
     }
 
+    private static func validateCalendarDate(_ date: Date) throws {
+        // Calendar persistence writes integer milliseconds. Validate explicitly so
+        // current-store validation cannot admit a later Int64 conversion trap.
+        guard Int64(exactly: (date.timeIntervalSince1970 * 1000).rounded()) != nil else {
+            throw ConversionError.invalidRecord("calendar date")
+        }
+    }
+
+    private static func validateCalendarClips(_ clips: [MetadataScheduleClip]) throws {
+        for clip in clips {
+            try validateCalendarDate(clip.startsAt)
+            try validateCalendarDate(clip.endsAt)
+        }
+    }
+
     private static func validateRange(_ range: MetadataSharingRange?) throws {
-        if let range, !(range.start.timeIntervalSince1970.isFinite && range.end.timeIntervalSince1970.isFinite && range.end > range.start) {
-            throw ConversionError.invalidRecord("calendar range")
+        if let range {
+            try validateCalendarDate(range.start)
+            try validateCalendarDate(range.end)
+            guard range.end > range.start else { throw ConversionError.invalidRecord("calendar range") }
         }
     }
 
@@ -489,6 +561,7 @@ enum Version3JSONStoreConversion {
               ["owner", "editor", "reader"].contains(calendar.role),
               (calendar.rangeStart == nil) == (calendar.rangeEnd == nil) else { throw ConversionError.invalidRecord("calendar") }
         try validateRange(calendar.range)
+        try validateCalendarClips(calendar.document.clips)
         // Construct the value directly; transport .validated() canonicalizes dates,
         // sorts records and strips private profile data, which migration must retain.
         try validateAutomation(MetadataAutomation(photographers: calendar.document.photographers,
@@ -504,6 +577,8 @@ enum Version3JSONStoreConversion {
               let actualSource = jobs.first(where: { $0.id == pending.source.id }) else { throw ConversionError.invalidPendingReceipt }
         try validateJob(pending.source, profileIDs: profileIDs)
         try validateJob(pending.duplicate, profileIDs: profileIDs)
+        try validateCalendarClips(pending.source.metadataAutomation?.clips ?? [])
+        try validateCalendarClips(pending.duplicate.metadataAutomation?.clips ?? [])
         try validateCalendar(pending.calendar)
         // Job files use ISO seconds; receipt snapshots use calendar milliseconds.
         // Compare the persisted job representation without changing either output.

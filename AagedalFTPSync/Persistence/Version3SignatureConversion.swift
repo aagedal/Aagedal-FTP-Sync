@@ -117,10 +117,12 @@ enum Version3SignatureConversion {
     private final class Connection {
         let pointer: OpaquePointer
         private var closed = false
-        init(_ url: URL, readOnly: Bool, deadline: Deadline, limits: Limits) throws {
+        init(_ url: URL, readOnly: Bool, immutable: Bool = false, deadline: Deadline, limits: Limits) throws {
             var opened: OpaquePointer?
-            let status = sqlite3_open_v2(url.path, &opened,
-                (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE) | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
+            let name = immutable ? url.absoluteString + "?immutable=1" : url.path
+            let status = sqlite3_open_v2(name, &opened,
+                (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE) | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW
+                    | (immutable ? SQLITE_OPEN_URI : 0), nil)
             guard status == SQLITE_OK, let opened else {
                 if let opened { sqlite3_close_v2(opened) }
                 throw Failure.sqlite(status)
@@ -151,9 +153,7 @@ enum Version3SignatureConversion {
     /// deduplication check deadlines per record. JSON dates use legacy milliseconds
     /// since Unix epoch; the caller supplies one frozen last-seen migration date.
     static func convert(_ input: Input, temporaryDirectory: URL, limits: Limits = Limits()) throws -> Output {
-        guard (1...1_073_741_824).contains(limits.maximumBytes), (0...10_000_000).contains(limits.maximumRecords),
-              (1...1_048_576).contains(limits.maximumTextBytes), limits.timeout.isFinite,
-              limits.timeout > 0, limits.timeout <= 60 else { throw Failure.invalidLimits }
+        try validateLimits(limits)
         let deadline = Deadline(limits.timeout)
         try deadline.check()
         if case .standaloneSnapshot(let data) = input {
@@ -218,17 +218,7 @@ enum Version3SignatureConversion {
                         if step == SQLITE_DONE { break }
                         guard step == SQLITE_ROW else { throw Failure.sqlite(step) }
                         guard count < limits.maximumRecords else { throw Failure.recordLimit }
-                        let jobText = try text(read, column: 0, limits: limits)
-                        let sourceKey = try text(read, column: 1, limits: limits)
-                        let path = try text(read, column: 2, limits: limits)
-                        guard let jobID = UUID(uuidString: jobText), validSourceKey(sourceKey), PathSafety.isSafeRelativePath(path),
-                              sqlite3_column_type(read, 3) == SQLITE_INTEGER, sqlite3_column_int64(read, 3) >= 0 else {
-                            throw Failure.invalidRow
-                        }
-                        for column: Int32 in [4, 5] {
-                            guard [SQLITE_INTEGER, SQLITE_FLOAT].contains(sqlite3_column_type(read, column)),
-                                  sqlite3_column_double(read, column).isFinite else { throw Failure.invalidRow }
-                        }
+                        let jobID = try validateRow(read, limits: limits)
                         sqlite3_reset(insert)
                         sqlite3_clear_bindings(insert)
                         // Bind sqlite3_value directly: preserve exact text bytes,
@@ -297,6 +287,88 @@ enum Version3SignatureConversion {
             if case Failure.sqlite(SQLITE_FULL) = error { throw Failure.outputLimit }
             throw error
         }
+    }
+
+    /// Read-only validation of already acquired, complete v3 database bytes. The
+    /// caller must exclude writers and establish that no WAL was omitted. A clean
+    /// checkpointed main can retain WAL mode in its header; immutable SQLite opens
+    /// only our private frozen copy, never the original store or its companions.
+    /// Returns the exact input bytes, with validated row count and historical IDs.
+    /// It never rewrites v3, repairs schema, or regenerates last-seen timestamps.
+    static func validateVersion3Snapshot(_ data: Data, temporaryDirectory: URL,
+                                         limits: Limits = Limits()) throws -> Output {
+        try validateLimits(limits)
+        let deadline = Deadline(limits.timeout)
+        try deadline.check()
+        guard data.count <= limits.maximumBytes else { throw Failure.inputLimit }
+        guard data.count >= 100, data.prefix(16) == Data("SQLite format 3\0".utf8) else { throw Failure.notStandaloneSQLite }
+        let readVersion = data[data.index(data.startIndex, offsetBy: 18)]
+        let writeVersion = data[data.index(data.startIndex, offsetBy: 19)]
+        guard [1, 2].contains(readVersion), readVersion == writeVersion else { throw Failure.notStandaloneSQLite }
+        try validateDirectory(temporaryDirectory)
+        let stage = temporaryDirectory.appendingPathComponent(".signature-conversion-\(UUID().uuidString)", isDirectory: true)
+        guard mkdir(stage.path, 0o700) == 0 else { throw Failure.fileSystem(errno) }
+        defer { try? FileManager.default.removeItem(at: stage) }
+        defer { withExtendedLifetime(deadline) {} }
+        do {
+            let url = stage.appendingPathComponent("validated-v3.sqlite3")
+            try writeExclusive(data, to: url)
+            let source = try Connection(url, readOnly: true, immutable: true, deadline: deadline, limits: limits)
+            guard sqlite3_db_readonly(source.pointer, "main") == 1 else { throw Failure.incompatibleSchema }
+            try validate(source.pointer, version: 3, applicationID: SourceSignatureRepository.version3ApplicationID)
+            let pages = try integer("PRAGMA page_count", in: source.pointer)
+            let pageSize = try integer("PRAGMA page_size", in: source.pointer)
+            guard pages > 0, pageSize > 0, pages <= Int64(data.count) / pageSize,
+                  pages * pageSize == data.count else { throw Failure.notStandaloneSQLite }
+            let expectedCount = try integer("SELECT count(*) FROM source_signatures", in: source.pointer)
+            guard expectedCount >= 0, expectedCount <= limits.maximumRecords else { throw Failure.recordLimit }
+            try checkIntegrity(source.pointer)
+            let read = try prepare("SELECT job_id, source_key, relative_path, size, modified_at, last_seen_at FROM source_signatures ORDER BY job_id, source_key, relative_path", in: source.pointer)
+            var count = 0
+            var jobs = Set<UUID>()
+            do {
+                defer { sqlite3_finalize(read) }
+                while true {
+                    try deadline.check()
+                    let status = sqlite3_step(read)
+                    if status == SQLITE_DONE { break }
+                    guard status == SQLITE_ROW else { throw Failure.sqlite(status) }
+                    guard count < limits.maximumRecords else { throw Failure.recordLimit }
+                    jobs.insert(try validateRow(read, limits: limits))
+                    count += 1
+                }
+            }
+            guard count == expectedCount else { throw Failure.invalidRow }
+            try source.close()
+            try deadline.check()
+            return Output(data: data, recordCount: count, referencedJobIDs: jobs)
+        } catch {
+            try deadline.check()
+            throw error
+        }
+    }
+
+    private static func validateLimits(_ limits: Limits) throws {
+        guard (1...1_073_741_824).contains(limits.maximumBytes), (0...10_000_000).contains(limits.maximumRecords),
+              (1...1_048_576).contains(limits.maximumTextBytes), limits.timeout.isFinite,
+              limits.timeout > 0, limits.timeout <= 60 else { throw Failure.invalidLimits }
+    }
+
+    /// Shared by legacy SQLite conversion and current-v3 admission so malformed
+    /// identities, paths, sizes or timestamps cannot pass only one of the routes.
+    private static func validateRow(_ statement: OpaquePointer, limits: Limits) throws -> UUID {
+        let jobText = try text(statement, column: 0, limits: limits)
+        let sourceKey = try text(statement, column: 1, limits: limits)
+        let path = try text(statement, column: 2, limits: limits)
+        guard let jobID = UUID(uuidString: jobText), validSourceKey(sourceKey), PathSafety.isSafeRelativePath(path),
+              sqlite3_column_type(statement, 3) == SQLITE_INTEGER, sqlite3_column_int64(statement, 3) >= 0 else {
+            throw Failure.invalidRow
+        }
+        for column: Int32 in [4, 5] {
+            guard [SQLITE_INTEGER, SQLITE_FLOAT].contains(sqlite3_column_type(statement, column)),
+                  sqlite3_column_double(statement, column).isFinite else { throw Failure.invalidRow }
+        }
+        return jobID
     }
 
     private static func validate(_ database: OpaquePointer, version: Int64, applicationID: Int64) throws {
