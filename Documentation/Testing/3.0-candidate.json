@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Selected-source migration, immutable provenance, current-store validation and frozen recovery implemented at 67d91fa. Full app suite: 670 passed, 15 opt-in skips, zero failures. Production startup, lifetime writer exclusion, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
+  "note": "Runtime v3 mapping admission, strict paused calendar construction and cooperative lifetime lease implemented at 14e2e1f. Full app suite: 685 passed, 15 opt-in skips, zero failures. Production bootstrap, older-process exclusion, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
 }
