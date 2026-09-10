@@ -12,6 +12,9 @@ enum Version3SignatureConversion {
     enum Input: Sendable {
         case noLegacyStore
         case standaloneSnapshot(Data)
+        /// The driver explicitly selected these bytes from a legacy v1 JSON
+        /// source; this helper never looks up or silently selects a backup.
+        case legacyJSON(Data, migratedAt: Date)
     }
     struct Limits: Sendable {
         var maximumBytes = 256 * 1024 * 1024
@@ -29,10 +32,11 @@ enum Version3SignatureConversion {
     enum Failure: Error, Equatable {
         case invalidLimits, unsafeTemporaryDirectory, inputLimit, outputLimit, recordLimit, textLimit
         case deadlineExceeded, notStandaloneSQLite, incompatibleSchema, invalidRow, integrityFailure
+        case malformedLegacyJSON, invalidMigrationDate
         case wrongApplicationID(Int64), unsupportedVersion(Int64)
         case sqlite(Int32), fileSystem(Int32)
     }
-    private final class Deadline {
+    private final class Deadline: Sendable {
         let end: UInt64
         init(_ seconds: TimeInterval) { end = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000) }
         var expired: Bool { DispatchTime.now().uptimeNanoseconds >= end }
@@ -41,6 +45,75 @@ enum Version3SignatureConversion {
             try Task.checkCancellation()
         }
     }
+    // Mirror the legacy repository's synthesized Codable/Hashable model exactly:
+    // stored source fields are NOT normalized by constructing a fresh Endpoint.
+    private struct LegacyJSONSource: Decodable, Hashable {
+        let kind: EndpointKind
+        let localPath: String
+        let host: String
+        let port: Int
+        let username: String
+        let remotePath: String
+        var fields: [String] { [kind.rawValue, localPath, host, String(port), username, remotePath] }
+        var databaseKey: String { fields.map { "\($0.utf8.count):\($0)" }.joined() }
+    }
+    private struct LegacyJSONKey: Hashable {
+        let jobID: UUID
+        let source: LegacyJSONSource
+        let relativePath: String
+    }
+    private struct LegacyJSONRecord: Decodable {
+        let jobID: UUID
+        let source: LegacyJSONSource
+        let relativePath: String
+        let signature: SourceFileSignature
+        var key: LegacyJSONKey { LegacyJSONKey(jobID: jobID, source: source, relativePath: relativePath) }
+    }
+    private struct JSONDecodeContext: Sendable {
+        let limits: Limits
+        let deadline: Deadline
+    }
+    private static let jsonContextKey = CodingUserInfoKey(rawValue: "Version3SignatureConversion.context")!
+    private struct LegacyJSONBatch: Decodable {
+        let records: [LegacyJSONRecord]
+        init(from decoder: Decoder) throws {
+            guard let context = decoder.userInfo[jsonContextKey] as? JSONDecodeContext else { throw Failure.invalidLimits }
+            var array = try decoder.unkeyedContainer()
+            if let count = array.count, count > context.limits.maximumRecords { throw Failure.recordLimit }
+            var count = 0
+            var unique: [LegacyJSONKey: LegacyJSONRecord] = [:]
+            while !array.isAtEnd {
+                try context.deadline.check()
+                guard count < context.limits.maximumRecords else { throw Failure.recordLimit }
+                let record = try array.decode(LegacyJSONRecord.self)
+                // Bound and validate every present record before deduplication;
+                // a discarded duplicate cannot hide invalid or oversized data.
+                for value in record.source.fields + [record.relativePath] {
+                    guard value.utf8.count <= context.limits.maximumTextBytes else { throw Failure.textLimit }
+                    guard !value.utf8.contains(0) else { throw Failure.invalidRow }
+                }
+                let sourceKey = record.source.databaseKey
+                guard sourceKey.utf8.count <= context.limits.maximumTextBytes else { throw Failure.textLimit }
+                guard validSourceKey(sourceKey), PathSafety.isSafeRelativePath(record.relativePath),
+                      record.signature.size >= 0, record.signature.modifiedAt.timeIntervalSince1970.isFinite else {
+                    throw Failure.invalidRow
+                }
+                // Swift Hashable equality (including canonically equivalent
+                // Unicode strings) and last occurrence wins match v1 migration.
+                unique[record.key] = record
+                count += 1
+            }
+            var comparisons = 0
+            records = try unique.values.sorted {
+                comparisons += 1
+                if comparisons.isMultiple(of: 1024) { try context.deadline.check() }
+                return ($0.jobID.uuidString, $0.source.databaseKey, $0.relativePath)
+                    < ($1.jobID.uuidString, $1.source.databaseKey, $1.relativePath)
+            }
+            try context.deadline.check()
+        }
+    }
+
     private final class Connection {
         let pointer: OpaquePointer
         private var closed = false
@@ -73,7 +146,10 @@ enum Version3SignatureConversion {
     /// The existing temporary directory and its ancestors must remain trusted and
     /// stable. Only a uniquely created private stage is cleaned up; unrelated files
     /// are untouched. Success returns closed, synchronized standalone v3 bytes.
-    /// Deadline checks bound SQLite/row work, not a blocked kernel filesystem call.
+    /// Deadline checks bound SQLite/row work, not a blocked kernel filesystem call
+    /// or Foundation's initial JSON parse. Input bytes cap that parse; decoding and
+    /// deduplication check deadlines per record. JSON dates use legacy milliseconds
+    /// since Unix epoch; the caller supplies one frozen last-seen migration date.
     static func convert(_ input: Input, temporaryDirectory: URL, limits: Limits = Limits()) throws -> Output {
         guard (1...1_073_741_824).contains(limits.maximumBytes), (0...10_000_000).contains(limits.maximumRecords),
               (1...1_048_576).contains(limits.maximumTextBytes), limits.timeout.isFinite,
@@ -84,6 +160,21 @@ enum Version3SignatureConversion {
             guard data.count <= limits.maximumBytes else { throw Failure.inputLimit }
             guard data.count >= 100, data.prefix(16) == Data("SQLite format 3\0".utf8),
                   data[data.index(data.startIndex, offsetBy: 18)] == 1, data[data.index(data.startIndex, offsetBy: 19)] == 1 else { throw Failure.notStandaloneSQLite }
+        }
+        var legacyRecords: [LegacyJSONRecord]?
+        if case .legacyJSON(let data, let migratedAt) = input {
+            guard data.count <= limits.maximumBytes else { throw Failure.inputLimit }
+            guard migratedAt.timeIntervalSince1970.isFinite else { throw Failure.invalidMigrationDate }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .millisecondsSince1970
+            decoder.userInfo[jsonContextKey] = JSONDecodeContext(limits: limits, deadline: deadline)
+            do { legacyRecords = try decoder.decode(LegacyJSONBatch.self, from: data).records }
+            catch {
+                try deadline.check()
+                if let bounded = error as? Failure { throw bounded }
+                throw Failure.malformedLegacyJSON
+            }
+            try deadline.check()
         }
         try validateDirectory(temporaryDirectory)
         let stage = temporaryDirectory.appendingPathComponent(".signature-conversion-\(UUID().uuidString)", isDirectory: true)
@@ -157,6 +248,33 @@ enum Version3SignatureConversion {
                 guard count == sourceCount else { throw Failure.invalidRow }
                 try execute("COMMIT", in: output.pointer)
                 try source.close()
+            }
+            if case .legacyJSON(_, let migratedAt) = input, let legacyRecords {
+                try execute("BEGIN IMMEDIATE", in: output.pointer)
+                let insert = try prepare("INSERT INTO source_signatures VALUES (?, ?, ?, ?, ?, ?)", in: output.pointer)
+                do {
+                    defer { sqlite3_finalize(insert) }
+                    for record in legacyRecords {
+                        try deadline.check()
+                        sqlite3_reset(insert)
+                        sqlite3_clear_bindings(insert)
+                        for (index, value) in [record.jobID.uuidString, record.source.databaseKey, record.relativePath].enumerated() {
+                            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                            let status = value.withCString { sqlite3_bind_text(insert, Int32(index + 1), $0, Int32(value.utf8.count), transient) }
+                            guard status == SQLITE_OK else { throw Failure.sqlite(status) }
+                        }
+                        for status in [sqlite3_bind_int64(insert, 4, record.signature.size),
+                                       sqlite3_bind_double(insert, 5, record.signature.modifiedAt.timeIntervalSince1970),
+                                       sqlite3_bind_double(insert, 6, migratedAt.timeIntervalSince1970)] {
+                            guard status == SQLITE_OK else { throw Failure.sqlite(status) }
+                        }
+                        let status = sqlite3_step(insert)
+                        guard status == SQLITE_DONE else { throw Failure.sqlite(status) }
+                        count += 1
+                        jobs.insert(record.jobID)
+                    }
+                }
+                try execute("COMMIT", in: output.pointer)
             }
             try validate(output.pointer, version: 3, applicationID: SourceSignatureRepository.version3ApplicationID)
             try checkIntegrity(output.pointer)

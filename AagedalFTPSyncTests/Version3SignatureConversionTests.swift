@@ -99,6 +99,111 @@ final class Version3SignatureConversionTests: XCTestCase {
         try assertNoStages(root)
     }
 
+    private func jsonRecord(job: String = "AE5B40F5-6C9C-4FDC-89C8-B9D802DB20C1",
+                            username: String = "Åse", path: String = "folder/東京\\photo.jpg",
+                            size: Int64 = Int64.max - 1, milliseconds: Double = -123_456_125) -> [String: Any] {
+        ["jobID": job,
+         "source": ["kind": "sftp", "localPath": "", "host": " MiXeD.Example ", "port": 22,
+                    "username": username, "remotePath": "/incoming//"],
+         "relativePath": path,
+         "signature": ["size": size, "modifiedAt": milliseconds]]
+    }
+    private func json(_ records: [[String: Any]]) throws -> Data {
+        try JSONSerialization.data(withJSONObject: records, options: [.sortedKeys])
+    }
+
+    func testLegacyJSONUsesStoredIdentityMillisecondsAndOneExplicitMigrationDate() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let input = try json([jsonRecord()])
+        let original = input
+        let migratedAt = Date(timeIntervalSince1970: 1_700_000_999.25)
+        let output = try Conversion.convert(.legacyJSON(input, migratedAt: migratedAt), temporaryDirectory: root)
+        XCTAssertEqual(input, original)
+        XCTAssertEqual(output.recordCount, 1)
+        XCTAssertEqual(output.referencedJobIDs, [try XCTUnwrap(UUID(uuidString: sample.job))])
+        let fields = ["sftp", "", " MiXeD.Example ", "22", "Åse", "/incoming//"]
+        let expected = Row(job: sample.job, key: fields.map { "\($0.utf8.count):\($0)" }.joined(),
+            path: sample.path, size: Int64.max - 1, modified: -123_456.125, seen: migratedAt.timeIntervalSince1970)
+        XCTAssertEqual(try rows(output.data, in: root), [expected])
+        let repeated = try Conversion.convert(.legacyJSON(input, migratedAt: migratedAt), temporaryDirectory: root)
+        XCTAssertEqual(try rows(repeated.data, in: root), [expected])
+        try assertNoStages(root)
+    }
+
+    func testLegacyJSONDuplicatesUseSwiftIdentityEqualityAndLastOccurrenceWins() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = jsonRecord(username: "Åse", path: "é.jpg", size: 1, milliseconds: 1000)
+        let lastUsername = "A\u{030A}se"
+        let lastPath = "e\u{0301}.jpg"
+        let last = jsonRecord(job: sample.job.lowercased(), username: lastUsername, path: lastPath, size: 2, milliseconds: 2000)
+        let other = jsonRecord(job: "264823A7-70A1-4F52-9836-EC36259F194F", size: 3, milliseconds: 3000)
+        let output = try Conversion.convert(.legacyJSON(try json([first, other, last]), migratedAt: Date(timeIntervalSince1970: 40)), temporaryDirectory: root)
+        XCTAssertEqual(output.recordCount, 2)
+        XCTAssertEqual(output.referencedJobIDs.count, 2)
+        let actual = try rows(output.data, in: root)
+        let winning = try XCTUnwrap(actual.first { $0.job == sample.job })
+        let fields = ["sftp", "", " MiXeD.Example ", "22", lastUsername, "/incoming//"]
+        // Compare UTF-8 bytes: ordinary Swift String equality intentionally treats
+        // these composed/decomposed spellings as equal, just like legacy keys.
+        XCTAssertEqual(Array(winning.key.utf8), Array(fields.map { "\($0.utf8.count):\($0)" }.joined().utf8))
+        XCTAssertEqual(Array(winning.path.utf8), Array(lastPath.utf8))
+        XCTAssertEqual(winning.size, 2)
+        XCTAssertEqual(winning.modified, 2)
+        XCTAssertEqual(winning.seen, 40)
+    }
+
+    func testMalformedLegacyJSONNeverBecomesAnEmptyStore() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var missing = jsonRecord(); missing.removeValue(forKey: "signature")
+        var wrongType = jsonRecord(); wrongType["signature"] = ["size": "100", "modifiedAt": 1000]
+        var invalidKind = jsonRecord()
+        var source = invalidKind["source"] as! [String: Any]; source["kind"] = "future"; invalidKind["source"] = source
+        for input in [Data(), Data("{}".utf8), Data("null".utf8), Data("[".utf8),
+                      try json([missing]), try json([wrongType]), try json([invalidKind])] {
+            XCTAssertThrowsError(try Conversion.convert(.legacyJSON(input, migratedAt: Date(timeIntervalSince1970: 0)), temporaryDirectory: root)) {
+                XCTAssertEqual($0 as? Conversion.Failure, .malformedLegacyJSON)
+            }
+        }
+        let empty = try Conversion.convert(.legacyJSON(Data("[]".utf8), migratedAt: Date(timeIntervalSince1970: 0)), temporaryDirectory: root)
+        XCTAssertEqual(empty.recordCount, 0)
+        XCTAssertTrue(empty.referencedJobIDs.isEmpty)
+        try assertNoStages(root)
+    }
+
+    func testLegacyJSONValidatesEveryRecordBeforeDedupAndBoundsInput() throws {
+        let root = try root()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let migratedAt = Date(timeIntervalSince1970: 0)
+        let valid = jsonRecord()
+        let input = try json([valid, valid])
+        for (limits, expected) in [(Conversion.Limits(maximumBytes: 1), Conversion.Failure.inputLimit),
+                                   (Conversion.Limits(maximumRecords: 1), .recordLimit),
+                                   (Conversion.Limits(maximumTextBytes: 2), .textLimit)] {
+            XCTAssertThrowsError(try Conversion.convert(.legacyJSON(input, migratedAt: migratedAt), temporaryDirectory: root, limits: limits)) {
+                XCTAssertEqual($0 as? Conversion.Failure, expected)
+            }
+        }
+        // A semantically damaged earlier duplicate cannot be hidden by the later
+        // valid record. Valid duplicates alone retain legacy last-wins behavior.
+        let negative = jsonRecord(size: -1)
+        let nul = jsonRecord(path: "bad\0path")
+        let newline = jsonRecord(path: "bad\npath")
+        for bad in [negative, nul, newline] {
+            XCTAssertThrowsError(try Conversion.convert(.legacyJSON(try json([bad, valid]), migratedAt: migratedAt), temporaryDirectory: root)) {
+                XCTAssertEqual($0 as? Conversion.Failure, .invalidRow)
+            }
+        }
+        for date in [Date(timeIntervalSince1970: .nan), Date(timeIntervalSince1970: .infinity)] {
+            XCTAssertThrowsError(try Conversion.convert(.legacyJSON(input, migratedAt: date), temporaryDirectory: root)) {
+                XCTAssertEqual($0 as? Conversion.Failure, .invalidMigrationDate)
+            }
+        }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
     func testExplicitNoLegacyStoreCreatesValidEmptyVersion3Bytes() throws {
         let root = try root()
         defer { try? FileManager.default.removeItem(at: root) }

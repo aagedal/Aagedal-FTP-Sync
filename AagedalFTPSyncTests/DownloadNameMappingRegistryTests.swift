@@ -188,4 +188,135 @@ final class DownloadNameMappingRegistryTests: XCTestCase {
         XCTAssertThrowsError(try DownloadNameMappingRegistry.convertLegacyMappings([mappingName: try JSONEncoder().encode(["photo.jpg": "elsewhere/photo.jpg"])]))
         XCTAssertThrowsError(try DownloadNameMappingRegistry.convertLegacyMappings([mappingName + ".replace": Data("{\"names\":{},\"newestDates\":{},\"version\":4}".utf8)]))
     }
+    func testCurrentCollectionValidatesRuntimeMapsBeyondInitialManifest() async throws {
+        let layout = try layout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        // The initial migration contains only an empty registry. Runtime maps
+        // deliberately never become part of its immutable installation manifest.
+        let legacyRoot = layout.root.appendingPathComponent("migration")
+        try FileManager.default.createDirectory(at: legacyRoot, withIntermediateDirectories: false)
+        let storage = VersionedAppStorage(root: legacyRoot)
+        let initial = try DownloadNameMappingRegistry.convertLegacyMappings([:])
+        let v3 = try storage.openOrMigrate(plan: .init(legacyFiles: []), convert: { _ in initial },
+                                          validate: DownloadNameMappingRegistry.validateCurrentMappings)
+        let current = AppStorageLayout(root: v3, storageFormat: .version3)
+        try FileManager.default.createDirectory(at: current.downloadNamesDirectory, withIntermediateDirectories: false)
+        let manifestURL = v3.appendingPathComponent("storage-manifest.json")
+        let manifestBefore = try Data(contentsOf: manifestURL)
+        let registry = try DownloadNameMappingRegistry(storage: current)
+        _ = try await registry.admitOrProvision(fileName: mappingName)
+        try saveMap(current, name: mappingName, names: ["photo.jpg": "photo (2).jpg"])
+        let root = legacyRoot
+        let name = mappingName
+        let opened = try await registry.withValidatedCurrentMappings { snapshot in
+            try VersionedAppStorage(root: root).openOrMigrate(plan: .init(legacyFiles: []), convert: { _ in
+                XCTFail("Committed storage must not reconvert")
+                return [:]
+            }, validate: { files in
+                try DownloadNameMappingRegistry.validateCurrentMappings(in: files)
+                for (path, bytes) in snapshot { XCTAssertEqual(files[path], bytes) }
+                XCTAssertNotNil(files["download-names-v1/" + name])
+            }, currentStorePaths: DownloadNameMappingRegistry.currentStorePaths)
+        }
+        XCTAssertEqual(opened, v3)
+        XCTAssertEqual(try Data(contentsOf: manifestURL), manifestBefore)
+    }
+
+    func testCurrentCollectionRejectsMissingOrphanAndCorruptReceipts() async throws {
+        let layout = try layout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let registry = try DownloadNameMappingRegistry(storage: layout)
+        let url = try await registry.admitOrProvision(fileName: mappingName)
+        let bytes = try Data(contentsOf: url)
+        try FileManager.default.removeItem(at: url)
+        await fails { try await registry.withValidatedCurrentMappings { _ in XCTFail("Missing receipt admitted") } }
+        try bytes.write(to: url)
+        let orphan = layout.downloadNamesDirectory.appendingPathComponent(String(repeating: "b", count: 64) + ".json")
+        try bytes.write(to: orphan)
+        await fails { try await registry.withValidatedCurrentMappings { _ in XCTFail("Orphan admitted") } }
+        try FileManager.default.removeItem(at: orphan)
+        try Data("broken".utf8).write(to: url)
+        await fails { try await registry.withValidatedCurrentMappings { _ in XCTFail("Corrupt receipt admitted") } }
+        XCTAssertEqual(try Data(contentsOf: url), Data("broken".utf8))
+    }
+
+    func testCurrentCollectionRequiresExplicitPreparedRecoveryAndHoldsProvisioningLock() async throws {
+        let layout = try layout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let registry = try DownloadNameMappingRegistry(storage: layout)
+        await fails {
+            _ = try await registry.admitOrProvision(fileName: self.mappingName) { stage in
+                if stage == .mappingCreated { throw InjectedFailure() }
+            }
+        }
+        let before = try Data(contentsOf: layout.downloadNameRegistry)
+        await fails { try await registry.withValidatedCurrentMappings { _ in XCTFail("Prepared must require recovery") } }
+        XCTAssertEqual(try Data(contentsOf: layout.downloadNameRegistry), before)
+        _ = try await registry.admitOrProvision(fileName: mappingName)
+        let lockPath = layout.root.appendingPathComponent(".download-name-registry.lock").path
+        try await registry.withValidatedCurrentMappings { _ in
+            let fd = Darwin.open(lockPath, O_RDWR | O_NOFOLLOW)
+            XCTAssertGreaterThanOrEqual(fd, 0)
+            defer { Darwin.close(fd) }
+            XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), -1)
+            XCTAssertEqual(errno, EWOULDBLOCK)
+        }
+    }
+
+    func testCurrentCollectionAllowsOnlyEmptyRegistryWhenDirectoryAbsentAndRejectsLinks() async throws {
+        let layout = try layout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        let registry = try DownloadNameMappingRegistry(storage: layout)
+        try FileManager.default.removeItem(at: layout.downloadNamesDirectory)
+        let count = try await registry.withValidatedCurrentMappings { $0.count }
+        XCTAssertEqual(count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: layout.downloadNamesDirectory.path))
+        let unrelated = layout.root.appendingPathComponent("unrelated-directory")
+        try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: layout.downloadNamesDirectory, withDestinationURL: unrelated)
+        await fails { try await registry.withValidatedCurrentMappings { _ in XCTFail("Directory link admitted") } }
+        try FileManager.default.removeItem(at: layout.downloadNamesDirectory)
+        try FileManager.default.createDirectory(at: layout.downloadNamesDirectory, withIntermediateDirectories: false)
+        let url = try await registry.admitOrProvision(fileName: mappingName)
+        let original = try Data(contentsOf: url)
+        let other = layout.root.appendingPathComponent("other-map")
+        try original.write(to: other)
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: other)
+        await fails { try await registry.withValidatedCurrentMappings { _ in XCTFail("Map link admitted") } }
+        XCTAssertEqual(try Data(contentsOf: other), original)
+    }
+
+    func testPureCurrentResolverRejectsPreparedFutureMissingAndUnregisteredMaps() throws {
+        let empty = try DownloadNameMappingRegistry.convertLegacyMappings([:])
+        XCTAssertEqual(try DownloadNameMappingRegistry.currentStorePaths(in: empty), [])
+        XCTAssertThrowsError(try DownloadNameMappingRegistry.currentStorePaths(in: [:]))
+        let codec = VersionedStoreCodec(format: .version3, store: .downloadNameRegistry)
+        let prepared = try codec.encode(DownloadNameMappingRegistry.State(entries: [mappingName: .prepared]), encoder: JSONEncoder())
+        XCTAssertThrowsError(try DownloadNameMappingRegistry.currentStorePaths(in: ["download-name-registry-v3.json": prepared]))
+        var future = try XCTUnwrap(String(data: XCTUnwrap(empty["download-name-registry-v3.json"]), encoding: .utf8))
+        future = future.replacingOccurrences(of: "\"schemaVersion\":3", with: "\"schemaVersion\":4")
+        XCTAssertThrowsError(try DownloadNameMappingRegistry.currentStorePaths(in: ["download-name-registry-v3.json": Data(future.utf8)]))
+        var orphan = empty
+        orphan["download-names-v1/" + mappingName] = Data()
+        XCTAssertThrowsError(try DownloadNameMappingRegistry.validateCurrentMappings(in: orphan))
+        let required = ["download-name-registry-v3.json": try DownloadNameMappingRegistry.initialData(committedMappingNames: [mappingName])]
+        XCTAssertThrowsError(try DownloadNameMappingRegistry.validateCurrentMappings(in: required))
+    }
+
+    func testFirstProvisionCreatesAbsentDirectoryButNeverRebuildsCommittedDirectory() async throws {
+        let layout = try layout()
+        defer { try? FileManager.default.removeItem(at: layout.root) }
+        try FileManager.default.removeItem(at: layout.downloadNamesDirectory)
+        let registry = try DownloadNameMappingRegistry(storage: layout)
+        let url = try await registry.admitOrProvision(fileName: mappingName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try state(layout).entries[mappingName], .committed)
+        try FileManager.default.removeItem(at: layout.downloadNamesDirectory)
+        let before = try Data(contentsOf: layout.downloadNameRegistry)
+        await fails { _ = try await registry.admitOrProvision(fileName: self.mappingName) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: layout.downloadNamesDirectory.path))
+        XCTAssertEqual(try Data(contentsOf: layout.downloadNameRegistry), before)
+    }
+
 }

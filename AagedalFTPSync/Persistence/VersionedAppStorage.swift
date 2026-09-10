@@ -16,7 +16,9 @@ struct VersionedAppStorage {
         let maximumFiles: Int
         let maximumBytes: Int
 
-        init(legacyFiles: [String], maximumFiles: Int = 512, maximumBytes: Int = 256 * 1_024 * 1_024) {
+        // Allow 4,096 runtime maps plus fixed stores, retained legacy files and
+        // backups. The independent aggregate byte limit remains unchanged.
+        init(legacyFiles: [String], maximumFiles: Int = 8_192, maximumBytes: Int = 256 * 1_024 * 1_024) {
             self.legacyFiles = legacyFiles
             self.maximumFiles = maximumFiles
             self.maximumBytes = maximumBytes
@@ -33,6 +35,10 @@ struct VersionedAppStorage {
     enum Checkpoint { case snapshotCaptured, stageValidated, boundaryPrepared, installed }
     typealias Files = [String: Data]
     typealias Validator = (Files) throws -> Void
+    /// Pure inventory resolver over the current bytes of initial-manifest stores.
+    /// Every returned path is required. The caller owns registry semantics and
+    /// complete directory enumeration; undeclared files are not discovered here.
+    typealias CurrentStorePaths = (Files) throws -> [String]
 
     private struct Entry: Codable, Equatable {
         let path: String
@@ -63,20 +69,29 @@ struct VersionedAppStorage {
     private let fileManager = FileManager.default
     private let boundaryName = ".v3-storage-boundary.json"
     private let manifestName = "storage-manifest.json"
+    // Two sets of thousands of bounded source/store entries can exceed 1 MiB.
+    private let maximumManifestBytes = 32 * 1_024 * 1_024
 
     /// Returns the v3 root after migration, or validates and opens an existing v3.
     /// `convert` receives original bytes, never file URLs. It must emit explicit
     /// versioned store envelopes. `validate` must enforce schema versions and all
     /// cross-store references and is called again whenever committed storage opens.
+    /// For COMMITTED storage, `currentStorePaths` may declare additional required
+    /// stores, such as runtime maps registered since migration. Initial stores stay
+    /// required; the final validator receives their union. PREPARED validation uses
+    /// only the immutable manifest and exact initial hashes, never this resolver.
+    /// The caller must hold all writer/registry exclusions around this entire call.
     func openOrMigrate(
         plan: Plan,
         convert: (Files) throws -> Files,
         validate: Validator,
+        currentStorePaths: CurrentStorePaths? = nil,
         checkpoint: (Checkpoint) throws -> Void = { _ in }
     ) throws -> URL {
         try withLock {
             if try exists(boundaryName) {
-                return try openCommitted(validate: validate, maximumFiles: plan.maximumFiles, maximumBytes: plan.maximumBytes)
+                return try openCommitted(validate: validate, maximumFiles: plan.maximumFiles, maximumBytes: plan.maximumBytes,
+                                         currentStorePaths: currentStorePaths)
             }
             // A v3 directory without its boundary is damage, never a reason to
             // overwrite it or load older settings.
@@ -141,13 +156,14 @@ struct VersionedAppStorage {
     /// recopies legacy stores. A missing COMMITTED installation requires v3 backup
     /// recovery by a higher-level UI; initial migration state is not current data.
     func recoverPreparedInstallation(
-        maximumFiles: Int = 512, maximumBytes: Int = 256 * 1_024 * 1_024,
-        validate: Validator
+        maximumFiles: Int = 8_192, maximumBytes: Int = 256 * 1_024 * 1_024,
+        validate: Validator, currentStorePaths: CurrentStorePaths? = nil
     ) throws -> URL {
         try withLock {
             let boundary = try readBoundary()
             if try exists("v3") {
-                return try openCommitted(validate: validate, maximumFiles: maximumFiles, maximumBytes: maximumBytes)
+                return try openCommitted(validate: validate, maximumFiles: maximumFiles, maximumBytes: maximumBytes,
+                                         currentStorePaths: currentStorePaths)
             }
             guard boundary.state == .prepared else { throw Failure.committedStorageMissing }
             _ = try validateInstallation(boundary, installed: false, initial: true,
@@ -157,26 +173,30 @@ struct VersionedAppStorage {
         }
     }
 
-    private func openCommitted(validate: Validator, maximumFiles: Int, maximumBytes: Int) throws -> URL {
+    private func openCommitted(validate: Validator, maximumFiles: Int, maximumBytes: Int,
+                               currentStorePaths: CurrentStorePaths?) throws -> URL {
         let boundary = try readBoundary()
         guard try exists("v3") else {
             throw boundary.state == .committed ? Failure.committedStorageMissing : Failure.recoveryRequired
         }
         _ = try validateInstallation(boundary, installed: true, initial: boundary.state == .prepared,
-                                     maximumFiles: maximumFiles, maximumBytes: maximumBytes, validate: validate)
+                                     maximumFiles: maximumFiles, maximumBytes: maximumBytes, validate: validate,
+                                     currentStorePaths: currentStorePaths)
         if boundary.state == .prepared { try commitBoundary(boundary) }
         return root.appendingPathComponent("v3", isDirectory: true)
     }
 
     private func validateInstallation(
         _ boundary: Boundary, installed: Bool, initial: Bool,
-        maximumFiles: Int, maximumBytes: Int, validate: Validator
+        maximumFiles: Int, maximumBytes: Int, validate: Validator,
+        currentStorePaths: CurrentStorePaths? = nil
     ) throws -> Manifest {
+        guard maximumFiles > 0, maximumBytes > 0 else { throw Failure.limitExceeded }
         let archive = archiveName(boundary.migrationID)
         let directory = installed ? "v3" : archive + "/install"
-        guard let bytes = try read(directory + "/" + manifestName, maximumBytes: 1_048_576, allowMissing: false)?.data,
+        guard let bytes = try read(directory + "/" + manifestName, maximumBytes: maximumManifestBytes, allowMissing: false)?.data,
               digest(bytes) == boundary.manifestSHA256,
-              let snapshotManifest = try read(archive + "/" + manifestName, maximumBytes: 1_048_576, allowMissing: false)?.data,
+              let snapshotManifest = try read(archive + "/" + manifestName, maximumBytes: maximumManifestBytes, allowMissing: false)?.data,
               snapshotManifest == bytes else { throw Failure.invalidManifest }
         let manifest = try JSONDecoder().decode(Manifest.self, from: bytes)
         guard manifest.format == "AagedalFTPSync.storage", manifest.version == 3,
@@ -193,13 +213,42 @@ struct VersionedAppStorage {
         }
         total = 0
         var stores: Files = [:]
+        var capturedStores: [String: Captured] = [:]
         for expected in manifest.stores {
-            guard let data = try read(directory + "/" + expected.path, maximumBytes: maximumBytes, allowMissing: false)?.data,
+            guard let captured = try read(directory + "/" + expected.path, maximumBytes: maximumBytes, allowMissing: false),
                   expected.bytes != nil, expected.sha256 != nil else { throw Failure.invalidManifest }
+            let data = captured.data
             if initial, entry(expected.path, data: data) != expected { throw Failure.invalidManifest }
             total += data.count
             guard total <= maximumBytes else { throw Failure.limitExceeded }
             stores[expected.path] = data
+            capturedStores[expected.path] = captured
+        }
+        if !initial, let currentStorePaths {
+            let declared = try currentStorePaths(stores)
+            try validatePaths(declared, maximum: maximumFiles)
+            guard !declared.contains(manifestName) else { throw Failure.invalidManifest }
+            let combined = Set(stores.keys).union(declared).sorted()
+            try validatePaths(combined, maximum: maximumFiles)
+            try rejectSQLiteCompanions(combined.map { directory + "/" + $0 })
+            for path in combined where stores[path] == nil {
+                guard let captured = try read(directory + "/" + path, maximumBytes: maximumBytes, allowMissing: false) else {
+                    throw Failure.unsafeFile(path)
+                }
+                guard captured.data.count <= maximumBytes - total else { throw Failure.limitExceeded }
+                total += captured.data.count
+                stores[path] = captured.data
+                capturedStores[path] = captured
+            }
+            // The resolver must be pure and writers excluded. Rechecks additionally
+            // catch observed replacement/removal of a registry or map during the
+            // collection, but cannot establish an uncoordinated cross-store snapshot.
+            for path in combined {
+                let current = try read(directory + "/" + path, maximumBytes: maximumBytes, allowMissing: false)
+                guard current?.identity == capturedStores[path]?.identity,
+                      current?.data == capturedStores[path]?.data else { throw Failure.inputChanged(path) }
+            }
+            try rejectSQLiteCompanions(combined.map { directory + "/" + $0 })
         }
         try validate(stores)
         return manifest

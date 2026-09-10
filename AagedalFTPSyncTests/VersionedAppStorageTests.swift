@@ -219,4 +219,161 @@ final class VersionedAppStorageTests: XCTestCase {
             }
         }
     }
+
+    func testCommittedCollectorPassesRuntimeStoresWithoutChangingInitialManifest() throws {
+        try fixture { root, storage in
+            let initialRegistry = try JSONEncoder().encode([String]())
+            let v3 = try storage.openOrMigrate(plan: plan, convert: { _ in
+                ["jobs.json": validStore, "registry.json": initialRegistry]
+            }, validate: validate, currentStorePaths: { _ in XCTFail("Initial installation must not use current inventory"); return [] })
+            let manifestURL = v3.appendingPathComponent("storage-manifest.json")
+            let manifestBefore = try Data(contentsOf: manifestURL)
+            let archiveManifest = try XCTUnwrap(try archives(root).first).appendingPathComponent("storage-manifest.json")
+            let boundaryBefore = try Data(contentsOf: root.appendingPathComponent(".v3-storage-boundary.json"))
+            let maps = v3.appendingPathComponent("maps", isDirectory: true)
+            try FileManager.default.createDirectory(at: maps, withIntermediateDirectories: false)
+            let map = Data("new committed mapping".utf8)
+            try map.write(to: maps.appendingPathComponent("runtime.json"))
+            try JSONEncoder().encode(["maps/runtime.json"]).write(to: v3.appendingPathComponent("registry.json"), options: .atomic)
+            var validated = false
+            _ = try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] }, validate: { files in
+                try validate(files)
+                XCTAssertEqual(files["maps/runtime.json"], map)
+                XCTAssertEqual(files.count, 3)
+                validated = true
+            }, currentStorePaths: { files in
+                XCTAssertEqual(Set(files.keys), ["jobs.json", "registry.json"])
+                // An initial path can also be declared; the union reads it once.
+                return try JSONDecoder().decode([String].self, from: XCTUnwrap(files["registry.json"])) + ["jobs.json"]
+            })
+            XCTAssertTrue(validated)
+            XCTAssertEqual(try Data(contentsOf: manifestURL), manifestBefore)
+            XCTAssertEqual(try Data(contentsOf: archiveManifest), manifestBefore)
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(".v3-storage-boundary.json")), boundaryBefore)
+            _ = try storage.recoverPreparedInstallation(validate: { XCTAssertEqual($0["maps/runtime.json"], map) },
+                                                       currentStorePaths: { _ in ["maps/runtime.json"] })
+        }
+    }
+
+    func testCommittedCollectorRejectsMissingRequiredMapBeforeValidation() throws {
+        try fixture { _, storage in
+            _ = try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate)
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] },
+                validate: { _ in XCTFail("Missing map must fail before final validation") },
+                currentStorePaths: { _ in ["maps/lost.json"] })) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .unsafeFile("v3/maps/lost.json"))
+            }
+        }
+    }
+
+    func testCommittedCollectorEnforcesPathUnionAndResourceBounds() throws {
+        try fixture { _, storage in
+            _ = try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate)
+            for paths in [["../outside"], ["/absolute"], ["a//b"], ["a/./b"], ["a\\b"], ["a\0b"],
+                          [String(repeating: "a", count: 1025)], [Array(repeating: "a", count: 17).joined(separator: "/")],
+                          ["jobs.json/child"], ["storage-manifest.json"], ["same", "same"]] {
+                XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] },
+                    validate: { _ in XCTFail() }, currentStorePaths: { _ in paths }))
+            }
+            let smallPlan = VersionedAppStorage.Plan(legacyFiles: [], maximumFiles: 2)
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: smallPlan, convert: { _ in XCTFail(); return [:] },
+                validate: { _ in XCTFail() }, currentStorePaths: { _ in ["one", "two"] })) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .limitExceeded)
+            }
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] },
+                validate: { _ in XCTFail() }, currentStorePaths: { _ in throw Injected.invalidSchema }))
+        }
+    }
+
+    func testCommittedCollectorRejectsOversizedAndAggregateStoreBytes() throws {
+        try fixture { _, storage in
+            let v3 = try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate)
+            let maximum = validStore.count + 32
+            let bounded = VersionedAppStorage.Plan(legacyFiles: [], maximumBytes: maximum)
+            let first = v3.appendingPathComponent("first.json")
+            try Data(repeating: 1, count: maximum + 1).write(to: first)
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: bounded, convert: { _ in XCTFail(); return [:] },
+                validate: { _ in XCTFail() }, currentStorePaths: { _ in ["first.json"] })) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .limitExceeded)
+            }
+            try Data(repeating: 1, count: 20).write(to: first)
+            try Data(repeating: 2, count: 20).write(to: v3.appendingPathComponent("second.json"))
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: bounded, convert: { _ in XCTFail(); return [:] },
+                validate: { _ in XCTFail() }, currentStorePaths: { _ in ["first.json", "second.json"] })) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .limitExceeded)
+            }
+        }
+    }
+
+    func testCommittedCollectorRejectsLinksAndUncheckpointedSQLite() throws {
+        try fixture { _, storage in
+            let v3 = try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate)
+            let actual = v3.appendingPathComponent("actual.json")
+            try validStore.write(to: actual)
+            let link = v3.appendingPathComponent("link.json")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: actual)
+            let parentLink = v3.appendingPathComponent("linked")
+            try FileManager.default.createSymbolicLink(at: parentLink, withDestinationURL: v3)
+            let hardLink = v3.appendingPathComponent("hard.json")
+            try FileManager.default.linkItem(at: actual, to: hardLink)
+            for path in ["link.json", "linked/actual.json", "hard.json"] {
+                XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] },
+                    validate: { _ in XCTFail() }, currentStorePaths: { _ in [path] }))
+            }
+            let database = v3.appendingPathComponent("extra.sqlite3")
+            try Data("fixture".utf8).write(to: database)
+            try Data().write(to: URL(fileURLWithPath: database.path + "-wal"))
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] },
+                validate: { _ in XCTFail() }, currentStorePaths: { _ in ["extra.sqlite3"] })) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .sqliteNotQuiescent("v3/extra.sqlite3"))
+            }
+        }
+    }
+
+    func testPreparedInstallationNeverUsesCurrentCollectorOrRelaxesInitialHashes() throws {
+        try fixture { root, storage in
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate,
+                currentStorePaths: { _ in XCTFail("Prepared must not collect runtime stores"); return [] }, checkpoint: {
+                    if case .installed = $0 { throw Injected.interruption }
+                }))
+            let jobs = root.appendingPathComponent("v3/jobs.json")
+            let changed = Data("{\"version\":3,\"changed\":true}".utf8)
+            try changed.write(to: jobs)
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] }, validate: validate,
+                currentStorePaths: { _ in XCTFail("Cannot replace prepared manifest with dynamic paths"); return [] })) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .invalidManifest)
+            }
+            try validStore.write(to: jobs)
+            _ = try storage.recoverPreparedInstallation(validate: validate,
+                currentStorePaths: { _ in XCTFail("Prepared recovery must not collect dynamic paths"); return [] })
+        }
+    }
+
+    func testCommittedCollectorDetectsRegistryMutationDuringCollection() throws {
+        try fixture { _, storage in
+            let v3 = try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore, "registry.json": Data("[]".utf8)] }, validate: validate)
+            XCTAssertThrowsError(try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] },
+                validate: { _ in XCTFail("Changed base stores must fail before validation") }, currentStorePaths: { _ in
+                    try Data("[\"new\"]".utf8).write(to: v3.appendingPathComponent("registry.json"), options: .atomic)
+                    return []
+                })) {
+                XCTAssertEqual($0 as? VersionedAppStorage.Failure, .inputChanged("registry.json"))
+            }
+        }
+    }
+
+    func testDefaultCommittedInventoryBudgetSupports4096RuntimeMaps() throws {
+        try fixture { _, storage in
+            let v3 = try storage.openOrMigrate(plan: plan, convert: { _ in ["jobs.json": validStore] }, validate: validate)
+            let maps = v3.appendingPathComponent("maps", isDirectory: true)
+            try FileManager.default.createDirectory(at: maps, withIntermediateDirectories: false)
+            let paths = (0..<4096).map { "maps/\($0).json" }
+            for path in paths { try Data("{}".utf8).write(to: v3.appendingPathComponent(path)) }
+            _ = try storage.openOrMigrate(plan: plan, convert: { _ in XCTFail(); return [:] }, validate: { files in
+                try validate(files)
+                XCTAssertEqual(files.count, 4097)
+                XCTAssertTrue(paths.allSatisfy { files[$0] == Data("{}".utf8) })
+            }, currentStorePaths: { _ in paths })
+        }
+    }
 }
