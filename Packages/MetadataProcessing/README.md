@@ -102,3 +102,14 @@ zone provenance, missing values, single-pass substitution, keyword atomicity and
 normalization, strict activation decoding, unchanged legacy literals, source/version
 round trips and failed atomic replacements. App integration and real metadata/GUI behavior require separate
 verification and are not established by these tests.
+
+## App integration
+
+The app now links this package through `MetadataProcessingCoordinator`. Existing
+preview/transfer/reprocess paths use its literal snapshot entry point. Explicit
+in-memory activation resolves against a supplied frozen context with per-field
+outcomes and pinned writer limits; production UI/persistence does not yet activate
+those requests. App-level literal keyword overrides use the existing normalization
+policy; the package literal codec itself remains exact. See the
+[processing/storage checkpoint](../../Documentation/Testing/2026-09-10-M1-Processing-Storage-Integration.md)
+for verification and the remaining context, encoding and completion gates.
