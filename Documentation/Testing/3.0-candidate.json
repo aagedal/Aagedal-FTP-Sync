@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Paused strict runtime construction, immutable SQLite acquisition and frozen-calendar legacy conversion implemented at 689e73e alongside prior processing/storage prerequisites. Full app suite: 643 passed, 15 opt-in skips, zero failures. Production migration driver/root selection, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
+  "note": "Selected-source migration, immutable provenance, current-store validation and frozen recovery implemented at 67d91fa. Full app suite: 670 passed, 15 opt-in skips, zero failures. Production startup, lifetime writer exclusion, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
 }
