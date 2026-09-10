@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "App-linked processing core/literal snapshots, injected storage layouts and opt-in migration/SQLite snapshot APIs are implemented. Full app suite: 520 passed, 15 opt-in skips, zero failures. Activated UI/context integration, production migrations and release validation remain incomplete. Freeze candidate identity before final testing."
+  "note": "App-linked processing core/literal snapshots, strict original-capture reader, proleptic date formatting, storage layouts and opt-in migration/SQLite snapshot/v3 JSON adapters are implemented at c0de968. Full app suite: 551 passed, 15 opt-in skips, zero failures; package: 33 tests pass. Activated UI/context integration, production migrations and release validation remain incomplete. Freeze candidate identity before final testing."
 }
