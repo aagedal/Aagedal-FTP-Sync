@@ -230,4 +230,191 @@ final class Version3JSONStoreConversionTests: XCTestCase {
             }
         }
     }
+
+    private func fixedCalendar(_ identifier: Calendar.Identifier = .gregorian, zone: String = "Etc/UTC") -> Calendar {
+        var calendar = Calendar(identifier: identifier)
+        calendar.timeZone = TimeZone(identifier: zone)!
+        return calendar
+    }
+
+    private func payload(_ name: String, _ result: Version3JSONStoreConversion.Result) throws -> String {
+        let text = try XCTUnwrap(String(data: XCTUnwrap(result.stores[name]), encoding: .utf8))
+        let marker = try XCTUnwrap(text.range(of: "\"payload\":"))
+        return String(text[marker.upperBound..<text.index(before: text.endIndex)])
+    }
+
+    private func implicit(_ data: Data, null: Bool = true) throws -> Data {
+        // Fixture values have explicit empty tracks. JSONEncoder does not emit whitespace.
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let replacement = null ? "\"photographerTracks\":null" : "\"fixturePreserved\":\"{literal} 😺\""
+        let changed = text.replacingOccurrences(of: "\"photographerTracks\":[]", with: replacement)
+        XCTAssertNotEqual(text, changed)
+        return Data(changed.utf8)
+    }
+
+    func testFrozenCalendarPatchesOnlyMissingOrNullMemberAndIsDeterministic() throws {
+        let (job, profile, _) = fixture()
+        for useNull in [false, true] {
+            let bytes = try implicit(encode([job], iso: true), null: useNull)
+            let input = [jobsName: bytes, "server-profiles-v1.json": try encode([profile])]
+            let result = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: fixedCalendar())
+            let repeated = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: fixedCalendar())
+            XCTAssertEqual(result.stores[jobsName], repeated.stores[jobsName])
+            let jobs = try decode([SyncJob].self, store: .jobs, name: jobsName, result: result, iso: true)
+            let tracks = try XCTUnwrap(jobs.first?.metadataAutomation?.photographerTracks)
+            XCTAssertEqual(tracks.count, 1)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            let encodedTracks = try XCTUnwrap(String(data: encoder.encode(tracks), encoding: .utf8))
+            let patched = try payload(jobsName, result)
+            let reversed = useNull
+                ? patched.replacingOccurrences(of: encodedTracks, with: "null")
+                : patched.replacingOccurrences(of: ",\"photographerTracks\":" + encodedTracks, with: "")
+            XCTAssertEqual(Data(reversed.utf8), bytes, "All original bytes survive outside the explicit track patch")
+            XCTAssertEqual(result.summary.selectedSourceSHA256, repeated.summary.selectedSourceSHA256)
+            XCTAssertEqual(result.summary.trackInference?.calendarIdentifier, "gregorian")
+            XCTAssertEqual(result.summary.trackInference?.timeZoneIdentifier, "Etc/UTC")
+            XCTAssertEqual(result.summary.trackInference?.adaptedObjects, 1)
+            XCTAssertEqual(result.summary.trackInference?.inferredTracks, 1)
+            XCTAssertEqual(result.summary.trackInference?.dayIterations, 1)
+        }
+    }
+
+    func testFrozenCalendarRespectsDSTExclusiveMidnightAndClipOrderDeduplication() throws {
+        let (original, profile, _) = fixture()
+        var job = original
+        var automation = try XCTUnwrap(job.metadataAutomation)
+        let date = ISO8601DateFormatter()
+        for (start, end, month, days) in [
+            ("2026-03-28T23:00:00Z", "2026-03-30T22:00:00Z", 3, [29, 30]),
+            ("2026-10-24T22:00:00Z", "2026-10-26T23:00:00Z", 10, [25, 26])
+        ] {
+            var clip = automation.clips[0]
+            clip.startsAt = try XCTUnwrap(date.date(from: start))
+            clip.endsAt = try XCTUnwrap(date.date(from: end))
+            var overlap = clip
+            overlap.id = UUID()
+            automation.clips = [clip, overlap]
+            job.metadataAutomation = automation
+            let result = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [
+                jobsName: implicit(encode([job], iso: true)), "server-profiles-v1.json": encode([profile])
+            ], implicitTrackCalendar: fixedCalendar(zone: "Europe/Oslo"))
+            let jobs = try decode([SyncJob].self, store: .jobs, name: jobsName, result: result, iso: true)
+            let tracks = try XCTUnwrap(jobs.first?.metadataAutomation?.photographerTracks)
+            XCTAssertEqual(tracks.map(\.date.day), days)
+            XCTAssertEqual(tracks.map(\.date.month), [month, month])
+            XCTAssertEqual(tracks.map(\.photographerID), [clip.photographerID, clip.photographerID])
+            XCTAssertEqual(result.summary.trackInference?.dayIterations, 4)
+            XCTAssertEqual(result.summary.trackInference?.inferredTracks, 2)
+        }
+    }
+
+    func testCallerCalendarIdentifierIsHonoredInsteadOfAssumingGregorian() throws {
+        let (job, profile, _) = fixture()
+        let input = [jobsName: try implicit(encode([job], iso: true)), "server-profiles-v1.json": try encode([profile])]
+        let gregorian = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: fixedCalendar())
+        let buddhist = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: fixedCalendar(.buddhist))
+        let first = try decode([SyncJob].self, store: .jobs, name: jobsName, result: gregorian, iso: true)
+        let second = try decode([SyncJob].self, store: .jobs, name: jobsName, result: buddhist, iso: true)
+        XCTAssertEqual(first[0].metadataAutomation?.photographerTracks.first?.date.year, 2023)
+        XCTAssertEqual(second[0].metadataAutomation?.photographerTracks.first?.date.year, 2566)
+        XCTAssertEqual(buddhist.summary.trackInference?.calendarIdentifier, "buddhist")
+    }
+
+    func testBindingConflictAndEveryPendingReceiptCopyAreAdaptedWithOwnDatePolicy() throws {
+        let (source, profile, initial) = fixture()
+        var state = initial
+        state.bindings[0].conflict = state.bindings[0].snapshot
+        var input = [jobsName: try implicit(encode([source], iso: true)), "server-profiles-v1.json": try encode([profile]),
+                     calendarName: try implicit(encode(state, calendar: true))]
+        let bindingResult = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: fixedCalendar())
+        let bindingState = try decode(MetadataCalendarState.self, store: .metadataCalendar, name: calendarName, result: bindingResult, calendar: true)
+        XCTAssertEqual(bindingResult.summary.trackInference?.adaptedObjects, 3)
+        XCTAssertEqual(bindingState.bindings[0].snapshot.document.photographerTracks.count, 1)
+        XCTAssertEqual(bindingState.bindings[0].conflict?.document.photographerTracks.count, 1)
+        XCTAssertEqual(bindingState.bindings[0].snapshot.document.clips[0].startsAt, initial.bindings[0].snapshot.document.clips[0].startsAt)
+        var duplicate = source
+        duplicate.id = UUID()
+        duplicate.isEnabled = false
+        duplicate.startsOnAppLaunch = false
+        state.bindings = []
+        state.pendingReceive = MetadataCalendarReceiveProposal(accountID: state.accounts[0].id, source: source,
+            duplicate: duplicate, calendar: initial.bindings[0].snapshot)
+        input[calendarName] = try implicit(encode(state, calendar: true), null: false)
+        let pendingResult = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: fixedCalendar())
+        let pendingState = try decode(MetadataCalendarState.self, store: .metadataCalendar, name: calendarName, result: pendingResult, calendar: true)
+        let pending = try XCTUnwrap(pendingState.pendingReceive)
+        XCTAssertEqual(pendingResult.summary.trackInference?.adaptedObjects, 4)
+        XCTAssertEqual(pendingResult.summary.pendingReceiptPhase, .beforeInstallation)
+        XCTAssertEqual(pending.source.metadataAutomation?.photographerTracks.count, 1)
+        XCTAssertEqual(pending.duplicate.metadataAutomation?.photographerTracks.count, 1)
+        XCTAssertEqual(pending.calendar.document.photographerTracks.count, 1)
+    }
+
+    func testInferenceBudgetIsAggregateAcrossStoresAndInvalidIntervalsFailClosed() throws {
+        let (source, profile, state) = fixture()
+        let input = [jobsName: try implicit(encode([source], iso: true)), "server-profiles-v1.json": try encode([profile]),
+                     calendarName: try implicit(encode(state, calendar: true))]
+        XCTAssertThrowsError(try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input,
+            implicitTrackCalendar: fixedCalendar(), maximumInferredDayIterations: 1)) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .trackInferenceLimitExceeded)
+        }
+        let result = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input,
+            implicitTrackCalendar: fixedCalendar(), maximumInferredDayIterations: 2)
+        XCTAssertEqual(result.summary.trackInference?.dayIterations, 2)
+        for budget in [0, 50_001] {
+            XCTAssertThrowsError(try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input,
+                implicitTrackCalendar: fixedCalendar(), maximumInferredDayIterations: budget)) {
+                XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .invalidTrackInferenceOptions)
+            }
+        }
+        var invalid = source
+        let invalidStart = try XCTUnwrap(invalid.metadataAutomation?.clips.first?.startsAt)
+        invalid.metadataAutomation?.clips[0].endsAt = invalidStart
+        XCTAssertThrowsError(try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [jobsName: implicit(encode([invalid], iso: true)),
+            "server-profiles-v1.json": encode([profile])], implicitTrackCalendar: fixedCalendar())) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .invalidRecord("implicit track date range"))
+        }
+        invalid.metadataAutomation?.clips[0].endsAt = Date(timeIntervalSince1970: 253_402_300_800)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [jobsName: implicit(encode([invalid], iso: true)),
+            "server-profiles-v1.json": encode([profile])], implicitTrackCalendar: fixedCalendar()))
+    }
+
+    func testUnknownClipShapedExtensionsRemainOpaqueWithOrWithoutCalendar() throws {
+        let (job, profile, _) = fixture()
+        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: encode([job], iso: true)) as? [[String: Any]])
+        let automation = try XCTUnwrap(raw[0]["metadataAutomation"] as? [String: Any])
+        raw[0]["legacyExtension"] = ["clips": try XCTUnwrap(automation["clips"]), "literal": "{unknown} 😺"]
+        let bytes = try JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys])
+        let input = [jobsName: bytes, "server-profiles-v1.json": try encode([profile])]
+        for calendar in [nil, fixedCalendar()] as [Calendar?] {
+            let result = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: calendar)
+            XCTAssertEqual(Data(try payload(jobsName, result).utf8), bytes)
+            XCTAssertEqual(result.summary.trackInference?.adaptedObjects ?? 0, 0)
+        }
+    }
+
+    func testFrozenAdapterRejectsAmbiguousKnownTrackKeysBeforePatching() throws {
+        let (job, profile, _) = fixture()
+        let text = try XCTUnwrap(String(data: encode([job], iso: true), encoding: .utf8))
+        let changed = text.replacingOccurrences(of: "\"photographerTracks\":[]", with: "\"photographerTracks\":null,\"photographerTracks\":[]")
+        XCTAssertNotEqual(text, changed)
+        XCTAssertThrowsError(try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [jobsName: Data(changed.utf8),
+            "server-profiles-v1.json": encode([profile])], implicitTrackCalendar: fixedCalendar())) {
+            XCTAssertEqual($0 as? Version3JSONStoreConversion.ConversionError, .ambiguousTrackInference(self.jobsName))
+        }
+    }
+
+    func testExplicitPayloadsAcrossAllNineStoresRemainUnchangedWithCalendarOption() throws {
+        let empty = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: [:])
+        var input: [String: Data] = [:]
+        for name in Version3JSONStoreConversion.primaryFilenames {
+            let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(empty.stores[name])) as? [String: Any])
+            input[name] = try JSONSerialization.data(withJSONObject: XCTUnwrap(envelope["payload"]), options: [.sortedKeys])
+        }
+        let result = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: input, implicitTrackCalendar: fixedCalendar())
+        XCTAssertEqual(result.stores.count, 9)
+        XCTAssertEqual(result.summary.trackInference?.adaptedObjects, 0)
+        for (name, bytes) in input { XCTAssertEqual(Data(try payload(name, result).utf8), bytes, name) }
+    }
 }

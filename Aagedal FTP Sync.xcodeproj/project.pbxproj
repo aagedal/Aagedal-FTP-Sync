@@ -56,6 +56,7 @@
 		55A135CDA7E6147620C9F303 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 052561673651EFAEC20483A2 /* KeychainStore.swift */; };
 		5662C3ECC707EE19CDE34F51 /* ConfigurationTransferCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61206E0435FCE509729F69A0 /* ConfigurationTransferCoordinatorTests.swift */; };
 		5924A4106BF442BB4DE764B0 /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F63E1167F0C4B8DD60E70E /* MetadataPreview.swift */; };
+		5A338901500F14C192E13EBA /* LegacySignatureSQLiteAcquisitionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38340DAEFB7349C2D522EDA /* LegacySignatureSQLiteAcquisitionTests.swift */; };
 		5ADE536567FA896B1319AB32 /* MetadataAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DF972CA42278237F9D4F9F1 /* MetadataAudit.swift */; };
 		5C34E41AD9A2ED138D0CBA51 /* AagedalFTPSyncApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A020FD65B833FE80CEB305B3 /* AagedalFTPSyncApp.swift */; };
 		5DB6CD9B34792459E85F91CE /* DownloadNameMappingRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6E699622BD45D4E5BDCAE2 /* DownloadNameMappingRegistry.swift */; };
@@ -88,6 +89,7 @@
 		9453177603F487C96FF5B9E1 /* PhotographerMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D08A4DCF03FB39971112D2D /* PhotographerMapView.swift */; };
 		956B364A51DE2F3F84CD18BD /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F02E14B784149DDFFF502ADA /* MetadataAutomation.swift */; };
 		95D006439B0ACA8D63134DA2 /* VersionedStoreCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */; };
+		966F0DB9BFCEB5D15CFF84DB /* LegacySignatureSQLiteAcquisition.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E0134521531D31F0A13CBD /* LegacySignatureSQLiteAcquisition.swift */; };
 		9BE974E35F14A02DD16B33DC /* Endpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 937FD9EED413E474E9F6903E /* Endpoint.swift */; };
 		9DB40C0F242BAF5400C1AB08 /* SourceSignatureVersion3Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6814BDEA2C7D9393E32617C /* SourceSignatureVersion3Tests.swift */; };
 		A0534370D1A62D35C61FCBBC /* SyncSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */; };
@@ -276,6 +278,7 @@
 		E0AB176BB0302BDD7BEE6ED8 /* ServerProfileRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepositoryTests.swift; sourceTree = "<group>"; };
 		E29CC609150B77D9F9FCA70E /* JobRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobRepositoryTests.swift; sourceTree = "<group>"; };
 		E350D2AA9DCE6EEF0FCA8BBD /* MetadataProcessingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProcessingCoordinatorTests.swift; sourceTree = "<group>"; };
+		E38340DAEFB7349C2D522EDA /* LegacySignatureSQLiteAcquisitionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacySignatureSQLiteAcquisitionTests.swift; sourceTree = "<group>"; };
 		E45C7CB10B1E196CE6CF8CD5 /* MetadataAutomationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomationTests.swift; sourceTree = "<group>"; };
 		E5335018C1256A3299113AB0 /* SyncEventLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEventLoggerTests.swift; sourceTree = "<group>"; };
 		E63C0949223A1DB7761525D6 /* SourceSignatureSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureSnapshotTests.swift; sourceTree = "<group>"; };
@@ -285,6 +288,7 @@
 		F02E14B784149DDFFF502ADA /* MetadataAutomation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAutomation.swift; sourceTree = "<group>"; };
 		F0A8861238F0BE12E239A2BC /* UploadNamingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadNamingSession.swift; sourceTree = "<group>"; };
 		F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarMerge.swift; sourceTree = "<group>"; };
+		F2E0134521531D31F0A13CBD /* LegacySignatureSQLiteAcquisition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacySignatureSQLiteAcquisition.swift; sourceTree = "<group>"; };
 		F3A2D6F5AD2A2701FD04AA11 /* MetadataSyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncSettingsView.swift; sourceTree = "<group>"; };
 		F488B465A35870C5148449F4 /* Citadel */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Citadel; path = Vendor/Citadel; sourceTree = SOURCE_ROOT; };
 		F90079927622715BF02539C9 /* VersionedRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedRepositoryTests.swift; sourceTree = "<group>"; };
@@ -394,6 +398,7 @@
 				5EDD38DA7C2A9FF12C640FA1 /* FolderBookmark.swift */,
 				DBC455448901CCC142FAFA0C /* JobRepository.swift */,
 				052561673651EFAEC20483A2 /* KeychainStore.swift */,
+				F2E0134521531D31F0A13CBD /* LegacySignatureSQLiteAcquisition.swift */,
 				11EEAAEEA8F25FFA2893352E /* MetadataAuditRepository.swift */,
 				60E0E09FD8169213D49FACE8 /* MetadataPresetRepository.swift */,
 				6BEF64F5094273F5CED52D82 /* PhotographerProfileRepository.swift */,
@@ -488,6 +493,7 @@
 				BC25AACD3C7F08B23B371518 /* FileFilterTests.swift */,
 				21199D2C1CA349452587E48F /* FTPListingTests.swift */,
 				E29CC609150B77D9F9FCA70E /* JobRepositoryTests.swift */,
+				E38340DAEFB7349C2D522EDA /* LegacySignatureSQLiteAcquisitionTests.swift */,
 				D0C9F952969D2D03BFCC3221 /* LocalSyncIntegrationTests.swift */,
 				07B39CBB757E875BE7C71E39 /* MetadataAuditTests.swift */,
 				E45C7CB10B1E196CE6CF8CD5 /* MetadataAutomationTests.swift */,
@@ -720,6 +726,7 @@
 				EA92EB4FBB105356154EC1DA /* FTPListingTests.swift in Sources */,
 				643C37FA6F70828858D71250 /* FileFilterTests.swift in Sources */,
 				02ECC949E0CD2F017A4C7D26 /* JobRepositoryTests.swift in Sources */,
+				5A338901500F14C192E13EBA /* LegacySignatureSQLiteAcquisitionTests.swift in Sources */,
 				DC1FF0B0F1590933DFEB5D6D /* LocalSyncIntegrationTests.swift in Sources */,
 				78FA1B86AA36E6601A1CD68E /* MetadataAuditTests.swift in Sources */,
 				A3FE2D8BFC1145F0C306FAE4 /* MetadataAutomationTests.swift in Sources */,
@@ -793,6 +800,7 @@
 				E296EA00ACFAF5AE7432F629 /* JobsWindowView.swift in Sources */,
 				55A135CDA7E6147620C9F303 /* KeychainStore.swift in Sources */,
 				0837FDF547FB63BE4AE4953C /* LaunchAtLoginCoordinator.swift in Sources */,
+				966F0DB9BFCEB5D15CFF84DB /* LegacySignatureSQLiteAcquisition.swift in Sources */,
 				35861BD0DE6E6C56ED72FB75 /* LocalEndpointSession.swift in Sources */,
 				869C3F20F6579EC38F1DCC53 /* MenuBarView.swift in Sources */,
 				5ADE536567FA896B1319AB32 /* MetadataAudit.swift in Sources */,

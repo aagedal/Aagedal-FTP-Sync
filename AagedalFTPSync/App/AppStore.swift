@@ -86,7 +86,11 @@ final class AppStore: ObservableObject {
         syncConcurrencyController: SyncConcurrencyController = SyncConcurrencyController(),
         failureNotificationCoordinator: SyncFailureNotificationCoordinator = SyncFailureNotificationCoordinator(),
         launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator(),
-        jobDraftTemplate: SyncJob? = nil
+        jobDraftTemplate: SyncJob? = nil,
+        retainedCredentialIDs: Set<String> = [],
+        allowsCredentialGarbageCollection: Bool = true,
+        preloadedPersistence: AppPersistenceLoadResult? = nil,
+        startsJobsOnInitialization: Bool = true
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -95,7 +99,9 @@ final class AppStore: ObservableObject {
             serverProfileRepository: serverProfileRepository,
             metadataAuditRepository: metadataAuditRepository,
             syncFailureRepository: syncFailureRepository,
-            keychain: keychain
+            keychain: keychain,
+            retainedCredentialIDs: retainedCredentialIDs,
+            allowsCredentialGarbageCollection: allowsCredentialGarbageCollection
         )
         self.persistenceCoordinator = persistenceCoordinator
         metadataLibraryCoordinator = MetadataLibraryCoordinator(
@@ -115,7 +121,7 @@ final class AppStore: ObservableObject {
         self.launchAtLoginCoordinator = launchAtLoginCoordinator
         self.jobDraftTemplate = jobDraftTemplate
         scheduler = SyncScheduler()
-        let persistenceLoad = persistenceCoordinator.load()
+        let persistenceLoad = preloadedPersistence ?? persistenceCoordinator.load()
         jobs = persistenceLoad.state.jobs
         metadataPresets = persistenceLoad.state.metadataPresets
         photographerLibrary = persistenceLoad.state.photographerLibrary
@@ -134,13 +140,51 @@ final class AppStore: ObservableObject {
                 || jobs[index].right.serverProfileID != nil
             let requiresRecoveredConfigurationReview = persistenceLoad.jobsRecoveredFromBackup
                 || (persistenceLoad.serverProfilesRecoveredFromBackup && usesServerProfile)
-            let shouldStart = !requiresRecoveredConfigurationReview && configuredToStart
+            let shouldStart = startsJobsOnInitialization && !requiresRecoveredConfigurationReview && configuredToStart
             jobs[index].startOnAppLaunch = configuredToStart
             jobs[index].isEnabled = shouldStart
             phases[jobs[index].id] = .stopped
         }
         scheduler.delegate = self
-        scheduler.restart(with: jobs)
+        if startsJobsOnInitialization { scheduler.restart(with: jobs) }
+    }
+
+    /// Construct a paused runtime only AFTER the complete v3 root has passed
+    /// migration/current-store admission under writer exclusion. No normal app
+    /// startup calls this yet. Calendar construction, lifetime ownership and
+    /// explicit start/recovery policy remain the bootstrap coordinator's job.
+    /// The strict load throws before any AppStore or scheduler exists; all eight
+    /// repositories, the default engine and reset service use this one layout.
+    static func makePausedForValidatedStorage(
+        _ storage: AppStorageLayout,
+        retainedCredentialIDs: Set<String>,
+        allowsCredentialGarbageCollection: Bool,
+        keychain: KeychainStore = KeychainStore(),
+        launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator()
+    ) throws -> AppStore {
+        guard storage.storageFormat == .version3 else { throw AppPersistenceStartupError.unsupportedStorage }
+        let jobs = JobRepository(storage: storage)
+        let presets = MetadataPresetRepository(storage: storage)
+        let photographers = PhotographerProfileRepository(storage: storage)
+        let profiles = ServerProfileRepository(storage: storage)
+        let audits = MetadataAuditRepository(storage: storage)
+        let failures = SyncFailureRepository(storage: storage)
+        let coordinator = AppPersistenceCoordinator(
+            jobRepository: jobs, metadataPresetRepository: presets,
+            photographerProfileRepository: photographers, serverProfileRepository: profiles,
+            metadataAuditRepository: audits, syncFailureRepository: failures, keychain: keychain,
+            retainedCredentialIDs: retainedCredentialIDs,
+            allowsCredentialGarbageCollection: allowsCredentialGarbageCollection)
+        let loaded = try coordinator.loadForValidatedStartup()
+        return AppStore(repository: jobs, metadataPresetRepository: presets,
+            photographerProfileRepository: photographers, serverProfileRepository: profiles,
+            metadataAuditRepository: audits, syncFailureRepository: failures,
+            sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+            downloadManifestRepository: DownloadManifestRepository(storage: storage),
+            keychain: keychain, launchAtLoginCoordinator: launchAtLoginCoordinator,
+            retainedCredentialIDs: retainedCredentialIDs,
+            allowsCredentialGarbageCollection: allowsCredentialGarbageCollection,
+            preloadedPersistence: loaded, startsJobsOnInitialization: false)
     }
 
     deinit {

@@ -1,9 +1,153 @@
 import Foundation
+import ServiceManagement
 import XCTest
 @testable import AagedalFTPSync
 
 @MainActor
 final class AppPersistenceCoordinatorTests: XCTestCase {
+    private func startupLayout(jobs: [SyncJob] = []) throws -> AppStorageLayout {
+        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("v3-startup-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let layout = AppStorageLayout(root: root, storageFormat: .version3)
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let converted = try Version3JSONStoreConversion.convert(selectedLegacyPrimaries: ["jobs-v2.json": encoder.encode(jobs)])
+        for (name, bytes) in converted.stores { try bytes.write(to: root.appendingPathComponent(name)) }
+        let signatures = try Version3SignatureConversion.convert(.noLegacyStore, temporaryDirectory: root)
+        try signatures.data.write(to: layout.sourceSignatures)
+        try DownloadNameMappingRegistry.initialData(committedMappingNames: []).write(to: layout.downloadNameRegistry)
+        return layout
+    }
+
+    private func paused(_ layout: AppStorageLayout, keychain: KeychainStore = KeychainStore(),
+                        retained: Set<String> = [], garbageCollection: Bool = true,
+                        launch: StartupLaunchProbe = StartupLaunchProbe()) throws -> AppStore {
+        try AppStore.makePausedForValidatedStorage(layout, retainedCredentialIDs: retained,
+            allowsCredentialGarbageCollection: garbageCollection, keychain: keychain,
+            launchAtLoginCoordinator: launch)
+    }
+
+    func testPausedVersion3StartupDoesNotRunLegacyMigrationsOrEnableJobs() throws {
+        var job = remoteJob(leftCredentialID: "retained-left", rightCredentialID: "retained-right")
+        job.isEnabled = true; job.startsOnAppLaunch = true
+        job.metadataAutomation = MetadataAutomation(photographers: [PhotographerProfile(
+            name: "Embedded photographer", filenamePrefix: "ABC", creator: "Embedded photographer", copyrightNotice: "{date:YYYY-MM-DD}")])
+        let layout = try startupLayout(jobs: [job])
+        let paths = try FileManager.default.contentsOfDirectory(atPath: layout.root.path)
+        let before = try Dictionary(uniqueKeysWithValues: paths.map { ($0, try Data(contentsOf: layout.root.appendingPathComponent($0))) })
+        let keychain = TestKeychain(values: [:])
+        let launch = StartupLaunchProbe()
+        let store = try paused(layout, keychain: keychain.store, launch: launch)
+        XCTAssertEqual(store.jobs.count, 1)
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(store.jobs.first).startsOnAppLaunch)
+        XCTAssertTrue(store.serverProfiles.isEmpty) // no automatic embedded endpoint migration
+        XCTAssertTrue(store.photographerLibrary.isEmpty) // no implicit library merge/save
+        XCTAssertNil(store.alertMessage)
+        XCTAssertEqual(launch.statusReads, 1)
+        XCTAssertEqual(keychain.writeCount, 0)
+        XCTAssertTrue(keychain.removedCredentialIDs.isEmpty)
+        for (name, bytes) in before { XCTAssertEqual(try Data(contentsOf: layout.root.appendingPathComponent(name)), bytes) }
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: layout.root.path)), Set(paths))
+    }
+
+    func testPausedStartupRejectsEveryDamagedOrMissingJSONStoreBeforeConstructingRuntime() throws {
+        let layout = try startupLayout()
+        let paths = [layout.jobs, layout.metadataPresets, layout.photographers, layout.serverProfiles, layout.metadataAudit, layout.syncFailures]
+        for url in paths {
+            let original = try Data(contentsOf: url)
+            let launch = StartupLaunchProbe()
+            try FileManager.default.removeItem(at: url)
+            XCTAssertThrowsError(try paused(layout, launch: launch))
+            try Data("broken".utf8).write(to: url)
+            XCTAssertThrowsError(try paused(layout, launch: launch))
+            XCTAssertEqual(try Data(contentsOf: url), Data("broken".utf8))
+            try original.write(to: url)
+            XCTAssertEqual(launch.statusReads, 0)
+        }
+        XCTAssertThrowsError(try paused(AppStorageLayout(root: layout.root))) {
+            XCTAssertEqual($0 as? AppPersistenceStartupError, .unsupportedStorage)
+        }
+    }
+
+    func testPausedStartupRefusesPerStoreBackupSelectionAndFutureVersions() throws {
+        let layout = try startupLayout()
+        let paths = [layout.jobs, layout.metadataPresets, layout.photographers, layout.serverProfiles, layout.metadataAudit, layout.syncFailures]
+        for url in paths {
+            let original = try Data(contentsOf: url)
+            let backup = url.appendingPathExtension("backup")
+            try original.write(to: backup)
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+            object["payload"] = "damaged payload"
+            let damaged = try JSONSerialization.data(withJSONObject: object)
+            try damaged.write(to: url)
+            XCTAssertThrowsError(try paused(layout)) {
+                XCTAssertEqual($0 as? AppPersistenceStartupError, .recoveryRequired)
+            }
+            XCTAssertEqual(try Data(contentsOf: url), damaged)
+            object["schemaVersion"] = 4
+            try JSONSerialization.data(withJSONObject: object).write(to: url)
+            XCTAssertThrowsError(try paused(layout))
+            XCTAssertEqual(try Data(contentsOf: backup), original)
+            try original.write(to: url)
+            try FileManager.default.removeItem(at: backup)
+        }
+    }
+
+    func testPausedStartupRejectsDuplicateJobsAndMissingServerReferences() throws {
+        let job = SyncJob(name: "Job")
+        let layout = try startupLayout(jobs: [job])
+        try JobRepository(storage: layout).save([job, job])
+        XCTAssertThrowsError(try paused(layout)) {
+            XCTAssertEqual($0 as? AppPersistenceStartupError, .duplicateIdentity)
+        }
+        var invalid = job
+        invalid.left.serverProfileID = UUID()
+        try JobRepository(storage: layout).save([invalid])
+        XCTAssertThrowsError(try paused(layout))
+    }
+
+    func testPausedStartupForwardsRetainedCredentialsAndUnknownReachabilityPolicy() throws {
+        for garbageCollection in [true, false] {
+            let keychain = TestKeychain(values: ["left-old": "left-password", "right-old": "right-password"])
+            let jobs = ["left-old", "right-old"].map { id in
+                var job = remoteJob(leftCredentialID: id)
+                job.name = id
+                job.right = Endpoint(kind: .local, localPath: "/private/tmp", bookmark: Data([1]))
+                return job
+            }
+            let layout = try startupLayout(jobs: jobs)
+            let store = try paused(layout, keychain: keychain.store, retained: ["left-old"], garbageCollection: garbageCollection)
+            for var draft in store.jobs {
+                draft.name += " updated"
+                XCTAssertTrue(store.saveJob(draft, leftPassword: "replacement", rightPassword: ""))
+            }
+            XCTAssertEqual(keychain.value(for: "left-old"), "left-password")
+            if garbageCollection { XCTAssertNil(keychain.value(for: "right-old")) }
+            else { XCTAssertEqual(keychain.value(for: "right-old"), "right-password") }
+            XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+            XCTAssertEqual(try JobRepository(storage: layout).load(), store.jobs)
+        }
+    }
+
+    func testDisabledCredentialCollectionStillRollsBackNewPasswordsOnFailedCommit() throws {
+        let keychain = TestKeychain(values: ["durable": "previous"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "unknown-retained-reachability", keychain: keychain.store,
+                                                        allowsCredentialGarbageCollection: false)
+        defer { fixture.removeTemporaryFiles() }
+        var job = remoteJob(leftCredentialID: "durable")
+        job.right = .local
+        try fixture.jobRepository.save([job])
+        var invalid = job; invalid.intervalSeconds = .nan
+        XCTAssertThrowsError(try fixture.coordinator.saveJob(previousJobs: [job], draftJob: invalid,
+                                                             leftPassword: "replacement", rightPassword: ""))
+        XCTAssertEqual(keychain.valuesSnapshot(), ["durable": "previous"])
+        XCTAssertEqual(keychain.removedCredentialIDs.count, 1)
+        XCTAssertNotEqual(keychain.removedCredentialIDs.first, "durable")
+        XCTAssertTrue(fixture.coordinator.removeCredentials(for: job, retainedJobs: []).isEmpty)
+        XCTAssertEqual(keychain.value(for: "durable"), "previous")
+    }
+
     func testCredentialReplacementPreservesRetainedStoreReferences() throws {
         let keychain = TestKeychain(values: ["retained-left": "old-left", "obsolete-right": "old-right"])
         let fixture = try PersistenceCoordinatorFixture(
@@ -740,7 +884,7 @@ private struct PersistenceCoordinatorFixture {
     let coordinator: AppPersistenceCoordinator
 
     @MainActor
-    init(prefix: String, keychain: KeychainStore = KeychainStore(), retainedCredentialIDs: Set<String> = []) throws {
+    init(prefix: String, keychain: KeychainStore = KeychainStore(), retainedCredentialIDs: Set<String> = [], allowsCredentialGarbageCollection: Bool = true) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -766,7 +910,8 @@ private struct PersistenceCoordinatorFixture {
             metadataAuditRepository: metadataAuditRepository,
             syncFailureRepository: syncFailureRepository,
             keychain: keychain,
-            retainedCredentialIDs: retainedCredentialIDs
+            retainedCredentialIDs: retainedCredentialIDs,
+            allowsCredentialGarbageCollection: allowsCredentialGarbageCollection
         )
     }
 
@@ -835,4 +980,12 @@ private final class TestKeychain: @unchecked Sendable {
     func valuesSnapshot() -> [String: String] {
         values
     }
+}
+
+@MainActor
+private final class StartupLaunchProbe: LaunchAtLoginCoordinating {
+    var statusReads = 0
+    var status: SMAppService.Status { statusReads += 1; return .notRegistered }
+    func setEnabled(_ enabled: Bool) throws { XCTFail("Startup must not change login registration") }
+    func openSettings() { XCTFail("Startup must not open system settings") }
 }

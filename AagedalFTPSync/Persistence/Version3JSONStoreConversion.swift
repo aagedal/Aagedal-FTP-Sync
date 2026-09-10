@@ -11,9 +11,9 @@ import Foundation
 /// Uses stable payload models for validation, then wraps present payload bytes
 /// unchanged, retaining literal fields, order, optional defaults and date precision.
 /// Unknown legacy fields are preserved but are not claimed to be semantically
-/// understood. Older nonempty calendars without explicit photographer tracks need
-/// a separate, frozen-timezone reconciliation adapter before conversion. SQLite
-/// and mapping/registry stores are separate adapters.
+/// understood. Older implicit tracks require an explicit caller-frozen calendar;
+/// inference is bounded and patches only the track member, retaining unrelated
+/// bytes. SQLite and mapping/registry stores are separate adapters.
 enum Version3JSONStoreConversion {
     struct Result: Sendable {
         let stores: [String: Data]
@@ -30,6 +30,15 @@ enum Version3JSONStoreConversion {
         /// A stale binding is an existing recoverable state: the UI can detach it.
         let calendarBindingJobIDsWithoutCurrentJob: Set<UUID>
         let pendingReceiptPhase: PendingReceiptPhase
+        let trackInference: TrackInferenceSummary?
+    }
+
+    struct TrackInferenceSummary: Sendable {
+        let calendarIdentifier: String
+        let timeZoneIdentifier: String
+        let adaptedObjects: Int
+        let inferredTracks: Int
+        let dayIterations: Int
     }
 
     enum PendingReceiptPhase: String, Sendable { case none, beforeInstallation, jobsInstalled }
@@ -38,6 +47,7 @@ enum Version3JSONStoreConversion {
         case invalidReference(String), invalidPendingReceipt, invalidRecord(String)
         case explicitPhotographerTracksRequired(String)
         case unsupportedJSONEncoding(String)
+        case invalidTrackInferenceOptions, trackInferenceLimitExceeded, ambiguousTrackInference(String)
     }
 
     private static let layout = AppStorageLayout(root: URL(fileURLWithPath: "/", isDirectory: true))
@@ -47,17 +57,24 @@ enum Version3JSONStoreConversion {
              layout.syncFailures, layout.downloadManifest].map(\.lastPathComponent))
     }
 
-    static func convert(selectedLegacyPrimaries input: [String: Data], maximumInputBytes: Int = 256 * 1024 * 1024) throws -> Result {
+    static func convert(selectedLegacyPrimaries input: [String: Data], maximumInputBytes: Int = 256 * 1024 * 1024,
+                        implicitTrackCalendar: Calendar? = nil, maximumInferredDayIterations: Int = 50_000) throws -> Result {
         guard maximumInputBytes > 0 else { throw ConversionError.inputLimitExceeded }
+        guard (1...50_000).contains(maximumInferredDayIterations) else { throw ConversionError.invalidTrackInferenceOptions }
+        var adapter = TrackAdapter(calendar: implicitTrackCalendar, remainingDays: maximumInferredDayIterations)
+        var selected = input
         var remaining = maximumInputBytes
         for name in input.keys.sorted() {
             guard primaryFilenames.contains(name) else { throw ConversionError.unsupportedSource(name) }
             guard input[name]!.count <= remaining else { throw ConversionError.inputLimitExceeded }
             remaining -= input[name]!.count
-            try preflightTrackInference(input[name]!, source: name)
+            let policy: DatePolicy = name == layout.metadataCalendar.lastPathComponent ? .calendar
+                : [layout.jobs, layout.metadataPresets, layout.metadataAudit, layout.syncFailures].contains(where: { $0.lastPathComponent == name }) ? .iso8601 : .foundation
+            selected[name] = try adapter.adapt(input[name]!, source: name, policy: policy)
+            try preflightTrackInference(selected[name]!, source: name)
         }
         func read<T: Decodable>(_ type: T.Type, at url: URL, empty: T, policy: DatePolicy) throws -> T {
-            guard let data = input[url.lastPathComponent] else { return empty }
+            guard let data = selected[url.lastPathComponent] else { return empty }
             return try policy.decoder.decode(type, from: data)
         }
         let jobs = try read([SyncJob].self, at: layout.jobs, empty: [], policy: .iso8601)
@@ -125,7 +142,7 @@ enum Version3JSONStoreConversion {
         var counts: [String: Int] = [:]
         func write<T: Codable>(_ value: T, at url: URL, store: VersionedStoreCodec.Store, policy: DatePolicy, count: Int) throws {
             let encoded = try VersionedStoreCodec(format: .version3, store: store).encode(value, encoder: policy.encoder)
-            if let original = input[url.lastPathComponent] {
+            if let original = selected[url.lastPathComponent] {
                 // The header fields are fixed identifiers, never user-supplied text.
                 var wrapped = Data("{\"format\":\"AagedalFTPSync.store\",\"schemaVersion\":3,\"store\":\"\(store.rawValue)\",\"payload\":".utf8)
                 wrapped.append(original)
@@ -154,21 +171,242 @@ enum Version3JSONStoreConversion {
             initializedAbsentStores: primaryFilenames.subtracting(input.keys),
             historicalJobIDsWithoutCurrentJob: history,
             calendarBindingJobIDsWithoutCurrentJob: Set(calendar.bindings.map(\.jobID)).subtracting(jobIDs),
-            pendingReceiptPhase: phase))
+            pendingReceiptPhase: phase, trackInference: adapter.summary))
     }
 
     private static func unique<T: Hashable>(_ values: [T], label: String) throws {
         guard Set(values).count == values.count else { throw ConversionError.duplicateIdentity(label) }
     }
 
-    private static func preflightTrackInference(_ data: Data, source: String) throws {
+    private struct TrackAdapter {
+        let calendar: Calendar?
+        var remainingDays: Int
+        private var objects = 0
+        private var tracks = 0
+        private var iterations = 0
+
+        init(calendar supplied: Calendar?, remainingDays: Int) {
+            if let supplied {
+                // Snapshot autoupdating calendar/zone values at the call boundary.
+                var fixed = Calendar(identifier: supplied.identifier)
+                fixed.locale = supplied.locale
+                fixed.timeZone = TimeZone(identifier: supplied.timeZone.identifier) ?? supplied.timeZone
+                fixed.firstWeekday = supplied.firstWeekday
+                fixed.minimumDaysInFirstWeek = supplied.minimumDaysInFirstWeek
+                calendar = fixed
+            } else { calendar = nil }
+            self.remainingDays = remainingDays
+        }
+
+        var summary: TrackInferenceSummary? {
+            calendar.map { TrackInferenceSummary(calendarIdentifier: String(describing: $0.identifier),
+                timeZoneIdentifier: $0.timeZone.identifier, adaptedObjects: objects,
+                inferredTracks: tracks, dayIterations: iterations) }
+        }
+
+        mutating func adapt(_ data: Data, source: String, policy: DatePolicy) throws -> Data {
+            guard let calendar else { return data }
+            try validateSourceEncoding(data, source: source)
+            // Grammar/type validation before the small byte-span scanner. The
+            // scanner never invents or reserializes scalar values/unknown members.
+            _ = try JSONDecoder().decode(PreflightValue.self, from: data)
+            var scanner = RawScanner(bytes: Array(data))
+            let root = try scanner.parse()
+            var pending: [RawScanner.Node] = []
+            for path in trackObjectPaths(source: source) {
+                var nodes = [root]
+                for component in path {
+                    var selected: [RawScanner.Node] = []
+                    for node in nodes {
+                        if component == "*" { selected += node.elements ?? [] }
+                        else if let value = try member(component, in: node, source: source) { selected.append(value) }
+                    }
+                    nodes = selected
+                }
+                pending += nodes
+            }
+            var patches: [(range: Range<Int>, bytes: Data)] = []
+            while let node = pending.popLast() {
+                if node.members != nil {
+                    if let clipNode = try member("clips", in: node, source: source),
+                       let clips = clipNode.elements, !clips.isEmpty {
+                        let priorTracks = try member("photographerTracks", in: node, source: source)
+                        if priorTracks == nil || scanner.bytes[priorTracks!.range].elementsEqual(Array("null".utf8)) {
+                            let clips = try policy.decoder.decode([MetadataScheduleClip].self, from: Data(scanner.bytes[clipNode.range]))
+                            let inferred = try infer(clips, calendar: calendar)
+                            let encoder = JSONEncoder()
+                            encoder.outputFormatting = [.sortedKeys]
+                            let encoded = try encoder.encode(inferred)
+                            if let priorTracks { patches.append((priorTracks.range, encoded)) }
+                            else {
+                                var insertion = Data(",\"photographerTracks\":".utf8)
+                                insertion.append(encoded)
+                                patches.append(((node.range.upperBound - 1)..<(node.range.upperBound - 1), insertion))
+                            }
+                            objects += 1
+                            tracks += inferred.count
+                        }
+                    }
+                }
+            }
+            guard !patches.isEmpty else { return data }
+            var result = Data()
+            var cursor = 0
+            for patch in patches.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
+                guard patch.range.lowerBound >= cursor else { throw ConversionError.ambiguousTrackInference(source) }
+                result.append(contentsOf: scanner.bytes[cursor..<patch.range.lowerBound])
+                result.append(patch.bytes)
+                cursor = patch.range.upperBound
+            }
+            result.append(contentsOf: scanner.bytes[cursor...])
+            return result
+        }
+
+        private func member(_ key: String, in node: RawScanner.Node, source: String) throws -> RawScanner.Node? {
+            let values = node.members?.filter { $0.key == key } ?? []
+            // Refuse ambiguous model paths/track members without touching unrelated
+            // duplicate keys in extension data that the payload model ignores.
+            guard values.count <= 1 else { throw ConversionError.ambiguousTrackInference(source) }
+            return values.first?.value
+        }
+
+        private mutating func infer(_ clips: [MetadataScheduleClip], calendar: Calendar) throws -> [MetadataPhotographerTrack] {
+            var result: [MetadataPhotographerTrack] = []
+            var seen = Set<MetadataPhotographerTrack>()
+            // Explicit conversion policy bounds absolute dates to Gregorian years
+            // 1..<10000, independently of the selected calendar's year numbering.
+            let lower = Date(timeIntervalSince1970: -62_135_596_800)
+            let upper = Date(timeIntervalSince1970: 253_402_300_800)
+            for clip in clips {
+                guard clip.startsAt.timeIntervalSince1970.isFinite, clip.endsAt.timeIntervalSince1970.isFinite,
+                      clip.startsAt >= lower, clip.endsAt < upper, clip.endsAt > clip.startsAt else {
+                    throw ConversionError.invalidRecord("implicit track date range")
+                }
+                var day = calendar.startOfDay(for: clip.startsAt)
+                while day < clip.endsAt {
+                    guard remainingDays > 0 else { throw ConversionError.trackInferenceLimitExceeded }
+                    remainingDays -= 1
+                    iterations += 1
+                    guard let next = calendar.date(byAdding: .day, value: 1, to: day), next > day,
+                          next.timeIntervalSince1970.isFinite else { throw ConversionError.invalidRecord("implicit track day") }
+                    let track = MetadataPhotographerTrack(photographerID: clip.photographerID,
+                                                         date: PhotographerWorkDate(day, calendar: calendar))
+                    if clip.startsAt < next, clip.endsAt > day, seen.insert(track).inserted { result.append(track) }
+                    day = next
+                }
+            }
+            return result
+        }
+    }
+
+    /// JSON spans only; the Foundation decoder above validates syntax and UTF-8.
+    /// Parsing is bounded separately from calendar inference to avoid unbounded
+    /// recursion or per-node work in malformed/oversized legacy object graphs.
+    private struct RawScanner {
+        struct Member { let key: String; let value: Node }
+        struct Node { let range: Range<Int>; let members: [Member]?; let elements: [Node]? }
+        let bytes: [UInt8]
+        var offset = 0
+        var remainingNodes = 1_000_000
+
+        mutating func parse() throws -> Node {
+            let parsed = try value(depth: 0)
+            whitespace()
+            guard offset == bytes.count else { throw ConversionError.invalidRecord("legacy JSON") }
+            return parsed
+        }
+
+        private mutating func value(depth: Int) throws -> Node {
+            guard depth <= 128, remainingNodes > 0 else { throw ConversionError.trackInferenceLimitExceeded }
+            remainingNodes -= 1
+            whitespace()
+            let start = offset
+            guard offset < bytes.count else { throw ConversionError.invalidRecord("legacy JSON") }
+            if bytes[offset] == 123 {
+                offset += 1
+                whitespace()
+                var members: [Member] = []
+                if offset < bytes.count, bytes[offset] != 125 {
+                    while true {
+                        whitespace()
+                        let keyRange = try string()
+                        let key = try JSONDecoder().decode(String.self, from: Data(bytes[keyRange]))
+                        whitespace()
+                        try consume(58)
+                        members.append(Member(key: key, value: try value(depth: depth + 1)))
+                        whitespace()
+                        if offset < bytes.count, bytes[offset] == 44 { offset += 1 } else { break }
+                    }
+                }
+                try consume(125)
+                return Node(range: start..<offset, members: members, elements: nil)
+            }
+            if bytes[offset] == 91 {
+                offset += 1
+                whitespace()
+                var elements: [Node] = []
+                if offset < bytes.count, bytes[offset] != 93 {
+                    while true {
+                        elements.append(try value(depth: depth + 1))
+                        whitespace()
+                        if offset < bytes.count, bytes[offset] == 44 { offset += 1 } else { break }
+                    }
+                }
+                try consume(93)
+                return Node(range: start..<offset, members: nil, elements: elements)
+            }
+            if bytes[offset] == 34 { _ = try string() }
+            else {
+                while offset < bytes.count, ![9, 10, 13, 32, 44, 93, 125].contains(bytes[offset]) { offset += 1 }
+            }
+            guard offset > start else { throw ConversionError.invalidRecord("legacy JSON") }
+            return Node(range: start..<offset, members: nil, elements: nil)
+        }
+
+        private mutating func string() throws -> Range<Int> {
+            let start = offset
+            try consume(34)
+            while offset < bytes.count {
+                let byte = bytes[offset]
+                offset += 1
+                if byte == 34 { return start..<offset }
+                if byte == 92 { offset += 1 }
+            }
+            throw ConversionError.invalidRecord("legacy JSON string")
+        }
+
+        private mutating func consume(_ byte: UInt8) throws {
+            guard offset < bytes.count, bytes[offset] == byte else { throw ConversionError.invalidRecord("legacy JSON") }
+            offset += 1
+        }
+        private mutating func whitespace() {
+            while offset < bytes.count, [9, 10, 13, 32].contains(bytes[offset]) { offset += 1 }
+        }
+    }
+
+    private static func validateSourceEncoding(_ data: Data, source: String) throws {
         // Stable 2.9 JSON encoders emit BOM-free UTF-8. Embedded UTF-16/32 or
         // a BOM would make an otherwise readable legacy payload invalid inside
         // the UTF-8 envelope; do not transcode selected source bytes implicitly.
         guard String(data: data, encoding: .utf8) != nil, !data.contains(0),
               !data.starts(with: [0xEF, 0xBB, 0xBF]) else { throw ConversionError.unsupportedJSONEncoding(source) }
+    }
+
+    private static func preflightTrackInference(_ data: Data, source: String) throws {
+        try validateSourceEncoding(data, source: source)
         let root = try JSONDecoder().decode(PreflightValue.self, from: data)
-        var pending = [root]
+        var pending: [PreflightValue] = []
+        for path in trackObjectPaths(source: source) {
+            var nodes = [root]
+            for component in path {
+                nodes = nodes.flatMap { node -> [PreflightValue] in
+                    if component == "*", case .array(let values) = node { return values }
+                    if case .object(let members) = node, let value = members[component] { return [value] }
+                    return []
+                }
+            }
+            pending += nodes
+        }
         while let value = pending.popLast() {
             switch value {
             case .object(let object):
@@ -176,11 +414,22 @@ enum Version3JSONStoreConversion {
                    object["photographerTracks"] == nil || object["photographerTracks"]?.isNull == true {
                     throw ConversionError.explicitPhotographerTracksRequired(source)
                 }
-                pending.append(contentsOf: object.values)
-            case .array(let values): pending.append(contentsOf: values)
+            case .array: break
             case .null, .scalar: break
             }
         }
+    }
+
+    /// Only locations actually decoded as automation/documents participate. A
+    /// similarly named object inside an unknown extension remains opaque bytes.
+    private static func trackObjectPaths(source: String) -> [[String]] {
+        if source == layout.jobs.lastPathComponent { return [["*", "metadataAutomation"]] }
+        if source == layout.metadataCalendar.lastPathComponent {
+            return [["bindings", "*", "snapshot", "document"], ["bindings", "*", "conflict", "document"],
+                    ["pendingReceive", "source", "metadataAutomation"], ["pendingReceive", "duplicate", "metadataAutomation"],
+                    ["pendingReceive", "calendar", "document"]]
+        }
+        return []
     }
 
     /// Use the same Foundation keyed decoder as payload models, including its
