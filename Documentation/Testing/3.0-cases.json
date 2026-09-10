@@ -209,7 +209,7 @@
       "id": "m2-001",
       "section": "M2 — Reverse geocoding",
       "title": "Offline geocoding works independently of the calendar",
-      "prerequisites": "An installed offline GeoNames dataset, photos with known GPS, a disposable one-way local destination job with no matching photographer or clip, and a network monitor scoped to the app.",
+      "prerequisites": "A candidate with offline geocoding controls integrated and the bundled GeoNames dataset, photos with known GPS, a disposable one-way local destination job with no matching photographer or clip, and a network monitor scoped to the app. The standalone provider foundation does not yet enable this workflow.",
       "steps": [
         "Disable schedule metadata and enable only offline City/Country processing; select and record the output language.",
         "Disconnect network access and transfer a GPS-tagged picture, then inspect City/Country and the lookup audit.",
@@ -233,6 +233,7 @@
         "Record the expected complete effective pair for each fixture: RAW prefers valid XMP; embedded images prefer valid EXIF with XMP fallback.",
         "Preview and transfer with scheduled GPS disabled, then compare the selected coordinate source and conflict reporting.",
         "Repeat with a valid scheduled replacement under preserve/fill-empty and overwrite policies.",
+        "Include a RAW fixture whose existing sidecar has no GPS but embedded EXIF has a complete valid pair. With scheduled fill-empty, confirm both the lookup and final GPS preserve the embedded pair; repeat with scheduled overwrite.",
         "Test latitude-only EXIF combined with longitude-only XMP and confirm the app does not construct a synthetic pair.",
         "Compare geocoded output and final GPS against the recorded expected pair for each run."
       ],

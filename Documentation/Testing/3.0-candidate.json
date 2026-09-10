@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Production startup, explicit source selection and recovery implemented at 1bd6c1f. Full app suite: 717 passed, 15 opt-in skips, zero failures. Native QA selection timed out; no GUI gate passed. Continuous older-writer exclusion, activation and release validation remain incomplete. Freeze candidate identity before final testing."
+  "note": "Geocoding/coordinate foundations and pinned offline adapter implemented at de33e98. Full app suite: 739 passed, 15 opt-in skips, zero failures. Production enrichment integration, actual native UI, continuous older-writer exclusion and release validation remain incomplete. No manual gate advanced; freeze candidate identity before final testing."
 }
