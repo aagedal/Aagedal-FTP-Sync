@@ -2,7 +2,7 @@ import Foundation
 import Darwin
 
 actor DownloadManifestRepository {
-    private struct DestinationIdentity: Codable, Hashable, Sendable {
+    struct DestinationIdentity: Codable, Hashable, Sendable {
         let localPath: String
 
         init(endpoint: Endpoint) {
@@ -10,13 +10,13 @@ actor DownloadManifestRepository {
         }
     }
 
-    private struct Key: Hashable, Sendable {
+    struct Key: Hashable, Sendable {
         let jobID: UUID
         let destination: DestinationIdentity
         let relativePath: String
     }
 
-    private struct Record: Codable, Sendable {
+    struct Record: Codable, Sendable {
         let jobID: UUID
         let destination: DestinationIdentity
         let relativePath: String

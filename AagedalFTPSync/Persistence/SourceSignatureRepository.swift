@@ -602,7 +602,7 @@ actor SourceSignatureRepository {
     }
 
     static let version3ApplicationID: Int64 = 0x41465333 // "AFS3", source-signature store in the v3 boundary.
-    private static let version3TableSQL = """
+    static let version3TableSQL = """
         CREATE TABLE source_signatures (
             job_id TEXT NOT NULL,
             source_key TEXT NOT NULL,
@@ -613,7 +613,7 @@ actor SourceSignatureRepository {
             PRIMARY KEY (job_id, source_key, relative_path)
         ) WITHOUT ROWID
         """
-    private static let version3IndexSQL = "CREATE INDEX source_signatures_last_seen ON source_signatures (job_id, source_key, last_seen_at)"
+    static let version3IndexSQL = "CREATE INDEX source_signatures_last_seen ON source_signatures (job_id, source_key, last_seen_at)"
 
     /// Converter contract, not an automatic initializer: execute only in a newly
     /// created, empty disposable migration stage whose ownership was established
@@ -704,24 +704,6 @@ actor SourceSignatureRepository {
         guard version == 3 else { throw Version3OpenError.unsupportedSchemaVersion(version) }
         let statement = try prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name LIMIT 3", in: database)
         defer { sqlite3_finalize(statement) }
-        func normalized(_ sql: String) -> [String]? {
-            // The converter schema is ASCII. Unicode "whitespace" can be an
-            // SQLite identifier character, so it must never disappear here.
-            guard sql.utf8.allSatisfy({ $0 < 128 }) else { return nil }
-            var tokens: [String] = []
-            var word = ""
-            for scalar in sql.lowercased().unicodeScalars {
-                if (97...122).contains(scalar.value) || (48...57).contains(scalar.value) || scalar == "_" {
-                    word.unicodeScalars.append(scalar)
-                } else {
-                    if !word.isEmpty { tokens.append(word); word = "" }
-                    if !CharacterSet.whitespacesAndNewlines.contains(scalar) { tokens.append(String(scalar)) }
-                }
-            }
-            if !word.isEmpty { tokens.append(word) }
-            if tokens.last == ";" { tokens.removeLast() }
-            return tokens
-        }
         let expected = [("table", "source_signatures", Self.version3TableSQL),
                         ("index", "source_signatures_last_seen", Self.version3IndexSQL)]
         for (type, name, sql) in expected {
@@ -735,9 +717,28 @@ actor SourceSignatureRepository {
             // casing/whitespace/statement terminators), including primary/index
             // column order, affinity, collation, constraints and WITHOUT ROWID.
             guard columns[0] == type, columns[1] == name, columns[2] == "source_signatures",
-                  normalized(columns[3]) == normalized(sql) else { throw Version3OpenError.incompatibleSchema }
+                  Self.canonicalSchemaTokens(columns[3]) == Self.canonicalSchemaTokens(sql) else { throw Version3OpenError.incompatibleSchema }
         }
         guard sqlite3_step(statement) == SQLITE_DONE else { throw Version3OpenError.incompatibleSchema }
+    }
+
+    static func canonicalSchemaTokens(_ sql: String) -> [String]? {
+        // The converter schema is ASCII. Unicode "whitespace" can be an
+        // SQLite identifier character, so it must never disappear here.
+        guard sql.utf8.allSatisfy({ $0 < 128 }) else { return nil }
+        var tokens: [String] = []
+        var word = ""
+        for scalar in sql.lowercased().unicodeScalars {
+            if (97...122).contains(scalar.value) || (48...57).contains(scalar.value) || scalar == "_" {
+                word.unicodeScalars.append(scalar)
+            } else {
+                if !word.isEmpty { tokens.append(word); word = "" }
+                if !CharacterSet.whitespacesAndNewlines.contains(scalar) { tokens.append(String(scalar)) }
+            }
+        }
+        if !word.isEmpty { tokens.append(word) }
+        if tokens.last == ";" { tokens.removeLast() }
+        return tokens
     }
 
     private func validateVersion3Paths() throws {
