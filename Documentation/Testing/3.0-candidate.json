@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Compatibility probes and the isolated template core are implemented; app integration and release validation remain incomplete. Candidate identity must be frozen before final testing."
+  "note": "Template activation core, immutable writer inputs and an opt-in v3 storage helper are implemented. Full app unit tests pass; coordinator/UI integration, production migrations and release validation remain incomplete. Candidate identity must be frozen before final testing."
 }
