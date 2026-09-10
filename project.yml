@@ -20,6 +20,8 @@ settings:
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
     STRING_CATALOG_GENERATE_SYMBOLS: YES
 packages:
+  MetadataProcessing:
+    path: Packages/MetadataProcessing
   Citadel:
     path: Vendor/Citadel
   SwiftMediaMetadata:
@@ -34,6 +36,8 @@ targets:
     dependencies:
       - package: Citadel
       - package: SwiftMediaMetadata
+      - package: MetadataProcessing
+        product: MetadataTemplates
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSync
@@ -56,6 +60,8 @@ targets:
     dependencies:
       - target: AagedalFTPSync
       - package: SwiftMediaMetadata
+      - package: MetadataProcessing
+        product: MetadataTemplates
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSyncTests

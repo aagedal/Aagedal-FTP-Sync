@@ -28,21 +28,14 @@ actor DownloadManifestRepository {
     private let fileURL: URL
     private var cachedKeys: Set<Key>?
 
-    var nameMappingsDirectory: URL { fileURL.deletingLastPathComponent().appendingPathComponent("download-names-v1", isDirectory: true) }
+    var nameMappingsDirectory: URL { AppStorageLayout(root: fileURL.deletingLastPathComponent()).downloadNamesDirectory }
 
     private var backupURL: URL {
         fileURL.appendingPathExtension("backup")
     }
 
-    init(fileURL: URL? = nil) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.fileURL = base
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-                .appendingPathComponent("download-manifest-v1.json")
-        }
+    init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
+        self.fileURL = fileURL ?? storage.downloadManifest
     }
 
     func record(

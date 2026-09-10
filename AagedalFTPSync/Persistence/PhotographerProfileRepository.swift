@@ -72,15 +72,8 @@ struct PhotographerProfileRepository: Sendable {
         fileURL.appendingPathExtension("backup")
     }
 
-    init(fileURL: URL? = nil) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.fileURL = base
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-                .appendingPathComponent("photographers-v1.json")
-        }
+    init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
+        self.fileURL = fileURL ?? storage.photographers
     }
 
     func load() throws -> [PhotographerProfile] {

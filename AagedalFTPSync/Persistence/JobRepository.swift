@@ -15,16 +15,10 @@ struct JobRepository: Sendable {
 
     init(
         fileURL: URL? = nil,
+        storage: AppStorageLayout = .legacy,
         beforeSave: @escaping @Sendable () throws -> Void = {}
     ) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.fileURL = base
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-                .appendingPathComponent("jobs-v2.json")
-        }
+        self.fileURL = fileURL ?? storage.jobs
         self.beforeSave = beforeSave
     }
 

@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Darwin
 
 struct SourceFileSignature: Codable, Equatable, Sendable {
     let size: Int64
@@ -108,7 +109,7 @@ actor SourceSignatureRepository {
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
         if let fileURL {
             // A supplied URL remains the store location so test and portable app
             // environments do not need a second configuration value. If it contains
@@ -116,10 +117,8 @@ actor SourceSignatureRepository {
             databaseURL = fileURL
             legacyFileURL = fileURL
         } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-            databaseURL = base.appendingPathComponent("original-source-signatures-v2.sqlite3")
-            legacyFileURL = base.appendingPathComponent("original-source-signatures-v1.json")
+            databaseURL = storage.sourceSignatures
+            legacyFileURL = storage.legacySourceSignatures
         }
     }
 
@@ -342,6 +341,219 @@ actor SourceSignatureRepository {
         defer { sqlite3_finalize(statement) }
         try bind(jobID.uuidString, at: 1, to: statement, operation: "remove")
         try stepToCompletion(statement, in: database, operation: "remove")
+    }
+
+    enum SnapshotError: Error, Equatable {
+        case databaseNotOpen, invalidOptions, unsafeDestination, destinationExists
+        case deadlineExceeded, sizeLimitExceeded, invalidSnapshot
+        case fileSystem(Int32)
+    }
+
+    struct SnapshotReceipt: Equatable, Sendable {
+        let schemaVersion: Int
+        let recordCount: Int64
+        let byteCount: Int64
+    }
+
+    private final class SnapshotDeadline {
+        let expires: UInt64
+        init(timeout: TimeInterval) {
+            expires = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
+        }
+        var expired: Bool { DispatchTime.now().uptimeNanoseconds >= expires }
+        func check() throws {
+            if expired { throw SnapshotError.deadlineExceeded }
+            try Task.checkCancellation()
+        }
+    }
+
+    /// Exports the already-open repository's committed read snapshot, including WAL
+    /// records, without checkpointing, reopening or migrating the source. The caller
+    /// must first reconcile legacy storage normally and exclude ALL app writers for
+    /// a consistent multi-store migration; actor exclusion covers this repository only.
+    ///
+    /// The destination must be absent in an existing trusted, stable, non-symlinked
+    /// directory (including its ancestors). This does not defend against a malicious
+    /// same-user process renaming those ancestors concurrently. A private stage is
+    /// validated, closed and synchronized before exclusive publication. Never replace
+    /// an existing destination or companions. No normal startup path calls this API.
+    ///
+    /// The deadline bounds SQLite work/retries, with checks between filesystem calls;
+    /// it cannot interrupt a kernel filesystem operation. A failure after publication
+    /// (e.g. parent fsync) can leave the complete destination; it is never erased.
+    func snapshot(
+        to destinationURL: URL,
+        timeout: TimeInterval = 5,
+        maximumBytes: Int64 = 256 * 1024 * 1024
+    ) throws -> SnapshotReceipt {
+        guard timeout.isFinite, timeout > 0, timeout <= 60, maximumBytes > 0 else {
+            throw SnapshotError.invalidOptions
+        }
+        guard let source = databaseHandle?.pointer else { throw SnapshotError.databaseNotOpen }
+        let deadline = SnapshotDeadline(timeout: timeout)
+        try deadline.check()
+        try validateSnapshotDestination(destinationURL)
+        let parent = destinationURL.deletingLastPathComponent()
+        let stage = parent.appendingPathComponent(".source-signature-snapshot-\(UUID().uuidString)", isDirectory: true)
+        guard mkdir(stage.path, 0o700) == 0 else { throw SnapshotError.fileSystem(errno) }
+        defer { try? FileManager.default.removeItem(at: stage) }
+        let stagedURL = stage.appendingPathComponent("snapshot.sqlite3")
+        let descriptor = Darwin.open(stagedURL.path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw SnapshotError.fileSystem(errno) }
+        defer { Darwin.close(descriptor) }
+
+        var opened: OpaquePointer?
+        let result = sqlite3_open_v2(stagedURL.path, &opened, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
+        guard result == SQLITE_OK, let destination = opened else {
+            if let opened { sqlite3_close_v2(opened) }
+            throw SnapshotError.invalidSnapshot
+        }
+        var destinationClosed = false
+        defer { if !destinationClosed { sqlite3_close_v2(destination) } }
+        let context = Unmanaged.passUnretained(deadline).toOpaque()
+        for connection in [source, destination] {
+            sqlite3_busy_timeout(connection, 0)
+            sqlite3_progress_handler(connection, 1000, { context in
+                guard let context else { return 1 }
+                return Unmanaged<SnapshotDeadline>.fromOpaque(context).takeUnretainedValue().expired
+                    || Task<Never, Never>.isCancelled ? 1 : 0
+            }, context)
+        }
+        defer {
+            sqlite3_progress_handler(source, 0, nil, nil)
+            sqlite3_busy_timeout(source, 5000)
+            if !destinationClosed { sqlite3_progress_handler(destination, 0, nil, nil) }
+            // Keep the callback context alive until both handlers have been removed.
+            withExtendedLifetime(deadline) {}
+        }
+        do {
+            try execute("BEGIN", in: source, operation: "begin snapshot of")
+            defer {
+                // The read transaction never changes source data. Disable timeout
+                // interruption before releasing it even on cancellation/failure.
+                sqlite3_progress_handler(source, 0, nil, nil)
+                try? execute("ROLLBACK", in: source, operation: "finish snapshot of")
+            }
+            // The first read pins the WAL snapshot before backup steps; outside
+            // writers cannot make the incremental backup restart indefinitely.
+            guard try snapshotInteger("PRAGMA user_version", in: source) == 2 else {
+                throw SnapshotError.invalidSnapshot
+            }
+            let pages = try snapshotInteger("PRAGMA page_count", in: source)
+            let pageSize = try snapshotInteger("PRAGMA page_size", in: source)
+            guard pages > 0, pageSize > 0, pages <= maximumBytes / pageSize else {
+                throw SnapshotError.sizeLimitExceeded
+            }
+            try deadline.check()
+            guard let backup = sqlite3_backup_init(destination, "main", source, "main") else {
+                throw sqliteError(operation: "snapshot", database: destination)
+            }
+            var backupFinished = false
+            defer { if !backupFinished { sqlite3_backup_finish(backup) } }
+            while true {
+                try deadline.check()
+                let step = sqlite3_backup_step(backup, 128)
+                guard Int64(sqlite3_backup_pagecount(backup)) <= maximumBytes / pageSize else {
+                    throw SnapshotError.sizeLimitExceeded
+                }
+                if step == SQLITE_DONE { break }
+                guard step == SQLITE_OK || step == SQLITE_BUSY || step == SQLITE_LOCKED else {
+                    throw sqliteError(operation: "snapshot", database: destination)
+                }
+                if step != SQLITE_OK { sqlite3_sleep(10) }
+            }
+            let finish = sqlite3_backup_finish(backup)
+            backupFinished = true
+            guard finish == SQLITE_OK else { throw sqliteError(operation: "snapshot", database: destination) }
+            try deadline.check()
+            try execute("PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL", in: destination, operation: "seal snapshot of")
+            let count = try validateSignatureSnapshot(destination)
+            try deadline.check()
+            sqlite3_progress_handler(destination, 0, nil, nil)
+            guard sqlite3_close(destination) == SQLITE_OK else {
+                throw sqliteError(operation: "close snapshot of", database: destination)
+            }
+            destinationClosed = true
+            var info = stat()
+            guard fstat(descriptor, &info) == 0 else { throw SnapshotError.fileSystem(errno) }
+            guard info.st_size > 0, info.st_size <= maximumBytes else { throw SnapshotError.sizeLimitExceeded }
+            guard fsync(descriptor) == 0 else { throw SnapshotError.fileSystem(errno) }
+            try deadline.check()
+            try validateSnapshotDestination(destinationURL)
+            guard renamex_np(stagedURL.path, destinationURL.path, UInt32(RENAME_EXCL)) == 0 else {
+                if errno == EEXIST { throw SnapshotError.destinationExists }
+                throw SnapshotError.fileSystem(errno)
+            }
+            // Synchronize both sides of the rename before deleting our empty stage.
+            for directory in [stage, parent] {
+                let fd = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard fd >= 0 else { throw SnapshotError.fileSystem(errno) }
+                let syncResult = fsync(fd)
+                let failure = errno
+                Darwin.close(fd)
+                guard syncResult == 0 else { throw SnapshotError.fileSystem(failure) }
+            }
+            return SnapshotReceipt(schemaVersion: 2, recordCount: count, byteCount: info.st_size)
+        } catch {
+            try deadline.check()
+            throw error
+        }
+    }
+
+    private func validateSnapshotDestination(_ url: URL) throws {
+        guard url.isFileURL, url.host == nil || url.host == "" || url.host == "localhost",
+              url.query == nil, url.fragment == nil, !url.path.utf8.contains(0),
+              !url.lastPathComponent.isEmpty, url.lastPathComponent != "/",
+              !url.pathComponents.contains(".."), !url.pathComponents.contains(".") else {
+            throw SnapshotError.unsafeDestination
+        }
+        var ancestor = url.deletingLastPathComponent()
+        while true {
+            var info = stat()
+            guard lstat(ancestor.path, &info) == 0,
+                  info.st_mode & S_IFMT == S_IFDIR else { throw SnapshotError.unsafeDestination }
+            if ancestor.path == "/" { break }
+            ancestor.deleteLastPathComponent()
+        }
+        for path in [url.path, url.path + "-wal", url.path + "-shm", url.path + "-journal"] {
+            var info = stat()
+            if lstat(path, &info) == 0 { throw SnapshotError.destinationExists }
+            guard errno == ENOENT else { throw SnapshotError.fileSystem(errno) }
+        }
+    }
+
+    private func snapshotInteger(_ sql: String, in database: OpaquePointer) throws -> Int64 {
+        let statement = try prepare(sql, in: database)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              sqlite3_column_type(statement, 0) == SQLITE_INTEGER else { throw SnapshotError.invalidSnapshot }
+        let result = sqlite3_column_int64(statement, 0)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw SnapshotError.invalidSnapshot }
+        return result
+    }
+
+    private func validateSignatureSnapshot(_ database: OpaquePointer) throws -> Int64 {
+        guard try snapshotInteger("PRAGMA user_version", in: database) == 2 else {
+            throw SnapshotError.invalidSnapshot
+        }
+        let integrity = try prepare("PRAGMA integrity_check", in: database)
+        defer { sqlite3_finalize(integrity) }
+        guard sqlite3_step(integrity) == SQLITE_ROW,
+              let bytes = sqlite3_column_text(integrity, 0), String(cString: bytes) == "ok",
+              sqlite3_step(integrity) == SQLITE_DONE else { throw SnapshotError.invalidSnapshot }
+        let columns = try prepare("PRAGMA table_info(source_signatures)", in: database)
+        defer { sqlite3_finalize(columns) }
+        let expected = [("job_id", "TEXT", 1), ("source_key", "TEXT", 2), ("relative_path", "TEXT", 3),
+                        ("size", "INTEGER", 0), ("modified_at", "REAL", 0), ("last_seen_at", "REAL", 0)]
+        for (name, type, primaryKey) in expected {
+            guard sqlite3_step(columns) == SQLITE_ROW,
+                  let nameBytes = sqlite3_column_text(columns, 1), String(cString: nameBytes) == name,
+                  let typeBytes = sqlite3_column_text(columns, 2), String(cString: typeBytes) == type,
+                  sqlite3_column_int(columns, 3) == 1,
+                  sqlite3_column_int(columns, 5) == primaryKey else { throw SnapshotError.invalidSnapshot }
+        }
+        guard sqlite3_step(columns) == SQLITE_DONE else { throw SnapshotError.invalidSnapshot }
+        return try snapshotInteger("SELECT count(*) FROM source_signatures", in: database)
     }
 
     private func openDatabaseIfNeeded() throws -> OpaquePointer {

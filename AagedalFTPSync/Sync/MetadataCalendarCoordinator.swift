@@ -38,11 +38,13 @@ struct MetadataCalendarState: Codable {
 struct MetadataCalendarRepository {
     var url: URL
     private let beforeSave: @Sendable () throws -> Void
-    init(url: URL? = nil, beforeSave: @escaping @Sendable () throws -> Void = {}) {
+    init(url: URL? = nil, storage: AppStorageLayout = .legacy, beforeSave: @escaping @Sendable () throws -> Void = {}) {
         self.beforeSave = beforeSave
-        self.url = url ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AagedalFTPSync/metadata-sync-v1.json")
+        self.url = url ?? storage.metadataCalendar
     }
+    /// Keep events beside an explicitly injected calendar file, including custom filenames.
+    var eventsURL: URL { AppStorageLayout(root: url.deletingLastPathComponent()).metadataSyncEvents }
+
     func load() throws -> MetadataCalendarState {
         guard FileManager.default.fileExists(atPath: url.path) else { return MetadataCalendarState() }
         return try MetadataCalendarClient.decoder().decode(MetadataCalendarState.self, from: Data(contentsOf: url))
@@ -108,7 +110,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         self.changeDebounce = changeDebounce
         self.now = now
         self.repository = repository
-        self.eventRepository = MetadataSyncEventRepository(url: repository.url.deletingLastPathComponent().appendingPathComponent("metadata-sync-events-v1.json"))
+        self.eventRepository = MetadataSyncEventRepository(url: repository.eventsURL)
         self.events = eventRepository.load()
         self.keychain = keychain
         do { state = try repository.load() }

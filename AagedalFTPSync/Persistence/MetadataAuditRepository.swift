@@ -14,15 +14,8 @@ struct MetadataAuditRepository: Sendable {
         fileURL.appendingPathExtension("backup")
     }
 
-    init(fileURL: URL? = nil, maximumEntries: Int = 2_000) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.fileURL = base
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-                .appendingPathComponent("metadata-audit-v1.json")
-        }
+    init(fileURL: URL? = nil, maximumEntries: Int = 2_000, storage: AppStorageLayout = .legacy) {
+        self.fileURL = fileURL ?? storage.metadataAudit
         self.maximumEntries = max(maximumEntries, 1)
     }
 

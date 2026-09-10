@@ -33,15 +33,8 @@ struct SyncFailureRepository: Sendable {
         fileURL.appendingPathExtension("backup")
     }
 
-    init(fileURL: URL? = nil, maximumEntries: Int = 200) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.fileURL = base
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-                .appendingPathComponent("sync-errors-v1.json")
-        }
+    init(fileURL: URL? = nil, maximumEntries: Int = 200, storage: AppStorageLayout = .legacy) {
+        self.fileURL = fileURL ?? storage.syncFailures
         self.maximumEntries = max(maximumEntries, 1)
     }
 
