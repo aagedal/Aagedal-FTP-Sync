@@ -7,6 +7,7 @@ struct VersionedStoreCodec: Sendable {
         case jobs, metadataPresets, photographers, serverProfiles
         case metadataAudit, syncFailures, downloadManifest
         case metadataCalendar, metadataSyncEvents
+        case downloadNames, downloadReplacementNames
     }
 
     enum HeaderError: Error, Equatable {

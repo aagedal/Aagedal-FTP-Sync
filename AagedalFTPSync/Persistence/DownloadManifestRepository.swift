@@ -46,6 +46,8 @@ actor DownloadManifestRepository {
         case fileSystem(Int32)
     }
 
+    var nameMappingsStorageFormat: AppStorageFormat { codec.format }
+
     var nameMappingsDirectory: URL { AppStorageLayout(root: fileURL.deletingLastPathComponent()).downloadNamesDirectory }
 
     private var backupURL: URL {

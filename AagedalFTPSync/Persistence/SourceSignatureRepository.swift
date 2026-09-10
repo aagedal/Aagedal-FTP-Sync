@@ -105,15 +105,18 @@ actor SourceSignatureRepository {
 
     private let databaseURL: URL
     private let legacyFileURL: URL
+    private let storageFormat: AppStorageFormat
     private var databaseHandle: DatabaseHandle?
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
     init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
+        storageFormat = storage.storageFormat
         if let fileURL {
             // A supplied URL remains the store location so test and portable app
             // environments do not need a second configuration value. If it contains
-            // v1 JSON, it is atomically replaced with the SQLite database on first use.
+            // v1 JSON in legacy mode, it is atomically replaced with SQLite on
+            // first use. Explicit version3 mode never migrates or creates it.
             databaseURL = fileURL
             legacyFileURL = fileURL
         } else {
@@ -167,6 +170,7 @@ actor SourceSignatureRepository {
         sourceEndpoint: Endpoint,
         relativePaths: some Collection<String>
     ) throws -> [String: SourceFileSignature] {
+        if storageFormat == .version3 { _ = try openDatabaseIfNeeded() }
         guard !relativePaths.isEmpty else { return [:] }
         let database = try openDatabaseIfNeeded()
         return try inTransaction(database, operation: "load") {
@@ -198,6 +202,7 @@ actor SourceSignatureRepository {
     }
 
     func record(_ files: [SyncFile], jobID: UUID, sourceEndpoint: Endpoint) throws {
+        if storageFormat == .version3 { _ = try openDatabaseIfNeeded() }
         guard !files.isEmpty else { return }
         let database = try openDatabaseIfNeeded()
         let sourceKey = SourceIdentity(endpoint: sourceEndpoint).databaseKey
@@ -436,7 +441,7 @@ actor SourceSignatureRepository {
             }
             // The first read pins the WAL snapshot before backup steps; outside
             // writers cannot make the incremental backup restart indefinitely.
-            guard try snapshotInteger("PRAGMA user_version", in: source) == 2 else {
+            guard try snapshotInteger("PRAGMA user_version", in: source) == expectedSchemaVersion else {
                 throw SnapshotError.invalidSnapshot
             }
             let pages = try snapshotInteger("PRAGMA page_count", in: source)
@@ -493,7 +498,7 @@ actor SourceSignatureRepository {
                 Darwin.close(fd)
                 guard syncResult == 0 else { throw SnapshotError.fileSystem(failure) }
             }
-            return SnapshotReceipt(schemaVersion: 2, recordCount: count, byteCount: info.st_size)
+            return SnapshotReceipt(schemaVersion: Int(expectedSchemaVersion), recordCount: count, byteCount: info.st_size)
         } catch {
             try deadline.check()
             throw error
@@ -532,8 +537,11 @@ actor SourceSignatureRepository {
         return result
     }
 
+    private var expectedSchemaVersion: Int64 { storageFormat == .version3 ? 3 : 2 }
+
     private func validateSignatureSnapshot(_ database: OpaquePointer) throws -> Int64 {
-        guard try snapshotInteger("PRAGMA user_version", in: database) == 2 else {
+        if storageFormat == .version3 { try validateVersion3Schema(database) }
+        guard try snapshotInteger("PRAGMA user_version", in: database) == expectedSchemaVersion else {
             throw SnapshotError.invalidSnapshot
         }
         let integrity = try prepare("PRAGMA integrity_check", in: database)
@@ -558,6 +566,7 @@ actor SourceSignatureRepository {
 
     private func openDatabaseIfNeeded() throws -> OpaquePointer {
         if let databaseHandle { return databaseHandle.pointer }
+        if storageFormat == .version3 { return try openVersion3Database() }
         try prepareStorageIfNeeded()
         let directory = databaseURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -585,6 +594,176 @@ actor SourceSignatureRepository {
         }
         databaseHandle = DatabaseHandle(database)
         return database
+    }
+
+    enum Version3OpenError: Error, Equatable {
+        case missingDatabase, unsafeDatabase, invalidDatabase, incompatibleSchema, inspectionTimedOut
+        case applicationIDMismatch(Int64), unsupportedSchemaVersion(Int64)
+    }
+
+    static let version3ApplicationID: Int64 = 0x41465333 // "AFS3", source-signature store in the v3 boundary.
+    private static let version3TableSQL = """
+        CREATE TABLE source_signatures (
+            job_id TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            modified_at REAL NOT NULL,
+            last_seen_at REAL NOT NULL,
+            PRIMARY KEY (job_id, source_key, relative_path)
+        ) WITHOUT ROWID
+        """
+    private static let version3IndexSQL = "CREATE INDEX source_signatures_last_seen ON source_signatures (job_id, source_key, last_seen_at)"
+
+    /// Converter contract, not an automatic initializer: execute only in a newly
+    /// created, empty disposable migration stage whose ownership was established
+    /// separately. Then insert validated legacy records and validate/close/fsync
+    /// that stage before installation. Existing v2 files require an explicit
+    /// converter; changing their marker in place is not a supported upgrade.
+    static let version3InitializationSQL = """
+        \(version3TableSQL);
+        \(version3IndexSQL);
+        PRAGMA application_id = \(version3ApplicationID);
+        PRAGMA user_version = 3;
+        """
+
+    /// Strict admission is opt-in. Its directory/ancestors and companion files must
+    /// be trusted and stable; callers must exclude other app processes/migrations
+    /// for the repository lifetime. Admission validates newly opened handles, not
+    /// external replacement/schema changes while the cached live handle is open.
+    /// Read-only inspection sees committed WAL contents and never checkpoints or
+    /// runs legacy repair. SQLite may maintain its shared-memory coordination file;
+    /// the database and WAL records remain read-only during rejected admission.
+    private func openVersion3Database() throws -> OpaquePointer {
+        try validateVersion3Paths()
+        let inspection = try openExistingVersion3Connection(readOnly: true)
+        do {
+            try inspectVersion3Schema(inspection)
+        } catch {
+            sqlite3_close_v2(inspection)
+            throw error
+        }
+        sqlite3_close_v2(inspection)
+        // Revalidate using the actual writable handle before write PRAGMAs. This
+        // catches observed replacement, but is not a cross-process writer lock.
+        try validateVersion3Paths()
+        let database = try openExistingVersion3Connection(readOnly: false)
+        do {
+            try inspectVersion3Schema(database)
+            try execute("PRAGMA journal_mode = WAL", in: database, operation: "configure")
+            try execute("PRAGMA synchronous = FULL", in: database, operation: "configure")
+            try execute("PRAGMA busy_timeout = 5000", in: database, operation: "configure")
+        } catch {
+            sqlite3_close_v2(database)
+            throw error
+        }
+        databaseHandle = DatabaseHandle(database)
+        return database
+    }
+
+    private func openExistingVersion3Connection(readOnly: Bool) throws -> OpaquePointer {
+        var connection: OpaquePointer?
+        let result = sqlite3_open_v2(databaseURL.path, &connection,
+            (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE) | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
+        guard result == SQLITE_OK, let connection else {
+            if let connection { sqlite3_close_v2(connection) }
+            throw Version3OpenError.invalidDatabase
+        }
+        return connection
+    }
+
+    private func inspectVersion3Schema(_ database: OpaquePointer) throws {
+        // Schema inspection has no busy retries and bounds both metadata size and
+        // VM work. A locked/oversized/unreadable store fails rather than being fixed.
+        let deadline = SnapshotDeadline(timeout: 5)
+        let priorLength = sqlite3_limit(database, SQLITE_LIMIT_LENGTH, 1_048_576)
+        defer { sqlite3_limit(database, SQLITE_LIMIT_LENGTH, priorLength) }
+        sqlite3_progress_handler(database, 1000, { context in
+            guard let context else { return 1 }
+            return Unmanaged<SnapshotDeadline>.fromOpaque(context).takeUnretainedValue().expired ? 1 : 0
+        }, Unmanaged.passUnretained(deadline).toOpaque())
+        defer {
+            sqlite3_progress_handler(database, 0, nil, nil)
+            try? execute("ROLLBACK", in: database, operation: "finish inspection of")
+            withExtendedLifetime(deadline) {}
+        }
+        do {
+            try execute("BEGIN", in: database, operation: "inspect")
+            try validateVersion3Schema(database)
+        } catch {
+            if deadline.expired { throw Version3OpenError.inspectionTimedOut }
+            if let typed = error as? Version3OpenError { throw typed }
+            throw Version3OpenError.invalidDatabase
+        }
+    }
+
+    private func validateVersion3Schema(_ database: OpaquePointer) throws {
+        let applicationID = try snapshotInteger("PRAGMA application_id", in: database)
+        guard applicationID == Self.version3ApplicationID else { throw Version3OpenError.applicationIDMismatch(applicationID) }
+        let version = try snapshotInteger("PRAGMA user_version", in: database)
+        guard version == 3 else { throw Version3OpenError.unsupportedSchemaVersion(version) }
+        let statement = try prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name LIMIT 3", in: database)
+        defer { sqlite3_finalize(statement) }
+        func normalized(_ sql: String) -> [String]? {
+            // The converter schema is ASCII. Unicode "whitespace" can be an
+            // SQLite identifier character, so it must never disappear here.
+            guard sql.utf8.allSatisfy({ $0 < 128 }) else { return nil }
+            var tokens: [String] = []
+            var word = ""
+            for scalar in sql.lowercased().unicodeScalars {
+                if (97...122).contains(scalar.value) || (48...57).contains(scalar.value) || scalar == "_" {
+                    word.unicodeScalars.append(scalar)
+                } else {
+                    if !word.isEmpty { tokens.append(word); word = "" }
+                    if !CharacterSet.whitespacesAndNewlines.contains(scalar) { tokens.append(String(scalar)) }
+                }
+            }
+            if !word.isEmpty { tokens.append(word) }
+            if tokens.last == ";" { tokens.removeLast() }
+            return tokens
+        }
+        let expected = [("table", "source_signatures", Self.version3TableSQL),
+                        ("index", "source_signatures_last_seen", Self.version3IndexSQL)]
+        for (type, name, sql) in expected {
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw Version3OpenError.incompatibleSchema }
+            var columns: [String] = []
+            for index: Int32 in 0..<4 {
+                guard let value = sqlite3_column_text(statement, index) else { throw Version3OpenError.incompatibleSchema }
+                columns.append(String(cString: value))
+            }
+            // Deliberately require the converter's exact schema (ignoring only
+            // casing/whitespace/statement terminators), including primary/index
+            // column order, affinity, collation, constraints and WITHOUT ROWID.
+            guard columns[0] == type, columns[1] == name, columns[2] == "source_signatures",
+                  normalized(columns[3]) == normalized(sql) else { throw Version3OpenError.incompatibleSchema }
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw Version3OpenError.incompatibleSchema }
+    }
+
+    private func validateVersion3Paths() throws {
+        guard databaseURL.isFileURL, !databaseURL.path.utf8.contains(0),
+              databaseURL.host == nil || databaseURL.host == "" || databaseURL.host == "localhost",
+              databaseURL.query == nil, databaseURL.fragment == nil,
+              !databaseURL.pathComponents.contains(".."), !databaseURL.pathComponents.contains(".") else {
+            throw Version3OpenError.unsafeDatabase
+        }
+        var info = stat()
+        guard lstat(databaseURL.path, &info) == 0 else {
+            if errno == ENOENT { throw Version3OpenError.missingDatabase }
+            throw Version3OpenError.unsafeDatabase
+        }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Version3OpenError.unsafeDatabase }
+        var directory = databaseURL.deletingLastPathComponent()
+        while true {
+            guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw Version3OpenError.unsafeDatabase }
+            if directory.path == "/" { break }
+            directory.deleteLastPathComponent()
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            if lstat(databaseURL.path + suffix, &info) == 0 {
+                guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Version3OpenError.unsafeDatabase }
+            } else if errno != ENOENT { throw Version3OpenError.unsafeDatabase }
+        }
     }
 
     private func createSchema(in database: OpaquePointer) throws {

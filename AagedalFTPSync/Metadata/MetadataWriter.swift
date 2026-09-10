@@ -163,6 +163,7 @@ enum MetadataWriter {
     static func apply(_ changes: ResolvedMetadataChanges, to fileURL: URL) throws -> [String] {
         var metadata = try ImageMetadata.read(from: fileURL)
         let readWarnings = metadata.warnings
+        metadata.iptc = try utf8IPTCForWriting(metadata.iptc)
         var xmp = metadata.xmp ?? XMPData()
 
         let headline = changes.headline
@@ -200,6 +201,19 @@ enum MetadataWriter {
         applyGPS(from: changes, to: &metadata)
         let writeWarnings = try metadata.write(to: fileURL)
         return uniqueWarnings(readWarnings + writeWarnings)
+    }
+
+    /// The pinned writer already emits UTF-8. Perform that same lossless
+    /// conversion before setting new Unicode values, which would otherwise try
+    /// to encode in the old character set. Never relabel existing raw bytes.
+    /// Undecodable retained text fails while the image is still untouched.
+    static func utf8IPTCForWriting(_ source: IPTCData) throws -> IPTCData {
+        guard source.encoding != .utf8 else { return source }
+        var converted = try IPTCReader.read(from: IPTCWriter.write(source))
+        // Keep the promotion contract explicit even when ASCII-only output
+        // omits its charset marker.
+        converted.encoding = .utf8
+        return converted
     }
 
     static func apply(

@@ -6,6 +6,8 @@ import Foundation
 actor DownloadNamingSession: EndpointSession {
     private let source: any EndpointSession
     private let destination: any EndpointSession
+    private let mappingCodec: VersionedStoreCodec
+    private var committedMappingIdentity: DownloadNameMappingStorage.Identity?
     private let mappingURL: URL
     private let overwriteCaseVariants: Bool
     private let filter: FileFilter
@@ -24,7 +26,9 @@ actor DownloadNamingSession: EndpointSession {
     nonisolated let supportsCompletedDirectoryListings: Bool
 
     init(source: any EndpointSession, destination: any EndpointSession, overwriteCaseVariants: Bool = false, mappingURL: URL,
-         filter: FileFilter = FileFilter()) {
+         filter: FileFilter = FileFilter(), storageFormat: AppStorageFormat = .legacy) {
+        self.mappingCodec = VersionedStoreCodec(format: storageFormat,
+            store: overwriteCaseVariants ? .downloadReplacementNames : .downloadNames)
         self.source = source
         self.destination = destination
         self.overwriteCaseVariants = overwriteCaseVariants
@@ -45,10 +49,25 @@ actor DownloadNamingSession: EndpointSession {
     }
 
     private func prepare() async throws {
-        guard !prepared else { return }
+        guard !prepared else { try validateCommittedMapping(); return }
+        try mappingCodec.validateExistingStore(at: mappingURL)
         if FileManager.default.fileExists(atPath: mappingURL.path) {
             do {
-                if overwriteCaseVariants {
+                let identity = mappingCodec.format == .version3 ? try DownloadNameMappingStorage.identity(at: mappingURL) : nil
+                if mappingCodec.format == .version3 {
+                    let saved = try mappingCodec.decode(DownloadNameMappingStorage.Version3State.self,
+                        from: Data(contentsOf: mappingURL), decoder: JSONDecoder())
+                    guard saved.mappingID == mappingURL.lastPathComponent else {
+                        throw DownloadNameMappingStorage.StorageError.invalidIdentity
+                    }
+                    names = saved.names
+                    replacementDates = saved.newestDates
+                    let keys = Set(names.keys.map(PathSafety.localComparisonKey))
+                    guard replacementDates.allSatisfy({ keys.contains($0.key) && $0.value.timeIntervalSinceReferenceDate.isFinite }),
+                          overwriteCaseVariants || replacementDates.isEmpty else {
+                        throw DownloadNameMappingStorage.StorageError.invalidReplacementDates
+                    }
+                } else if overwriteCaseVariants {
                     let saved = try JSONDecoder().decode(ReplacementState.self, from: Data(contentsOf: mappingURL))
                     names = saved.names
                     replacementDates = saved.newestDates
@@ -65,9 +84,17 @@ actor DownloadNamingSession: EndpointSession {
                 }), Set(names.values.map(PathSafety.localComparisonKey)).count == names.count else {
                     throw AppError.transferFailed("Invalid download name mapping.")
                 }
+                if let identity {
+                    guard try DownloadNameMappingStorage.identity(at: mappingURL) == identity else {
+                        throw DownloadNameMappingStorage.StorageError.changedDuringSession
+                    }
+                    committedMappingIdentity = identity
+                }
             } catch {
                 throw AppError.transferFailed("Saved download names could not be read safely. Restore the download name mapping before syncing. \(error.localizedDescription)")
             }
+        } else {
+            try mappingCodec.validateExistingStore(at: mappingURL)
         }
         occupied = Set(try await destination.listFiles().keys)
         existingLocalPaths = occupied
@@ -130,6 +157,7 @@ actor DownloadNamingSession: EndpointSession {
     }
 
     private func replacingFiles(_ files: [SyncFile]) throws -> [String: SyncFile] {
+        try validateCommittedMapping()
         let grouped = Dictionary(grouping: files, by: { PathSafety.localComparisonKey($0.relativePath) })
         var updated = names
         var dates = replacementDates
@@ -167,7 +195,11 @@ actor DownloadNamingSession: EndpointSession {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             try FileManager.default.createDirectory(at: mappingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try encoder.encode(ReplacementState(names: updated, newestDates: dates)).write(to: mappingURL, options: .atomic)
+            let bytes = mappingCodec.format == .version3
+                ? try mappingCodec.encode(DownloadNameMappingStorage.Version3State(mappingID: mappingURL.lastPathComponent, names: updated, newestDates: dates), encoder: encoder)
+                : try encoder.encode(ReplacementState(names: updated, newestDates: dates))
+            try bytes.write(to: mappingURL, options: .atomic)
+            if mappingCodec.format == .version3 { committedMappingIdentity = try DownloadNameMappingStorage.identity(at: mappingURL) }
             names = updated
             replacementDates = dates
         }
@@ -242,16 +274,33 @@ actor DownloadNamingSession: EndpointSession {
 
     /// Synchronous actor-isolated save: no mapping can change between encoding,
     /// atomic replacement and clearing the dirty bit. A failure retains the dirty
-    /// state and prevents the delegated source operation from starting. The flat
-    /// JSON format stays compatible with existing installations.
+    /// state and prevents the delegated source operation from starting. Legacy
+    /// JSON stays unchanged; v3 also checks clean receipts before source operations.
     private func checkpointNames() throws {
         try Task.checkCancellation()
+        try validateCommittedMapping()
         guard namesNeedCheckpoint else { return }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try FileManager.default.createDirectory(at: mappingURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try encoder.encode(names).write(to: mappingURL, options: .atomic)
+        let bytes = mappingCodec.format == .version3
+            ? try mappingCodec.encode(DownloadNameMappingStorage.Version3State(mappingID: mappingURL.lastPathComponent, names: names, newestDates: [:]), encoder: encoder)
+            : try encoder.encode(names)
+        try bytes.write(to: mappingURL, options: .atomic)
+        if mappingCodec.format == .version3 { committedMappingIdentity = try DownloadNameMappingStorage.identity(at: mappingURL) }
         namesNeedCheckpoint = false
+    }
+
+    /// Receipt identity is checked with nanosecond timestamps without reparsing the
+    /// cumulative map on unchanged operations. A changed map ends this session; it
+    /// cannot safely swap ownership while a listing or transfer is already active.
+    /// Requires a trusted stable root and serialized cooperating writers.
+    private func validateCommittedMapping() throws {
+        guard mappingCodec.format == .version3 else { return }
+        let current = try DownloadNameMappingStorage.identity(at: mappingURL)
+        guard current != committedMappingIdentity else { return }
+        try mappingCodec.validateExistingStore(at: mappingURL)
+        throw DownloadNameMappingStorage.StorageError.changedDuringSession
     }
 
     private func localFile(_ file: SyncFile) throws -> SyncFile {

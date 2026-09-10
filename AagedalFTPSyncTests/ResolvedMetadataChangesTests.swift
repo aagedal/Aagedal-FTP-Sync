@@ -4,6 +4,83 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class ResolvedMetadataChangesTests: XCTestCase {
+    func testLegacyIPTCEncodingAcceptsNewUnicodeWithoutChangingRetainedTextOrPixels() throws {
+        for (encoding, city) in [(String.Encoding.isoLatin1, "Málaga"), (.windowsCP1252, "“Málaga”")] {
+            let root = try fixtureRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let url = root.appendingPathComponent("legacy.jpg")
+            let binary = Data([0, 4])
+            let datasets = [
+                try IPTCDataSet(tag: .city, stringValue: city, encoding: encoding),
+                try IPTCDataSet(tag: .captionAbstract, stringValue: "Café déjà vu", encoding: encoding),
+                try IPTCDataSet(tag: .keywords, stringValue: "Équipe", encoding: encoding),
+                try IPTCDataSet(tag: .keywords, stringValue: "Équipe", encoding: encoding),
+                IPTCDataSet(tag: .applicationRecordVersion, rawValue: binary)
+            ]
+            try jpegWithRawIPTC(datasets).write(to: url)
+            let original = try ImageMetadata.read(from: url)
+            XCTAssertEqual(original.iptc.encoding, encoding)
+            let scan = try JPEGParser.parse(Data(contentsOf: url)).scanData
+            let pixels = try decodedPixels(url)
+            let changes = ResolvedMetadataChanges(headline: "東京のニュース", description: "Preserve old caption",
+                creator: "علي", copyright: "© Example 📷", existingFieldPolicy: .fillEmpty)
+
+            _ = try MetadataWriter.apply(changes, to: url)
+
+            let actual = try ImageMetadata.read(from: url)
+            XCTAssertEqual(actual.iptc.encoding, .utf8)
+            XCTAssertEqual(actual.iptc.city, city)
+            XCTAssertEqual(actual.iptc.caption, "Café déjà vu")
+            XCTAssertEqual(actual.iptc.keywords, ["Équipe", "Équipe"])
+            XCTAssertEqual(actual.iptc.rawValue(for: .applicationRecordVersion), binary)
+            XCTAssertEqual(actual.iptc.headline, "東京のニュース")
+            XCTAssertEqual(actual.xmp?.headline, "東京のニュース")
+            XCTAssertEqual(actual.iptc.byline, "علي")
+            XCTAssertEqual(actual.xmp?.creator, ["علي"])
+            XCTAssertEqual(actual.iptc.copyright, "© Example 📷")
+            XCTAssertEqual(actual.iptc.dataSets(for: .codedCharacterSet).map(\.rawValue), [Data([0x1B, 0x25, 0x47])])
+            XCTAssertEqual(try JPEGParser.parse(Data(contentsOf: url)).scanData, scan)
+            XCTAssertEqual(try decodedPixels(url), pixels)
+        }
+    }
+
+    func testPromotingLegacyIPTCPreservesOrderBinaryAndOverlengthWarnings() throws {
+        let original = IPTCData(datasets: [
+            try IPTCDataSet(tag: .headline, stringValue: String(repeating: "é", count: 260), encoding: .isoLatin1),
+            IPTCDataSet(tag: .objectDataPreviewData, rawValue: Data([0xFF, 0x80, 0x00, 0x81])),
+            try IPTCDataSet(tag: .keywords, stringValue: "one", encoding: .isoLatin1),
+            try IPTCDataSet(tag: .keywords, stringValue: "two", encoding: .isoLatin1)
+        ], encoding: .isoLatin1)
+        var actual = try MetadataWriter.utf8IPTCForWriting(original)
+        XCTAssertEqual(actual.rawValue(for: .objectDataPreviewData), original.rawValue(for: .objectDataPreviewData))
+        XCTAssertEqual(actual.headline, original.headline)
+        XCTAssertEqual(actual.keywords, ["one", "two"])
+        XCTAssertEqual(actual.datasets.filter { $0.tag != .codedCharacterSet }.map(\.tag), original.datasets.map(\.tag))
+        XCTAssertFalse(actual.maxLengthWarnings().isEmpty)
+        try actual.setValue("新しい値", for: .copyrightNotice)
+        var warnings: [String] = []
+        _ = try IPTCWriter.write(actual, warnings: &warnings)
+        XCTAssertFalse(warnings.isEmpty)
+    }
+
+    func testPromotionRejectsUndecodableLegacyTextWithoutMutatingInput() throws {
+        let original = IPTCData(datasets: [IPTCDataSet(tag: .captionAbstract, rawValue: Data([0xD8, 0x00]))], encoding: .utf16BigEndian)
+        XCTAssertNil(original.caption)
+        XCTAssertThrowsError(try MetadataWriter.utf8IPTCForWriting(original))
+        XCTAssertEqual(original.rawValue(for: .captionAbstract), Data([0xD8, 0x00]))
+        XCTAssertEqual(original.encoding, .utf16BigEndian)
+    }
+
+    func testASCIILegacyAndUTF8IPTCPromotionKeepUnicodeReady() throws {
+        var ascii = try MetadataWriter.utf8IPTCForWriting(IPTCData(
+            datasets: [try IPTCDataSet(tag: .city, stringValue: "Oslo", encoding: .isoLatin1)], encoding: .isoLatin1))
+        XCTAssertEqual(ascii.encoding, .utf8)
+        XCTAssertEqual(ascii.city, "Oslo")
+        try ascii.setValue("東京", for: .headline)
+        XCTAssertEqual(ascii.headline, "東京")
+        XCTAssertEqual(try MetadataWriter.utf8IPTCForWriting(ascii), ascii)
+    }
+
     func testLegacySnapshotKeepsBracesCanonicalNameAndKeywordBoundaries() {
         var photographer = PhotographerProfile(name: " Legacy Name ", filenamePrefix: "TEST", creator: "", copyrightNotice: " © {photographer} ")
         var clip = MetadataScheduleClip(photographerID: photographer.id, name: "Test", startsAt: .distantPast, endsAt: .distantFuture,
@@ -118,6 +195,22 @@ final class ResolvedMetadataChangesTests: XCTestCase {
         let bytes = try XCTUnwrap(bitmap.bitmapData)
         for index in 0..<(bitmap.bytesPerRow * bitmap.pixelsHigh) { bytes[index] = UInt8(index % 251) }
         return try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:]))
+    }
+
+    /// Write raw IIM records to avoid canonicalizing the legacy fixture through
+    /// IPTCWriter before the app ever sees it.
+    private func jpegWithRawIPTC(_ datasets: [IPTCDataSet]) throws -> Data {
+        var payload = Data()
+        for dataset in datasets {
+            XCTAssertLessThan(dataset.rawValue.count, 32_768)
+            payload.append(contentsOf: [0x1C, dataset.tag.record, dataset.tag.dataSet,
+                UInt8(dataset.rawValue.count >> 8), UInt8(dataset.rawValue.count & 0xFF)])
+            payload.append(dataset.rawValue)
+        }
+        var file = try JPEGParser.parse(jpeg())
+        let app13 = PhotoshopIRB.write(blocks: [IRBBlock(resourceID: PhotoshopIRB.iptcResourceID, data: payload)])
+        file.replaceOrAddIPTCSegment(JPEGSegment(marker: .app13, data: app13))
+        return try JPEGWriter.write(file)
     }
 
     private struct PixelSnapshot: Equatable {

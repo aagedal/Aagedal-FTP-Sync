@@ -254,9 +254,10 @@ struct SyncEngine: Sendable {
     private func downloadNamingSession(source: any EndpointSession, destination: any EndpointSession, job: SyncJob,
                                        sourceEndpoint: Endpoint, destinationEndpoint: Endpoint) async -> any EndpointSession {
         let directory = await downloadManifestRepository.nameMappingsDirectory
+        let storageFormat = await downloadManifestRepository.nameMappingsStorageFormat
         return DownloadNamingSession(source: source, destination: destination, overwriteCaseVariants: job.overwritesCaseVariantDownloads,
             mappingURL: DownloadNamingSession.mappingURL(directory: directory, job: job, source: sourceEndpoint, destination: destinationEndpoint),
-            filter: job.filter)
+            filter: job.filter, storageFormat: storageFormat)
     }
 
     private func performRun(
