@@ -70,6 +70,9 @@ final class MetadataCalendarCoordinator: ObservableObject {
     @Published private(set) var calendars: [MetadataCalendarSummary] = []
     @Published private(set) var members: [MetadataCalendarMember] = []
     @Published private(set) var busy = false
+    /// Strict startup instances remain inert until start(store:...) is explicit.
+    @Published private(set) var isPaused = false
+    private var enforcesExplicitStart = false
     @Published private(set) var message = ""
     @Published private(set) var bindingMessages: [UUID: String] = [:]
     @Published var invitation = ""
@@ -129,8 +132,51 @@ final class MetadataCalendarCoordinator: ObservableObject {
         catch { storageFailed = true; message = "Sync state could not be read. It has been left intact: \(error.localizedDescription)" }
     }
 
+    /// The complete root must already have passed v3 admission under writer
+    /// exclusion. This factory reloads both required stores strictly before the
+    /// coordinator exists; it does not attach an AppStore, read credentials, run
+    /// a receipt, observe edits or create a polling task. Admission/lifetime and
+    /// release of writer exclusion remain the bootstrap coordinator's job.
+    static func makePausedForValidatedStorage(
+        _ storage: AppStorageLayout,
+        keychain: KeychainStore = KeychainStore(),
+        changeDebounce: Duration = .milliseconds(500),
+        now: @escaping () -> Date = Date.init,
+        transport: @escaping Transport = { body, address, id, key, setup in
+            try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup)
+        }
+    ) throws -> MetadataCalendarCoordinator {
+        guard storage.storageFormat == .version3 else { throw AppPersistenceStartupError.unsupportedStorage }
+        let repository = MetadataCalendarRepository(storage: storage)
+        let events = MetadataSyncEventRepository(url: repository.eventsURL, storageFormat: .version3)
+        let loadedState = try repository.load()
+        let loadedEvents = try events.loadResult()
+        return MetadataCalendarCoordinator(repository: repository, eventRepository: events, keychain: keychain,
+            changeDebounce: changeDebounce, now: now, transport: transport, state: loadedState, events: loadedEvents)
+    }
+
+    private init(repository: MetadataCalendarRepository, eventRepository: MetadataSyncEventRepository,
+                 keychain: KeychainStore, changeDebounce: Duration, now: @escaping () -> Date,
+                 transport: @escaping Transport, state: MetadataCalendarState, events: [MetadataSyncEvent]) {
+        self.repository = repository
+        self.eventRepository = eventRepository
+        self.keychain = keychain
+        self.changeDebounce = changeDebounce
+        self.now = now
+        self.transport = transport
+        self.state = state
+        self.events = events
+        self.enforcesExplicitStart = true
+        self.isPaused = true
+    }
+
     func start(store: AppStore, polling: Bool = true, observingChanges: Bool = true) {
+        // stop() is not an await-all-writers barrier. A strict runtime cannot be
+        // reactivated until the prior operation has observed the pause and ended;
+        // otherwise its suspended response could resume in a later activation.
+        guard !enforcesExplicitStart || !isPaused || !busy else { return }
         self.store = store
+        isPaused = false
         if observingChanges, changeObservation == nil {
             changeObservation = store.$jobs
                 .map { jobs in Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0.metadataAutomation ?? MetadataAutomation()) }) }
@@ -161,6 +207,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     func stop() {
+        if enforcesExplicitStart { isPaused = true }
         loop?.cancel(); loop = nil
         changeObservation = nil
         changeTask?.cancel(); changeTask = nil
@@ -170,7 +217,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func jobsNeedingSyncAfterEdit() -> [UUID] {
-        guard !storageFailed else { return [] }
+        guard !storageFailed, !isPaused else { return [] }
         return state.bindings.compactMap { binding in
             guard binding.conflict == nil else { return nil }
             let phase = activities[binding.jobID]?.phase
@@ -192,7 +239,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
 
     private func finishBusyOperation() {
         busy = false
-        guard refreshAllQueued || !queuedJobIDs.isEmpty else { return }
+        guard !isPaused, refreshAllQueued || !queuedJobIDs.isEmpty else { return }
         // Coalesce requests made during a network operation, including saves to a
         // job already visited by this polling pass. Never silently discard them.
         guard queuedRefreshTask == nil else { return }
@@ -254,6 +301,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func record(_ event: MetadataSyncEvent) {
+        guard !isPaused else { return }
         if let last = events.last, last.jobID == event.jobID, last.operation == event.operation,
            last.detail == event.detail, last.revision == event.revision, last.isError == event.isError {
             events[events.count - 1].date = event.date
@@ -277,6 +325,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func persist(_ next: MetadataCalendarState) throws {
+        guard !isPaused else { throw CancellationError() }
         guard !storageFailed else { throw MetadataSyncFailure(message: "Sync is paused because its saved state could not be read.") }
         try repository.save(next)
         state = next
@@ -291,6 +340,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func request(_ body: MetadataCalendarRequest, account: MetadataSyncAccount, setupKey: String? = nil) async throws -> MetadataCalendarResponse {
+        guard !isPaused else { throw CancellationError() }
         let jobID = state.bindings.first { $0.accountID == account.id && $0.id == body.calendarID }?.jobID
         let operation: String
         switch body.action {
@@ -317,6 +367,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
                 throw MetadataSyncFailure(message: "This device's sync key is missing from Keychain. Sync is paused; local metadata is retained.", diagnosticCode: "Device key missing from Keychain")
             }
             let result = try await transport(body, account.address, account.id, key, setupKey)
+            guard !isPaused else { throw CancellationError() }
             if body.action != "listCalendars" && body.action != "getCalendar" {
                 record(MetadataSyncEvent(jobID: jobID, operation: operation,
                     detail: result.error == "revision_conflict" ? "A newer server revision arrived; merging before retry." : "Request completed.", revision: result.calendar?.revision))
@@ -350,12 +401,15 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     func perform(_ operation: @escaping @MainActor () async throws -> Void) {
-        guard !busy, !storageFailed else { return }
+        guard !busy, !storageFailed, !isPaused else { return }
         busy = true
         message = ""
         Task { @MainActor in
             defer { finishBusyOperation() }
-            do { try await operation() }
+            do {
+                guard !isPaused else { throw CancellationError() }
+                try await operation()
+            }
             catch {
                 message = error.localizedDescription
                 self.record(MetadataSyncEvent(operation: "Setup or calendar action", detail: MetadataSyncEvent.errorDetail(error), isError: true))
@@ -384,7 +438,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     func selectAccount(_ id: UUID) {
-        guard !busy else { return }
+        guard !busy, !isPaused else { return }
         do {
             var next = state; next.activeAccountID = id
             try persist(next)
@@ -400,7 +454,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     func refresh(jobID: UUID? = nil, automatic: Bool = false) async {
-        guard !storageFailed, !Task.isCancelled else { return }
+        guard !storageFailed, !isPaused, !Task.isCancelled else { return }
         guard !busy else {
             if let jobID {
                 queuedJobIDs.insert(jobID)
@@ -483,6 +537,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func apply(_ document: SharedMetadataDocument, binding: MetadataCalendarBinding) throws {
+        guard !isPaused else { throw CancellationError() }
         guard let store, let job = store.jobs.first(where: { $0.id == binding.jobID }) else {
             throw MetadataSyncFailure(message: "The linked local job no longer exists.")
         }
@@ -662,6 +717,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func finishReceive(_ proposal: MetadataCalendarReceiveProposal) throws {
+        guard !isPaused else { throw CancellationError() }
         guard let store else { throw MetadataSyncFailure(message: "The job store is unavailable.") }
         _ = try store.installCalendarReceiveCopy(source: proposal.source, duplicate: proposal.duplicate)
         var next = state
@@ -683,7 +739,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     func cancelPendingReceive() {
-        guard !busy else { return }
+        guard !busy, !isPaused else { return }
         do {
             var next = state; next.pendingReceive = nil
             try persist(next)
@@ -692,7 +748,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     func detach(_ binding: MetadataCalendarBinding) {
-        guard !busy else { return }
+        guard !busy, !isPaused else { return }
         do {
             var next = state
             next.bindings.removeAll { $0.id == binding.id && $0.accountID == binding.accountID }

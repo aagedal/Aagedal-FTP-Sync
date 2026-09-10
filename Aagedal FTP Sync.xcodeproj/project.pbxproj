@@ -75,7 +75,9 @@
 		76B434A2DBF3769A17310DE3 /* AppPersistenceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE20E0C1B29F4F92DD057885 /* AppPersistenceCoordinator.swift */; };
 		7783E7951621289631F1B98A /* SSHHostKeyFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CCB321C1FE43CEDC8865882 /* SSHHostKeyFingerprint.swift */; };
 		778D76DDAE4998C883C2DC4D /* MetadataProcessingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09FCF5596B7232B205E5A2D2 /* MetadataProcessingCoordinator.swift */; };
+		7819F965114F64BB35CC8C79 /* Version3StorageLeaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EABDD898689101C7370A59D /* Version3StorageLeaseTests.swift */; };
 		78FA1B86AA36E6601A1CD68E /* MetadataAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07B39CBB757E875BE7C71E39 /* MetadataAuditTests.swift */; };
+		79BA78E24FD4D324D48DC134 /* MetadataCalendarPausedStartupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4011BEBA189EEEF704BB661B /* MetadataCalendarPausedStartupTests.swift */; };
 		7B7FFFC8046C8E72BEA98C4C /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = B66A13BC50FAC5260C223549 /* SwiftMediaMetadata */; };
 		7C2A82E72FDC2C0AB1F73C5D /* MetadataLibraryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 890826A7102C45494742574C /* MetadataLibraryCoordinator.swift */; };
 		7CF4B93C42D10EC7A665959F /* Version3MigrationDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F6C2B251AD13D15AC460E33 /* Version3MigrationDriver.swift */; };
@@ -136,6 +138,7 @@
 		EE38D0E7FDFFDE7E66F8AE0E /* Version3JSONStoreConversionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 881E835940BB4E1CF30EE8A3 /* Version3JSONStoreConversionTests.swift */; };
 		EF49DF30560E2C2A87147711 /* SourceSignatureRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 679AE22A6DA5596AB0D08913 /* SourceSignatureRepository.swift */; };
 		F740FAA73212115FCB852FAE /* SyncScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C577F4C00B53FEE0AEAEC4 /* SyncScheduler.swift */; };
+		F76D4E1BC44C3BD2734C826D /* Version3StorageLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23BFD8D23D8730CCA08AEDEE /* Version3StorageLease.swift */; };
 		F9587CBD6566871E67AB6A61 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288034277BC7727C71C3304 /* ServerProfileRepository.swift */; };
 		FB1A07E51A16C9E7FD4F322D /* MetadataCalendarMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */; };
 		FD6B4E4D3B7906C933964D9C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2745B822AD45CDF06BB3463 /* Assets.xcassets */; };
@@ -181,6 +184,7 @@
 		21199D2C1CA349452587E48F /* FTPListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPListingTests.swift; sourceTree = "<group>"; };
 		21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNamingSession.swift; sourceTree = "<group>"; };
 		2153155F850DC3D8E89847FE /* MetadataPreviewAndRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreviewAndRecoveryTests.swift; sourceTree = "<group>"; };
+		23BFD8D23D8730CCA08AEDEE /* Version3StorageLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3StorageLease.swift; sourceTree = "<group>"; };
 		25C577F4C00B53FEE0AEAEC4 /* SyncScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncScheduler.swift; sourceTree = "<group>"; };
 		266FEE315151F94EF37C236B /* MetadataProcessing */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MetadataProcessing; path = Packages/MetadataProcessing; sourceTree = SOURCE_ROOT; };
 		299A6C29AB74842C2E8A91AA /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
@@ -196,10 +200,12 @@
 		3C0B9F766C78243FC5FFFB07 /* AppError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppError.swift; sourceTree = "<group>"; };
 		3F6C2B251AD13D15AC460E33 /* Version3MigrationDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3MigrationDriver.swift; sourceTree = "<group>"; };
 		3FACE3FD67ADE245F727458D /* UITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestSupport.swift; sourceTree = "<group>"; };
+		4011BEBA189EEEF704BB661B /* MetadataCalendarPausedStartupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarPausedStartupTests.swift; sourceTree = "<group>"; };
 		44DC5631E8E1F2C557CA626F /* ConfigurationTransferView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferView.swift; sourceTree = "<group>"; };
 		4A1B40E9EED67D6C74811BBE /* EndpointEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointEditor.swift; sourceTree = "<group>"; };
 		4AF30957A97DA611D3EF011D /* MetadataAuditTrailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAuditTrailView.swift; sourceTree = "<group>"; };
 		4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStorageLayoutTests.swift; sourceTree = "<group>"; };
+		4EABDD898689101C7370A59D /* Version3StorageLeaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3StorageLeaseTests.swift; sourceTree = "<group>"; };
 		4FA2EE5D72C430D4544BFF2A /* AppPersistenceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistenceCoordinatorTests.swift; sourceTree = "<group>"; };
 		512B066026E904E8FB0B048C /* VersionedAppStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedAppStorageTests.swift; sourceTree = "<group>"; };
 		52D1BE257268E13A9E61907D /* LaunchAtLoginCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginCoordinator.swift; sourceTree = "<group>"; };
@@ -412,6 +418,7 @@
 				C4361B07FCB5CAEA92777F35 /* Version3JSONStoreConversion.swift */,
 				3F6C2B251AD13D15AC460E33 /* Version3MigrationDriver.swift */,
 				CB1AFA414888CD48716FB116 /* Version3SignatureConversion.swift */,
+				23BFD8D23D8730CCA08AEDEE /* Version3StorageLease.swift */,
 				7B4996735AA685CA67FB2282 /* VersionedAppStorage.swift */,
 				B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */,
 			);
@@ -502,6 +509,7 @@
 				D0C9F952969D2D03BFCC3221 /* LocalSyncIntegrationTests.swift */,
 				07B39CBB757E875BE7C71E39 /* MetadataAuditTests.swift */,
 				E45C7CB10B1E196CE6CF8CD5 /* MetadataAutomationTests.swift */,
+				4011BEBA189EEEF704BB661B /* MetadataCalendarPausedStartupTests.swift */,
 				2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */,
 				DCC0FC21B2F27B7B2EDD14FE /* MetadataPresetTests.swift */,
 				2153155F850DC3D8E89847FE /* MetadataPreviewAndRecoveryTests.swift */,
@@ -527,6 +535,7 @@
 				881E835940BB4E1CF30EE8A3 /* Version3JSONStoreConversionTests.swift */,
 				6E84B07A10207633692ABBA6 /* Version3MigrationDriverTests.swift */,
 				BFAC78A600793F68ED7DA500 /* Version3SignatureConversionTests.swift */,
+				4EABDD898689101C7370A59D /* Version3StorageLeaseTests.swift */,
 				512B066026E904E8FB0B048C /* VersionedAppStorageTests.swift */,
 				831D08FC15EE951D1FB90B97 /* VersionedCalendarStorageTests.swift */,
 				17FDBBA2847B2DFAB839E239 /* VersionedDownloadNamingTests.swift */,
@@ -736,6 +745,7 @@
 				DC1FF0B0F1590933DFEB5D6D /* LocalSyncIntegrationTests.swift in Sources */,
 				78FA1B86AA36E6601A1CD68E /* MetadataAuditTests.swift in Sources */,
 				A3FE2D8BFC1145F0C306FAE4 /* MetadataAutomationTests.swift in Sources */,
+				79BA78E24FD4D324D48DC134 /* MetadataCalendarPausedStartupTests.swift in Sources */,
 				15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */,
 				42674EE8F66813EA860B4A7B /* MetadataPresetTests.swift in Sources */,
 				1DB2D9D4B7FBCDEC3164FC84 /* MetadataPreviewAndRecoveryTests.swift in Sources */,
@@ -761,6 +771,7 @@
 				EE38D0E7FDFFDE7E66F8AE0E /* Version3JSONStoreConversionTests.swift in Sources */,
 				86607256E4A975B63BEF781B /* Version3MigrationDriverTests.swift in Sources */,
 				41EB1C0EECCB18180BF48E38 /* Version3SignatureConversionTests.swift in Sources */,
+				7819F965114F64BB35CC8C79 /* Version3StorageLeaseTests.swift in Sources */,
 				27ECC724FC87366D0FDD1079 /* VersionedAppStorageTests.swift in Sources */,
 				905D01582F74B78B5E97ECDB /* VersionedCalendarStorageTests.swift in Sources */,
 				AEDDDE875B19FA8C303BBCFC /* VersionedDownloadNamingTests.swift in Sources */,
@@ -861,6 +872,7 @@
 				32298A5A73DBAD1DAC109092 /* Version3JSONStoreConversion.swift in Sources */,
 				7CF4B93C42D10EC7A665959F /* Version3MigrationDriver.swift in Sources */,
 				BE8F3E9B1261EF8C6B5E1BC1 /* Version3SignatureConversion.swift in Sources */,
+				F76D4E1BC44C3BD2734C826D /* Version3StorageLease.swift in Sources */,
 				633B3F36038EC1B321CAC4E8 /* VersionedAppStorage.swift in Sources */,
 				95D006439B0ACA8D63134DA2 /* VersionedStoreCodec.swift in Sources */,
 			);

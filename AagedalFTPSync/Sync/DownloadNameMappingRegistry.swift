@@ -162,13 +162,14 @@ actor DownloadNameMappingRegistry {
 
     /// A prepared record permits recovery of this exact empty new map. Once
     /// committed, disappearance is damage, never a request for initialization.
-    func admitOrProvision(fileName: String, checkpoint: (Checkpoint) throws -> Void = { _ in }) throws -> URL {
+    func admitOrProvision(fileName: String, allowPreparedRecovery: Bool = true, checkpoint: (Checkpoint) throws -> Void = { _ in }) throws -> URL {
         try Self.validateName(fileName)
         try validateDirectories(allowMissingMappings: true)
         // Refuse missing/incompatible state before even creating the lock file.
         _ = try load()
         return try withRegistryLock {
             var (state, identity) = try load()
+            guard allowPreparedRecovery || !state.entries.values.contains(.prepared) else { throw Failure.recoveryRequired }
             if try !exists(storage.downloadNamesDirectory) {
                 // Empty migrations have no map file to create this directory. Its
                 // absence cannot authorize rebuilding any committed receipt.

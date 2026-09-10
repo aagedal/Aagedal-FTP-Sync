@@ -370,6 +370,101 @@ final class DownloadNamingTests: XCTestCase {
         XCTAssertFalse(originals.contains { $0.contains("~") })
     }
 
+    private func version3Storage() throws -> AppStorageLayout {
+        let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("naming-storage-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let legacy = root.appendingPathComponent("profile")
+        let temporary = root.appendingPathComponent("migration-temp")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        let driver = Version3MigrationDriver(root: legacy, temporaryDirectory: temporary)
+        let choices = Dictionary(uniqueKeysWithValues: Version3JSONStoreConversion.primaryFilenames.map {
+            ($0, Version3MigrationDriver.Source.absent)
+        })
+        return try driver.migrateSelectedSources(.init(legacyFiles: Array(Version3MigrationDriver.fixedLegacyPaths),
+            primarySources: choices, signatures: .absent, calendar: Calendar(identifier: .gregorian),
+            migrationDate: Date(timeIntervalSince1970: 1_800_000_000))).storage
+    }
+
+    func testVersion3EngineProvisionsBothDirectionsAndModesAndRefusesLostReceipts() async throws {
+        for reverse in [false, true] {
+            for overwrite in [false, true] {
+                let (root, endpoint, destination) = try fixture()
+                defer { try? FileManager.default.removeItem(at: root) }
+                let storage = try version3Storage()
+                let remote = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+                var job = SyncJob(name: "V3 downloads")
+                job.left = reverse ? endpoint : remote
+                job.right = reverse ? remote : endpoint
+                job.direction = reverse ? .rightToLeft : .leftToRight
+                job.overwritesCaseVariantDownloads = overwrite
+                let source = NamedDownloadSource(["photo.jpg": Data("picture".utf8)])
+                let engine = SyncEngine(sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+                    downloadManifestRepository: DownloadManifestRepository(storage: storage),
+                    sessionFactory: { entry, _, _ -> any EndpointSession in
+                        if entry.kind.isRemote { return source }; return destination
+                    })
+                let result = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(result.transferred, 1)
+                let second = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(second.transferred, 0)
+                let base = DownloadNamingSession.mappingURL(directory: storage.downloadNamesDirectory,
+                    job: job, source: remote, destination: endpoint)
+                let mapping = overwrite ? base.appendingPathExtension("replace") : base
+                XCTAssertTrue(FileManager.default.fileExists(atPath: mapping.path))
+                let registryBytes = try Data(contentsOf: storage.downloadNameRegistry)
+                let registry = try VersionedStoreCodec(format: .version3, store: .downloadNameRegistry)
+                    .decode(DownloadNameMappingRegistry.State.self, from: registryBytes, decoder: JSONDecoder())
+                XCTAssertEqual(registry.entries[mapping.lastPathComponent], .committed)
+                try FileManager.default.removeItem(at: mapping)
+                let blocked = SyncEngine(sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+                    downloadManifestRepository: DownloadManifestRepository(storage: storage), sessionFactory: { _, _, _ in
+                        XCTFail("Admission failure must precede opening either endpoint")
+                        throw NamingCheckpointTestError.stopListing
+                    })
+                do { _ = try await blocked.run(job: job, leftPassword: nil, rightPassword: nil); XCTFail("Lost receipt admitted") }
+                catch { }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: mapping.path))
+                XCTAssertEqual(try Data(contentsOf: storage.downloadNameRegistry), registryBytes)
+                XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: endpoint.localPath).appendingPathComponent("photo.jpg")), Data("picture".utf8))
+            }
+        }
+    }
+
+    func testVersion3EngineRefusesMissingAndPreparedRegistryBeforeOpeningEndpoints() async throws {
+        for prepared in [false, true] {
+            let (root, endpoint, _) = try fixture()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let storage = try version3Storage()
+            if prepared {
+                let codec = VersionedStoreCodec(format: .version3, store: .downloadNameRegistry)
+                try codec.encode(DownloadNameMappingRegistry.State(entries: [String(repeating: "a", count: 64) + ".json": .prepared]),
+                    encoder: JSONEncoder()).write(to: storage.downloadNameRegistry)
+            } else { try FileManager.default.removeItem(at: storage.downloadNameRegistry) }
+            let before = try? Data(contentsOf: storage.downloadNameRegistry)
+            var job = SyncJob(name: "Blocked v3 downloads")
+            job.left = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+            job.right = endpoint
+            let engine = SyncEngine(sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+                downloadManifestRepository: DownloadManifestRepository(storage: storage), sessionFactory: { _, _, _ in
+                    XCTFail("Registry recovery must precede opening endpoints")
+                    throw NamingCheckpointTestError.stopListing
+                })
+            do { _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil); XCTFail("Invalid registry admitted") }
+            catch { }
+            let photographer = PhotographerProfile(name: "Test", filenamePrefix: "TEST", creator: "Test", copyrightNotice: "")
+            let timestamp = Date(timeIntervalSince1970: 1_800_000_000)
+            job.metadataAutomation = MetadataAutomation(isEnabled: true, timestampPolicy: .sourceModification,
+                photographers: [photographer], clips: [MetadataScheduleClip(photographerID: photographer.id,
+                    name: "Test", startsAt: timestamp, endsAt: timestamp.addingTimeInterval(60),
+                    fields: ScheduledMetadataFields(headline: "Preserve until admitted"))])
+            do { _ = try await engine.reprocessExistingLocalFiles(job: job); XCTFail("Reprocessing admitted invalid registry") }
+            catch { XCTAssertTrue(error.localizedDescription.contains("Source modification times could not be loaded")) }
+            XCTAssertEqual(try? Data(contentsOf: storage.downloadNameRegistry), before)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: storage.downloadNamesDirectory.path))
+        }
+    }
+
     func testExistingLowercaseFileKeepsItsNameAndNewUppercaseFileGetsAlias() async throws {
         let (root, endpoint, destination) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

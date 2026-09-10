@@ -251,13 +251,35 @@ struct SyncEngine: Sendable {
         }
     }
 
-    private func downloadNamingSession(source: any EndpointSession, destination: any EndpointSession, job: SyncJob,
-                                       sourceEndpoint: Endpoint, destinationEndpoint: Endpoint) async -> any EndpointSession {
+    private struct DownloadNamingConfiguration {
+        let mappingURL: URL
+        let storageFormat: AppStorageFormat
+    }
+
+    /// Admit receipts before opening endpoint sessions. A lost committed map or
+    /// interrupted registry requires recovery, never an implicit empty replacement.
+    private func prepareDownloadNaming(job: SyncJob) async throws -> DownloadNamingConfiguration? {
+        guard job.direction != .bidirectional,
+              let source = job.sourceEndpoint, let destination = job.destinationEndpoint,
+              source.kind.isRemote, destination.kind == .local else { return nil }
+        try Task.checkCancellation()
         let directory = await downloadManifestRepository.nameMappingsDirectory
-        let storageFormat = await downloadManifestRepository.nameMappingsStorageFormat
-        return DownloadNamingSession(source: source, destination: destination, overwriteCaseVariants: job.overwritesCaseVariantDownloads,
-            mappingURL: DownloadNamingSession.mappingURL(directory: directory, job: job, source: sourceEndpoint, destination: destinationEndpoint),
-            filter: job.filter, storageFormat: storageFormat)
+        let format = await downloadManifestRepository.nameMappingsStorageFormat
+        let url = DownloadNamingSession.mappingURL(directory: directory, job: job, source: source, destination: destination)
+        if format == .version3 {
+            let storage = AppStorageLayout(root: directory.deletingLastPathComponent(), storageFormat: .version3)
+            let registry = try DownloadNameMappingRegistry(storage: storage)
+            let name = job.overwritesCaseVariantDownloads ? url.lastPathComponent + ".replace" : url.lastPathComponent
+            _ = try await registry.admitOrProvision(fileName: name, allowPreparedRecovery: false)
+        }
+        try Task.checkCancellation()
+        return DownloadNamingConfiguration(mappingURL: url, storageFormat: format)
+    }
+
+    private func downloadNamingSession(source: any EndpointSession, destination: any EndpointSession,
+                                       job: SyncJob, configuration: DownloadNamingConfiguration) -> any EndpointSession {
+        DownloadNamingSession(source: source, destination: destination, overwriteCaseVariants: job.overwritesCaseVariantDownloads,
+            mappingURL: configuration.mappingURL, filter: job.filter, storageFormat: configuration.storageFormat)
     }
 
     private func performRun(
@@ -273,15 +295,16 @@ struct SyncEngine: Sendable {
         let rightManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .leftToRight
             ? .syncedFiles
             : nil
+        let naming = try await prepareDownloadNaming(job: job)
         let rawLeft = try sessionFactory(job.left, leftPassword, leftManagedFolder)
         let rawRight = try sessionFactory(job.right, rightPassword, rightManagedFolder)
         let left: any EndpointSession
         let right: any EndpointSession
-        if job.direction == .leftToRight, job.left.kind.isRemote, job.right.kind == .local {
-            left = await downloadNamingSession(source: rawLeft, destination: rawRight, job: job, sourceEndpoint: job.left, destinationEndpoint: job.right)
+        if job.direction == .leftToRight, let naming {
+            left = downloadNamingSession(source: rawLeft, destination: rawRight, job: job, configuration: naming)
             right = rawRight
-        } else if job.direction == .rightToLeft, job.right.kind.isRemote, job.left.kind == .local {
-            right = await downloadNamingSession(source: rawRight, destination: rawLeft, job: job, sourceEndpoint: job.right, destinationEndpoint: job.left)
+        } else if job.direction == .rightToLeft, let naming {
+            right = downloadNamingSession(source: rawRight, destination: rawLeft, job: job, configuration: naming)
             left = rawLeft
         } else if job.supportsUploadNaming, let naming = job.uploadNaming, naming.isEnabled {
             if job.direction == .leftToRight {
@@ -976,10 +999,10 @@ struct SyncEngine: Sendable {
 
         let source: any EndpointSession
         do {
+            let naming = try await prepareDownloadNaming(job: job)
             let rawSource = try sessionFactory(sourceEndpoint, password, nil)
-            if sourceEndpoint.kind.isRemote, let target = job.destinationEndpoint {
-                source = await downloadNamingSession(source: rawSource, destination: destination, job: job,
-                    sourceEndpoint: sourceEndpoint, destinationEndpoint: target)
+            if let naming {
+                source = downloadNamingSession(source: rawSource, destination: destination, job: job, configuration: naming)
             } else { source = rawSource }
         } catch is CancellationError {
             throw CancellationError()
