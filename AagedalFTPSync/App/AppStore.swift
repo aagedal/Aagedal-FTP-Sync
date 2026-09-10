@@ -64,6 +64,8 @@ final class AppStore: ObservableObject {
     private let engine: SyncEngine
     private let syncConcurrencyController: SyncConcurrencyController
     private let failureNotificationCoordinator: SyncFailureNotificationCoordinator
+    @Published private(set) var isSuspendedForExternalWriter = false
+
     private let scheduler: SyncScheduler
     private let jobDraftTemplate: SyncJob?
     private var metadataReprocessTasks: [UUID: Task<Void, Never>] = [:]
@@ -684,6 +686,7 @@ final class AppStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         let wasEnabled = jobs[index].isEnabled
         var updatedJobs = jobs
@@ -736,6 +739,7 @@ final class AppStore: ObservableObject {
     }
 
     func runNow(_ jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         guard !isJobBusy(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return }
         scheduler.runNow(job)
@@ -745,7 +749,7 @@ final class AppStore: ObservableObject {
         _ jobID: UUID,
         scope: MetadataReprocessScope = .all
     ) {
-        guard !isJobBusy(jobID) else { return }
+        guard !isSuspendedForExternalWriter, !isJobBusy(jobID) else { return }
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performMetadataReprocess(jobID, scope: scope)
@@ -762,6 +766,7 @@ final class AppStore: ObservableObject {
     }
 
     func resetJob(_ jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         guard !isJobBusy(jobID),
               let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         let job = jobs[index]
@@ -784,7 +789,11 @@ final class AppStore: ObservableObject {
 
         let task = Task { [weak self] in
             guard let self else { return }
-            defer { resettingJobs.remove(jobID) }
+            defer {
+                resettingJobs.remove(jobID)
+                resetTasks[jobID] = nil
+            }
+            guard !isSuspendedForExternalWriter, !Task.isCancelled else { return }
             do {
                 let result = try await jobResetService.resetDownloads(for: job)
                 try await sourceSignatureRepository.removeSignatures(jobID: jobID)
@@ -802,7 +811,6 @@ final class AppStore: ObservableObject {
             } catch {
                 appendAlert("“\(job.name)” could not be fully reset: \(error.localizedDescription)")
             }
-            resetTasks[jobID] = nil
         }
         resetTasks[jobID] = task
     }
@@ -884,6 +892,7 @@ final class AppStore: ObservableObject {
     }
 
     private func scheduleSourceSignatureMaintenance(jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         sourceSignatureMaintenanceTasks[jobID]?.cancel()
         sourceSignatureMaintenanceTasks[jobID] = Task { [weak self] in
             guard let self else { return }
@@ -938,7 +947,22 @@ final class AppStore: ObservableObject {
         launchAtLoginCoordinator.openSettings()
     }
 
+    /// Stop admitting work after another app copy is observed. Cancellation is
+    /// cooperative: in-flight file I/O may still finish, so this is not a drain
+    /// barrier and never authorizes releasing the storage lease. No saved launch
+    /// choices are changed; the suspension lasts until this process is closed.
+    func suspendForExternalWriter() {
+        guard !isSuspendedForExternalWriter else { return }
+        isSuspendedForExternalWriter = true
+        scheduler.cancelAll()
+        for task in metadataReprocessTasks.values { task.cancel() }
+        for task in resetTasks.values { task.cancel() }
+        for task in sourceSignatureMaintenanceTasks.values { task.cancel() }
+        alertMessage = "Another copy of Aagedal FTP Sync was detected. New work is blocked and active operations are being cancelled. Quit the other copy, then quit and reopen this app before continuing."
+    }
+
     func startAll() {
+        guard !isSuspendedForExternalWriter else { return }
         var updatedJobs = jobs
         let newlyEnabledJobIDs = updatedJobs.compactMap { $0.isEnabled ? nil : $0.id }
         for index in updatedJobs.indices {
@@ -1018,7 +1042,7 @@ final class AppStore: ObservableObject {
     }
 
     private func performSync(_ jobID: UUID) async -> SyncAttempt {
-        guard !scheduler.isRunning(jobID),
+        guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
               let savedJob = jobs.first(where: { $0.id == jobID }) else { return .skipped }
         let job: SyncJob
         do {
@@ -1106,7 +1130,7 @@ final class AppStore: ObservableObject {
         _ jobID: UUID,
         scope: MetadataReprocessScope
     ) async {
-        guard !scheduler.isRunning(jobID),
+        guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
               let savedJob = jobs.first(where: { $0.id == jobID }) else { return }
         let job: SyncJob
         do {
@@ -1245,7 +1269,8 @@ final class AppStore: ObservableObject {
 
 extension AppStore: SyncSchedulerDelegate {
     func syncSchedulerJob(_ jobID: UUID) -> SyncJob? {
-        jobs.first(where: { $0.id == jobID })
+        guard !isSuspendedForExternalWriter else { return nil }
+        return jobs.first(where: { $0.id == jobID })
     }
 
     func syncSchedulerPerformSync(_ jobID: UUID) async -> SyncAttempt {

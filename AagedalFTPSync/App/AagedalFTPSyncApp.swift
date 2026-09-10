@@ -3,37 +3,37 @@ import SwiftUI
 
 @main
 struct AagedalFTPSyncApp: App {
-    @StateObject private var store: AppStore
-    @StateObject private var metadataSync: MetadataCalendarCoordinator
-
-    init() {
-        let testStore = UITestSupport.makeStore()
-        let store = testStore ?? AppStore()
-        let syncRepository = UITestSupport.rootURL.map {
-            MetadataCalendarRepository(url: $0.appendingPathComponent("metadata-sync-v1.json"))
-        } ?? MetadataCalendarRepository()
-        let metadataSync = MetadataCalendarCoordinator(repository: syncRepository)
-        _store = StateObject(wrappedValue: store)
-        _metadataSync = StateObject(wrappedValue: metadataSync)
-        if testStore == nil && ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            metadataSync.start(store: store)
-        }
-    }
+    @StateObject private var startup = Version3StartupController()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView()
-                .environmentObject(store)
-                .applyingUITestDynamicTypeSize()
+            if let session = startup.session {
+                if startup.requiresRelaunchAfterConflict {
+                    Text(startup.userFacingMessage).padding()
+                }
+                MenuBarView()
+                    .disabled(startup.requiresRelaunchAfterConflict || !startup.otherRunningCopies.isEmpty)
+                    .environmentObject(session.store)
+                    .applyingUITestDynamicTypeSize()
+                Divider()
+                StartupWindowButton()
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Aagedal FTP Sync").font(.headline)
+                    Text(startup.userFacingMessage).font(.caption)
+                    StartupWindowButton()
+                    Button("Quit Aagedal FTP Sync") { NSApplication.shared.terminate(nil) }
+                }
+                .padding()
+                .frame(width: 320)
+            }
         } label: {
-            MenuBarActivityLabel(store: store)
+            StartupMenuLabel(startup: startup)
         }
         .menuBarExtraStyle(.window)
 
         Window("Aagedal FTP Sync", id: "jobs") {
-            JobsWindowView()
-                .environmentObject(store)
-                .applyingUITestDynamicTypeSize()
+            StartupGate(startup: startup) { _ in JobsWindowView() }
                 .frame(minWidth: 820, minHeight: 580)
                 .background(RegularWindowTracker(windowID: "jobs"))
         }
@@ -48,53 +48,40 @@ struct AagedalFTPSyncApp: App {
         .windowResizability(.contentSize)
 
         Window("Metadata Programming", id: "metadata-programming") {
-            MetadataProgrammingView()
-                .environmentObject(store)
-                .environmentObject(metadataSync)
-                .applyingUITestDynamicTypeSize()
+            StartupGate(startup: startup) { _ in MetadataProgrammingView() }
                 .background(RegularWindowTracker(windowID: "metadata-programming"))
         }
         .defaultSize(width: 1180, height: 760)
 
         Window("Photographers", id: "photographers") {
-            PhotographerSettingsView()
-                .environmentObject(store)
-                .applyingUITestDynamicTypeSize()
+            StartupGate(startup: startup) { _ in PhotographerSettingsView() }
                 .background(RegularWindowTracker(windowID: "photographers"))
         }
         .defaultSize(width: 700, height: 450)
 
         Window("Photographer Map", id: "photographer-map") {
-            PhotographerMapView()
-                .environmentObject(store)
-                .applyingUITestDynamicTypeSize()
+            StartupGate(startup: startup) { _ in PhotographerMapView() }
                 .background(RegularWindowTracker(windowID: "photographer-map"))
         }
         .defaultSize(width: 1120, height: 760)
 
         Window("Servers", id: "servers") {
-            ServerSettingsView()
-                .environmentObject(store)
-                .applyingUITestDynamicTypeSize()
+            StartupGate(startup: startup) { _ in ServerSettingsView() }
                 .background(RegularWindowTracker(windowID: "servers"))
         }
         .defaultSize(width: 780, height: 560)
 
+        Window("Startup and Recovery", id: "startup") {
+            Version3StartupView(startup: startup)
+                .frame(minWidth: 620, minHeight: 480)
+                .background(RegularWindowTracker(windowID: "startup"))
+        }
+        .defaultSize(width: 720, height: 660)
+
         Settings {
-            TabView(selection: $store.settingsTab) {
-                ServerSettingsView()
-                    .tabItem { Label("Servers", systemImage: "server.rack") }
-                    .tag(AppSettingsTab.servers)
-                PhotographerSettingsView()
-                    .tabItem { Label("Photographers", systemImage: "person.2") }
-                    .tag(AppSettingsTab.photographers)
-                MetadataSyncSettingsView()
-                    .environmentObject(metadataSync)
-                    .tabItem { Label("Metadata Sync", systemImage: "arrow.triangle.2.circlepath") }
-                    .tag(AppSettingsTab.metadataSync)
+            StartupGate(startup: startup) { session in
+                RuntimeSettingsView(store: session.store)
             }
-            .environmentObject(store)
-            .applyingUITestDynamicTypeSize()
             .background(RegularWindowTracker())
         }
     }
@@ -230,7 +217,7 @@ private struct RegularWindowTracker: NSViewRepresentable {
     }
 }
 
-private struct MenuBarActivityLabel: View {
+struct MenuBarActivityLabel: View {
     @ObservedObject var store: AppStore
 
     var body: some View {

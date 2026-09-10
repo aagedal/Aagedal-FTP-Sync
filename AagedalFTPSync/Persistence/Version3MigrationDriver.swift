@@ -5,8 +5,8 @@ import Foundation
 /// must exclude every repository writer and older app process for the whole call.
 /// This does not select backups, acquire a lifetime lease, or construct UI/runtime.
 struct Version3MigrationDriver: Sendable {
-    enum Source: Codable, Equatable, Sendable { case absent, file(String) }
-    enum Signatures: Codable, Equatable, Sendable { case absent, json(String), sqlite(String) }
+    enum Source: Codable, Equatable, Hashable, Sendable { case absent, file(String) }
+    enum Signatures: Codable, Equatable, Hashable, Sendable { case absent, json(String), sqlite(String) }
     struct Plan: Sendable {
         let legacyFiles: [String]
         let primarySources: [String: Source]
@@ -38,7 +38,7 @@ struct Version3MigrationDriver: Sendable {
         case invalidPlan, unsafePath, limitExceeded, incompleteInventory(String)
         case missingSelectedSource(String), absentSourceHasRetainedData(String)
         case migrationRequired, alreadyMigrated, invalidStoreSet, invalidSelectionRecord
-        case interruptedLegacyMigration
+        case interruptedLegacyMigration, inventoryDeadlineExceeded
     }
 
     let root: URL
@@ -67,7 +67,7 @@ struct Version3MigrationDriver: Sendable {
     func migrateSelectedSources(_ plan: Plan,
                                 checkpoint: (VersionedAppStorage.Checkpoint) throws -> Void = { _ in }) throws -> Admission {
         try validatePlan(plan)
-        try validateRoot()
+        try Self.validateRoot(root)
         guard !exists(root.appendingPathComponent(".v3-storage-boundary.json")),
               !exists(root.appendingPathComponent("v3")) else { throw Failure.alreadyMigrated }
         try verifyInventory(plan)
@@ -152,7 +152,7 @@ struct Version3MigrationDriver: Sendable {
     /// Finish only the frozen PREPARED installation. Current legacy files are never
     /// recopied; an installed directory uses normal complete current admission.
     func recoverPreparedInstallation() async throws -> Admission {
-        try validateRoot()
+        try Self.validateRoot(root)
         if exists(root.appendingPathComponent("v3")) { return try await openCommitted() }
         var admitted: (selection: SelectionRecord, credentials: Set<String>)?
         let v3 = try VersionedAppStorage(root: root).recoverPreparedInstallation(validate: { files in
@@ -168,7 +168,7 @@ struct Version3MigrationDriver: Sendable {
     /// from absence. The registry lock covers actual directory inventory, complete
     /// collection and byte comparison. Caller also excludes all other writers.
     func openCommitted() async throws -> Admission {
-        try validateRoot()
+        try Self.validateRoot(root)
         guard exists(root.appendingPathComponent(".v3-storage-boundary.json")) else { throw Failure.migrationRequired }
         let layout = AppStorageLayout(root: root.appendingPathComponent("v3", isDirectory: true), storageFormat: .version3)
         let registry = try DownloadNameMappingRegistry(storage: layout)
@@ -234,7 +234,7 @@ struct Version3MigrationDriver: Sendable {
         }
     }
 
-    private func validateRoot() throws {
+    static func validateRoot(_ root: URL) throws {
         guard root.isFileURL, root.path.hasPrefix("/"), !root.pathComponents.contains("."), !root.pathComponents.contains(".."),
               root.query == nil, root.fragment == nil, root.host == nil || root.host == "" || root.host == "localhost" else { throw Failure.unsafePath }
         var directory = root
@@ -247,12 +247,35 @@ struct Version3MigrationDriver: Sendable {
     }
 
     private func verifyInventory(_ plan: Plan) throws {
+        let observed = try Self.inspectLegacyInventory(root: root, maximumFiles: plan.maximumFiles, maximumBytes: plan.maximumBytes)
         let declared = Set(plan.legacyFiles)
-        var count = 0
+        for path in observed where !declared.contains(path) { throw Failure.incompleteInventory(path) }
+    }
+
+    /// Shared read-only filesystem admission for the selection catalog and actual
+    /// migration. No content is decoded and no missing file is created. Retained
+    /// .v3-migration-* directories remain opaque, matching the existing recovery
+    /// policy. These checks do not replace continuous caller-owned writer exclusion.
+    static func inspectLegacyInventory(root: URL, maximumFiles: Int, maximumBytes: Int,
+                                       timeout: TimeInterval = 5) throws -> Set<String> {
+        guard maximumFiles > 0, maximumFiles <= 8_192, maximumBytes >= 4096, maximumBytes <= 256 * 1_048_576,
+              timeout.isFinite, timeout > 0, timeout <= 60 else { throw Failure.invalidPlan }
+        try validateRoot(root)
+        let end = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
+        var count = 0, bytes = 0
+        var observed: Set<String> = []
+        func check() throws {
+            try Task.checkCancellation()
+            guard DispatchTime.now().uptimeNanoseconds < end else { throw Failure.inventoryDeadlineExceeded }
+        }
         func scan(_ directory: URL, prefix: String) throws {
+            try check()
             guard let handle = opendir(directory.path) else { throw Failure.unsafePath }
             defer { closedir(handle) }
+            var before = stat()
+            guard fstat(dirfd(handle), &before) == 0, before.st_mode & S_IFMT == S_IFDIR else { throw Failure.unsafePath }
             while true {
+                try check()
                 errno = 0
                 guard let entry = readdir(handle) else {
                     guard errno == 0 else { throw Failure.unsafePath }
@@ -263,23 +286,40 @@ struct Version3MigrationDriver: Sendable {
                 }
                 if name == "." || name == ".." { continue }
                 count += 1
-                guard count <= plan.maximumFiles else { throw Failure.limitExceeded }
+                guard count <= maximumFiles else { throw Failure.limitExceeded }
                 let path = prefix + name
                 let url = directory.appendingPathComponent(name)
                 var info = stat()
                 guard lstat(url.path, &info) == 0 else { throw Failure.unsafePath }
                 if prefix.isEmpty, name.hasPrefix(".v3-migration-"), info.st_mode & S_IFMT == S_IFDIR { continue }
-                if prefix.isEmpty, [".v3-migration.lock", ".v3-runtime.lock", ".DS_Store"].contains(name), info.st_mode & S_IFMT == S_IFREG { continue }
+                if prefix.isEmpty, [".v3-migration.lock", ".v3-runtime.lock", ".DS_Store"].contains(name),
+                   info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 { continue }
                 if prefix.isEmpty, name == "download-names-v1", info.st_mode & S_IFMT == S_IFDIR {
                     try scan(url, prefix: Self.namesDirectory)
                     continue
                 }
                 guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Failure.unsafePath }
-                guard declared.contains(path) else { throw Failure.incompleteInventory(path) }
                 if path.contains(".migration-in-progress") { throw Failure.interruptedLegacyMigration }
+                if !Self.fixedLegacyPaths.contains(path) {
+                    guard path.hasPrefix(Self.namesDirectory), !name.contains("/") else { throw Failure.incompleteInventory(path) }
+                    _ = try DownloadNameMappingRegistry.initialData(committedMappingNames: [name])
+                }
+                guard info.st_size >= 0, info.st_size <= maximumBytes - bytes else { throw Failure.limitExceeded }
+                bytes += Int(info.st_size)
+                observed.insert(path)
+            }
+            var after = stat(), named = stat()
+            guard fstat(dirfd(handle), &after) == 0, lstat(directory.path, &named) == 0,
+                  before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+                  before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+                  before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  named.st_mode & S_IFMT == S_IFDIR, named.st_dev == after.st_dev, named.st_ino == after.st_ino else {
+                throw Failure.unsafePath
             }
         }
         try scan(root, prefix: "")
+        try check()
+        return observed
     }
     private func exists(_ url: URL) -> Bool {
         var info = stat()
