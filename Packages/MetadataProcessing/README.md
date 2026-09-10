@@ -59,8 +59,10 @@ minutes within ±14 hours), or the identifier of the persisted job fallback zone
 Invalid zones fail construction. The caller must interpret offset-free EXIF wall
 clock components in that selected fallback zone **before** passing the resulting
 `Date`; this package does not parse EXIF. Preserve `zoneSource` for preview/audit so
-the user sees assumptions. Dates use an explicit Gregorian calendar and numeric
+the user sees assumptions. Dates use proleptic Gregorian civil-date arithmetic and numeric
 year/month/day formatting independent of the machine's locale/calendar/time zone.
+The calendar applies Gregorian leap-year rules before 1582 as well as after it;
+there is no Julian cutover. Date fractions cannot round across a day boundary.
 No capture date fallback to the processing date occurs. Unsupported years (outside
 1–9999 CE) and nonfinite instants return a typed preservation outcome.
 

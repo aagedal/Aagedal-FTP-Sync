@@ -1,14 +1,21 @@
 import Foundation
 
+enum AppStorageFormat: Sendable {
+    case legacy
+    case version3
+}
+
 /// Names the related stores beneath one explicitly selected directory.
 /// Constructing a layout neither creates files nor selects, validates or migrates
 /// a storage version. A future migration coordinator must validate its chosen v3
 /// root before injecting that same layout into every repository.
 struct AppStorageLayout: Equatable, Sendable {
     let root: URL
+    let storageFormat: AppStorageFormat
 
-    init(root: URL) {
+    init(root: URL, storageFormat: AppStorageFormat = .legacy) {
         self.root = root
+        self.storageFormat = storageFormat
     }
 
     /// Preserve Foundation's sandbox-aware location used by the 2.x repositories.

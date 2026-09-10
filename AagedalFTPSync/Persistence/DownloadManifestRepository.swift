@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 actor DownloadManifestRepository {
     private struct DestinationIdentity: Codable, Hashable, Sendable {
@@ -25,8 +26,25 @@ actor DownloadManifestRepository {
         }
     }
 
+    private let codec: VersionedStoreCodec
     private let fileURL: URL
     private var cachedKeys: Set<Key>?
+    private var validatedIdentity: StoreIdentity?
+
+    private struct StoreIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let modifiedSeconds: Int
+        let modifiedNanoseconds: Int
+        let changedSeconds: Int
+        let changedNanoseconds: Int
+    }
+
+    private enum StoreReadError: Error {
+        case unsafeStore, changedDuringRead
+        case fileSystem(Int32)
+    }
 
     var nameMappingsDirectory: URL { AppStorageLayout(root: fileURL.deletingLastPathComponent()).downloadNamesDirectory }
 
@@ -35,6 +53,7 @@ actor DownloadManifestRepository {
     }
 
     init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
+        self.codec = VersionedStoreCodec(format: storage.storageFormat, store: .downloadManifest)
         self.fileURL = fileURL ?? storage.downloadManifest
     }
 
@@ -101,30 +120,70 @@ actor DownloadManifestRepository {
     }
 
     private func loadIfNeeded() throws -> Set<Key> {
+        try validatePrimaryIdentityIfNeeded()
         if let cachedKeys { return cachedKeys }
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            try codec.validateExistingStore(at: fileURL)
             cachedKeys = []
             return []
         }
 
         let records: [Record]
+        var recoveredFromBackup = false
         do {
             records = try decodeRecords(at: fileURL)
         } catch let primaryError {
+            guard VersionedStoreCodec.permitsBackupRecovery(after: primaryError) else { throw primaryError }
             guard FileManager.default.fileExists(atPath: backupURL.path) else { throw primaryError }
             do {
                 records = try decodeRecords(at: backupURL)
+                recoveredFromBackup = true
             } catch {
+                guard VersionedStoreCodec.permitsBackupRecovery(after: error) else { throw error }
                 throw primaryError
             }
         }
+        if codec.format == .version3, try primaryIdentity() != validatedIdentity {
+            cachedKeys = nil
+            validatedIdentity = nil
+            throw StoreReadError.changedDuringRead
+        }
         let keys = Set(records.map(\.key))
-        cachedKeys = keys
+        // A fallback has a second mutable source. Re-read it on the next v3
+        // request so replacing a recovery file cannot leave stale ownership cached.
+        cachedKeys = codec.format == .version3 && recoveredFromBackup ? nil : keys
         return keys
     }
 
+    /// Avoid reparsing a large v3 manifest for every ownership query. Normal atomic
+    /// replacements and observed in-place changes invalidate both header and payload.
+    /// The selected directory must remain trusted: this is not authentication against
+    /// a hostile same-user writer manipulating files and timestamps concurrently.
+    private func validatePrimaryIdentityIfNeeded() throws {
+        guard codec.format == .version3 else { return }
+        let identity = try primaryIdentity()
+        guard identity != validatedIdentity else { return }
+        cachedKeys = nil
+        validatedIdentity = nil
+        try codec.validateExistingStore(at: fileURL)
+        guard try primaryIdentity() == identity else { throw StoreReadError.changedDuringRead }
+        validatedIdentity = identity
+    }
+
+    private func primaryIdentity() throws -> StoreIdentity {
+        var info = stat()
+        guard lstat(fileURL.path, &info) == 0 else {
+            if errno == ENOENT { throw VersionedStoreCodec.HeaderError.missingStore }
+            throw StoreReadError.fileSystem(errno)
+        }
+        guard info.st_mode & S_IFMT == S_IFREG else { throw StoreReadError.unsafeStore }
+        return StoreIdentity(device: info.st_dev, inode: info.st_ino, size: info.st_size,
+                             modifiedSeconds: info.st_mtimespec.tv_sec, modifiedNanoseconds: info.st_mtimespec.tv_nsec,
+                             changedSeconds: info.st_ctimespec.tv_sec, changedNanoseconds: info.st_ctimespec.tv_nsec)
+    }
+
     private func decodeRecords(at url: URL) throws -> [Record] {
-        try Self.decoder.decode([Record].self, from: Data(contentsOf: url))
+        try codec.decode([Record].self, from: Data(contentsOf: url), decoder: Self.decoder)
     }
 
     private func persist(_ keys: Set<Key>) throws {
@@ -138,12 +197,14 @@ actor DownloadManifestRepository {
             return $0.relativePath < $1.relativePath
         }
 
+        try codec.validateExistingStore(at: fileURL)
+        try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try Self.encoder.encode(records)
+        let data = try codec.encode(records, encoder: Self.encoder)
         if FileManager.default.fileExists(atPath: fileURL.path),
            let existingData = try? Data(contentsOf: fileURL),
-           (try? Self.decoder.decode([Record].self, from: existingData)) != nil {
+           (try? codec.decode([Record].self, from: existingData, decoder: Self.decoder)) != nil {
             try existingData.write(to: backupURL, options: .atomic)
         }
         try data.write(to: fileURL, options: .atomic)

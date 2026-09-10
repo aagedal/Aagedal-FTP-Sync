@@ -96,6 +96,9 @@ final class AppPersistenceCoordinator {
     private let metadataAuditRepository: MetadataAuditRepository
     private let syncFailureRepository: SyncFailureRepository
     private let keychain: KeychainStore
+    /// Supplied from validated retained-store references by the future migration
+    /// driver. Never contains credential bytes; an empty set keeps legacy behavior.
+    private let retainedCredentialIDs: Set<String>
 
     private var cachedPasswords: [String: String] = [:]
     private var loadedCredentialIDs = Set<String>()
@@ -107,7 +110,8 @@ final class AppPersistenceCoordinator {
         serverProfileRepository: ServerProfileRepository = ServerProfileRepository(),
         metadataAuditRepository: MetadataAuditRepository,
         syncFailureRepository: SyncFailureRepository,
-        keychain: KeychainStore
+        keychain: KeychainStore,
+        retainedCredentialIDs: Set<String> = []
     ) {
         self.jobRepository = jobRepository
         self.metadataPresetRepository = metadataPresetRepository
@@ -116,6 +120,7 @@ final class AppPersistenceCoordinator {
         self.metadataAuditRepository = metadataAuditRepository
         self.syncFailureRepository = syncFailureRepository
         self.keychain = keychain
+        self.retainedCredentialIDs = retainedCredentialIDs
     }
 
     func load() -> AppPersistenceLoadResult {
@@ -650,7 +655,7 @@ final class AppPersistenceCoordinator {
 
     private func removeCredentials(_ credentialIDs: Set<String>) -> [String] {
         var warnings: [String] = []
-        for credentialID in credentialIDs {
+        for credentialID in credentialIDs.subtracting(retainedCredentialIDs) {
             do {
                 try keychain.removePassword(for: credentialID)
                 cachedPasswords[credentialID] = nil

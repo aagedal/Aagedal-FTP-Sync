@@ -174,15 +174,26 @@ public struct MetadataTemplate: Equatable, Sendable {
 
     private static func formatDate(_ date: Date, zone: TimeZone) -> String? {
         let interval = date.timeIntervalSinceReferenceDate
-        // Avoid passing extreme finite values into Foundation's calendar conversion.
-        // This deliberately broad envelope contains all instants in years 1–9999 in
-        // every supported zone; the actual calendar-year check follows below.
+        // Bound conversion before querying the zone or converting to integers.
+        // All supported civil years (1–9999), including their zone offsets, fit.
         guard interval.isFinite, abs(interval) < 1_000_000_000_000 else { return nil }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = zone
-        let parts = calendar.dateComponents([.era, .year, .month, .day], from: date)
-        guard parts.era == 1, let year = parts.year, (1...9999).contains(year),
-              let month = parts.month, let day = parts.day else { return nil }
+        // Date's reference epoch is 2001-01-01. Floor its stored value BEFORE
+        // adding the Unix epoch/zone offsets: floating-point epoch conversion can
+        // otherwise round a representable instant just before midnight forward.
+        let seconds = Int64(floor(interval)) + 978_307_200 + Int64(zone.secondsFromGMT(for: date))
+        let days = seconds >= 0 ? seconds / 86_400 : (seconds - 86_399) / 86_400
+        // Proleptic Gregorian civil-from-days conversion, independent of locale
+        // and Foundation Calendar's Julian/Gregorian cutover in October 1582.
+        let shiftedDays = days + 719_468
+        let era = (shiftedDays >= 0 ? shiftedDays : shiftedDays - 146_096) / 146_097
+        let dayOfEra = shiftedDays - era * 146_097
+        let yearOfEra = (dayOfEra - dayOfEra / 1_460 + dayOfEra / 36_524 - dayOfEra / 146_096) / 365
+        let dayOfYear = dayOfEra - (365 * yearOfEra + yearOfEra / 4 - yearOfEra / 100)
+        let shiftedMonth = (5 * dayOfYear + 2) / 153
+        let day = Int(dayOfYear - (153 * shiftedMonth + 2) / 5 + 1)
+        let month = Int(shiftedMonth + (shiftedMonth < 10 ? 3 : -9))
+        let year = Int(yearOfEra + era * 400 + (month <= 2 ? 1 : 0))
+        guard (1...9999).contains(year) else { return nil }
         func padded(_ number: Int, width: Int) -> String {
             let value = String(number)
             return String(repeating: "0", count: max(0, width - value.count)) + value

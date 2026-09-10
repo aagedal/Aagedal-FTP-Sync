@@ -26,6 +26,7 @@ struct SyncFailureLoadResult: Sendable {
 
 /// A small, persistent per-job history for errors that stop an entire sync run.
 struct SyncFailureRepository: Sendable {
+    private let codec: VersionedStoreCodec
     private let fileURL: URL
     private let maximumEntries: Int
 
@@ -34,21 +35,26 @@ struct SyncFailureRepository: Sendable {
     }
 
     init(fileURL: URL? = nil, maximumEntries: Int = 200, storage: AppStorageLayout = .legacy) {
+        self.codec = VersionedStoreCodec(format: storage.storageFormat, store: .syncFailures)
         self.fileURL = fileURL ?? storage.syncFailures
         self.maximumEntries = max(maximumEntries, 1)
     }
 
     func loadResult() throws -> SyncFailureLoadResult {
+        try codec.validateExistingStore(at: fileURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            try codec.validateExistingStore(at: fileURL)
             return SyncFailureLoadResult(entries: [], recoveredFromBackup: false)
         }
         do {
             return SyncFailureLoadResult(entries: try decode(at: fileURL), recoveredFromBackup: false)
         } catch let primaryError {
+            guard VersionedStoreCodec.permitsBackupRecovery(after: primaryError) else { throw primaryError }
             guard FileManager.default.fileExists(atPath: backupURL.path) else { throw primaryError }
             do {
                 return SyncFailureLoadResult(entries: try decode(at: backupURL), recoveredFromBackup: true)
             } catch {
+                guard VersionedStoreCodec.permitsBackupRecovery(after: error) else { throw error }
                 throw primaryError
             }
         }
@@ -71,9 +77,11 @@ struct SyncFailureRepository: Sendable {
         let retained = Array(entries
             .sorted(by: Self.oldestFirst)
             .suffix(maximumEntries))
+        try codec.validateExistingStore(at: fileURL)
+        try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder.syncFailureConfigured.encode(retained)
+        let data = try codec.encode(retained, encoder: JSONEncoder.syncFailureConfigured)
 
         if FileManager.default.fileExists(atPath: fileURL.path),
            (try? decode(at: fileURL)) != nil {
@@ -88,10 +96,7 @@ struct SyncFailureRepository: Sendable {
     }
 
     private func decode(at url: URL) throws -> [SyncFailureRecord] {
-        try JSONDecoder.syncFailureConfigured.decode(
-            [SyncFailureRecord].self,
-            from: Data(contentsOf: url)
-        )
+        try codec.decode([SyncFailureRecord].self, from: Data(contentsOf: url), decoder: JSONDecoder.syncFailureConfigured)
     }
 
     private static func oldestFirst(_ lhs: SyncFailureRecord, _ rhs: SyncFailureRecord) -> Bool {

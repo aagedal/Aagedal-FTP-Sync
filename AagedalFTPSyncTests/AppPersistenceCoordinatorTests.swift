@@ -4,6 +4,45 @@ import XCTest
 
 @MainActor
 final class AppPersistenceCoordinatorTests: XCTestCase {
+    func testCredentialReplacementPreservesRetainedStoreReferences() throws {
+        let keychain = TestKeychain(values: ["retained-left": "old-left", "obsolete-right": "old-right"])
+        let fixture = try PersistenceCoordinatorFixture(
+            prefix: "retained-credentials", keychain: keychain.store,
+            retainedCredentialIDs: ["retained-left"]
+        )
+        defer { fixture.removeTemporaryFiles() }
+        let job = remoteJob(leftCredentialID: "retained-left", rightCredentialID: "obsolete-right")
+        try fixture.jobRepository.save([job])
+
+        let result = try fixture.coordinator.saveJob(
+            previousJobs: [job], draftJob: job,
+            leftPassword: "new-left", rightPassword: "new-right"
+        )
+
+        XCTAssertEqual(try fixture.jobRepository.load(), result.jobs)
+        XCTAssertNotEqual(result.savedJob.left.credentialID, "retained-left")
+        XCTAssertEqual(keychain.value(for: result.savedJob.left.credentialID), "new-left")
+        XCTAssertEqual(keychain.value(for: result.savedJob.right.credentialID), "new-right")
+        XCTAssertEqual(keychain.value(for: "retained-left"), "old-left")
+        XCTAssertNil(keychain.value(for: "obsolete-right"))
+        XCTAssertEqual(keychain.removedCredentialIDs, ["obsolete-right"])
+    }
+
+    func testJobRemovalPreservesRetainedStoreCredentials() throws {
+        let keychain = TestKeychain(values: ["retained-left": "old-left", "obsolete-right": "old-right"])
+        let fixture = try PersistenceCoordinatorFixture(
+            prefix: "retained-removal", keychain: keychain.store,
+            retainedCredentialIDs: ["retained-left"]
+        )
+        defer { fixture.removeTemporaryFiles() }
+        let job = remoteJob(leftCredentialID: "retained-left", rightCredentialID: "obsolete-right")
+
+        XCTAssertTrue(fixture.coordinator.removeCredentials(for: job, retainedJobs: []).isEmpty)
+        XCTAssertEqual(keychain.value(for: "retained-left"), "old-left")
+        XCTAssertNil(keychain.value(for: "obsolete-right"))
+        XCTAssertEqual(keychain.removedCredentialIDs, ["obsolete-right"])
+    }
+
     func testLoadAggregatesRecoveredRepositoryStateAndWarnings() throws {
         let fixture = try PersistenceCoordinatorFixture(prefix: "load-recovery")
         defer { fixture.removeTemporaryFiles() }
@@ -701,7 +740,7 @@ private struct PersistenceCoordinatorFixture {
     let coordinator: AppPersistenceCoordinator
 
     @MainActor
-    init(prefix: String, keychain: KeychainStore = KeychainStore()) throws {
+    init(prefix: String, keychain: KeychainStore = KeychainStore(), retainedCredentialIDs: Set<String> = []) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -726,7 +765,8 @@ private struct PersistenceCoordinatorFixture {
             serverProfileRepository: serverProfileRepository,
             metadataAuditRepository: metadataAuditRepository,
             syncFailureRepository: syncFailureRepository,
-            keychain: keychain
+            keychain: keychain,
+            retainedCredentialIDs: retainedCredentialIDs
         )
     }
 

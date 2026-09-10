@@ -7,6 +7,7 @@ struct MetadataAuditLoadResult: Sendable {
 
 /// Bounded, backup-protected storage for per-file metadata decisions.
 struct MetadataAuditRepository: Sendable {
+    private let codec: VersionedStoreCodec
     private let fileURL: URL
     private let maximumEntries: Int
 
@@ -15,6 +16,7 @@ struct MetadataAuditRepository: Sendable {
     }
 
     init(fileURL: URL? = nil, maximumEntries: Int = 2_000, storage: AppStorageLayout = .legacy) {
+        self.codec = VersionedStoreCodec(format: storage.storageFormat, store: .metadataAudit)
         self.fileURL = fileURL ?? storage.metadataAudit
         self.maximumEntries = max(maximumEntries, 1)
     }
@@ -26,7 +28,9 @@ struct MetadataAuditRepository: Sendable {
     }
 
     func loadResult() throws -> MetadataAuditLoadResult {
+        try codec.validateExistingStore(at: fileURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            try codec.validateExistingStore(at: fileURL)
             return MetadataAuditLoadResult(entries: [], recoveredFromBackup: false)
         }
         do {
@@ -35,6 +39,7 @@ struct MetadataAuditRepository: Sendable {
                 recoveredFromBackup: false
             )
         } catch let primaryError {
+            guard VersionedStoreCodec.permitsBackupRecovery(after: primaryError) else { throw primaryError }
             guard FileManager.default.fileExists(atPath: backupURL.path) else { throw primaryError }
             do {
                 return MetadataAuditLoadResult(
@@ -42,6 +47,7 @@ struct MetadataAuditRepository: Sendable {
                     recoveredFromBackup: true
                 )
             } catch {
+                guard VersionedStoreCodec.permitsBackupRecovery(after: error) else { throw error }
                 throw primaryError
             }
         }
@@ -65,9 +71,11 @@ struct MetadataAuditRepository: Sendable {
         let retained = Array(entries
             .sorted(by: Self.oldestFirst)
             .suffix(maximumEntries))
+        try codec.validateExistingStore(at: fileURL)
+        try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder.metadataAuditConfigured.encode(retained)
+        let data = try codec.encode(retained, encoder: JSONEncoder.metadataAuditConfigured)
 
         if FileManager.default.fileExists(atPath: fileURL.path),
            (try? decode(at: fileURL)) != nil {
@@ -82,10 +90,7 @@ struct MetadataAuditRepository: Sendable {
     }
 
     private func decode(at url: URL) throws -> [MetadataAuditEntry] {
-        try JSONDecoder.metadataAuditConfigured.decode(
-            [MetadataAuditEntry].self,
-            from: Data(contentsOf: url)
-        )
+        try codec.decode([MetadataAuditEntry].self, from: Data(contentsOf: url), decoder: JSONDecoder.metadataAuditConfigured)
     }
 
     private static func oldestFirst(_ lhs: MetadataAuditEntry, _ rhs: MetadataAuditEntry) -> Bool {

@@ -72,14 +72,26 @@ struct MetadataSyncEvent: Codable, Identifiable {
 
 struct MetadataSyncEventRepository {
     var url: URL
+    var storageFormat: AppStorageFormat = .legacy
+    private var codec: VersionedStoreCodec { VersionedStoreCodec(format: storageFormat, store: .metadataSyncEvents) }
+
+    /// Compatibility convenience for legacy diagnostic history. V3 callers use
+    /// loadResult() so incompatible state is visible instead of becoming empty.
     func load() -> [MetadataSyncEvent] {
-        guard let data = try? Data(contentsOf: url),
-              let events = try? JSONDecoder().decode([MetadataSyncEvent].self, from: data) else { return [] }
+        (try? loadResult()) ?? []
+    }
+    func loadResult() throws -> [MetadataSyncEvent] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            try codec.validateExistingStore(at: url)
+            return []
+        }
+        let events = try codec.decode([MetadataSyncEvent].self, from: Data(contentsOf: url), decoder: JSONDecoder())
         return Array(events.suffix(200))
     }
     func save(_ events: [MetadataSyncEvent]) throws {
+        try codec.validateExistingStore(at: url)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(Array(events.suffix(200))).write(to: url, options: .atomic)
+        try codec.encode(Array(events.suffix(200)), encoder: JSONEncoder()).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

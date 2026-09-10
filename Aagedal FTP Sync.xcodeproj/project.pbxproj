@@ -13,8 +13,10 @@
 		0837FDF547FB63BE4AE4953C /* LaunchAtLoginCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52D1BE257268E13A9E61907D /* LaunchAtLoginCoordinator.swift */; };
 		0AAA481F3C385626316506D1 /* SFTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A410C80EF820D8FCA6B3000 /* SFTPTransport.swift */; };
 		0AC37DE8ECE3F49643FBBA65 /* SyncJobValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95047C158288E644416B7E05 /* SyncJobValidationTests.swift */; };
+		0B2EB20BBBDADDD0EFA459EA /* VersionedStoreCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AF81AC92A35155B26A9363C /* VersionedStoreCodecTests.swift */; };
 		0C318FACD47BB1ECC0C86E37 /* DownloadManifestRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */; };
 		0F49E4F6EC05AB6395A4F2FA /* ConfigurationTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0EAD657F152BADDBE31F18A /* ConfigurationTransferTests.swift */; };
+		15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */; };
 		17E233B3702C9E630DB8CA3A /* DownloadNamingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */; };
 		1905562AD67C12F229EEF2DD /* MetadataSyncServerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 607698C48EA810DCC39628D4 /* MetadataSyncServerTests.swift */; };
 		192D43F2E6579A284084377B /* SyncRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E93E3863E7CE51C640F3CCF /* SyncRuntimeSupport.swift */; };
@@ -22,6 +24,7 @@
 		1BDDAFDC5384482ED3F2DC81 /* SyncEventLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07320ACC5291F1191BAA2E4C /* SyncEventLogger.swift */; };
 		1DB2D9D4B7FBCDEC3164FC84 /* MetadataPreviewAndRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2153155F850DC3D8E89847FE /* MetadataPreviewAndRecoveryTests.swift */; };
 		1E170736D9479384B73197DD /* AppStorageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0F72DD22CD6008F168834B5 /* AppStorageLayout.swift */; };
+		21D2F698B936793A5A20B14B /* VersionedRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90079927622715BF02539C9 /* VersionedRepositoryTests.swift */; };
 		232530E47CDEBD0A8D35EA9D /* EndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6F8355FC14D367480034FA8 /* EndpointSession.swift */; };
 		24D31589FC2F7FD31749C35E /* AppStorageLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */; };
 		269D04476AEC3E54C0FF8A90 /* DeliveryLatencyBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12EC7ADB08DA171C5517C6D0 /* DeliveryLatencyBenchmarkTests.swift */; };
@@ -44,6 +47,7 @@
 		42674EE8F66813EA860B4A7B /* MetadataPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC0FC21B2F27B7B2EDD14FE /* MetadataPresetTests.swift */; };
 		461067BAB3C6EAB6B24624C3 /* MetadataCalendarConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FF089E5B1C4518A479C331C /* MetadataCalendarConflictView.swift */; };
 		49FF023ECBFBE4B27037A37D /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BEBFCBDD620232A1D0C014 /* SyncEngine.swift */; };
+		4BECE2C7328FEDA45ED1787E /* MetadataCaptureDateReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13C742D691DBA7A5E07B7A16 /* MetadataCaptureDateReader.swift */; };
 		510304BA75E7B2E1F74A37B2 /* MetadataCalendarClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B07ADB5A0D82B2900ADF5DB /* MetadataCalendarClient.swift */; };
 		52E139C2169CE507A045D79D /* PathSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = D100CDE9EC3EF2B672A4EC7E /* PathSafety.swift */; };
 		53D891D5E1AB32B8F7B35F9A /* MetadataPresetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60E0E09FD8169213D49FACE8 /* MetadataPresetRepository.swift */; };
@@ -76,8 +80,10 @@
 		869C3F20F6579EC38F1DCC53 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6F803C3B092319AAFD4845 /* MenuBarView.swift */; };
 		89A4BE3FCCD98D0268AF6FFB /* ResolvedMetadataChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3452533D474B065274D589DA /* ResolvedMetadataChanges.swift */; };
 		8F518CD8A98FF676995DD9A5 /* PhotographerMapTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97C0C816A4FB1006374B4D23 /* PhotographerMapTimelineTests.swift */; };
+		905D01582F74B78B5E97ECDB /* VersionedCalendarStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 831D08FC15EE951D1FB90B97 /* VersionedCalendarStorageTests.swift */; };
 		9453177603F487C96FF5B9E1 /* PhotographerMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D08A4DCF03FB39971112D2D /* PhotographerMapView.swift */; };
 		956B364A51DE2F3F84CD18BD /* MetadataAutomation.swift in Sources */ = {isa = PBXBuildFile; fileRef = F02E14B784149DDFFF502ADA /* MetadataAutomation.swift */; };
+		95D006439B0ACA8D63134DA2 /* VersionedStoreCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */; };
 		9BE974E35F14A02DD16B33DC /* Endpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 937FD9EED413E474E9F6903E /* Endpoint.swift */; };
 		A0534370D1A62D35C61FCBBC /* SyncSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */; };
 		A0863F1D6C4FD686BDA2D700 /* PathSafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C502318E99DE80F0847AFF6E /* PathSafetyTests.swift */; };
@@ -153,8 +159,10 @@
 		11EEAAEEA8F25FFA2893352E /* MetadataAuditRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAuditRepository.swift; sourceTree = "<group>"; };
 		1230146607A0960638643931 /* SFTPEndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SFTPEndpointSession.swift; sourceTree = "<group>"; };
 		12EC7ADB08DA171C5517C6D0 /* DeliveryLatencyBenchmarkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliveryLatencyBenchmarkTests.swift; sourceTree = "<group>"; };
+		13C742D691DBA7A5E07B7A16 /* MetadataCaptureDateReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCaptureDateReader.swift; sourceTree = "<group>"; };
 		15B915A3B64E4F58BDA5FD73 /* MetadataSyncStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncStatusView.swift; sourceTree = "<group>"; };
 		1827F74FB21B975949149778 /* MetadataSyncActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncActivity.swift; sourceTree = "<group>"; };
+		1AF81AC92A35155B26A9363C /* VersionedStoreCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedStoreCodecTests.swift; sourceTree = "<group>"; };
 		21199D2C1CA349452587E48F /* FTPListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPListingTests.swift; sourceTree = "<group>"; };
 		21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNamingSession.swift; sourceTree = "<group>"; };
 		2153155F850DC3D8E89847FE /* MetadataPreviewAndRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreviewAndRecoveryTests.swift; sourceTree = "<group>"; };
@@ -162,6 +170,7 @@
 		266FEE315151F94EF37C236B /* MetadataProcessing */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MetadataProcessing; path = Packages/MetadataProcessing; sourceTree = SOURCE_ROOT; };
 		299A6C29AB74842C2E8A91AA /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		2E65EC551E128F2CEA855514 /* MetadataPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreset.swift; sourceTree = "<group>"; };
+		2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCaptureDateReaderTests.swift; sourceTree = "<group>"; };
 		30978DC45B262D8C7E18A029 /* MetadataCalendarSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarSettingsView.swift; sourceTree = "<group>"; };
 		312739F289E7DEE5475728B9 /* MetadataPhotographerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPhotographerViews.swift; sourceTree = "<group>"; };
 		329E3435991E5099C5DB51A6 /* PhotographerSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerSettingsView.swift; sourceTree = "<group>"; };
@@ -204,6 +213,7 @@
 		7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		7FF089E5B1C4518A479C331C /* MetadataCalendarConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarConflictView.swift; sourceTree = "<group>"; };
 		821EDDD4C943D4CCD4CB022D /* MetadataProgrammingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingView.swift; sourceTree = "<group>"; };
+		831D08FC15EE951D1FB90B97 /* VersionedCalendarStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedCalendarStorageTests.swift; sourceTree = "<group>"; };
 		8710C0C84C0F5CABFAC80B85 /* SharedMetadataCalendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedMetadataCalendar.swift; sourceTree = "<group>"; };
 		890826A7102C45494742574C /* MetadataLibraryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataLibraryCoordinator.swift; sourceTree = "<group>"; };
 		8DF972CA42278237F9D4F9F1 /* MetadataAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAudit.swift; sourceTree = "<group>"; };
@@ -228,6 +238,7 @@
 		AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManifestRepository.swift; sourceTree = "<group>"; };
 		AED8A942C6CBC2911165A52D /* JobsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobsWindowView.swift; sourceTree = "<group>"; };
 		B2745B822AD45CDF06BB3463 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedStoreCodec.swift; sourceTree = "<group>"; };
 		B6F8355FC14D367480034FA8 /* EndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointSession.swift; sourceTree = "<group>"; };
 		BA9524A5EE736DEEEC94976B /* ConfigurationTransferCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferCoordinator.swift; sourceTree = "<group>"; };
 		BC25AACD3C7F08B23B371518 /* FileFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileFilterTests.swift; sourceTree = "<group>"; };
@@ -258,6 +269,7 @@
 		F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarMerge.swift; sourceTree = "<group>"; };
 		F3A2D6F5AD2A2701FD04AA11 /* MetadataSyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncSettingsView.swift; sourceTree = "<group>"; };
 		F488B465A35870C5148449F4 /* Citadel */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Citadel; path = Vendor/Citadel; sourceTree = SOURCE_ROOT; };
+		F90079927622715BF02539C9 /* VersionedRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedRepositoryTests.swift; sourceTree = "<group>"; };
 		FC5DD7F9670E3114DCB8DD33 /* MetadataCalendarCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarCoordinator.swift; sourceTree = "<group>"; };
 		FE6F803C3B092319AAFD4845 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -371,6 +383,7 @@
 				679AE22A6DA5596AB0D08913 /* SourceSignatureRepository.swift */,
 				91F14102B4F8D6DAEF14EC8A /* SyncFailureRepository.swift */,
 				7B4996735AA685CA67FB2282 /* VersionedAppStorage.swift */,
+				B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */,
 			);
 			path = Persistence;
 			sourceTree = "<group>";
@@ -431,6 +444,7 @@
 		B5270C0798695023436C85DF /* Metadata */ = {
 			isa = PBXGroup;
 			children = (
+				13C742D691DBA7A5E07B7A16 /* MetadataCaptureDateReader.swift */,
 				D7F63E1167F0C4B8DD60E70E /* MetadataPreview.swift */,
 				09FCF5596B7232B205E5A2D2 /* MetadataProcessingCoordinator.swift */,
 				9F668C295458EA4DCCB46EF8 /* MetadataWriter.swift */,
@@ -454,6 +468,7 @@
 				D0C9F952969D2D03BFCC3221 /* LocalSyncIntegrationTests.swift */,
 				07B39CBB757E875BE7C71E39 /* MetadataAuditTests.swift */,
 				E45C7CB10B1E196CE6CF8CD5 /* MetadataAutomationTests.swift */,
+				2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */,
 				DCC0FC21B2F27B7B2EDD14FE /* MetadataPresetTests.swift */,
 				2153155F850DC3D8E89847FE /* MetadataPreviewAndRecoveryTests.swift */,
 				E350D2AA9DCE6EEF0FCA8BBD /* MetadataProcessingCoordinatorTests.swift */,
@@ -475,6 +490,9 @@
 				78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */,
 				7A3135E3B7AE16B13F9085BD /* UploadNamingTests.swift */,
 				512B066026E904E8FB0B048C /* VersionedAppStorageTests.swift */,
+				831D08FC15EE951D1FB90B97 /* VersionedCalendarStorageTests.swift */,
+				F90079927622715BF02539C9 /* VersionedRepositoryTests.swift */,
+				1AF81AC92A35155B26A9363C /* VersionedStoreCodecTests.swift */,
 			);
 			path = AagedalFTPSyncTests;
 			sourceTree = "<group>";
@@ -677,6 +695,7 @@
 				DC1FF0B0F1590933DFEB5D6D /* LocalSyncIntegrationTests.swift in Sources */,
 				78FA1B86AA36E6601A1CD68E /* MetadataAuditTests.swift in Sources */,
 				A3FE2D8BFC1145F0C306FAE4 /* MetadataAutomationTests.swift in Sources */,
+				15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */,
 				42674EE8F66813EA860B4A7B /* MetadataPresetTests.swift in Sources */,
 				1DB2D9D4B7FBCDEC3164FC84 /* MetadataPreviewAndRecoveryTests.swift in Sources */,
 				AE9932BB50FA89C5DCB6A12C /* MetadataProcessingCoordinatorTests.swift in Sources */,
@@ -698,6 +717,9 @@
 				A0534370D1A62D35C61FCBBC /* SyncSchedulerTests.swift in Sources */,
 				C59FEB0268DFF93AFE0BAA03 /* UploadNamingTests.swift in Sources */,
 				27ECC724FC87366D0FDD1079 /* VersionedAppStorageTests.swift in Sources */,
+				905D01582F74B78B5E97ECDB /* VersionedCalendarStorageTests.swift in Sources */,
+				21D2F698B936793A5A20B14B /* VersionedRepositoryTests.swift in Sources */,
+				0B2EB20BBBDADDD0EFA459EA /* VersionedStoreCodecTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -748,6 +770,7 @@
 				3FC3B92D73172536B5F71B13 /* MetadataCalendarCoordinator.swift in Sources */,
 				FB1A07E51A16C9E7FD4F322D /* MetadataCalendarMerge.swift in Sources */,
 				419BC164587DE64BDE6DC3D5 /* MetadataCalendarSettingsView.swift in Sources */,
+				4BECE2C7328FEDA45ED1787E /* MetadataCaptureDateReader.swift in Sources */,
 				7C2A82E72FDC2C0AB1F73C5D /* MetadataLibraryCoordinator.swift in Sources */,
 				5FD9FAE8DB564E8AB7B74237 /* MetadataPhotographerViews.swift in Sources */,
 				649027A87547FE310DC4E8E5 /* MetadataPreset.swift in Sources */,
@@ -787,6 +810,7 @@
 				7DA7775DF56E2282A2036362 /* UITestSupport.swift in Sources */,
 				D1989B62B3D59FCA70B96350 /* UploadNamingSession.swift in Sources */,
 				633B3F36038EC1B321CAC4E8 /* VersionedAppStorage.swift in Sources */,
+				95D006439B0ACA8D63134DA2 /* VersionedStoreCodec.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -66,6 +66,7 @@ enum PhotographerLibraryTransferCodec {
 }
 
 struct PhotographerProfileRepository: Sendable {
+    private let codec: VersionedStoreCodec
     private let fileURL: URL
 
     private var backupURL: URL {
@@ -73,6 +74,7 @@ struct PhotographerProfileRepository: Sendable {
     }
 
     init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
+        self.codec = VersionedStoreCodec(format: storage.storageFormat, store: .photographers)
         self.fileURL = fileURL ?? storage.photographers
     }
 
@@ -81,49 +83,46 @@ struct PhotographerProfileRepository: Sendable {
     }
 
     func loadResult() throws -> PhotographerProfileLoadResult {
+        try codec.validateExistingStore(at: fileURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            try codec.validateExistingStore(at: fileURL)
             return PhotographerProfileLoadResult(photographers: [], recoveredFromBackup: false)
         }
 
         do {
             let data = try Data(contentsOf: fileURL)
-            let photographers = try JSONDecoder.photographerProfileConfigured.decode(
-                [PhotographerProfile].self,
-                from: data
-            )
+            let photographers = try codec.decode([PhotographerProfile].self, from: data, decoder: JSONDecoder.photographerProfileConfigured)
             return PhotographerProfileLoadResult(
                 photographers: photographers,
                 recoveredFromBackup: false
             )
         } catch let primaryError {
+            guard VersionedStoreCodec.permitsBackupRecovery(after: primaryError) else { throw primaryError }
             guard FileManager.default.fileExists(atPath: backupURL.path) else { throw primaryError }
             do {
                 let backupData = try Data(contentsOf: backupURL)
-                let photographers = try JSONDecoder.photographerProfileConfigured.decode(
-                    [PhotographerProfile].self,
-                    from: backupData
-                )
+                let photographers = try codec.decode([PhotographerProfile].self, from: backupData, decoder: JSONDecoder.photographerProfileConfigured)
                 return PhotographerProfileLoadResult(
                     photographers: photographers,
                     recoveredFromBackup: true
                 )
             } catch {
+                guard VersionedStoreCodec.permitsBackupRecovery(after: error) else { throw error }
                 throw primaryError
             }
         }
     }
 
     func save(_ photographers: [PhotographerProfile]) throws {
+        try codec.validateExistingStore(at: fileURL)
+        try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder.photographerProfileConfigured.encode(photographers)
+        let data = try codec.encode(photographers, encoder: JSONEncoder.photographerProfileConfigured)
 
         if FileManager.default.fileExists(atPath: fileURL.path),
            let existingData = try? Data(contentsOf: fileURL),
-           (try? JSONDecoder.photographerProfileConfigured.decode(
-               [PhotographerProfile].self,
-               from: existingData
-           )) != nil {
+           (try? codec.decode([PhotographerProfile].self, from: existingData, decoder: JSONDecoder.photographerProfileConfigured)) != nil {
             if FileManager.default.fileExists(atPath: backupURL.path) {
                 try FileManager.default.removeItem(at: backupURL)
             }

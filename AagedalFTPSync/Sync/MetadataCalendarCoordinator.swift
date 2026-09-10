@@ -37,22 +37,29 @@ struct MetadataCalendarState: Codable {
 
 struct MetadataCalendarRepository {
     var url: URL
+    let storageFormat: AppStorageFormat
+    private var codec: VersionedStoreCodec { VersionedStoreCodec(format: storageFormat, store: .metadataCalendar) }
     private let beforeSave: @Sendable () throws -> Void
     init(url: URL? = nil, storage: AppStorageLayout = .legacy, beforeSave: @escaping @Sendable () throws -> Void = {}) {
         self.beforeSave = beforeSave
         self.url = url ?? storage.metadataCalendar
+        self.storageFormat = storage.storageFormat
     }
     /// Keep events beside an explicitly injected calendar file, including custom filenames.
     var eventsURL: URL { AppStorageLayout(root: url.deletingLastPathComponent()).metadataSyncEvents }
 
     func load() throws -> MetadataCalendarState {
-        guard FileManager.default.fileExists(atPath: url.path) else { return MetadataCalendarState() }
-        return try MetadataCalendarClient.decoder().decode(MetadataCalendarState.self, from: Data(contentsOf: url))
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            try codec.validateExistingStore(at: url)
+            return MetadataCalendarState()
+        }
+        return try codec.decode(MetadataCalendarState.self, from: Data(contentsOf: url), decoder: MetadataCalendarClient.decoder())
     }
     func save(_ state: MetadataCalendarState) throws {
+        try codec.validateExistingStore(at: url)
         try beforeSave()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try MetadataCalendarClient.encoder().encode(state).write(to: url, options: .atomic)
+        try codec.encode(state, encoder: MetadataCalendarClient.encoder()).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
@@ -110,9 +117,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
         self.changeDebounce = changeDebounce
         self.now = now
         self.repository = repository
-        self.eventRepository = MetadataSyncEventRepository(url: repository.eventsURL)
-        self.events = eventRepository.load()
+        self.eventRepository = MetadataSyncEventRepository(url: repository.eventsURL, storageFormat: repository.storageFormat)
         self.keychain = keychain
+        if repository.storageFormat == .legacy {
+            self.events = eventRepository.load()
+        } else {
+            do { self.events = try eventRepository.loadResult() }
+            catch { eventStorageError = "Saved sync diagnostics could not be read. They have been left intact." }
+        }
         do { state = try repository.load() }
         catch { storageFailed = true; message = "Sync state could not be read. It has been left intact: \(error.localizedDescription)" }
     }

@@ -6,6 +6,7 @@ struct JobLoadResult: Sendable {
 }
 
 struct JobRepository: Sendable {
+    private let codec: VersionedStoreCodec
     private let fileURL: URL
     private let beforeSave: @Sendable () throws -> Void
 
@@ -18,6 +19,7 @@ struct JobRepository: Sendable {
         storage: AppStorageLayout = .legacy,
         beforeSave: @escaping @Sendable () throws -> Void = {}
     ) {
+        self.codec = VersionedStoreCodec(format: storage.storageFormat, store: .jobs)
         self.fileURL = fileURL ?? storage.jobs
         self.beforeSave = beforeSave
     }
@@ -27,20 +29,24 @@ struct JobRepository: Sendable {
     }
 
     func loadResult() throws -> JobLoadResult {
+        try codec.validateExistingStore(at: fileURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            try codec.validateExistingStore(at: fileURL)
             return JobLoadResult(jobs: [], recoveredFromBackup: false)
         }
         do {
             let data = try Data(contentsOf: fileURL)
-            let jobs = try JSONDecoder.configured.decode([SyncJob].self, from: data)
+            let jobs = try codec.decode([SyncJob].self, from: data, decoder: JSONDecoder.configured)
             return JobLoadResult(jobs: jobs, recoveredFromBackup: false)
         } catch let primaryError {
+            guard VersionedStoreCodec.permitsBackupRecovery(after: primaryError) else { throw primaryError }
             guard FileManager.default.fileExists(atPath: backupURL.path) else { throw primaryError }
             do {
                 let backupData = try Data(contentsOf: backupURL)
-                let jobs = try JSONDecoder.configured.decode([SyncJob].self, from: backupData)
+                let jobs = try codec.decode([SyncJob].self, from: backupData, decoder: JSONDecoder.configured)
                 return JobLoadResult(jobs: jobs, recoveredFromBackup: true)
             } catch {
+                guard VersionedStoreCodec.permitsBackupRecovery(after: error) else { throw error }
                 throw primaryError
             }
         }
@@ -48,12 +54,14 @@ struct JobRepository: Sendable {
 
     func save(_ jobs: [SyncJob]) throws {
         try beforeSave()
+        try codec.validateExistingStore(at: fileURL)
+        try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder.configured.encode(jobs)
+        let data = try codec.encode(jobs, encoder: JSONEncoder.configured)
         if FileManager.default.fileExists(atPath: fileURL.path),
            let existingData = try? Data(contentsOf: fileURL),
-           (try? JSONDecoder.configured.decode([SyncJob].self, from: existingData)) != nil {
+           (try? codec.decode([SyncJob].self, from: existingData, decoder: JSONDecoder.configured)) != nil {
             if FileManager.default.fileExists(atPath: backupURL.path) {
                 try FileManager.default.removeItem(at: backupURL)
             }
