@@ -176,7 +176,8 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         XCTAssertFalse(sync.busy, "The receive operation should finish")
     }
 
-    private func liveFixture(now: @escaping () -> Date = Date.init) throws -> (URL, AppStore, MetadataCalendarCoordinator, CalendarTransportFixture) {
+    private func liveFixture(now: @escaping () -> Date = Date.init,
+                             waitForChangeDebounce: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) throws -> (URL, AppStore, MetadataCalendarCoordinator, CalendarTransportFixture) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let profile = PhotographerProfile(name: "Example", filenamePrefix: "EX", creator: "Example", copyrightNotice: "")
@@ -193,7 +194,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
             bindings: [MetadataCalendarBinding(accountID: account.id, jobID: job.id, snapshot: calendar)]))
         let server = CalendarTransportFixture(calendar: calendar)
         let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
-        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, changeDebounce: .milliseconds(100), now: now,
+        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, changeDebounce: .milliseconds(100), waitForChangeDebounce: waitForChangeDebounce, now: now,
             transport: { body, _, _, _, _ in try await server.send(body) })
         sync.start(store: store, polling: false)
         return (root, store, sync, server)
@@ -229,6 +230,41 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         let requests = await server.requests
         XCTAssertEqual(requests, ["getCalendar", "getCalendar", "putCalendar"], "Applying sync results must not create an echo request")
+    }
+
+    func testManualRefreshDuringEditDebounceDoesNotProduceDelayedEcho() async throws {
+        let delay = CalendarDebounceGate()
+        let (root, store, sync, server) = try liveFixture(waitForChangeDebounce: { _ in await delay.wait() })
+        defer {
+            sync.stop()
+            Task { await delay.release() }
+            try? FileManager.default.removeItem(at: root)
+        }
+        let id = store.jobs[0].id
+        await sync.refresh(jobID: id)
+        var edited = store.jobs[0].metadataAutomation!
+        edited.clips[0].name = "Manual refresh commits this edit"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await eventually {
+            let waiting = await delay.waitingCount
+            return sync.activity(for: id).phase == .pending && waiting > 0
+        }
+        // The gate makes this ordering independent of machine speed: the edit's
+        // debounce cannot dispatch while the explicit refresh updates its baseline.
+        await sync.refresh(jobID: id)
+        let committed = await server.calendar
+        XCTAssertEqual(committed.document.clips[0].name, edited.clips[0].name)
+        XCTAssertEqual(sync.state.bindings[0].snapshot, committed)
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
+        let beforeRelease = await server.requests
+        XCTAssertEqual(beforeRelease, ["getCalendar", "getCalendar", "putCalendar"])
+        await delay.release()
+        try await eventually { await delay.allReturned }
+        // No follow-up request should appear after all held debounce calls return.
+        try await Task.sleep(for: .milliseconds(200))
+        let afterRelease = await server.requests
+        XCTAssertEqual(afterRelease, beforeRelease, "A completed edit must be re-evaluated after debounce, not fetched again")
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
     }
 
     func testLocalProcessingPolicyChangesDoNotTriggerCalendarRequests() async throws {
@@ -1227,5 +1263,28 @@ extension SharedMetadataCalendarTests {
         let result = try MetadataCalendarMerge.plan(base: wire, local: document, remote: wire, readOnly: true)
         XCTAssertTrue(result.conflicts.isEmpty)
         XCTAssertEqual(try result.resolved(), document)
+    }
+}
+
+
+private actor CalendarDebounceGate {
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private(set) var startedCount = 0
+    private(set) var completedCount = 0
+    var waitingCount: Int { continuations.count }
+    var allReturned: Bool { completedCount == startedCount }
+
+    func wait() async {
+        startedCount += 1
+        if !released { await withCheckedContinuation { continuations.append($0) } }
+        completedCount += 1
+    }
+
+    func release() {
+        released = true
+        let pending = continuations
+        continuations.removeAll()
+        for continuation in pending { continuation.resume() }
     }
 }

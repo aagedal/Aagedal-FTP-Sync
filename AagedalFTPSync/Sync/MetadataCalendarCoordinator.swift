@@ -100,6 +100,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     private var refreshAllQueued = false
     private var refreshAllManual = false
     private let changeDebounce: Duration
+    private let waitForChangeDebounce: @Sendable (Duration) async throws -> Void
     private let now: () -> Date
     private struct ConnectionRetry {
         var failures: Int
@@ -112,12 +113,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
 
     init(repository: MetadataCalendarRepository = MetadataCalendarRepository(), keychain: KeychainStore = KeychainStore(),
          changeDebounce: Duration = .milliseconds(500),
+         waitForChangeDebounce: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          now: @escaping () -> Date = Date.init,
          transport: @escaping Transport = { body, address, id, key, setup in
              try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup)
          }) {
         self.transport = transport
         self.changeDebounce = changeDebounce
+        self.waitForChangeDebounce = waitForChangeDebounce
         self.now = now
         self.repository = repository
         self.eventRepository = MetadataSyncEventRepository(url: repository.eventsURL, storageFormat: repository.storageFormat)
@@ -162,6 +165,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         self.eventRepository = eventRepository
         self.keychain = keychain
         self.changeDebounce = changeDebounce
+        self.waitForChangeDebounce = { try await Task.sleep(for: $0) }
         self.now = now
         self.transport = transport
         self.state = state
@@ -188,10 +192,16 @@ final class MetadataCalendarCoordinator: ObservableObject {
                     self?.changeTask?.cancel()
                     self?.changeTask = Task { @MainActor [weak self] in
                         guard !Task.isCancelled, let self else { return }
-                        let jobIDs = self.jobsNeedingSyncAfterEdit()
-                        do { try await Task.sleep(for: self.changeDebounce) } catch { return }
+                        // Show pending state promptly, but do not retain this work
+                        // list: a manual refresh may commit it during the debounce.
+                        _ = self.jobsNeedingSyncAfterEdit()
+                        do { try await self.waitForChangeDebounce(self.changeDebounce) } catch { return }
+                        guard !Task.isCancelled else { return }
                         self.changeTask = nil
-                        for id in jobIDs { await self.refresh(jobID: id, automatic: true) }
+                        for id in self.jobsNeedingSyncAfterEdit() {
+                            guard !Task.isCancelled else { return }
+                            await self.refresh(jobID: id, automatic: true)
+                        }
                     }
                 }
         }
