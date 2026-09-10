@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Immutable legacy JSON/SQLite/name-map conversion and durable mapping registration implemented at 057cdc0 alongside prior processing/storage prerequisites. Full app suite: 603 passed, 15 opt-in skips, zero failures; unchanged package: 33 tests pass. Production source selection, dynamic validation, root selection, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
+  "note": "Current registered-map admission and v1 signature JSON conversion implemented at 3d62862 alongside prior processing/storage prerequisites. Full app suite: 621 passed, 15 opt-in skips, zero failures; final conformance-only fix: 13 affected tests pass. Production source acquisition/startup/root selection, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
 }
