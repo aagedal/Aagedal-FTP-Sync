@@ -323,16 +323,21 @@
       "title": "Verify versioned stores and safe downgrade recovery",
       "prerequisites": "A backed-up isolated 2.9 profile, 2.9 and 3.0 binaries, and the documented downgrade procedure; never use the production user profile.",
       "steps": [
-        "Upgrade the isolated profile, activate and save a new variable template, and quit 3.0 cleanly.",
-        "Inspect documented store paths and backup metadata to confirm template source and activation/version markers are retained together.",
-        "Launch 2.9 using the documented downgrade workflow and inspect recovered jobs, presets and calendars without enabling transfers.",
-        "Confirm 2.9 cannot reinterpret or overwrite 3.0 template-enabled storage, then reopen 3.0 and verify its saved state remains usable.",
-        "Repeat a documented interrupted-migration/recovery fixture and inspect the resulting storage state."
+        "Quit all other copies of FTP Sync. Launch the candidate against the supplied isolated 2.9 fixture and open Startup and Recovery from its menu-bar item. Before continuing, open Jobs, Metadata Programming and Settings: each must show startup/recovery rather than editable default libraries.",
+        "In Prepare your saved data for 3.0, review every library source. Use a fixture with a missing primary and retained backup: the source picker must say Choose a source until you explicitly select that backup. Choose the appropriate Original file history format, acknowledge that other copies are closed, and click Prepare 3.0 Copy.",
+        "After admission, verify the expected saved jobs and literal text. Jobs must remain stopped and calendar sync paused; inspect the Startup and Recovery window before deliberately starting calendar sync against the disposable server.",
+        "Activate and save a new variable template once that feature is available in the candidate, then quit 3.0 cleanly.",
+        "Inspect documented store paths and backup metadata to confirm template source and activation/version markers are retained together. Relaunch and use Open Saved 3.0 Data; the current state must be validated without importing later edits to retained 2.9 files.",
+        "Launch 2.9 using the documented downgrade workflow and inspect recovered jobs, presets and calendars without enabling transfers. Quit it before returning to 3.0. Confirm it cannot reinterpret or overwrite 3.0 template-enabled storage.",
+        "Repeat a documented interrupted-migration fixture and choose Recover Prepared Copy. Verify the frozen source selection is recovered even if the legacy files changed afterward. Missing or corrupt committed data must show recovery details, never empty replacement libraries.",
+        "With only disposable jobs/files, exercise the supplied second-copy detection fixture. The menu must show an attention icon and open recovery, new work must be blocked, and calendar sync must pause. Closing the extra copy must not silently resume this runtime; quit and reopen after any active cancellation settles."
       ],
       "expected": [
         "A consistent 2.9 backup is recoverable and the documented downgrade boundary protects new templates.",
         "Returning to 2.9 clearly restores older settings; 3.0 state is not silently corrupted.",
-        "Failed/interrupted migration preserves a recoverable prior state."
+        "Failed/interrupted migration preserves a recoverable prior state.",
+        "Source selection is explicit, all store-backed scenes wait for admission, and first startup preserves saved launch choices while keeping work paused.",
+        "An observed writer conflict remains latched until relaunch; cooperative cancellation is not reported as an instantaneous drain or permission to release storage ownership."
       ],
       "required": true
     },

@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Atomic opt-in bootstrap and physical startup paths implemented at 33e4b0a; calendar debounce echo fixed at ae2c3eb. Full app suite: 698 passed, 15 opt-in skips, zero failures. Production scene wiring, continuous older-writer exclusion, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
+  "note": "Production startup, explicit source selection and recovery implemented at 1bd6c1f. Full app suite: 717 passed, 15 opt-in skips, zero failures. Native QA selection timed out; no GUI gate passed. Continuous older-writer exclusion, activation and release validation remain incomplete. Freeze candidate identity before final testing."
 }
