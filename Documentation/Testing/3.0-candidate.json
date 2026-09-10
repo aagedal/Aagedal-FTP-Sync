@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "App-linked processing core/literal snapshots, strict original-capture reader, proleptic date formatting, storage layouts and opt-in migration/SQLite snapshot/v3 JSON adapters are implemented at c0de968. Full app suite: 551 passed, 15 opt-in skips, zero failures; package: 33 tests pass. Activated UI/context integration, production migrations and release validation remain incomplete. Freeze candidate identity before final testing."
+  "note": "Processing core/literal snapshots, strict capture dates, safe legacy IPTC Unicode writing and opt-in v3 JSON/SQLite/name-map storage prerequisites are implemented at 3970874. Full app suite: 575 passed, 15 opt-in skips, zero failures; unchanged package: 33 tests pass. Production conversion/registry/root selection, activated UI and release validation remain incomplete. Native computer selection timed out without UI evidence. Freeze candidate identity before final testing."
 }
