@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Runtime v3 mapping admission, strict paused calendar construction and cooperative lifetime lease implemented at 14e2e1f. Full app suite: 685 passed, 15 opt-in skips, zero failures. Production bootstrap, older-process exclusion, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
+  "note": "Atomic opt-in bootstrap and physical startup paths implemented at 33e4b0a; calendar debounce echo fixed at ae2c3eb. Full app suite: 698 passed, 15 opt-in skips, zero failures. Production scene wiring, continuous older-writer exclusion, activated UI and release validation remain incomplete. No new GUI evidence. Freeze candidate identity before final testing."
 }
