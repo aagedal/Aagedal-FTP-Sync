@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Saved processing-zone settings, existing/proposed metadata comparison and audit context disclosure implemented at cab50f3. Full suite: 846 passed, 15 opt-in skips, zero failures. Native desktop was reserved by the active companion coordinator; prior UI-test authentication limit remains. Geocoding/face integration, protocol3 sharing, native/supported-OS and release gates remain incomplete. No manual gate advanced."
+  "note": "Activated scheduled GPS preservation, strict coordinate reading, bounded XMP validation and private audit decisions implemented at ef154f3. Full suite: 868 passed, 15 opt-in skips, zero failures after fixing corrupt-XMP acceptance and exact-60-second EXIF rounding. Desktop deferred for active companion native testing. Standalone geocoding/face integration, protocol3 sharing, native/supported-OS and release gates remain incomplete. No manual gate advanced."
 }

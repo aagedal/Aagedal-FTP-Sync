@@ -229,19 +229,22 @@
       "id": "m2-002",
       "section": "M2 — Reverse geocoding",
       "title": "Resolve complete GPS pairs with correct source precedence",
-      "prerequisites": "Embedded and RAW fixtures with conflicting valid EXIF/XMP pairs, a valid XMP-only pair, invalid/incomplete pairs, and a schedule capable of GPS fill-empty and overwrite.",
+      "prerequisites": "Embedded and RAW fixtures with conflicting valid EXIF/XMP pairs, a valid XMP-only pair, invalid/incomplete pairs, and a schedule capable of GPS fill-empty and overwrite. For the activated processing path, enable Resolve Variables in a disposable clip Headline using {photographer}, save a Processing time zone on the job, and use a matching test photographer. The scheduled-GPS correction is implemented; standalone geocoding and no-scheduled-GPS coordinate evidence remain integration gates.",
       "steps": [
         "Record the expected complete effective pair for each fixture: RAW prefers valid XMP; embedded images prefer valid EXIF with XMP fallback.",
         "Preview and transfer with scheduled GPS disabled, then compare the selected coordinate source and conflict reporting.",
         "Repeat with a valid scheduled replacement under preserve/fill-empty and overwrite policies.",
         "Include a RAW fixture whose existing sidecar has no GPS but embedded EXIF has a complete valid pair. With scheduled fill-empty, confirm both the lookup and final GPS preserve the embedded pair; repeat with scheduled overwrite.",
+        "Select the RAW row in preview: Existing value must show the embedded camera GPS even when its sidecar contains no GPS. After processing, expand Processing details in the audit and inspect selected location source, disagreement, invalid-source and scheduled proposal/preservation messages. A proposal is not proof of successful publication; check the file and operation status separately.",
+        "Use disposable malformed GPS fixtures, including an EXIF latitude with one rational instead of three and invalid direction references. Under activated fill-empty with a valid scheduled pair and no other valid pair, verify the scheduled pair is actually written while unrelated filled fields remain unchanged. Invalid scheduled GPS must be omitted and mark resolution incomplete.",
         "Test latitude-only EXIF combined with longitude-only XMP and confirm the app does not construct a synthetic pair.",
         "Compare geocoded output and final GPS against the recorded expected pair for each run."
       ],
       "expected": [
         "The correct whole pair drives one lookup and valid source conflicts are recorded.",
         "Scheduled GPS supersedes existing coordinates only when its write policy permits it.",
-        "Coordinates are never assembled from unrelated sources."
+        "Coordinates are never assembled from unrelated sources.",
+        "Raw audit evidence stores source and policy decisions without numeric coordinate pairs. Legacy literal schedules keep their previous sidecar write behavior; activating variables opts into the corrected coordinate resolution path."
       ],
       "required": true
     },
