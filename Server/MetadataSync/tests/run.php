@@ -66,3 +66,5 @@ $failure = request('POST', $key, $action);
 verify($failure[0] === 503 && !str_contains($failure[2], 'local-test-only'), 'Missing schema gives a bounded error without credentials');
 echo "All hosting integration checks passed.\n";
 require __DIR__ . '/live.php';
+
+require __DIR__ . '/templates.php';

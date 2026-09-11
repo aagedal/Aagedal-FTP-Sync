@@ -31,6 +31,7 @@
 		1DB2D9D4B7FBCDEC3164FC84 /* MetadataPreviewAndRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2153155F850DC3D8E89847FE /* MetadataPreviewAndRecoveryTests.swift */; };
 		1E170736D9479384B73197DD /* AppStorageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0F72DD22CD6008F168834B5 /* AppStorageLayout.swift */; };
 		21D2F698B936793A5A20B14B /* VersionedRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F90079927622715BF02539C9 /* VersionedRepositoryTests.swift */; };
+		220959C52BC659698D26471C /* MetadataCalendarProtocol3ClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACEA8673B657D6551A67B513 /* MetadataCalendarProtocol3ClientTests.swift */; };
 		22BD502CBC16C803C3A26C19 /* JobProcessingTimeZoneEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C10ECA73CE2E422B772B13C /* JobProcessingTimeZoneEditingTests.swift */; };
 		232530E47CDEBD0A8D35EA9D /* EndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6F8355FC14D367480034FA8 /* EndpointSession.swift */; };
 		24D31589FC2F7FD31749C35E /* AppStorageLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */; };
@@ -157,6 +158,7 @@
 		C2F639F1B66CDCC841EA3927 /* PhotographerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BEF64F5094273F5CED52D82 /* PhotographerProfileRepository.swift */; };
 		C362A55DC6EC0537A118D6EE /* BookmarkAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5447B2211E64F445CD7DE075 /* BookmarkAccess.swift */; };
 		C59FEB0268DFF93AFE0BAA03 /* UploadNamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A3135E3B7AE16B13F9085BD /* UploadNamingTests.swift */; };
+		C6435BD2717C728AA8AA81F8 /* MetadataCalendarProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12E7F8C68183376271E1C4F /* MetadataCalendarProtocol.swift */; };
 		C66E4381C7CA8F6FBE290F3B /* ConfigurationTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73E4E8584F7A5AFA53BC9190 /* ConfigurationTransfer.swift */; };
 		C9EDCB099A8BF469B146AE0E /* JobDetailEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A76827BE4BCD54BAAE42FE36 /* JobDetailEditor.swift */; };
 		CA34F3079F56DC562248F942 /* EndpointEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A1B40E9EED67D6C74811BBE /* EndpointEditor.swift */; };
@@ -192,6 +194,7 @@
 		F8C31932D7512A3CE6FFFA28 /* Version3StartupPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E0F6252E7626CC54BA2939F /* Version3StartupPaths.swift */; };
 		F9587CBD6566871E67AB6A61 /* ServerProfileRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = D288034277BC7727C71C3304 /* ServerProfileRepository.swift */; };
 		FB1A07E51A16C9E7FD4F322D /* MetadataCalendarMerge.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */; };
+		FB716EB7F7C7B3EB53163A03 /* MetadataCalendarProtocolModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 393ED60149A90C7A28C835AA /* MetadataCalendarProtocolModelTests.swift */; };
 		FC5D9F525374D486F51FB078 /* MetadataOfflineProcessingCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FE4B81455691FED65804019 /* MetadataOfflineProcessingCoordinatorTests.swift */; };
 		FD6B4E4D3B7906C933964D9C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B2745B822AD45CDF06BB3463 /* Assets.xcassets */; };
 		FFAAC76304EE632FFD35DC19 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */; };
@@ -257,6 +260,7 @@
 		329E3435991E5099C5DB51A6 /* PhotographerSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerSettingsView.swift; sourceTree = "<group>"; };
 		3452533D474B065274D589DA /* ResolvedMetadataChanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResolvedMetadataChanges.swift; sourceTree = "<group>"; };
 		380E86E55A1D533A07FC5E58 /* DownloadNameMappingStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNameMappingStorage.swift; sourceTree = "<group>"; };
+		393ED60149A90C7A28C835AA /* MetadataCalendarProtocolModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarProtocolModelTests.swift; sourceTree = "<group>"; };
 		3B07ADB5A0D82B2900ADF5DB /* MetadataCalendarClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarClient.swift; sourceTree = "<group>"; };
 		3B588FB6CFBA90DBCC09B4F2 /* OfflineMetadataGeocodingProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineMetadataGeocodingProviderTests.swift; sourceTree = "<group>"; };
 		3B6E699622BD45D4E5BDCAE2 /* DownloadNameMappingRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNameMappingRegistry.swift; sourceTree = "<group>"; };
@@ -355,6 +359,7 @@
 		A83544A59B9CCAA0045D0C01 /* AagedalFTPSyncUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AagedalFTPSyncUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManifestRepository.swift; sourceTree = "<group>"; };
 		ABE88DF137448C1739A2ECE4 /* MetadataTemplateKeywordsDraftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataTemplateKeywordsDraftTests.swift; sourceTree = "<group>"; };
+		ACEA8673B657D6551A67B513 /* MetadataCalendarProtocol3ClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarProtocol3ClientTests.swift; sourceTree = "<group>"; };
 		AED8A942C6CBC2911165A52D /* JobsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobsWindowView.swift; sourceTree = "<group>"; };
 		B2745B822AD45CDF06BB3463 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedStoreCodec.swift; sourceTree = "<group>"; };
@@ -364,6 +369,7 @@
 		BC25AACD3C7F08B23B371518 /* FileFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileFilterTests.swift; sourceTree = "<group>"; };
 		BF900C39827A06F26F21FF1A /* AagedalFTPSyncSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AagedalFTPSyncSmokeTests.swift; sourceTree = "<group>"; };
 		BFAC78A600793F68ED7DA500 /* Version3SignatureConversionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3SignatureConversionTests.swift; sourceTree = "<group>"; };
+		C12E7F8C68183376271E1C4F /* MetadataCalendarProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarProtocol.swift; sourceTree = "<group>"; };
 		C14F7A0C710D70D36A49F620 /* MetadataGeocodingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingSettings.swift; sourceTree = "<group>"; };
 		C32736AE6B9B34F74267A9AF /* PhotographerProfileRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerProfileRepositoryTests.swift; sourceTree = "<group>"; };
 		C4361B07FCB5CAEA92777F35 /* Version3JSONStoreConversion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3JSONStoreConversion.swift; sourceTree = "<group>"; };
@@ -468,6 +474,7 @@
 				8DF972CA42278237F9D4F9F1 /* MetadataAudit.swift */,
 				F02E14B784149DDFFF502ADA /* MetadataAutomation.swift */,
 				F14DE83CA5F0B7929D0D911F /* MetadataCalendarMerge.swift */,
+				C12E7F8C68183376271E1C4F /* MetadataCalendarProtocol.swift */,
 				C14F7A0C710D70D36A49F620 /* MetadataGeocodingSettings.swift */,
 				2E65EC551E128F2CEA855514 /* MetadataPreset.swift */,
 				1827F74FB21B975949149778 /* MetadataSyncActivity.swift */,
@@ -639,6 +646,8 @@
 				E45C7CB10B1E196CE6CF8CD5 /* MetadataAutomationTests.swift */,
 				9C80FA23E6C80A52EE89914F /* MetadataCalendarActivationTests.swift */,
 				4011BEBA189EEEF704BB661B /* MetadataCalendarPausedStartupTests.swift */,
+				ACEA8673B657D6551A67B513 /* MetadataCalendarProtocol3ClientTests.swift */,
+				393ED60149A90C7A28C835AA /* MetadataCalendarProtocolModelTests.swift */,
 				2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */,
 				0DAF6689426FB90A37C65C06 /* MetadataCoordinateReaderTests.swift */,
 				E97321D663D13186B49EA810 /* MetadataExistingPreviewTests.swift */,
@@ -911,6 +920,8 @@
 				A3FE2D8BFC1145F0C306FAE4 /* MetadataAutomationTests.swift in Sources */,
 				69BD4C815EF96D98504A78EF /* MetadataCalendarActivationTests.swift in Sources */,
 				79BA78E24FD4D324D48DC134 /* MetadataCalendarPausedStartupTests.swift in Sources */,
+				220959C52BC659698D26471C /* MetadataCalendarProtocol3ClientTests.swift in Sources */,
+				FB716EB7F7C7B3EB53163A03 /* MetadataCalendarProtocolModelTests.swift in Sources */,
 				15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */,
 				A7FC7DBB95864DE714EE3F9F /* MetadataCoordinateReaderTests.swift in Sources */,
 				823F5A319880F7A836622FC6 /* MetadataExistingPreviewTests.swift in Sources */,
@@ -1021,6 +1032,7 @@
 				461067BAB3C6EAB6B24624C3 /* MetadataCalendarConflictView.swift in Sources */,
 				3FC3B92D73172536B5F71B13 /* MetadataCalendarCoordinator.swift in Sources */,
 				FB1A07E51A16C9E7FD4F322D /* MetadataCalendarMerge.swift in Sources */,
+				C6435BD2717C728AA8AA81F8 /* MetadataCalendarProtocol.swift in Sources */,
 				419BC164587DE64BDE6DC3D5 /* MetadataCalendarSettingsView.swift in Sources */,
 				4BECE2C7328FEDA45ED1787E /* MetadataCaptureDateReader.swift in Sources */,
 				BC29F5DC3FD064E95035D580 /* MetadataCoordinateReader.swift in Sources */,

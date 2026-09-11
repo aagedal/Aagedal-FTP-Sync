@@ -22,8 +22,8 @@ HTTPS protects transport. Calendar contents are stored as ordinary JSON in the d
 
 ## Install or upgrade
 
-1. Import `schema.sql` and `schema-live-sync.sql` into the dedicated database, using phpMyAdmin or the MySQL CLI. Both are additive and use `CREATE TABLE IF NOT EXISTS`. For an existing hosting-check installation, import only `schema-live-sync.sql`.
-2. Upload **both** `public/index.php` and `public/live.php` into the endpoint's public directory. Preserve any existing deployment-specific `$configPath` assignment in `index.php` when upgrading. Do not upload the repository, tests, SQL files, credentials or key files into that directory.
+1. Import `schema.sql`, `schema-live-sync.sql`, and then `schema-template-sync.sql` into the dedicated database, using phpMyAdmin or the MySQL CLI. All are additive and use `CREATE TABLE IF NOT EXISTS`. For an existing hosting-check installation, import both live-sync and template-sync migrations.
+2. Upload `public/index.php`, `public/live.php`, and `public/templates.php` into the endpoint's public directory. Preserve any existing deployment-specific `$configPath` assignment in `index.php` when upgrading. Do not upload the repository, tests, SQL files, credentials or key files into that directory.
 3. For a new installation, run `python3 create-config.py` locally. It prompts for the database connection and creates `config.php` and `hosting-check-key.txt` with owner-only permissions. They are ignored by Git. Existing installations keep their current config and key.
 4. Put `config.php` outside all public web roots. The generic layout is:
 
@@ -75,7 +75,7 @@ Test this implementation with disposable programming before using it to drive li
 | --- | --- |
 | TLS error or redirect | Certificate and final HTTPS base URL; do not disable certificate checks. |
 | HTML instead of JSON | Document root and PHP execution. Remove files if PHP source is exposed. |
-| Hosting works, sync fails | Upload `live.php`, import the additive live schema, and check private configuration. |
+| Hosting works, sync fails | Upload `live.php` and `templates.php`, import both additive live/template schemas, and check private configuration. |
 | First-device setup rejected | Enable bootstrap, use the correct setup key, or use an invitation if an owner already registered. |
 | 401 | Correct device identity and Keychain credential. The setup key is not a device key. |
 | 403 | Role/range restriction, revoked membership or invalid invitation. |
@@ -121,3 +121,62 @@ docker compose -p aftpsync-native -f Server/MetadataSync/tests/compose.yaml \
 ```
 
 This exercises invitation registration, receiving into a differently named job, offline edits from two independent coordinators, and a third editor with date-limited access. The test uses the production JSON encoder/decoder with a test-only loopback HTTP transport; normal app connections still require HTTPS. Run the cleanup command even if a test fails, and start fresh before rerunning because first-device registration is single-use.
+
+
+## Protocol 3 template namespace (foundation)
+
+The server also implements the protocol-three contract in
+`Documentation/Testing/3.0-M0-Template-Compatibility.md`. The app's legacy calendar
+coordinator remains guarded until its explicit create-and-rebind migration is
+implemented and verified; installing this server does not activate sharing.
+
+Import the additive `schema-template-sync.sql` **after** the existing live schema
+and before uploading the upgraded PHP files. It creates separate
+`aftpsync_v3_calendars`, `aftpsync_v3_members`, and `aftpsync_v3_invites` tables.
+Device credentials are shared, but calendar contents, permissions and invitation
+tokens never fall back between namespaces. No existing calendar is upgraded in
+place. Create a new UUID, retain the old literal calendar unchanged, and bind only
+a capable client's converted local storage after successful creation. This keeps
+old offline caches and rolled-back server code away from activated sources.
+
+Every v3 request supplies `X-Aagedal-Protocol: 3` and JSON
+`capabilities: ["metadata-templates-v1"]`. Authenticate `getCapabilities` at the
+current endpoint before sending template content. It returns supported document
+schemas `[1,3]` and template languages `[1]` without a document; every v3 envelope
+includes the capability declaration. The schema must be installed for this probe
+to succeed. Protocol-two requests retain their existing literal payload shape.
+Each protocol lists only its own calendars.
+
+V3 create/put require `documentSchemaVersion: 3`. Snapshots and list summaries
+carry `documentSchemaVersion: 3`, `minimumClientProtocol: 3`, and
+`requiredCapabilities: ["metadata-templates-v1"]`. Those requirements stay fixed
+even when every field becomes literal. Explicit marker version 1 activates
+copyright (`copyrightTemplateVersion`) or headline/description/keywords
+(`templateVersions`). The server validates the same bounded brace/token syntax,
+keeps exact source strings and keyword arrays, and never resolves variables.
+Existing server field-byte and array-count limits still apply.
+
+For retained records, removing a marker requires a matching
+`templateDeactivations` entry with `recordKind` (`clip` or `photographer`),
+`recordID`, `field` (`headline`, `description`, `keywords`, or `copyrightNotice`),
+and `previousVersion: 1`. Missing, duplicate, or extra transitions fail with
+`template_activation_lost`. Whole-record deletion needs no transition. A matching
+revision, membership, role and range are still required.
+
+Compatibility gates precede snapshots, conflict payloads, invitation redemption,
+and create retries. Authorized incompatible clients receive document-free
+`client_upgrade_required`; unauthorized resource requests retain generic denial.
+Creation serializes across both namespaces to reject UUID reuse. If an old server
+creates a colliding legacy UUID during rollback, the upgraded server omits it
+from listings and quarantines v3 access with `namespace_collision`. Resolve such
+a collision through a reviewed migration; never merge tables or expose a SQL
+compatibility view.
+
+The disposable compose suite includes exact old PHP fixtures from commit
+`a9a5a14` on an internal-only rollback server. It checks v2 compatibility, v3
+capability and schema gates, marker validation and deactivation, range-preserving
+edits, rollback reads/writes/invitations, and collision quarantine. Eight concurrent
+creation races use different owners and four disposable PHP workers; a database
+barrier verifies both requests reached the shared lock before allowing one to win. No host port is
+published by the standard suite. Run results must be recorded separately; the
+presence of these fixtures is not a deployment or test-pass claim.

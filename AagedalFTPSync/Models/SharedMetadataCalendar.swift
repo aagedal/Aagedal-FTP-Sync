@@ -116,6 +116,7 @@ struct SharedMetadataCalendar: Codable, Equatable, Identifiable, Sendable {
     var rangeStart: Date?
     var rangeEnd: Date?
     var document: SharedMetadataDocument
+    var compatibility: MetadataCalendarCompatibility = .legacy
     var range: MetadataSharingRange? {
         guard let rangeStart, let rangeEnd else { return nil }
         return MetadataSharingRange(start: rangeStart, end: rangeEnd)
@@ -127,6 +128,66 @@ struct MetadataCalendarSummary: Codable, Identifiable, Sendable {
     var name: String
     var timeZone: String
     var role: String
+    var compatibility: MetadataCalendarCompatibility = .legacy
+}
+
+extension SharedMetadataCalendar {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, timeZone, revision, role, rangeStart, rangeEnd, document
+    }
+
+    init(from decoder: Decoder) throws {
+        compatibility = try MetadataCalendarCompatibility.decodeHeaders(from: decoder)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        timeZone = try values.decode(String.self, forKey: .timeZone)
+        revision = try values.decode(Int64.self, forKey: .revision)
+        role = try values.decode(String.self, forKey: .role)
+        rangeStart = try values.decodeIfPresent(Date.self, forKey: .rangeStart)
+        rangeEnd = try values.decodeIfPresent(Date.self, forKey: .rangeEnd)
+        document = try values.decode(SharedMetadataDocument.self, forKey: .document)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try compatibility.encodeHeaders(to: encoder)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(name, forKey: .name)
+        try values.encode(timeZone, forKey: .timeZone)
+        try values.encode(revision, forKey: .revision)
+        try values.encode(role, forKey: .role)
+        try values.encodeIfPresent(rangeStart, forKey: .rangeStart)
+        try values.encodeIfPresent(rangeEnd, forKey: .rangeEnd)
+        try values.encode(document, forKey: .document)
+    }
+
+    func validateCompatibility(for selectedProtocol: MetadataCalendarProtocol) throws {
+        guard compatibility.protocolVersion == selectedProtocol else {
+            throw MetadataTemplateRecordError.invalidSource
+        }
+        if selectedProtocol == .legacy { try LegacyMetadataCalendarGate.validate(document) }
+    }
+}
+
+extension MetadataCalendarSummary {
+    private enum CodingKeys: String, CodingKey { case id, name, timeZone, role }
+    init(from decoder: Decoder) throws {
+        compatibility = try MetadataCalendarCompatibility.decodeHeaders(from: decoder)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        timeZone = try values.decode(String.self, forKey: .timeZone)
+        role = try values.decode(String.self, forKey: .role)
+    }
+    func encode(to encoder: Encoder) throws {
+        try compatibility.encodeHeaders(to: encoder)
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(name, forKey: .name)
+        try values.encode(timeZone, forKey: .timeZone)
+        try values.encode(role, forKey: .role)
+    }
 }
 
 struct MetadataCalendarMember: Codable, Identifiable, Sendable {
@@ -147,16 +208,22 @@ enum LegacyMetadataCalendarGate {
 
     static func validate(_ document: SharedMetadataDocument) throws { try validate(document.automation) }
 
+    static func validate(_ calendar: SharedMetadataCalendar) throws {
+        // A literal document in the new namespace must never reopen via old routing.
+        guard calendar.compatibility == .legacy else { throw MetadataTemplateRecordError.invalidSource }
+        try validate(calendar.document)
+    }
+
     static func validate(_ proposal: MetadataCalendarReceiveProposal) throws {
-        try validate(proposal.calendar.document)
+        try validate(proposal.calendar)
         if let source = proposal.source.metadataAutomation { try validate(source) }
         if let duplicate = proposal.duplicate.metadataAutomation { try validate(duplicate) }
     }
 
     static func validate(_ state: MetadataCalendarState) throws {
         for binding in state.bindings {
-            try validate(binding.snapshot.document)
-            if let conflict = binding.conflict { try validate(conflict.document) }
+            try validate(binding.snapshot)
+            if let conflict = binding.conflict { try validate(conflict) }
         }
         if let pending = state.pendingReceive { try validate(pending) }
     }

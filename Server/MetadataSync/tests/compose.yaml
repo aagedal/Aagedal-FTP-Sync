@@ -11,15 +11,26 @@ services:
     volumes:
       - ../schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
       - ../schema-live-sync.sql:/docker-entrypoint-initdb.d/schema-live-sync.sql:ro
+      - ../schema-template-sync.sql:/docker-entrypoint-initdb.d/schema-template-sync.sql:ro
     healthcheck:
       test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
       interval: 2s
       timeout: 5s
       retries: 30
   server:
+    environment:
+      PHP_CLI_SERVER_WORKERS: "4"
     build:
       context: ..
       dockerfile: tests/Dockerfile
+    depends_on:
+      database:
+        condition: service_healthy
+  legacy-server:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile
+    command: [php, -S, '0.0.0.0:8080', -t, /srv/legacy/public]
     depends_on:
       database:
         condition: service_healthy
@@ -30,4 +41,6 @@ services:
     command: [php, tests/run.php]
     depends_on:
       server:
+        condition: service_started
+      legacy-server:
         condition: service_started
