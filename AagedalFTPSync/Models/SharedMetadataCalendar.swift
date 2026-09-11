@@ -231,3 +231,117 @@ enum LegacyMetadataCalendarGate {
         if let pending = state.pendingReceive { try validate(pending) }
     }
 }
+
+/// Namespace-aware validation does not activate sync or choose a storage format.
+/// Protocol 2 remains literal even inside a version-3 local store.
+enum MetadataCalendarNamespaceGate {
+    static func validate(_ automation: MetadataAutomation, for protocolVersion: MetadataCalendarProtocol) throws {
+        if protocolVersion == .legacy { try LegacyMetadataCalendarGate.validate(automation); return }
+        for profile in automation.photographers { _ = try profile.validatedCopyright }
+        for clip in automation.clips {
+            _ = try clip.fields.validatedHeadline
+            _ = try clip.fields.validatedDescription
+            _ = try clip.fields.validatedKeywords
+            try validateDate(clip.startsAt, requireMilliseconds: false)
+            try validateDate(clip.endsAt, requireMilliseconds: false)
+        }
+        _ = try SharedMetadataDocument(automation).validated()
+    }
+
+    static func validate(_ calendar: SharedMetadataCalendar) throws {
+        if calendar.compatibility == .legacy { try LegacyMetadataCalendarGate.validate(calendar); return }
+        guard calendar.compatibility == .templates, calendar.revision >= 0,
+              ["owner", "editor", "reader"].contains(calendar.role),
+              TimeZone(identifier: calendar.timeZone) != nil,
+              !calendar.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (calendar.rangeStart == nil) == (calendar.rangeEnd == nil) else {
+            throw MetadataTemplateRecordError.invalidSource
+        }
+        // A durable local create intent uses revision zero. Network responses
+        // must still pass the client's positive-revision check before storage.
+        if calendar.revision == 0 {
+            guard calendar.role == "owner", calendar.rangeStart == nil, calendar.rangeEnd == nil else {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+        }
+        if let start = calendar.rangeStart, let end = calendar.rangeEnd {
+            try validateDate(start); try validateDate(end)
+            guard start < end else { throw MetadataTemplateRecordError.invalidSource }
+        }
+        for clip in calendar.document.clips {
+            try validateDate(clip.startsAt); try validateDate(clip.endsAt)
+        }
+        try validate(calendar.document.automation, for: .templates)
+    }
+
+    static func validate(_ binding: MetadataCalendarBinding) throws {
+        try validate(binding.snapshot)
+        if let range = binding.publicationRange {
+            try validateDate(range.start); try validateDate(range.end)
+            guard range.start < range.end else { throw MetadataTemplateRecordError.invalidSource }
+        }
+        if let conflict = binding.conflict {
+            try validate(conflict)
+            guard conflict.revision > 0, conflict.id == binding.snapshot.id,
+                  conflict.compatibility == binding.snapshot.compatibility else {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+            if binding.snapshot.compatibility == .templates {
+                guard conflict.timeZone == binding.snapshot.timeZone,
+                      conflict.range == binding.snapshot.range,
+                      conflict.revision >= binding.snapshot.revision else { throw MetadataTemplateRecordError.invalidSource }
+            }
+        }
+    }
+
+    static func validate(_ proposal: MetadataCalendarReceiveProposal) throws {
+        try validate(proposal.calendar)
+        if proposal.calendar.compatibility == .templates {
+            guard proposal.calendar.revision > 0, proposal.source.id != proposal.duplicate.id else {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+        }
+        if let source = proposal.source.metadataAutomation {
+            try validate(source, for: proposal.calendar.compatibility.protocolVersion)
+        }
+        if let duplicate = proposal.duplicate.metadataAutomation {
+            try validate(duplicate, for: proposal.calendar.compatibility.protocolVersion)
+        }
+    }
+
+    static func validate(_ state: MetadataCalendarState) throws {
+        for binding in state.bindings { try validate(binding) }
+        if let proposal = state.pendingReceive { try validate(proposal) }
+        for binding in state.bindings where binding.snapshot.compatibility == .templates {
+            guard state.accounts.filter({ $0.id == binding.accountID }).count == 1 else {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+        }
+        if let proposal = state.pendingReceive, proposal.calendar.compatibility == .templates {
+            guard state.accounts.filter({ $0.id == proposal.accountID }).count == 1 else {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+        }
+        // The same remote identity cannot be cached under different namespaces.
+        var namespaces: [String: MetadataCalendarCompatibility] = [:]
+        func register(_ snapshot: SharedMetadataCalendar, accountID: UUID) throws {
+            let key = accountID.uuidString + "/" + snapshot.id.uuidString
+            if let previous = namespaces[key], previous != snapshot.compatibility { throw MetadataTemplateRecordError.invalidSource }
+            namespaces[key] = snapshot.compatibility
+        }
+        for binding in state.bindings { try register(binding.snapshot, accountID: binding.accountID) }
+        if let proposal = state.pendingReceive { try register(proposal.calendar, accountID: proposal.accountID) }
+        for receipt in state.pendingMigrations {
+            try register(receipt.source.snapshot, accountID: receipt.source.accountID)
+            try register(receipt.proposedSnapshot, accountID: receipt.source.accountID)
+        }
+    }
+
+    private static func validateDate(_ date: Date, requireMilliseconds: Bool = true) throws {
+        let seconds = date.timeIntervalSince1970
+        guard seconds.isFinite, seconds >= 0, seconds <= 4_102_444_800,
+              !requireMilliseconds || date == Date(timeIntervalSince1970: (seconds * 1000).rounded() / 1000) else {
+            throw MetadataTemplateRecordError.invalidSource
+        }
+    }
+}

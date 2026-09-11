@@ -62,8 +62,9 @@ extension MetadataCalendarState {
         if !pendingMigrations.isEmpty { try values.encode(pendingMigrations, forKey: .pendingMigrations) }
     }
 
-    /// Pending creation freezes the old binding and endpoint. This foundation
-    /// deliberately does not yet admit a rebind or a protocol-3 live binding.
+    /// Pending creation freezes the old binding and endpoint. After the atomic
+    /// rebind, the immutable receipt retains provenance while the new baseline
+    /// may advance normally in the same namespace.
     func validateMigrationJournals() throws {
         guard !pendingMigrations.isEmpty else { return }
         guard Set(accounts.map(\.id)).count == accounts.count,
@@ -73,15 +74,29 @@ extension MetadataCalendarState {
         }
         for journal in pendingMigrations {
             try journal.validate()
-            guard journal.phase != .bindingCommitted,
-                  bindings.filter({ $0.jobID == journal.source.jobID }) == [journal.source],
-                  let account = accounts.first(where: { $0.id == journal.source.accountID }),
+            guard let account = accounts.first(where: { $0.id == journal.source.accountID }),
                   try MetadataSyncServer(address: account.address).baseURL.absoluteString == journal.serverAddress,
-                  !bindings.contains(where: { $0.id == journal.destinationID }),
                   pendingReceive?.calendar.id != journal.destinationID,
                   pendingReceive?.source.id != journal.source.jobID,
                   pendingReceive?.duplicate.id != journal.source.jobID else {
                 throw MetadataTemplateRecordError.invalidSource
+            }
+            let matching = bindings.filter { $0.jobID == journal.source.jobID }
+            if journal.phase == .bindingCommitted {
+                guard matching.count == 1, let current = matching.first, let confirmed = journal.confirmedSnapshot,
+                      current.accountID == journal.source.accountID, current.id == journal.destinationID,
+                      current.snapshot.compatibility == .templates,
+                      current.snapshot.timeZone == confirmed.timeZone, current.snapshot.range == confirmed.range,
+                      current.publicationRange == journal.source.publicationRange,
+                      current.snapshot.revision >= confirmed.revision,
+                      current.snapshot.revision != confirmed.revision || current.snapshot == confirmed else {
+                    throw MetadataTemplateRecordError.invalidSource
+                }
+                try MetadataCalendarNamespaceGate.validate(current)
+            } else {
+                guard matching == [journal.source], !bindings.contains(where: { $0.id == journal.destinationID }) else {
+                    throw MetadataTemplateRecordError.invalidSource
+                }
             }
         }
     }
@@ -153,7 +168,16 @@ struct MetadataCalendarRepository {
                     throw MetadataTemplateRecordError.invalidSource
                 }
             }
+            for old in existingMigrations where old.phase == .serverConfirmed {
+                if let next = state.pendingMigrations.first(where: { $0.destinationID == old.destinationID }), next.phase == .bindingCommitted {
+                    guard let binding = state.bindings.first(where: { $0.jobID == old.source.jobID }),
+                          try old.markBindingCommitted(binding) == next else {
+                        throw MetadataTemplateRecordError.invalidSource
+                    }
+                }
+            }
         }
+        if let existingState { try validateNamespaceContinuity(from: existingState, to: state) }
         try beforeSave()
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try codec.encode(state, encoder: MetadataCalendarClient.encoder()).write(to: url, options: .atomic)
@@ -163,19 +187,52 @@ struct MetadataCalendarRepository {
     private func validate(_ state: MetadataCalendarState) throws {
         try state.validateMigrationJournals()
         if storageFormat == .legacy, !state.pendingMigrations.isEmpty { throw VersionedStoreCodec.HeaderError.requiresVersion3Storage }
-        var legacy = state
-        legacy.pendingMigrations = []
-        try LegacyMetadataCalendarGate.validate(legacy)
+        if storageFormat == .legacy {
+            try LegacyMetadataCalendarGate.validate(state)
+        } else {
+            try MetadataCalendarNamespaceGate.validate(state)
+        }
     }
 
     private func validateTransition(from previous: [MetadataCalendarMigrationJournal], to proposed: [MetadataCalendarMigrationJournal]) throws {
         for old in previous {
             guard let next = proposed.first(where: { $0.destinationID == old.destinationID }),
-                  old.source == next.source, old.serverAddress == next.serverAddress,
-                  old.phase == .prepared || old == next else { throw MetadataTemplateRecordError.invalidSource }
+                  old.source == next.source, old.serverAddress == next.serverAddress else { throw MetadataTemplateRecordError.invalidSource }
+            let allowed: Bool
+            switch old.phase {
+            case .prepared: allowed = next == old || next.phase == .serverConfirmed
+            case .serverConfirmed: allowed = next == old || next.phase == .bindingCommitted
+            case .bindingCommitted: allowed = next == old
+            }
+            guard allowed else { throw MetadataTemplateRecordError.invalidSource }
         }
         for added in proposed where !previous.contains(where: { $0.destinationID == added.destinationID }) {
             guard added.phase == .prepared else { throw MetadataTemplateRecordError.invalidSource }
+        }
+    }
+
+    private func validateNamespaceContinuity(from previous: MetadataCalendarState, to proposed: MetadataCalendarState) throws {
+        for old in previous.bindings {
+            for next in proposed.bindings where old.accountID == next.accountID && old.id == next.id {
+                guard old.snapshot.compatibility == next.snapshot.compatibility else { throw MetadataTemplateRecordError.invalidSource }
+                if old.snapshot.compatibility == .templates {
+                    guard next.snapshot.revision >= old.snapshot.revision,
+                          next.snapshot.revision != old.snapshot.revision || next.snapshot == old.snapshot else {
+                        throw MetadataTemplateRecordError.invalidSource
+                    }
+                }
+            }
+            if let next = proposed.pendingReceive, old.accountID == next.accountID, old.id == next.calendar.id {
+                guard old.snapshot.compatibility == next.calendar.compatibility else { throw MetadataTemplateRecordError.invalidSource }
+            }
+        }
+        if let old = previous.pendingReceive {
+            for next in proposed.bindings where old.accountID == next.accountID && old.calendar.id == next.id {
+                guard old.calendar.compatibility == next.snapshot.compatibility else { throw MetadataTemplateRecordError.invalidSource }
+            }
+            if let next = proposed.pendingReceive, old.accountID == next.accountID, old.calendar.id == next.calendar.id {
+                guard old.calendar.compatibility == next.calendar.compatibility else { throw MetadataTemplateRecordError.invalidSource }
+            }
         }
     }
 }

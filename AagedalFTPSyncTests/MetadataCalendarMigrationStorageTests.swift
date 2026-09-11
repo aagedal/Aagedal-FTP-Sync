@@ -132,7 +132,7 @@ final class MetadataCalendarMigrationStorageTests: XCTestCase {
         try assertRejectedWithoutMutation(f) { try f.repository.save(replaced, replacingMigrations: [f.journal]) }
     }
 
-    func testConfirmedReceiptDoesNotAdmitLiveV3BindingOrCommittedPhase() throws {
+    func testConfirmedReceiptRequiresAtomicCommittedRebindAndRetainsProvenance() throws {
         let f = try fixture()
         let confirmed = try f.journal.confirmCreated(f.journal.proposedSnapshot)
         var state = f.pending
@@ -142,10 +142,14 @@ final class MetadataCalendarMigrationStorageTests: XCTestCase {
         var rebound = f.journal.source
         rebound.snapshot = f.journal.proposedSnapshot
         state.bindings = [rebound]
+        try assertRejectedWithoutMutation(f) { try f.repository.save(state, replacingMigrations: [confirmed]) }
         state.pendingMigrations = [try confirmed.markBindingCommitted(rebound)]
-        try assertRejectedWithoutMutation(f) { try f.repository.save(state, replacingMigrations: [confirmed]) }
+        try f.repository.save(state, replacingMigrations: [confirmed])
+        XCTAssertEqual(try f.repository.load().bindings, [rebound])
+        XCTAssertEqual(try f.repository.load().pendingMigrations[0].source, f.journal.source)
+        let committed = state.pendingMigrations
         state.pendingMigrations = []
-        try assertRejectedWithoutMutation(f) { try f.repository.save(state, replacingMigrations: [confirmed]) }
+        try assertRejectedWithoutMutation(f) { try f.repository.save(state, replacingMigrations: committed) }
     }
 
     func testLegacyJournalPresenceIncludingEmptyOrNullRejectsBeforeMalformedSibling() throws {

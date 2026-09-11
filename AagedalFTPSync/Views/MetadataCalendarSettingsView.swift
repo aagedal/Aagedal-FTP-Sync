@@ -45,6 +45,16 @@ struct MetadataCalendarSettingsView: View {
 
     var body: some View {
         Form {
+            Section("Calendar type") {
+                Picker("Browse and create", selection: Binding(get: { sync.discoveryProtocol }, set: { sync.selectProtocol($0) })) {
+                    Text("Classic — compatible with 2.x").tag(MetadataCalendarProtocol.legacy)
+                    Text("Template-enabled — requires 3.0").tag(MetadataCalendarProtocol.templates)
+                }.disabled(sync.busy)
+                Text(sync.discoveryProtocol == .templates
+                     ? "Template-enabled calendars require an upgraded server and 3.0 on every participating Mac. They are separate calendars; existing classic calendars are not converted or mirrored."
+                     : "Classic calendars keep text literal, including braces. Choose template-enabled when creating a new calendar that will use metadata variables.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Calendar on this Mac") {
                 Picker("Local job", selection: $jobID) {
                     Text("Select a job").tag(nil as UUID?)
@@ -54,6 +64,8 @@ struct MetadataCalendarSettingsView: View {
                     let activity = sync.activity(for: binding.jobID)
                     Label(activity.phase.title, systemImage: activity.phase.symbol)
                     Text("Linked to “\(binding.snapshot.name)”").font(.headline)
+                    Text(binding.snapshot.compatibility == .templates ? "Template-enabled calendar" : "Classic calendar")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text(activity.detail).textSelection(.enabled)
                     if let date = activity.lastSuccess { Text("Last successful sync: \(date.formatted())").font(.caption) }
                     Button(activity.phase == .offline || activity.phase == .failed ? "Retry Now" : "Sync Now") {
@@ -136,6 +148,11 @@ struct MetadataCalendarSettingsView: View {
             if let id { calendarID = id; hasChosenCalendar = true }
         }
         .onChange(of: sync.calendars.map(\.id)) { _, _ in selectSuggestedCalendar() }
+        .onChange(of: sync.discoveryProtocol) { _, _ in
+            calendarID = nil
+            hasChosenCalendar = false
+            sync.clearSharingDetails()
+        }
         .onChange(of: sync.state.activeAccountID) { _, _ in
             address = sync.account?.address ?? savedAddress
             calendarID = nil
@@ -184,7 +201,7 @@ struct MetadataCalendarSettingsView: View {
             Text("Paste the whole copied invitation, including its server address, or enter the address and invitation code separately.")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Join Calendar") {
-                sync.register(address: address, deviceName: deviceName, setupKey: nil, invite: invite)
+                sync.register(address: address, deviceName: deviceName, setupKey: nil, invite: invite, protocolVersion: sync.discoveryProtocol)
                 invite = ""
             }.disabled(sync.busy || invite.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || deviceName.isEmpty)
             DisclosureGroup("Server administrator: connect the first Mac") {
@@ -194,7 +211,7 @@ struct MetadataCalendarSettingsView: View {
                 Button("Connect First Mac") {
                     calendarID = nil
                     hasChosenCalendar = true
-                    sync.register(address: address, deviceName: deviceName, setupKey: setupKey, invite: nil)
+                    sync.register(address: address, deviceName: deviceName, setupKey: setupKey, invite: nil, protocolVersion: sync.discoveryProtocol)
                     setupKey = ""
                 }.disabled(sync.busy || setupKey.isEmpty || address.isEmpty || deviceName.isEmpty)
             }
@@ -225,8 +242,8 @@ struct MetadataCalendarSettingsView: View {
             }
             Button("Activate Sync") {
                 guard let jobID else { return }
-                if let calendarID { sync.attach(calendarID: calendarID, jobID: jobID) }
-                else { sync.publish(jobID: jobID, name: calendarName, range: publicationRange) }
+                if let calendarID { sync.attach(calendarID: calendarID, jobID: jobID, protocolVersion: sync.discoveryProtocol) }
+                else { sync.publish(jobID: jobID, name: calendarName, range: publicationRange, protocolVersion: sync.discoveryProtocol) }
             }.disabled(sync.busy || jobID == nil || activationUnavailable)
             Text("Saved edits sync shortly after editing; updates from other Macs are checked about every 10 seconds while the app is open. Only calendar metadata is shared; file transfer settings, passwords and work hours stay on this Mac.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -253,7 +270,8 @@ struct MetadataCalendarSettingsView: View {
             if !sync.invitation.isEmpty {
                 Button("Copy Invitation") {
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString("Server: \(sync.account?.address ?? "")\nInvitation: \(sync.invitation)", forType: .string)
+                    let prefix = binding.snapshot.compatibility == .templates ? "Aagedal template calendar invitation\n" : ""
+                    NSPasteboard.general.setString(prefix + "Server: \(sync.account?.address ?? "")\nInvitation: \(sync.invitation)", forType: .string)
                 }
                 Text("Send this invitation privately. It works for one Mac and expires after 24 hours.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -277,7 +295,8 @@ struct MetadataCalendarSettingsView: View {
     }
 
     private func selectSuggestedCalendar() {
-        if let binding = selectedBinding, binding.accountID == sync.account?.id { calendarID = binding.id }
+        if let binding = selectedBinding, binding.accountID == sync.account?.id,
+           binding.snapshot.compatibility.protocolVersion == sync.discoveryProtocol { calendarID = binding.id }
         else if !hasChosenCalendar {
             calendarID = sync.suggestedCalendarID ?? (sync.calendars.count == 1 ? sync.calendars[0].id : nil)
         } else if let calendarID, !sync.calendars.contains(where: { $0.id == calendarID }) {

@@ -5,6 +5,7 @@ import Security
 @MainActor
 final class MetadataCalendarCoordinator: ObservableObject {
     @Published private(set) var state = MetadataCalendarState()
+    @Published private(set) var discoveryProtocol: MetadataCalendarProtocol = .legacy
     @Published private(set) var calendars: [MetadataCalendarSummary] = []
     @Published private(set) var members: [MetadataCalendarMember] = []
     @Published private(set) var busy = false
@@ -54,7 +55,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
          waitForChangeDebounce: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
          now: @escaping () -> Date = Date.init,
          transport: @escaping Transport = { body, address, id, key, setup in
-             try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup)
+             try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup, protocolVersion: body.routingProtocol)
          }) {
         self.transport = transport
         self.changeDebounce = changeDebounce
@@ -84,7 +85,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         changeDebounce: Duration = .milliseconds(500),
         now: @escaping () -> Date = Date.init,
         transport: @escaping Transport = { body, address, id, key, setup in
-            try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup)
+            try await MetadataCalendarClient().send(body, address: address, deviceID: id, key: key, setupKey: setup, protocolVersion: body.routingProtocol)
         }
     ) throws -> MetadataCalendarCoordinator {
         guard storage.storageFormat == .version3 else { throw AppPersistenceStartupError.unsupportedStorage }
@@ -287,22 +288,52 @@ final class MetadataCalendarCoordinator: ObservableObject {
         try persist(next)
     }
 
-    /// Check whole linked jobs before reading credentials, including discovery and
-    /// membership actions. Restricted sharing must not conceal local activation.
-    private func validateLegacyBindings(accountID: UUID? = nil) throws {
-        try LegacyMetadataCalendarGate.validate(state)
+    private func requireNamespace(_ protocolVersion: MetadataCalendarProtocol) throws {
+        if protocolVersion == .templates, repository.storageFormat != .version3 {
+            throw VersionedStoreCodec.HeaderError.requiresVersion3Storage
+        }
+    }
+
+    /// Check whole jobs, including private/unshared portions, before credentials.
+    /// A template namespace permits activation; a legacy binding never does.
+    private func validateBindings(accountID: UUID? = nil) throws {
+        guard !state.pendingMigrations.contains(where: { $0.phase != .bindingCommitted }) else {
+            throw MetadataSyncFailure(message: "Finish the pending calendar migration before syncing.", diagnosticCode: "calendar_migration_pending")
+        }
+        if repository.storageFormat == .legacy { try LegacyMetadataCalendarGate.validate(state) }
+        else { try MetadataCalendarNamespaceGate.validate(state) }
         for binding in state.bindings where accountID == nil || binding.accountID == accountID {
+            try requireNamespace(binding.snapshot.compatibility.protocolVersion)
             if let automation = store?.jobs.first(where: { $0.id == binding.jobID })?.metadataAutomation {
-                try LegacyMetadataCalendarGate.validate(automation)
+                try MetadataCalendarNamespaceGate.validate(automation, for: binding.snapshot.compatibility.protocolVersion)
             }
         }
     }
 
-    private func request(_ body: MetadataCalendarRequest, account: MetadataSyncAccount, setupKey: String? = nil) async throws -> MetadataCalendarResponse {
+    private func validateDocument(_ document: SharedMetadataDocument, for protocolVersion: MetadataCalendarProtocol) throws {
+        try requireNamespace(protocolVersion)
+        try MetadataCalendarNamespaceGate.validate(document.automation, for: protocolVersion)
+    }
+
+    private func request(_ original: MetadataCalendarRequest, account: MetadataSyncAccount, setupKey: String? = nil,
+                         protocolVersion: MetadataCalendarProtocol? = nil) async throws -> MetadataCalendarResponse {
         guard !isPaused else { throw CancellationError() }
-        try validateLegacyBindings(accountID: account.id)
-        if let document = body.document { try LegacyMetadataCalendarGate.validate(document) }
-        let jobID = state.bindings.first { $0.accountID == account.id && $0.id == body.calendarID }?.jobID
+        try validateBindings(accountID: account.id)
+        let linked = state.bindings.first { $0.accountID == account.id && $0.id == original.calendarID }
+        let routing = protocolVersion ?? linked?.snapshot.compatibility.protocolVersion
+            ?? calendars.first(where: { $0.id == original.calendarID })?.compatibility.protocolVersion ?? .legacy
+        try requireNamespace(routing)
+        if let linked, linked.snapshot.compatibility.protocolVersion != routing { throw MetadataSyncServerError.unsupportedProtocol }
+        var body = original
+        body.routingProtocol = routing
+        if let document = body.document { try validateDocument(document, for: routing) }
+        if routing == .templates {
+            body.capabilities = [MetadataCalendarCompatibility.templateCapability]
+            if body.document != nil { body.documentSchemaVersion = 3 }
+        } else if body.capabilities != nil || body.documentSchemaVersion != nil || body.templateDeactivations != nil {
+            throw MetadataSyncServerError.unsupportedProtocol
+        }
+        let jobID = linked?.jobID
         let operation: String
         switch body.action {
         case "getCalendar": operation = "Fetch calendar"
@@ -329,8 +360,27 @@ final class MetadataCalendarCoordinator: ObservableObject {
             }
             let result = try await transport(body, account.address, account.id, key, setupKey)
             guard !isPaused else { throw CancellationError() }
-            try validateLegacyBindings(accountID: account.id)
-            if let calendar = result.calendar { try LegacyMetadataCalendarGate.validate(calendar.document) }
+            try validateBindings(accountID: account.id)
+            guard result.service == "aagedal-metadata-sync", result.protocolVersion == routing.rawValue,
+                  routing != .templates || result.capabilities == [MetadataCalendarCompatibility.templateCapability] else {
+                throw MetadataSyncServerError.unsupportedProtocol
+            }
+            guard result.error == nil || (result.error == "revision_conflict" && result.calendar != nil) else {
+                throw MetadataSyncServerError.invalidResponse
+            }
+            if let calendar = result.calendar {
+                guard calendar.compatibility.protocolVersion == routing, calendar.id == body.calendarID,
+                      calendar.revision > 0, ["owner", "editor", "reader"].contains(calendar.role),
+                      TimeZone(identifier: calendar.timeZone) != nil,
+                      (calendar.rangeStart == nil) == (calendar.rangeEnd == nil),
+                      calendar.range.map({ $0.end > $0.start }) ?? true else { throw MetadataSyncServerError.invalidResponse }
+                try MetadataCalendarNamespaceGate.validate(calendar)
+                _ = try calendar.document.validated()
+            }
+            if let listed = result.calendars {
+                guard Set(listed.map(\.id)).count == listed.count,
+                      listed.allSatisfy({ $0.compatibility.protocolVersion == routing }) else { throw MetadataSyncServerError.invalidResponse }
+            }
             if body.action != "listCalendars" && body.action != "getCalendar" {
                 record(MetadataSyncEvent(jobID: jobID, operation: operation,
                     detail: result.error == "revision_conflict" ? "A newer server revision arrived; merging before retry." : "Request completed.", revision: result.calendar?.revision))
@@ -380,19 +430,22 @@ final class MetadataCalendarCoordinator: ObservableObject {
         }
     }
 
-    func register(address: String, deviceName: String, setupKey: String?, invite: String?) {
+    func register(address: String, deviceName: String, setupKey: String?, invite: String?, protocolVersion: MetadataCalendarProtocol = .legacy) {
         perform {
-            try self.validateLegacyBindings()
+            try self.validateBindings()
             let parsed = try invite.map(MetadataSyncInvitation.init)
+            let selectedProtocol = parsed?.protocolVersion ?? protocolVersion
+            try self.requireNamespace(selectedProtocol)
             let account = try self.prepareAccount(address: parsed?.address ?? address)
             let previousIDs = Set(self.calendars.map(\.id))
             var request = MetadataCalendarRequest(action: invite == nil ? "bootstrap" : "acceptInvite")
             request.deviceName = deviceName
             request.inviteToken = parsed?.token
-            _ = try await self.request(request, account: account, setupKey: setupKey?.trimmingCharacters(in: .whitespacesAndNewlines))
+            _ = try await self.request(request, account: account, setupKey: setupKey?.trimmingCharacters(in: .whitespacesAndNewlines), protocolVersion: selectedProtocol)
             var next = self.state
             if let i = next.accounts.firstIndex(where: { $0.id == account.id }) { next.accounts[i].registered = true }
             try self.persist(next)
+            self.discoveryProtocol = selectedProtocol
             try await self.loadCalendars()
             let newCalendars = self.calendars.filter { !previousIDs.contains($0.id) }
             self.suggestedCalendarID = newCalendars.count == 1 ? newCalendars[0].id : (self.calendars.count == 1 ? self.calendars[0].id : nil)
@@ -411,9 +464,20 @@ final class MetadataCalendarCoordinator: ObservableObject {
         } catch { message = error.localizedDescription }
     }
 
+    func selectProtocol(_ protocolVersion: MetadataCalendarProtocol) {
+        guard !busy, !isPaused else { return }
+        do {
+            try requireNamespace(protocolVersion)
+            discoveryProtocol = protocolVersion
+            calendars = []; members = []; invitation = ""; suggestedCalendarID = nil
+            if let account { lastCalendarList[account.id] = nil }
+            Task { await refresh() }
+        } catch { message = error.localizedDescription }
+    }
+
     private func loadCalendars() async throws {
         guard let account, account.registered else { return }
-        calendars = try await request(MetadataCalendarRequest(action: "listCalendars"), account: account).calendars ?? []
+        calendars = try await request(MetadataCalendarRequest(action: "listCalendars"), account: account, protocolVersion: discoveryProtocol).calendars ?? []
         lastCalendarList[account.id] = now()
     }
 
@@ -485,9 +549,9 @@ final class MetadataCalendarCoordinator: ObservableObject {
         guard let job = store?.jobs.first(where: { $0.id == binding.jobID }) else {
             throw MetadataSyncFailure(message: "The linked local job no longer exists. Detach this calendar to stop syncing it.")
         }
-        try LegacyMetadataCalendarGate.validate(job.metadataAutomation ?? MetadataAutomation())
-        try LegacyMetadataCalendarGate.validate(binding.snapshot.document)
-        if let conflict = binding.conflict { try LegacyMetadataCalendarGate.validate(conflict.document) }
+        try MetadataCalendarNamespaceGate.validate(binding)
+        try requireNamespace(binding.snapshot.compatibility.protocolVersion)
+        try MetadataCalendarNamespaceGate.validate(job.metadataAutomation ?? MetadataAutomation(), for: binding.snapshot.compatibility.protocolVersion)
         var doc = SharedMetadataDocument(job.metadataAutomation ?? MetadataAutomation())
             .restricted(to: binding.range, timeZone: binding.snapshot.timeZone)
         if binding.snapshot.range != nil {
@@ -508,20 +572,24 @@ final class MetadataCalendarCoordinator: ObservableObject {
         guard let store, let job = store.jobs.first(where: { $0.id == binding.jobID }) else {
             throw MetadataSyncFailure(message: "The linked local job no longer exists.")
         }
-        try LegacyMetadataCalendarGate.validate(document)
-        try LegacyMetadataCalendarGate.validate(binding.snapshot.document)
-        try LegacyMetadataCalendarGate.validate(job.metadataAutomation ?? MetadataAutomation())
+        try MetadataCalendarNamespaceGate.validate(binding)
+        try validateDocument(document, for: binding.snapshot.compatibility.protocolVersion)
+        try MetadataCalendarNamespaceGate.validate(job.metadataAutomation ?? MetadataAutomation(), for: binding.snapshot.compatibility.protocolVersion)
         let incoming = binding.publicationRange == nil ? document : document.restricted(to: binding.publicationRange, timeZone: binding.snapshot.timeZone)
         let automation = try incoming.applying(to: job.metadataAutomation ?? MetadataAutomation(), replacing: binding.snapshot.document,
                                               range: binding.range, timeZone: binding.snapshot.timeZone)
-        guard store.applySyncedMetadataAutomation(automation, for: job.id) else {
+        guard store.applySyncedMetadataAutomation(automation, for: job.id, protocolVersion: binding.snapshot.compatibility.protocolVersion) else {
             throw MetadataSyncFailure(message: "Received metadata could not be saved. Sync will retry; the previous baseline is retained.")
         }
     }
 
     private func validateRemote(_ remote: SharedMetadataCalendar, for binding: MetadataCalendarBinding) throws {
-        try LegacyMetadataCalendarGate.validate(remote.document)
-        try LegacyMetadataCalendarGate.validate(binding.snapshot.document)
+        guard remote.id == binding.id, remote.compatibility == binding.snapshot.compatibility else {
+            throw MetadataSyncServerError.invalidResponse
+        }
+        try MetadataCalendarNamespaceGate.validate(remote)
+        try MetadataCalendarNamespaceGate.validate(binding)
+        try requireNamespace(remote.compatibility.protocolVersion)
         // A new membership can hide records without deleting them. Never merge that
         // filtered snapshot against a baseline saved under different access rules.
         guard remote.range == binding.snapshot.range, remote.timeZone == binding.snapshot.timeZone else {
@@ -589,7 +657,10 @@ final class MetadataCalendarCoordinator: ObservableObject {
                 setActivity(.current, jobID: binding.jobID, detail: "Up to date · revision \(remote.revision)")
                 return
             }
-            let put = MetadataCalendarRequest(action: "putCalendar", calendarID: binding.id, document: merged, expectedRevision: remote.revision)
+            var put = MetadataCalendarRequest(action: "putCalendar", calendarID: binding.id, document: merged, expectedRevision: remote.revision)
+            if binding.snapshot.compatibility.protocolVersion == .templates {
+                put.templateDeactivations = try MetadataTemplateDeactivation.required(from: remote.document, to: merged)
+            }
             let result = try await request(put, account: account)
             guard let response = result.calendar else { throw MetadataSyncServerError.invalidResponse }
             try validateRemote(response, for: binding)
@@ -604,7 +675,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         setActivity(.waiting, jobID: binding.jobID, detail: "New changes arrived during sync; retrying shortly.")
     }
 
-    func publish(jobID: UUID, name: String, range: MetadataSharingRange?) {
+    func publish(jobID: UUID, name: String, range: MetadataSharingRange?, protocolVersion: MetadataCalendarProtocol = .legacy) {
         perform {
             guard let account = self.account, account.registered,
                   let job = self.store?.jobs.first(where: { $0.id == jobID }),
@@ -615,19 +686,22 @@ final class MetadataCalendarCoordinator: ObservableObject {
                   range.map({ $0.end > $0.start }) ?? true else {
                 throw MetadataSyncFailure(message: "Use a calendar name of at most 100 UTF-8 bytes and a valid date range.")
             }
-            try LegacyMetadataCalendarGate.validate(job.metadataAutomation ?? MetadataAutomation())
+            try self.validateBindings()
+            try self.requireNamespace(protocolVersion)
+            try MetadataCalendarNamespaceGate.validate(job.metadataAutomation ?? MetadataAutomation(), for: protocolVersion)
             let zone = TimeZone.current.identifier
             let document = try SharedMetadataDocument(job.metadataAutomation ?? MetadataAutomation()).restricted(to: range, timeZone: zone).validated()
-            let snapshot = SharedMetadataCalendar(id: UUID(), name: name, timeZone: zone, revision: 0, role: "owner", document: document)
+            let snapshot = SharedMetadataCalendar(id: UUID(), name: name, timeZone: zone, revision: 0, role: "owner", document: document, compatibility: protocolVersion == .templates ? .templates : .legacy)
             let binding = MetadataCalendarBinding(accountID: account.id, jobID: jobID, snapshot: snapshot, publicationRange: range)
             try self.replace(binding)
             try await self.sync(binding, account: account)
+            self.discoveryProtocol = protocolVersion
             try await self.loadCalendars()
             self.message = "Calendar linked. Saved metadata edits sync while the app is running."
         }
     }
 
-    func attach(calendarID: UUID, jobID: UUID) {
+    func attach(calendarID: UUID, jobID: UUID, protocolVersion: MetadataCalendarProtocol = .legacy) {
         perform {
             self.message = ""
             guard self.state.pendingReceive == nil else {
@@ -637,17 +711,18 @@ final class MetadataCalendarCoordinator: ObservableObject {
                   !self.state.bindings.contains(where: { $0.id == calendarID && $0.accountID == account.id }) else {
                 throw MetadataSyncFailure(message: "Choose a connected server and a calendar that is not already linked on this Mac.")
             }
+            try self.requireNamespace(protocolVersion)
             if let automation = self.store?.jobs.first(where: { $0.id == jobID })?.metadataAutomation {
-                try LegacyMetadataCalendarGate.validate(automation)
+                try MetadataCalendarNamespaceGate.validate(automation, for: protocolVersion)
             }
-            guard let remote = try await self.request(MetadataCalendarRequest(action: "getCalendar", calendarID: calendarID), account: account).calendar,
+            guard let remote = try await self.request(MetadataCalendarRequest(action: "getCalendar", calendarID: calendarID), account: account, protocolVersion: protocolVersion).calendar,
                   let store = self.store, let job = store.jobs.first(where: { $0.id == jobID }) else {
                 throw MetadataSyncServerError.invalidResponse
             }
             guard !store.metadataDraftsBeingEdited.contains(jobID) else {
                 throw MetadataSyncFailure(message: "Save or close this job's open metadata draft before receiving a calendar.")
             }
-            try LegacyMetadataCalendarGate.validate(job.metadataAutomation ?? MetadataAutomation())
+            try MetadataCalendarNamespaceGate.validate(job.metadataAutomation ?? MetadataAutomation(), for: protocolVersion)
             let alreadyLinked = self.state.bindings.contains { $0.jobID == jobID }
             if job.hasMetadataProgramming || alreadyLinked {
                 var copy = job
@@ -662,6 +737,10 @@ final class MetadataCalendarCoordinator: ObservableObject {
                 copy.startsOnAppLaunch = false
                 copy.metadataAutomation = try remote.document.applying(to: job.metadataAutomation ?? MetadataAutomation(),
                     replacing: SharedMetadataDocument(job.metadataAutomation ?? MetadataAutomation()), range: nil, timeZone: remote.timeZone)
+                if copy.metadataAutomation?.hasActivatedTemplates == true, copy.metadataProcessingTimeZoneIdentifier == nil {
+                    copy.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+                }
+                try copy.validateMetadataTemplateActivationContext()
                 self.receiveProposal = MetadataCalendarReceiveProposal(accountID: account.id, source: job, duplicate: copy, calendar: remote)
                 return
             }
@@ -683,7 +762,9 @@ final class MetadataCalendarCoordinator: ObservableObject {
                   let store = self.store else {
                 throw MetadataSyncFailure(message: "The receive selection changed. Select the calendar and job again.")
             }
-            try LegacyMetadataCalendarGate.validate(proposal)
+            try self.validateBindings()
+            try self.requireNamespace(proposal.calendar.compatibility.protocolVersion)
+            try MetadataCalendarNamespaceGate.validate(proposal)
             try store.validateCalendarReceiveCopy(source: proposal.source, duplicate: proposal.duplicate)
             var next = self.state
             next.pendingReceive = proposal
@@ -697,12 +778,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
     private func finishReceive(_ proposal: MetadataCalendarReceiveProposal) throws {
         guard !isPaused else { throw CancellationError() }
         guard let store else { throw MetadataSyncFailure(message: "The job store is unavailable.") }
-        try LegacyMetadataCalendarGate.validate(proposal)
+        try validateBindings()
+        try requireNamespace(proposal.calendar.compatibility.protocolVersion)
+        try MetadataCalendarNamespaceGate.validate(proposal)
         if let current = store.jobs.first(where: { $0.id == proposal.source.id })?.metadataAutomation {
-            try LegacyMetadataCalendarGate.validate(current)
+            try MetadataCalendarNamespaceGate.validate(current, for: proposal.calendar.compatibility.protocolVersion)
         }
         if let current = store.jobs.first(where: { $0.id == proposal.duplicate.id })?.metadataAutomation {
-            try LegacyMetadataCalendarGate.validate(current)
+            try MetadataCalendarNamespaceGate.validate(current, for: proposal.calendar.compatibility.protocolVersion)
         }
         _ = try store.installCalendarReceiveCopy(source: proposal.source, duplicate: proposal.duplicate)
         var next = state

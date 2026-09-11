@@ -146,7 +146,7 @@ final class MetadataCalendarProtocolModelTests: XCTestCase {
         XCTAssertThrowsError(try MetadataTemplateDeactivation.required(from: malformed, to: old))
     }
 
-    func testProductionRepositoryKeepsLiteralTemplateNamespaceBlockedAndBytesIntact() throws {
+    func testVersionThreeRepositoryAdmitsTemplateNamespaceButRejectsInPlaceDowngrade() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -158,15 +158,22 @@ final class MetadataCalendarProtocolModelTests: XCTestCase {
         try bytes.write(to: repository.url)
         let account = MetadataSyncAccount(id: UUID(), address: "https://fixture.invalid")
         let value = snapshot(try document(), compatibility: .templates)
-        let blocked = MetadataCalendarState(accounts: [account], activeAccountID: account.id,
+        let supported = MetadataCalendarState(accounts: [account], activeAccountID: account.id,
             bindings: [.init(accountID: account.id, jobID: UUID(), snapshot: value)])
-        XCTAssertThrowsError(try repository.save(blocked))
-        XCTAssertEqual(try Data(contentsOf: repository.url), bytes)
-        let incompatible = try codec.encode(blocked, encoder: encoder)
-        try incompatible.write(to: repository.url)
-        XCTAssertThrowsError(try repository.load())
-        XCTAssertThrowsError(try repository.save(empty))
-        XCTAssertEqual(try Data(contentsOf: repository.url), incompatible)
+        try repository.save(supported)
+        XCTAssertEqual(try repository.load().bindings, supported.bindings)
+        let saved = try Data(contentsOf: repository.url)
+        var downgraded = supported
+        downgraded.bindings[0].snapshot.compatibility = .legacy
+        XCTAssertThrowsError(try repository.save(downgraded))
+        XCTAssertEqual(try Data(contentsOf: repository.url), saved)
+        let legacyURL = root.appendingPathComponent("legacy.json")
+        let legacyBytes = try encoder.encode(supported)
+        try legacyBytes.write(to: legacyURL)
+        let legacy = MetadataCalendarRepository(url: legacyURL)
+        XCTAssertThrowsError(try legacy.load())
+        XCTAssertThrowsError(try legacy.save(empty))
+        XCTAssertEqual(try Data(contentsOf: legacyURL), legacyBytes)
     }
 
     func testEarlierMalformedBindingCannotHideLaterNamespaceFromRecoveryOrStaleSave() throws {

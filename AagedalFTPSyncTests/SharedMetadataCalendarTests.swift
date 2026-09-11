@@ -934,6 +934,13 @@ final class MetadataSyncFeedbackTests: XCTestCase {
         XCTAssertEqual(parsed.address, "https://sync.example.org/calendar/")
         XCTAssertEqual(parsed.token, token)
         XCTAssertEqual(try MetadataSyncInvitation(" \(token)\n").token, token)
+        XCTAssertNil(parsed.protocolVersion)
+        let template = try MetadataSyncInvitation("Aagedal template calendar invitation\nServer: https://SYNC.example.org/calendar/\nInvitation: \(token)")
+        XCTAssertEqual(template.protocolVersion, .templates)
+        XCTAssertEqual(template.address, parsed.address)
+        XCTAssertEqual(template.token, token)
+        XCTAssertEqual(try MetadataSyncInvitation("Aagedal template calendar invitation\r\nServer: https://SYNC.example.org/calendar/\r\nInvitation: \(token)\r\n").protocolVersion, .templates)
+        XCTAssertThrowsError(try MetadataSyncInvitation("Aagedal template calendar invitation v4\nInvitation: \(token)"))
         XCTAssertThrowsError(try MetadataSyncInvitation("Server: http://sync.example.org/\nInvitation: \(token)"))
         XCTAssertThrowsError(try MetadataSyncInvitation("not an invitation"))
     }

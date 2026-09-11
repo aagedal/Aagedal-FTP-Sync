@@ -12,7 +12,8 @@ final class MetadataActivationAdmissionTests: XCTestCase {
         let job: SyncJob
     }
 
-    private func fixture(linked: Bool = false, zone: String? = nil, legacy: Bool = false) throws -> Fixture {
+    private func fixture(linked: Bool = false, zone: String? = nil, legacy: Bool = false,
+                         templateCalendar: Bool = false, revision: Int64 = 1) throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("activation-admission-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -45,8 +46,8 @@ final class MetadataActivationAdmissionTests: XCTestCase {
         }
         if linked {
             let account = MetadataSyncAccount(id: UUID(), address: "https://fixture.invalid", registered: true)
-            let calendar = SharedMetadataCalendar(id: UUID(), name: "Fixture", timeZone: "Etc/UTC", revision: 1,
-                role: "owner", document: SharedMetadataDocument(job.metadataAutomation!))
+            let calendar = SharedMetadataCalendar(id: UUID(), name: "Fixture", timeZone: "Etc/UTC", revision: revision,
+                role: "owner", document: SharedMetadataDocument(job.metadataAutomation!), compatibility: templateCalendar ? .templates : .legacy)
             try MetadataCalendarRepository(storage: storage).save(MetadataCalendarState(accounts: [account], activeAccountID: account.id,
                 bindings: [.init(accountID: account.id, jobID: job.id, snapshot: calendar)]))
         }
@@ -208,6 +209,43 @@ final class MetadataActivationAdmissionTests: XCTestCase {
         XCTAssertTrue(f.store.alertMessage?.contains("calendar storage recovery") == true)
         XCTAssertEqual(try Data(contentsOf: f.storage.jobs), before)
         XCTAssertFalse(f.store.jobs[0].metadataAutomation?.hasActivatedTemplates ?? true)
+    }
+
+    func testConfirmedTemplateCalendarAdmitsOfflineEditorActivationWithoutChangingBaseline() throws {
+        let f = try fixture(linked: true, templateCalendar: true)
+        let calendarBefore = try Data(contentsOf: f.storage.metadataCalendar)
+        let draft = try activeAutomation(f.job)
+        XCTAssertTrue(f.store.saveMetadataAutomation(draft, for: f.job.id), f.store.alertMessage ?? "")
+        XCTAssertEqual(f.store.jobs[0].metadataAutomation, draft)
+        XCTAssertEqual(try Data(contentsOf: f.storage.metadataCalendar), calendarBefore)
+        XCTAssertTrue(try XCTUnwrap(JobRepository(storage: f.storage).load().first?.metadataAutomation).hasActivatedTemplates)
+        let jobsBefore = try Data(contentsOf: f.storage.jobs)
+        XCTAssertFalse(f.store.applySyncedMetadataAutomation(f.job.metadataAutomation!, for: f.job.id))
+        XCTAssertEqual(try Data(contentsOf: f.storage.jobs), jobsBefore)
+        XCTAssertEqual(f.store.jobs[0].metadataAutomation, draft)
+    }
+
+    func testUnconfirmedTemplateCalendarBlocksNewActivation() throws {
+        let f = try fixture(linked: true, templateCalendar: true, revision: 0)
+        let before = try savedBytes(f)
+        XCTAssertFalse(f.store.saveMetadataAutomation(try activeAutomation(f.job), for: f.job.id))
+        XCTAssertTrue(f.store.alertMessage?.contains("confirm") == true)
+        XCTAssertEqual(try savedBytes(f), before)
+    }
+
+    func testSyncedTemplateApplicationRequiresExplicitProtocolAndDurableNamespaceBinding() throws {
+        for linked in [false, true] {
+            for templateCalendar in [false, true] {
+                let f = try fixture(linked: linked, templateCalendar: templateCalendar)
+                let draft = try activeAutomation(f.job)
+                let before = try Data(contentsOf: f.storage.jobs)
+                XCTAssertFalse(f.store.applySyncedMetadataAutomation(draft, for: f.job.id))
+                XCTAssertEqual(try Data(contentsOf: f.storage.jobs), before)
+                let allowed = linked && templateCalendar
+                XCTAssertEqual(f.store.applySyncedMetadataAutomation(draft, for: f.job.id, protocolVersion: .templates), allowed)
+                if !allowed { XCTAssertEqual(try Data(contentsOf: f.storage.jobs), before) }
+            }
+        }
     }
 }
 

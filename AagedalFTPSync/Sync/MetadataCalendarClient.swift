@@ -16,6 +16,13 @@ struct MetadataCalendarRequest: Encodable, Sendable {
     var capabilities: [String]?
     var documentSchemaVersion: Int?
     var templateDeactivations: [MetadataTemplateDeactivation]?
+    /// Local transport selection, never serialized into the protocol body.
+    var routingProtocol: MetadataCalendarProtocol = .legacy
+
+    private enum CodingKeys: String, CodingKey {
+        case action, calendarID, deviceID, deviceName, inviteToken, name, timeZone, document
+        case expectedRevision, role, rangeStart, rangeEnd, capabilities, documentSchemaVersion, templateDeactivations
+    }
 }
 
 struct MetadataCalendarResponse: Decodable, Sendable {

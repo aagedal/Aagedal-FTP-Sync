@@ -99,11 +99,17 @@ struct MetadataSyncEventRepository {
 struct MetadataSyncInvitation {
     let address: String?
     let token: String
+    let protocolVersion: MetadataCalendarProtocol?
 
     /// Accept either the token alone or the complete text produced by Copy Invitation.
     init(_ text: String) throws {
         var address: String?
-        var token = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var token = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let templatePrefix = "Aagedal template calendar invitation\n"
+        if token.hasPrefix(templatePrefix) {
+            protocolVersion = .templates
+            token = String(token.dropFirst(templatePrefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else { protocolVersion = nil }
         if token.lowercased().hasPrefix("server:") {
             guard let separator = token.range(of: "invitation:", options: .caseInsensitive) else {
                 throw MetadataSyncFailure(message: "The copied invitation is incomplete. Copy it again from the owner’s Mac.")

@@ -117,10 +117,12 @@
 		8107516DA815844F70179329 /* MetadataPreviewViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7D1E5EDE9A608C2C40F07A4 /* MetadataPreviewViews.swift */; };
 		823F5A319880F7A836622FC6 /* MetadataExistingPreviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E97321D663D13186B49EA810 /* MetadataExistingPreviewTests.swift */; };
 		845492CDA8C27E5F0407D6D1 /* MetadataCalendarRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D465FCD0BDE8F18F40EAA70 /* MetadataCalendarRepository.swift */; };
+		84E1A10254105D5D7B20A6C0 /* MetadataCalendarNamespaceStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BAEAB2262411B4C82CA5F4B /* MetadataCalendarNamespaceStorageTests.swift */; };
 		85918EBE8692ED40C714EB76 /* MetadataTemplates in Frameworks */ = {isa = PBXBuildFile; productRef = B635B16CFC77ED0476D715ED /* MetadataTemplates */; };
 		85B8A1C3B573675B6902410E /* DownloadNameMappingRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03AE89625F40B3AEE6C3E650 /* DownloadNameMappingRegistryTests.swift */; };
 		86607256E4A975B63BEF781B /* Version3MigrationDriverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E84B07A10207633692ABBA6 /* Version3MigrationDriverTests.swift */; };
 		869C3F20F6579EC38F1DCC53 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6F803C3B092319AAFD4845 /* MenuBarView.swift */; };
+		898BE481754C07602C1BA8B6 /* MetadataCalendarNamespaceCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 577E5C87E6488FA83B930F19 /* MetadataCalendarNamespaceCoordinatorTests.swift */; };
 		89A4BE3FCCD98D0268AF6FFB /* ResolvedMetadataChanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3452533D474B065274D589DA /* ResolvedMetadataChanges.swift */; };
 		8EF79A17504FDB5D3F710319 /* EffectiveMetadataCoordinates.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61092FD1A2C7BDF7B00C56B2 /* EffectiveMetadataCoordinates.swift */; };
 		8F518CD8A98FF676995DD9A5 /* PhotographerMapTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97C0C816A4FB1006374B4D23 /* PhotographerMapTimelineTests.swift */; };
@@ -292,6 +294,7 @@
 		55EEEC723D4E4695B25EFAC9 /* MetadataTimelineViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataTimelineViews.swift; sourceTree = "<group>"; };
 		57188A1833C2D54250CF026F /* MetadataGeocodingImportConsentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingImportConsentTests.swift; sourceTree = "<group>"; };
 		574C0A6D755F5DB5BAA66F7C /* MetadataGeocodingSyncIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingSyncIntegrationTests.swift; sourceTree = "<group>"; };
+		577E5C87E6488FA83B930F19 /* MetadataCalendarNamespaceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarNamespaceCoordinatorTests.swift; sourceTree = "<group>"; };
 		57FCBE667F129FE47DF1CB07 /* SupportBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundleTests.swift; sourceTree = "<group>"; };
 		586353B7AF5F95DB24C2CF28 /* MetadataSyncServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncServer.swift; sourceTree = "<group>"; };
 		5A410C80EF820D8FCA6B3000 /* SFTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SFTPTransport.swift; sourceTree = "<group>"; };
@@ -313,6 +316,7 @@
 		6643BD547A23724133ABCBFE /* MetadataProcessingTimeZonePicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProcessingTimeZonePicker.swift; sourceTree = "<group>"; };
 		664FBAAE645A25CB1EBD1787 /* ResolvedMetadataChangesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResolvedMetadataChangesTests.swift; sourceTree = "<group>"; };
 		679AE22A6DA5596AB0D08913 /* SourceSignatureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureRepository.swift; sourceTree = "<group>"; };
+		6BAEAB2262411B4C82CA5F4B /* MetadataCalendarNamespaceStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarNamespaceStorageTests.swift; sourceTree = "<group>"; };
 		6BEF64F5094273F5CED52D82 /* PhotographerProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerProfileRepository.swift; sourceTree = "<group>"; };
 		6D08A4DCF03FB39971112D2D /* PhotographerMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerMapView.swift; sourceTree = "<group>"; };
 		6D1E4B1B6D1EC921FAB3E2C5 /* MetadataProgrammingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinator.swift; sourceTree = "<group>"; };
@@ -657,6 +661,8 @@
 				9C80FA23E6C80A52EE89914F /* MetadataCalendarActivationTests.swift */,
 				29AD54ED255340BAD512CCFD /* MetadataCalendarMigrationJournalTests.swift */,
 				B0AB6F63199B4C259A2D5B0F /* MetadataCalendarMigrationStorageTests.swift */,
+				577E5C87E6488FA83B930F19 /* MetadataCalendarNamespaceCoordinatorTests.swift */,
+				6BAEAB2262411B4C82CA5F4B /* MetadataCalendarNamespaceStorageTests.swift */,
 				4011BEBA189EEEF704BB661B /* MetadataCalendarPausedStartupTests.swift */,
 				ACEA8673B657D6551A67B513 /* MetadataCalendarProtocol3ClientTests.swift */,
 				393ED60149A90C7A28C835AA /* MetadataCalendarProtocolModelTests.swift */,
@@ -933,6 +939,8 @@
 				69BD4C815EF96D98504A78EF /* MetadataCalendarActivationTests.swift in Sources */,
 				57B5F9427F7FD54D2B45A866 /* MetadataCalendarMigrationJournalTests.swift in Sources */,
 				BDCA6761E7DD6019A77D9685 /* MetadataCalendarMigrationStorageTests.swift in Sources */,
+				898BE481754C07602C1BA8B6 /* MetadataCalendarNamespaceCoordinatorTests.swift in Sources */,
+				84E1A10254105D5D7B20A6C0 /* MetadataCalendarNamespaceStorageTests.swift in Sources */,
 				79BA78E24FD4D324D48DC134 /* MetadataCalendarPausedStartupTests.swift in Sources */,
 				220959C52BC659698D26471C /* MetadataCalendarProtocol3ClientTests.swift in Sources */,
 				FB716EB7F7C7B3EB53163A03 /* MetadataCalendarProtocolModelTests.swift in Sources */,
