@@ -221,6 +221,9 @@ enum LegacyMetadataCalendarGate {
     }
 
     static func validate(_ state: MetadataCalendarState) throws {
+        guard state.pendingMigrations.isEmpty else {
+            throw MetadataSyncFailure(message: "A calendar migration is pending. Live sync stays paused until migration recovery is available.", diagnosticCode: "migration_pending")
+        }
         for binding in state.bindings {
             try validate(binding.snapshot)
             if let conflict = binding.conflict { try validate(conflict) }
