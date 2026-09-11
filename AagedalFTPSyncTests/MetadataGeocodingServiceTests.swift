@@ -48,6 +48,76 @@ final class MetadataGeocodingServiceTests: XCTestCase {
         Service.Query(latitude: latitude, longitude: 10.7, locale: locale)!
     }
 
+    func testPacingSeparatesProviderStartsAndRechecksEarlyWake() async {
+        let provider = Gate<Service.ProviderResponse>()
+        let deadlines = Gate<Void>(), pacing = Gate<Void>()
+        let time = Time()
+        var limits = Service.Limits()
+        limits.minimumStartInterval = 1
+        let service = Service(identity: identity, limits: limits, now: { time.read() },
+            sleep: { delay in
+                if delay < 2 { await pacing.enter() } else { await deadlines.enter() }
+            }, provider: { _ in await provider.enter() })
+        let firstQuery = query(), nextQuery = query(60)
+        let first = Task { await service.resolve(firstQuery) }
+        await provider.entered(1)
+        time.advance(10) // Delayed/slow provider still requires a full pause after completion.
+        await provider.release(1, .noResult)
+        let initial = await first.value
+        XCTAssertEqual(initial, .noResult)
+        let next = Task { await service.resolve(nextQuery) }
+        await pacing.entered(1)
+        let before = await provider.count
+        XCTAssertEqual(before, 1)
+        await pacing.release(1, ())
+        await pacing.entered(2)
+        let early = await provider.count
+        XCTAssertEqual(early, 1, "A timer alone cannot authorize an early provider start")
+        time.advance(1)
+        await pacing.release(2, ())
+        await provider.entered(2)
+        await provider.release(2, .noResult)
+        let result = await next.value
+        XCTAssertEqual(result, .noResult)
+        await deadlines.releaseAll(())
+        await pacing.releaseAll(())
+    }
+
+    func testDeadlineDuringPacingRemovesWorkBeforeProviderStarts() async {
+        let provider = Gate<Service.ProviderResponse>()
+        let deadlines = Gate<Void>(), pacing = Gate<Void>()
+        let time = Time()
+        var limits = Service.Limits()
+        limits.minimumStartInterval = 1
+        let service = Service(identity: identity, limits: limits, now: { time.read() },
+            sleep: { delay in
+                if delay < 2 { await pacing.enter() } else { await deadlines.enter() }
+            }, provider: { _ in await provider.enter() })
+        let firstQuery = query(), nextQuery = query(60)
+        let first = Task { await service.resolve(firstQuery) }
+        await provider.entered(1)
+        await deadlines.entered(1)
+        await provider.release(1, .noResult)
+        _ = await first.value
+        let next = Task { await service.resolve(nextQuery) }
+        await pacing.entered(1)
+        await deadlines.entered(2)
+        await deadlines.release(2, ())
+        let result = await next.value
+        XCTAssertEqual(result, .deadlineExceeded)
+        time.advance(2)
+        await pacing.releaseAll(())
+        let count = await provider.count
+        XCTAssertEqual(count, 1)
+        // A later distinct request starts immediately once the spacing has elapsed.
+        let laterQuery = query(61)
+        let later = Task { await service.resolve(laterQuery) }
+        await provider.entered(2)
+        await provider.release(2, .noResult)
+        _ = await later.value
+        await deadlines.releaseAll(())
+    }
+
     func testQueriesValidateWholePairsAndDoNotRoundAcrossBoundaries() {
         XCTAssertNil(Service.Query(latitude: .nan, longitude: 0, locale: "en-US"))
         XCTAssertNil(Service.Query(latitude: 0, longitude: .infinity, locale: "en-US"))

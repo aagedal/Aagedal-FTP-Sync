@@ -52,7 +52,9 @@
 		4251AC983A19E2B72A16D6F1 /* MetadataAuditRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11EEAAEEA8F25FFA2893352E /* MetadataAuditRepository.swift */; };
 		42674EE8F66813EA860B4A7B /* MetadataPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCC0FC21B2F27B7B2EDD14FE /* MetadataPresetTests.swift */; };
 		461067BAB3C6EAB6B24624C3 /* MetadataCalendarConflictView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FF089E5B1C4518A479C331C /* MetadataCalendarConflictView.swift */; };
+		49EBF8050A833ABF369A4690 /* AppleMetadataGeocodingProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84967906FCBA9EEDD7BF6FBC /* AppleMetadataGeocodingProvider.swift */; };
 		49FF023ECBFBE4B27037A37D /* SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2BEBFCBDD620232A1D0C014 /* SyncEngine.swift */; };
+		4BC09059CA26CBE02F7E39D7 /* AppleMetadataGeocodingProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0B83602EE5BDE908A257014 /* AppleMetadataGeocodingProviderTests.swift */; };
 		4BECE2C7328FEDA45ED1787E /* MetadataCaptureDateReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13C742D691DBA7A5E07B7A16 /* MetadataCaptureDateReader.swift */; };
 		510304BA75E7B2E1F74A37B2 /* MetadataCalendarClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B07ADB5A0D82B2900ADF5DB /* MetadataCalendarClient.swift */; };
 		52E139C2169CE507A045D79D /* PathSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = D100CDE9EC3EF2B672A4EC7E /* PathSafety.swift */; };
@@ -262,6 +264,7 @@
 		7FF089E5B1C4518A479C331C /* MetadataCalendarConflictView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarConflictView.swift; sourceTree = "<group>"; };
 		821EDDD4C943D4CCD4CB022D /* MetadataProgrammingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingView.swift; sourceTree = "<group>"; };
 		831D08FC15EE951D1FB90B97 /* VersionedCalendarStorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedCalendarStorageTests.swift; sourceTree = "<group>"; };
+		84967906FCBA9EEDD7BF6FBC /* AppleMetadataGeocodingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMetadataGeocodingProvider.swift; sourceTree = "<group>"; };
 		8710C0C84C0F5CABFAC80B85 /* SharedMetadataCalendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedMetadataCalendar.swift; sourceTree = "<group>"; };
 		881E835940BB4E1CF30EE8A3 /* Version3JSONStoreConversionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3JSONStoreConversionTests.swift; sourceTree = "<group>"; };
 		890826A7102C45494742574C /* MetadataLibraryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataLibraryCoordinator.swift; sourceTree = "<group>"; };
@@ -277,6 +280,7 @@
 		9C550265145C1840CA4CAF18 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9F668C295458EA4DCCB46EF8 /* MetadataWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataWriter.swift; sourceTree = "<group>"; };
 		A020FD65B833FE80CEB305B3 /* AagedalFTPSyncApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AagedalFTPSyncApp.swift; sourceTree = "<group>"; };
+		A0B83602EE5BDE908A257014 /* AppleMetadataGeocodingProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMetadataGeocodingProviderTests.swift; sourceTree = "<group>"; };
 		A0F72DD22CD6008F168834B5 /* AppStorageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStorageLayout.swift; sourceTree = "<group>"; };
 		A2AEF7D0A53A78EB585175E2 /* RemoteTransportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTransportIntegrationTests.swift; sourceTree = "<group>"; };
 		A2BEBFCBDD620232A1D0C014 /* SyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngine.swift; sourceTree = "<group>"; };
@@ -516,6 +520,7 @@
 		B5270C0798695023436C85DF /* Metadata */ = {
 			isa = PBXGroup;
 			children = (
+				84967906FCBA9EEDD7BF6FBC /* AppleMetadataGeocodingProvider.swift */,
 				61092FD1A2C7BDF7B00C56B2 /* EffectiveMetadataCoordinates.swift */,
 				13C742D691DBA7A5E07B7A16 /* MetadataCaptureDateReader.swift */,
 				460965EA4D3BFCA79ADD3827 /* MetadataGeocodingService.swift */,
@@ -531,6 +536,7 @@
 		C208DFD096F41F301FABB160 /* AagedalFTPSyncTests */ = {
 			isa = PBXGroup;
 			children = (
+				A0B83602EE5BDE908A257014 /* AppleMetadataGeocodingProviderTests.swift */,
 				4FA2EE5D72C430D4544BFF2A /* AppPersistenceCoordinatorTests.swift */,
 				4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */,
 				61206E0435FCE509729F69A0 /* ConfigurationTransferCoordinatorTests.swift */,
@@ -778,6 +784,7 @@
 			files = (
 				68B68175A5690C2817E2E2C2 /* AppPersistenceCoordinatorTests.swift in Sources */,
 				24D31589FC2F7FD31749C35E /* AppStorageLayoutTests.swift in Sources */,
+				4BC09059CA26CBE02F7E39D7 /* AppleMetadataGeocodingProviderTests.swift in Sources */,
 				5662C3ECC707EE19CDE34F51 /* ConfigurationTransferCoordinatorTests.swift in Sources */,
 				0F49E4F6EC05AB6395A4F2FA /* ConfigurationTransferTests.swift in Sources */,
 				269D04476AEC3E54C0FF8A90 /* DeliveryLatencyBenchmarkTests.swift in Sources */,
@@ -850,6 +857,7 @@
 				76B434A2DBF3769A17310DE3 /* AppPersistenceCoordinator.swift in Sources */,
 				1E170736D9479384B73197DD /* AppStorageLayout.swift in Sources */,
 				D625A9426837FBFCE6087393 /* AppStore.swift in Sources */,
+				49EBF8050A833ABF369A4690 /* AppleMetadataGeocodingProvider.swift in Sources */,
 				C362A55DC6EC0537A118D6EE /* BookmarkAccess.swift in Sources */,
 				C66E4381C7CA8F6FBE290F3B /* ConfigurationTransfer.swift in Sources */,
 				DA9400038E9517D826EB6884 /* ConfigurationTransferCoordinator.swift in Sources */,

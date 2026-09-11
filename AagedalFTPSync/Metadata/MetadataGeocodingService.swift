@@ -59,6 +59,9 @@ actor MetadataGeocodingService {
     }
 
     struct Limits: Sendable {
+        /// For a serial provider, minimum pause after completion before the next start.
+        /// This also covers delayed execution of detached work; offline defaults to unpaced.
+        var minimumStartInterval: TimeInterval = 0
         var concurrent = 1
         var work = 32
         var callers = 128
@@ -70,6 +73,8 @@ actor MetadataGeocodingService {
         var maximumDistanceMeters: Double = 100_000
 
         fileprivate var valid: Bool {
+            minimumStartInterval.isFinite && (0...3600).contains(minimumStartInterval) &&
+            (minimumStartInterval == 0 || concurrent == 1) &&
             (1...16).contains(concurrent) && work >= concurrent && work <= 4096 &&
             callers >= work && callers <= 16_384 && (0...4096).contains(cacheEntries) &&
             [cacheTTL, deadline, failureBackoff, maximumBackoff, maximumDistanceMeters].allSatisfy { $0.isFinite && $0 > 0 } &&
@@ -102,6 +107,8 @@ actor MetadataGeocodingService {
     private var active = 0
     private var callers = 0
     private var backoffUntil: TimeInterval = 0
+    private var lastStart: TimeInterval?
+    private var pacingWake: (id: UUID, task: Task<Void, Never>)?
 
     init(identity: Identity, limits: Limits = Limits(),
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -173,20 +180,56 @@ actor MetadataGeocodingService {
             } else {
                 work.removeValue(forKey: key)
                 queue.removeAll { $0 == key }
+                if queue.isEmpty { cancelPacingWake() }
             }
         }
     }
 
+    private func cancelPacingWake() {
+        pacingWake?.task.cancel()
+        pacingWake = nil
+    }
+
+    private func schedulePacingWake(after delay: TimeInterval) {
+        guard pacingWake == nil else { return }
+        let id = UUID()
+        let sleeper = sleep
+        let task = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            do { try await sleeper(delay) } catch { return }
+            guard !Task.isCancelled else { return }
+            await self?.resumePacing(id: id)
+        }
+        pacingWake = (id, task)
+    }
+
+    private func resumePacing(id: UUID) {
+        guard pacingWake?.id == id else { return }
+        pacingWake = nil
+        pump() // Recheck monotonic time; an early wake must not start early.
+    }
+
     private func pump() {
-        while active < limits.concurrent, !queue.isEmpty {
-            let key = queue.removeFirst()
-            guard let item = work[key] else { continue }
-            if now() < backoffUntil {
+        while active < limits.concurrent, let key = queue.first {
+            guard let item = work[key] else { queue.removeFirst(); continue }
+            let time = now()
+            if time < backoffUntil {
+                queue.removeFirst()
                 completeWaiters(key, outcome: .backoff)
                 work.removeValue(forKey: key)
                 continue
             }
+            if let lastStart {
+                let delay = lastStart + limits.minimumStartInterval - time
+                if delay > 0 {
+                    schedulePacingWake(after: delay)
+                    return
+                }
+            }
+            cancelPacingWake()
+            queue.removeFirst()
             active += 1
+            lastStart = time
             let provider = provider
             let id = item.id
             // Detached provider work cannot block this actor's cancellation/deadline handling.
@@ -195,11 +238,13 @@ actor MetadataGeocodingService {
                 await self?.finished(key, id: id, response: response)
             }
         }
+        if queue.isEmpty { cancelPacingWake() }
     }
 
     private func finished(_ key: Key, id: UUID, response: ProviderResponse) {
         guard let item = work[key], item.id == id else { return }
         active -= 1
+        if limits.minimumStartInterval > 0 { lastStart = now() }
         guard !item.waiters.isEmpty else {
             // An abandoned response has no authority over cache, backoff, or later callers.
             work.removeValue(forKey: key)
