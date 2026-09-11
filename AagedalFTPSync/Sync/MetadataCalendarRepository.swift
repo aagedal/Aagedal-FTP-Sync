@@ -69,11 +69,24 @@ extension MetadataCalendarState {
         guard !pendingMigrations.isEmpty else { return }
         guard Set(accounts.map(\.id)).count == accounts.count,
               Set(pendingMigrations.map(\.destinationID)).count == pendingMigrations.count,
-              Set(pendingMigrations.map { $0.source.jobID }).count == pendingMigrations.count else {
+              Set(pendingMigrations.filter { !$0.isArchived }.map { $0.source.jobID }).count
+                == pendingMigrations.filter({ !$0.isArchived }).count else {
             throw MetadataTemplateRecordError.invalidSource
         }
         for journal in pendingMigrations {
             try journal.validate()
+            if journal.isArchived {
+                // The archive no longer owns a live account/job. It still
+                // prevents a stale saved binding or receive receipt from
+                // resurrecting this destination for the original local job.
+                // Deliberate receipt into a different local job remains allowed.
+                guard !bindings.contains(where: { $0.accountID == journal.source.accountID && $0.id == journal.destinationID && $0.jobID == journal.source.jobID }),
+                      !(pendingReceive?.accountID == journal.source.accountID && pendingReceive?.calendar.id == journal.destinationID
+                        && pendingReceive?.duplicate.id == journal.source.jobID) else {
+                    throw MetadataTemplateRecordError.invalidSource
+                }
+                continue
+            }
             guard let account = accounts.first(where: { $0.id == journal.source.accountID }),
                   try MetadataSyncServer(address: account.address).baseURL.absoluteString == journal.serverAddress,
                   pendingReceive?.calendar.id != journal.destinationID,
@@ -176,6 +189,23 @@ struct MetadataCalendarRepository {
                     }
                 }
             }
+            for old in existingMigrations where old.phase == .bindingCommitted {
+                if let next = state.pendingMigrations.first(where: { $0.destinationID == old.destinationID }), next.phase == .bindingDetached {
+                    guard let existingState,
+                          existingState.bindings.contains(where: { $0.accountID == old.source.accountID && $0.jobID == old.source.jobID && $0.id == old.destinationID }),
+                          try old.markBindingDetached() == next else {
+                        throw MetadataTemplateRecordError.invalidSource
+                    }
+                }
+            }
+            for old in existingMigrations where old.isPending {
+                if let next = state.pendingMigrations.first(where: { $0.destinationID == old.destinationID }), next.phase == .abandoned {
+                    guard state.bindings.filter({ $0.jobID == old.source.jobID }) == [old.source],
+                          try old.abandon() == next else {
+                        throw MetadataTemplateRecordError.invalidSource
+                    }
+                }
+            }
         }
         if let existingState { try validateNamespaceContinuity(from: existingState, to: state) }
         try beforeSave()
@@ -200,9 +230,10 @@ struct MetadataCalendarRepository {
                   old.source == next.source, old.serverAddress == next.serverAddress else { throw MetadataTemplateRecordError.invalidSource }
             let allowed: Bool
             switch old.phase {
-            case .prepared: allowed = next == old || next.phase == .serverConfirmed
-            case .serverConfirmed: allowed = next == old || next.phase == .bindingCommitted
-            case .bindingCommitted: allowed = next == old
+            case .prepared: allowed = next == old || next.phase == .serverConfirmed || next.phase == .abandoned
+            case .serverConfirmed: allowed = next == old || next.phase == .bindingCommitted || next.phase == .abandoned
+            case .bindingCommitted: allowed = next == old || next.phase == .bindingDetached
+            case .bindingDetached, .abandoned: allowed = next == old
             }
             guard allowed else { throw MetadataTemplateRecordError.invalidSource }
         }

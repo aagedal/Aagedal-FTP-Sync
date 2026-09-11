@@ -5,7 +5,7 @@ import Foundation
 /// effect, review unsynced edits, verify capabilities, and retain the old binding
 /// until the confirmed new snapshot can be committed atomically with the rebind.
 struct MetadataCalendarMigrationJournal: Codable, Equatable, Identifiable {
-    enum Phase: String, Codable { case prepared, serverConfirmed, bindingCommitted }
+    enum Phase: String, Codable { case prepared, serverConfirmed, bindingCommitted, bindingDetached, abandoned }
     enum RecoveryAction: Equatable {
         case fetchDestination
         case reconcileBinding
@@ -20,6 +20,8 @@ struct MetadataCalendarMigrationJournal: Codable, Equatable, Identifiable {
     let phase: Phase
     let confirmedSnapshot: SharedMetadataCalendar?
     var id: UUID { destinationID }
+    var isPending: Bool { phase == .prepared || phase == .serverConfirmed }
+    var isArchived: Bool { phase == .bindingDetached || phase == .abandoned }
 
     /// This is a proposed create result, not evidence that the server created it.
     var proposedSnapshot: SharedMetadataCalendar {
@@ -32,7 +34,7 @@ struct MetadataCalendarMigrationJournal: Codable, Equatable, Identifiable {
         switch phase {
         case .prepared: .fetchDestination
         case .serverConfirmed: .reconcileBinding
-        case .bindingCommitted: .retainProvenance
+        case .bindingCommitted, .bindingDetached, .abandoned: .retainProvenance
         }
     }
 
@@ -46,7 +48,7 @@ struct MetadataCalendarMigrationJournal: Codable, Equatable, Identifiable {
         try validate()
     }
 
-    private init(source: Self, phase: Phase, confirmedSnapshot: SharedMetadataCalendar) throws {
+    private init(source: Self, phase: Phase, confirmedSnapshot: SharedMetadataCalendar?) throws {
         schemaVersion = source.schemaVersion
         self.source = source.source
         destinationID = source.destinationID
@@ -60,22 +62,39 @@ struct MetadataCalendarMigrationJournal: Codable, Equatable, Identifiable {
     /// unrelated result requires explicit recovery, rather than a replacement ID.
     func confirmCreated(_ snapshot: SharedMetadataCalendar) throws -> Self {
         try validate()
-        guard phase != .bindingCommitted else { throw MetadataTemplateRecordError.invalidSource }
+        guard isPending else { throw MetadataTemplateRecordError.invalidSource }
         return try Self(source: self, phase: .serverConfirmed, confirmedSnapshot: snapshot)
     }
 
     /// The caller may persist this receipt only together with the exact rebind.
-    /// Current production repository integration may deliberately reject this
-    /// phase until namespace-aware binding orchestration is available.
     func markBindingCommitted(_ binding: MetadataCalendarBinding) throws -> Self {
         try validate()
-        guard phase != .prepared, let confirmedSnapshot,
+        guard phase == .serverConfirmed || phase == .bindingCommitted, let confirmedSnapshot,
               binding.accountID == source.accountID, binding.jobID == source.jobID,
               binding.snapshot == confirmedSnapshot, binding.conflict == nil,
               binding.publicationRange == source.publicationRange else {
             throw MetadataTemplateRecordError.invalidSource
         }
         return try Self(source: self, phase: .bindingCommitted, confirmedSnapshot: confirmedSnapshot)
+    }
+
+    /// Persist atomically with removal of the destination binding. This keeps
+    /// provenance without retaining the account or stopping later local work.
+    func markBindingDetached() throws -> Self {
+        try validate()
+        guard phase == .bindingCommitted || phase == .bindingDetached, let confirmedSnapshot else {
+            throw MetadataTemplateRecordError.invalidSource
+        }
+        return try Self(source: self, phase: .bindingDetached, confirmedSnapshot: confirmedSnapshot)
+    }
+
+    /// Stops local migration recovery without asserting that remote creation
+    /// failed or deleting any remote calendar. Persist while retaining the old
+    /// source binding; later ordinary account/job removal may keep this archive.
+    func abandon() throws -> Self {
+        try validate()
+        guard isPending || phase == .abandoned else { throw MetadataTemplateRecordError.invalidSource }
+        return try Self(source: self, phase: .abandoned, confirmedSnapshot: confirmedSnapshot)
     }
 
     func validate() throws {
@@ -104,8 +123,10 @@ struct MetadataCalendarMigrationJournal: Codable, Equatable, Identifiable {
         switch phase {
         case .prepared:
             guard confirmedSnapshot == nil else { throw MetadataTemplateRecordError.invalidSource }
-        case .serverConfirmed, .bindingCommitted:
+        case .serverConfirmed, .bindingCommitted, .bindingDetached:
             guard confirmedSnapshot == proposedSnapshot else { throw MetadataTemplateRecordError.invalidSource }
+        case .abandoned:
+            guard confirmedSnapshot == nil || confirmedSnapshot == proposedSnapshot else { throw MetadataTemplateRecordError.invalidSource }
         }
     }
 

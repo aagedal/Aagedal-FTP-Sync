@@ -23,6 +23,7 @@ struct MetadataCalendarSettingsView: View {
     @State private var inviteLimited = false
     @State private var inviteStart = Calendar.current.startOfDay(for: Date())
     @State private var inviteEnd = Calendar.current.startOfDay(for: Date())
+    @State private var migrationToAbandon: MetadataCalendarMigrationJournal?
 
 
     private var selectedBinding: MetadataCalendarBinding? { sync.binding(for: jobID) }
@@ -78,6 +79,13 @@ struct MetadataCalendarSettingsView: View {
                         }.disabled(sync.busy)
                         if let reviewError { Text(reviewError).foregroundStyle(.secondary) }
                     }
+                    if binding.snapshot.compatibility == .legacy, binding.snapshot.role == "owner",
+                       binding.snapshot.range == nil {
+                        Button("Create Template-Enabled Calendar…") { sync.prepareMigration(binding) }
+                            .disabled(sync.busy || sync.state.pendingMigrations.contains(where: \.isPending))
+                        Text("Review a new calendar for this job. The classic calendar stays separate, and its participants must be invited to the new calendar.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     DisclosureGroup("Stop sharing this job") {
                         Button("Detach and Keep Local Metadata") { sync.detach(binding) }.disabled(sync.busy)
                     }
@@ -122,6 +130,21 @@ struct MetadataCalendarSettingsView: View {
                     Button("Cancel Pending Link") { sync.cancelPendingReceive() }
                 }
             }
+            ForEach(sync.state.pendingMigrations.filter(\.isPending)) { journal in
+                Section("Calendar migration pending") {
+                    Text("“\(journal.source.snapshot.name)” still uses its classic calendar on this Mac.")
+                    LabeledContent("Local job", value: store.jobs.first(where: { $0.id == journal.source.jobID })?.name ?? journal.source.jobID.uuidString)
+                    LabeledContent("Server", value: journal.serverAddress).textSelection(.enabled)
+                    Text(journal.phase == .serverConfirmed
+                         ? "The new template calendar was confirmed. Finish linking it after reviewing any local edits made since migration began."
+                         : "The saved creation request may have reached the server. Retry checks the same new calendar and preserves your original calendar.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button(journal.phase == .serverConfirmed ? "Finish Calendar Migration" : "Retry Migration") {
+                        sync.retryMigration(journal.destinationID)
+                    }.disabled(sync.busy)
+                    Button("Keep Using Classic Calendar…") { migrationToAbandon = journal }.disabled(sync.busy)
+                }
+            }
             if !sync.message.isEmpty { Text(sync.message).textSelection(.enabled) }
         }
         .formStyle(.grouped)
@@ -136,7 +159,7 @@ struct MetadataCalendarSettingsView: View {
             jobID = store.selectedJobID ?? store.jobs.first?.id
             selectSuggestedCalendar()
         }
-        .onDisappear { setupKey = ""; invite = ""; sync.invitation = "" }
+        .onDisappear { setupKey = ""; invite = ""; sync.invitation = ""; sync.migrationProposal = nil }
         .onChange(of: calendarID) { _, _ in sync.clearSharingDetails() }
         .onChange(of: jobID) { _, id in
             sync.clearSharingDetails()
@@ -183,6 +206,30 @@ struct MetadataCalendarSettingsView: View {
         .sheet(item: $resolution) { review in
             MetadataCalendarConflictView(review: review)
         }
+        .sheet(item: $sync.migrationProposal) { journal in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Create a template-enabled calendar?").font(.headline)
+                Text("Create a new calendar from “\(journal.source.snapshot.name)” at revision \(journal.source.snapshot.revision), then link the local job “\(store.jobs.first(where: { $0.id == journal.source.jobID })?.name ?? "Unavailable job")” to it.")
+                LabeledContent("Server", value: journal.serverAddress).textSelection(.enabled)
+                Text("The current calendar stays unchanged and future edits are not mirrored to it. Other participants keep the classic calendar until you invite them to the new one. Every participant in the new calendar needs 3.0; existing invitations and access grants are not copied.")
+                Text("The reviewed metadata remains literal until you explicitly enable variables. Unsynced edits or a changed calendar require a fresh review.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !sync.message.isEmpty { Text(sync.message).foregroundStyle(.secondary) }
+                HStack {
+                    Button("Cancel", role: .cancel) { sync.migrationProposal = nil }
+                    Spacer()
+                    Button("Create and Link New Calendar") { sync.confirmMigration(journal) }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }.padding(24).frame(width: 590).disabled(sync.busy)
+        }
+        .alert("Keep using the classic calendar?", isPresented: Binding(
+            get: { migrationToAbandon != nil }, set: { if !$0 { migrationToAbandon = nil } }), presenting: migrationToAbandon) { journal in
+                Button("Keep Using Classic Calendar") { sync.cancelMigration(journal.destinationID); migrationToAbandon = nil }
+                Button("Cancel", role: .cancel) { migrationToAbandon = nil }
+            } message: { journal in
+                Text("Keep “\(store.jobs.first(where: { $0.id == journal.source.jobID })?.name ?? journal.source.jobID.uuidString)” linked to “\(journal.source.snapshot.name)” on \(journal.serverAddress). Your current local edits are kept. Any new calendar already created remains on that server with its owner's access; no invitations were copied. The saved migration record is retained for recovery history.")
+            }
     }
 
     private var serverPicker: some View {

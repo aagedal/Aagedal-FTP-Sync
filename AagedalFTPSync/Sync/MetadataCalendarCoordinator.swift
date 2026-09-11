@@ -15,6 +15,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     @Published private(set) var message = ""
     @Published private(set) var bindingMessages: [UUID: String] = [:]
     @Published var invitation = ""
+    @Published var migrationProposal: MetadataCalendarMigrationJournal?
     @Published var receiveProposal: MetadataCalendarReceiveProposal?
     @Published private(set) var receivedJobID: UUID?
     @Published private(set) var activities: [UUID: MetadataSyncActivity] = [:]
@@ -297,7 +298,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
     /// Check whole jobs, including private/unshared portions, before credentials.
     /// A template namespace permits activation; a legacy binding never does.
     private func validateBindings(accountID: UUID? = nil) throws {
-        guard !state.pendingMigrations.contains(where: { $0.phase != .bindingCommitted }) else {
+        guard !state.pendingMigrations.contains(where: { $0.phase == .prepared || $0.phase == .serverConfirmed }) else {
             throw MetadataSyncFailure(message: "Finish the pending calendar migration before syncing.", diagnosticCode: "calendar_migration_pending")
         }
         if repository.storageFormat == .legacy { try LegacyMetadataCalendarGate.validate(state) }
@@ -316,9 +317,11 @@ final class MetadataCalendarCoordinator: ObservableObject {
     }
 
     private func request(_ original: MetadataCalendarRequest, account: MetadataSyncAccount, setupKey: String? = nil,
-                         protocolVersion: MetadataCalendarProtocol? = nil) async throws -> MetadataCalendarResponse {
+                         protocolVersion: MetadataCalendarProtocol? = nil,
+                         migration: MetadataCalendarMigrationJournal? = nil) async throws -> MetadataCalendarResponse {
         guard !isPaused else { throw CancellationError() }
-        try validateBindings(accountID: account.id)
+        if let migration { try validateMigrationRequest(original, account: account, protocolVersion: protocolVersion, journal: migration) }
+        else { try validateBindings(accountID: account.id) }
         let linked = state.bindings.first { $0.accountID == account.id && $0.id == original.calendarID }
         let routing = protocolVersion ?? linked?.snapshot.compatibility.protocolVersion
             ?? calendars.first(where: { $0.id == original.calendarID })?.compatibility.protocolVersion ?? .legacy
@@ -360,12 +363,13 @@ final class MetadataCalendarCoordinator: ObservableObject {
             }
             let result = try await transport(body, account.address, account.id, key, setupKey)
             guard !isPaused else { throw CancellationError() }
-            try validateBindings(accountID: account.id)
+            if let migration { try validateMigrationRequest(original, account: account, protocolVersion: protocolVersion, journal: migration) }
+            else { try validateBindings(accountID: account.id) }
             guard result.service == "aagedal-metadata-sync", result.protocolVersion == routing.rawValue,
                   routing != .templates || result.capabilities == [MetadataCalendarCompatibility.templateCapability] else {
                 throw MetadataSyncServerError.unsupportedProtocol
             }
-            guard result.error == nil || (result.error == "revision_conflict" && result.calendar != nil) else {
+            guard result.error == nil || (migration == nil && result.error == "revision_conflict" && result.calendar != nil) else {
                 throw MetadataSyncServerError.invalidResponse
             }
             if let calendar = result.calendar {
@@ -818,13 +822,207 @@ final class MetadataCalendarCoordinator: ObservableObject {
     func detach(_ binding: MetadataCalendarBinding) {
         guard !busy, !isPaused else { return }
         do {
+            guard state.bindings.contains(binding) else { throw MetadataSyncServerError.invalidResponse }
             var next = state
             next.bindings.removeAll { $0.id == binding.id && $0.accountID == binding.accountID }
-            try persist(next)
+            if let index = next.pendingMigrations.firstIndex(where: {
+                $0.phase == .bindingCommitted && $0.destinationID == binding.id
+                    && $0.source.accountID == binding.accountID && $0.source.jobID == binding.jobID
+            }) {
+                next.pendingMigrations[index] = try next.pendingMigrations[index].markBindingDetached()
+                try persistMigration(next, replacing: state.pendingMigrations)
+            } else { try persist(next) }
             activities.removeValue(forKey: binding.jobID)
             record(MetadataSyncEvent(jobID: binding.jobID, operation: "Detach calendar", detail: "Sync stopped; local programming retained."))
             message = "Calendar detached. Local programming and server access are retained."
         } catch { message = error.localizedDescription }
+    }
+
+    /// Preparation is read-only: fresh capabilities and the exact current legacy
+    /// baseline are checked before presenting a separate, explicit confirmation.
+    func prepareMigration(_ binding: MetadataCalendarBinding) {
+        perform {
+            self.migrationProposal = nil
+            try self.validateBindings()
+            let account = try self.validateMigrationSource(binding)
+            let capability = try await self.request(.init(action: "getCapabilities"), account: account, protocolVersion: .templates)
+            try MetadataCalendarClient.validateCapabilities(capability)
+            let sourceResponse = try await self.request(.init(action: "getCalendar", calendarID: binding.id), account: account,
+                protocolVersion: .legacy)
+            guard sourceResponse.error == nil, sourceResponse.calendar == binding.snapshot else {
+                throw MetadataSyncFailure(message: "The shared calendar changed. Use Sync Now and resolve any conflicts before preparing the migration.")
+            }
+            // Local edits and endpoint changes may arrive while requests suspend.
+            _ = try self.validateMigrationSource(binding)
+            self.migrationProposal = try MetadataCalendarMigrationJournal(source: binding, destinationID: UUID(), serverAddress: account.address)
+        }
+    }
+
+    func confirmMigration(_ journal: MetadataCalendarMigrationJournal) {
+        perform {
+            guard self.migrationProposal == journal, journal.phase == .prepared else {
+                throw MetadataSyncFailure(message: "The migration proposal changed. Prepare it again before confirming.")
+            }
+            try self.validateBindings()
+            let account = try self.validateMigrationSource(journal.source)
+            guard try MetadataSyncServer(address: account.address).baseURL.absoluteString == journal.serverAddress else {
+                throw MetadataSyncFailure(message: "The server address changed. Prepare the migration again.")
+            }
+            let sourceResponse = try await self.request(.init(action: "getCalendar", calendarID: journal.source.id),
+                account: account, protocolVersion: .legacy)
+            guard sourceResponse.error == nil, sourceResponse.calendar == journal.source.snapshot else {
+                throw MetadataSyncFailure(message: "The shared calendar changed after preparation. Use Sync Now and prepare the migration again.")
+            }
+            _ = try self.validateMigrationSource(journal.source)
+            var next = self.state
+            next.pendingMigrations.append(journal)
+            try self.persistMigration(next, replacing: self.state.pendingMigrations)
+            self.migrationProposal = nil
+            try await self.resumeMigration(journal, fetchFirst: false)
+        }
+    }
+
+    /// Explicit recovery always keeps the original destination identity. Normal
+    /// polling deliberately does not start or resume migration side effects.
+    func retryMigration(_ destinationID: UUID) {
+        perform {
+            guard let journal = self.state.pendingMigrations.first(where: { $0.destinationID == destinationID }),
+                  journal.phase == .prepared || journal.phase == .serverConfirmed else {
+                throw MetadataSyncFailure(message: "This migration no longer needs recovery.")
+            }
+            try await self.resumeMigration(journal, fetchFirst: true)
+        }
+    }
+
+    /// Keep the classic binding and current local edits; never delete an uncertain
+    /// server result or reuse the reserved destination identity.
+    func cancelMigration(_ destinationID: UUID) {
+        perform {
+            guard let index = self.state.pendingMigrations.firstIndex(where: { $0.destinationID == destinationID }),
+                  self.state.pendingMigrations[index].phase == .prepared || self.state.pendingMigrations[index].phase == .serverConfirmed else {
+                throw MetadataSyncFailure(message: "Only a pending migration can keep using its classic calendar.")
+            }
+            var next = self.state
+            next.pendingMigrations[index] = try next.pendingMigrations[index].abandon()
+            try self.persistMigration(next, replacing: self.state.pendingMigrations)
+            self.migrationProposal = nil
+            self.message = "Kept the classic calendar and current local edits. Any separate calendar already created on the server remains there; no server calendar was deleted."
+        }
+    }
+
+    private func persistMigration(_ next: MetadataCalendarState, replacing expected: [MetadataCalendarMigrationJournal]) throws {
+        guard !isPaused else { throw CancellationError() }
+        guard !storageFailed else { throw MetadataSyncFailure(message: "Calendar storage must be recovered before migration can continue.") }
+        try repository.save(next, replacingMigrations: expected)
+        state = next
+    }
+
+    private func validateMigrationSource(_ binding: MetadataCalendarBinding) throws -> MetadataSyncAccount {
+        try requireNamespace(.templates)
+        guard state.pendingReceive == nil,
+              state.bindings.contains(binding), binding.snapshot.compatibility == .legacy,
+              binding.snapshot.role == "owner", binding.snapshot.revision > 0,
+              binding.snapshot.range == nil, binding.conflict == nil,
+              let account = state.accounts.first(where: { $0.id == binding.accountID && $0.registered }),
+              let store, !store.metadataDraftsBeingEdited.contains(binding.jobID),
+              let job = store.jobs.first(where: { $0.id == binding.jobID }) else {
+            throw MetadataSyncFailure(message: "Migration requires an unchanged owner calendar, no open metadata draft, and no pending receive.")
+        }
+        try LegacyMetadataCalendarGate.validate(job.metadataAutomation ?? MetadataAutomation())
+        guard try localDocument(binding) == binding.snapshot.document else {
+            throw MetadataSyncFailure(message: "There are unsynced local changes. Use Sync Now and resolve any conflicts before migrating.")
+        }
+        return account
+    }
+
+    /// Only the persisted journal's exact endpoint and destination can bypass the
+    /// pending-migration network gate. No legacy write or general sync can use it.
+    private func validateMigrationRequest(_ request: MetadataCalendarRequest, account: MetadataSyncAccount,
+                                          protocolVersion: MetadataCalendarProtocol?, journal: MetadataCalendarMigrationJournal) throws {
+        try requireNamespace(.templates)
+        try journal.validate()
+        let durable = try repository.load()
+        guard durable.pendingMigrations.contains(journal), durable.bindings.contains(journal.source),
+              durable.accounts.contains(where: { $0.id == account.id && $0.address == account.address && $0.registered }) else {
+            throw MetadataSyncFailure(message: "The saved migration changed in another process. Reload it before retrying.", diagnosticCode: "migration_state_changed")
+        }
+        guard protocolVersion == .templates, journal.phase == .prepared || journal.phase == .serverConfirmed,
+              state.pendingReceive == nil, state.pendingMigrations.contains(journal),
+              state.bindings.contains(journal.source), account.id == journal.source.accountID,
+              state.accounts.contains(where: { $0.id == account.id && $0.address == account.address && $0.registered }),
+              try MetadataSyncServer(address: account.address).baseURL.absoluteString == journal.serverAddress else {
+            throw MetadataSyncFailure(message: "The saved migration identity or server changed. Its journal has been retained.")
+        }
+        switch request.action {
+        case "getCapabilities":
+            guard request.calendarID == nil, request.document == nil else { throw MetadataSyncServerError.invalidResponse }
+        case "getCalendar":
+            guard request.calendarID == journal.destinationID, request.document == nil else { throw MetadataSyncServerError.invalidResponse }
+        case "createCalendar":
+            let proposed = journal.proposedSnapshot
+            guard journal.phase == .prepared, request.calendarID == journal.destinationID,
+                  request.document == proposed.document, request.name == proposed.name,
+                  request.timeZone == proposed.timeZone else { throw MetadataSyncServerError.invalidResponse }
+        default: throw MetadataSyncServerError.invalidResponse
+        }
+    }
+
+    private func resumeMigration(_ original: MetadataCalendarMigrationJournal, fetchFirst: Bool) async throws {
+        var journal = original
+        let account = try validateMigrationSource(journal.source)
+        guard try MetadataSyncServer(address: account.address).baseURL.absoluteString == journal.serverAddress,
+              state.pendingMigrations.contains(journal) else {
+            throw MetadataSyncFailure(message: "The migration source changed. Its recovery journal has been retained.")
+        }
+        let capability = try await request(.init(action: "getCapabilities"), account: account,
+            protocolVersion: .templates, migration: journal)
+        try MetadataCalendarClient.validateCapabilities(capability)
+        _ = try validateMigrationSource(journal.source)
+        if journal.phase == .prepared {
+            var received: SharedMetadataCalendar?
+            if fetchFirst {
+                do {
+                    received = try await request(.init(action: "getCalendar", calendarID: journal.destinationID), account: account,
+                        protocolVersion: .templates, migration: journal).calendar
+                    guard received != nil else { throw MetadataSyncServerError.invalidResponse }
+                } catch let failure as MetadataSyncFailure where failure.diagnosticCode == "HTTP 403: access_denied" {
+                    // This does not prove absence: retry the same idempotent create.
+                    // The server separately rejects collisions or revoked ownership.
+                }
+            }
+            if received == nil {
+                _ = try validateMigrationSource(journal.source)
+                let proposed = journal.proposedSnapshot
+                received = try await request(.init(action: "createCalendar", calendarID: journal.destinationID,
+                    name: proposed.name, timeZone: proposed.timeZone, document: proposed.document), account: account,
+                    protocolVersion: .templates, migration: journal).calendar
+            }
+            guard let received else { throw MetadataSyncServerError.invalidResponse }
+            let confirmed = try journal.confirmCreated(received)
+            var next = state
+            guard let index = next.pendingMigrations.firstIndex(of: journal) else { throw MetadataSyncServerError.invalidResponse }
+            next.pendingMigrations[index] = confirmed
+            try persistMigration(next, replacing: state.pendingMigrations)
+            journal = confirmed
+        }
+        // A downloaded receipt is not permission to overwrite edits made since
+        // confirmation. Rebinding changes only the identity; job content stays put.
+        _ = try validateMigrationSource(journal.source)
+        guard let confirmed = journal.confirmedSnapshot, journal.phase == .serverConfirmed else { throw MetadataSyncServerError.invalidResponse }
+        let binding = MetadataCalendarBinding(accountID: journal.source.accountID, jobID: journal.source.jobID,
+            snapshot: confirmed, publicationRange: journal.source.publicationRange)
+        let committed = try journal.markBindingCommitted(binding)
+        var next = state
+        guard let index = next.pendingMigrations.firstIndex(of: journal) else { throw MetadataSyncServerError.invalidResponse }
+        next.bindings.removeAll { $0 == journal.source }
+        next.bindings.append(binding)
+        next.pendingMigrations[index] = committed
+        try persistMigration(next, replacing: state.pendingMigrations)
+        discoveryProtocol = .templates
+        calendars = []; members = []; invitation = ""; suggestedCalendarID = binding.id
+        lastCalendarList[account.id] = nil
+        message = "Template calendar created and linked. The original legacy calendar is unchanged. Create new invitations to share the new calendar."
+        record(MetadataSyncEvent(jobID: binding.jobID, operation: "Migrate calendar", detail: "Created a separate template calendar and retained the legacy source.", revision: confirmed.revision))
     }
 
     func conflictReview(_ binding: MetadataCalendarBinding) throws -> MetadataCalendarConflictReview {

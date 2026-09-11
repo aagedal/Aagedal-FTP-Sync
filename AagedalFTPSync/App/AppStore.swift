@@ -409,7 +409,7 @@ final class AppStore: ObservableObject {
                 guard bindings.count <= 1,
                       bindings.allSatisfy({ $0.snapshot.compatibility.protocolVersion == protocolVersion }),
                       protocolVersion != .templates || bindings.count == 1,
-                      !state.pendingMigrations.contains(where: { $0.source.jobID == jobID && $0.phase != .bindingCommitted }) else {
+                      !state.pendingMigrations.contains(where: { $0.source.jobID == jobID && $0.isPending }) else {
                     throw MetadataTemplateRecordError.invalidSource
                 }
             } else if protocolVersion == .templates {
@@ -1290,7 +1290,7 @@ final class AppStore: ObservableObject {
             throw AppError.invalidConfiguration("Calendar links could not be checked. Resolve calendar storage recovery before saving metadata variables. Your draft has not been saved.")
         }
         for job in activeJobs {
-            if state.pendingMigrations.contains(where: { $0.source.jobID == job.id && $0.phase != .bindingCommitted }) {
+            if state.pendingMigrations.contains(where: { $0.source.jobID == job.id && $0.isPending }) {
                 throw AppError.invalidConfiguration("Finish calendar migration recovery before changing metadata variables. Your draft has not been saved.")
             }
             if let pending = state.pendingReceive, pending.source.id == job.id || pending.duplicate.id == job.id {
