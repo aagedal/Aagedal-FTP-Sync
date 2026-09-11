@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-2569206-namespace-routing",
+  "id": "development-2ee1c28-calendar-migration",
   "status": "IMPLEMENTING",
-  "commit": "2569206efd2d12c541e952aab04a1625b1d25ad7",
+  "commit": "2ee1c2895184fc7229e20b3f6ef9a6286fa4bb6f",
   "version": "2.9.2",
   "build": "37",
   "appPath": "/Users/truls.aagedal/Library/Developer/Xcode/DerivedData/Aagedal_FTP_Sync-chqrijudhplttvgsyeeekhmacadi/Build/Products/Debug/AagedalFTPSync.app",
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Development build only, not ready for human acceptance. Namespace-aware new-calendar sharing and confirmed-link activation at 2569206. Full suite: 983 passed, 15 opt-in skips, zero failures (998 discovered). Existing-calendar migration/recovery, native/supported-OS, recognition, M5 and release gates remain open. New development identity preserves prior result sets."
+  "note": "Development build only, not ready for human acceptance. Explicit classic-calendar migration, same-UUID recovery and retained archives at 2ee1c28. Full suite: 1000 passed, 15 opt-in skips, zero failures (1015 discovered). Native/live migration, supported-OS, recognition, M5 and release gates remain open. New development identity preserves prior result sets."
 }
