@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Explicit typed template editors and save/import activation guards implemented at 7790497. Full suite: 831 passed, 15 opt-in skips, zero failures. Separate ad-hoc UI-test build passed; native execution failed before initialization because authentication was canceled, so no GUI pass is claimed. Geocoding/face integration, protocol3 sharing, actual GUI/supported-OS and release gates remain incomplete. No manual gate advanced."
+  "note": "Saved processing-zone settings, existing/proposed metadata comparison and audit context disclosure implemented at cab50f3. Full suite: 846 passed, 15 opt-in skips, zero failures. Native desktop was reserved by the active companion coordinator; prior UI-test authentication limit remains. Geocoding/face integration, protocol3 sharing, native/supported-OS and release gates remain incomplete. No manual gate advanced."
 }

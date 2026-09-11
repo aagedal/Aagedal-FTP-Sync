@@ -102,7 +102,7 @@
       "steps": [
         "In Metadata Programming, open a copied clip. Beside Headline or Description choose Variables…, use Insert Variable (Capture date is first; insertion appends at the end), then explicitly enable Resolve Variables and choose Apply. Repeat for both fields.",
         "Choose Edit Keywords…, Add Keyword for each separate entry, and enable Resolve variables for the entire keyword list before Apply. In Photographer Profile use Variables… beside Copyright notice and enable Resolve Variables. Save the clip/profile and use Save as New or Update under Reusable Presets. Keep these templates local unless the server explicitly supports them.",
-        "Inspect the editor sample marked Sample output only; this is a synthetic example, not a photo preview. Then run the folder preview on both photos, select each file, and record proposed text, preservation/omission decisions, and the saved processing zone. Independently inspect existing values in an external reader.",
+        "Inspect the editor sample marked Sample output only; this is synthetic, not a photo preview. Run the real folder preview on both photos and select each file. Compare the Existing value and Proposed value or outcome columns, including separately labeled IPTC/XMP carriers, preservation/omission decisions and capture/processing zone. Confirm values independently with an external metadata reader.",
         "Transfer each photo through the matching schedule, then compare all four fields with the corresponding preview using an external metadata reader.",
         "Reopen the preset and clip to verify stored text still contains the original variable source rather than the first photo's resolved values."
       ],
@@ -119,10 +119,10 @@
       "title": "Dates respect calendar boundaries, offsets and job time zone",
       "prerequisites": "Fixtures with EXIF capture dates on leap day, Dec 31/Jan 1, immediately around midnight, explicit positive/negative offsets, no offset, and no capture date. Record expected dates independently before testing.",
       "steps": [
-        "Set a persisted job time zone different from the Mac's and preview '{dateCaptured:YYYY-MM-DD}' alongside '{dateCaptured:yyyy-MM-dd}' for every fixture.",
+        "In job metadata settings, choose Processing time zone → Choose…, search for Europe/Oslo or America/New_York, select a zone different from the Mac, choose Use Selected Zone, then Save the job. Reopen and confirm Saved zone. Preview both date aliases for every fixture. Simply opening or canceling the chooser must not initialize an unset literal job.",
         "Check Dec/Jan and leap-day results against the recorded calendar dates; test an explicit offset whose local date differs from UTC.",
         "Change the Mac's locale and time zone while retaining the job's configured zone, then repeat previews.",
-        "Verify the offset-free fixture identifies the job-zone assumption and the missing-date fixture reports an unavailable capture value.",
+        "Verify the offset-free fixture identifies the saved fallback zone and a fixture with an explicit offset identifies that original offset. After transfer, expand Metadata audit trail → Processing details and compare recorded processing time/zone and capture assumption. Missing capture must remain unavailable rather than becoming today.",
         "Preview/transfer with a fixed-clock test build or documented midnight-boundary procedure to confirm one processing date is shared by every field and retry within the same operation; attach that evidence."
       ],
       "expected": [
