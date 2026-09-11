@@ -20,6 +20,7 @@
 		0C318FACD47BB1ECC0C86E37 /* DownloadManifestRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0E4626D960A40103026D2D /* DownloadManifestRepository.swift */; };
 		0E7DDF8D1BE60E54522E7EF5 /* ActivatedMetadataSyncIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7666664A8E0B7D10BCE75842 /* ActivatedMetadataSyncIntegrationTests.swift */; };
 		0F49E4F6EC05AB6395A4F2FA /* ConfigurationTransferTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0EAD657F152BADDBE31F18A /* ConfigurationTransferTests.swift */; };
+		1468F93201442C3906FFAFB5 /* MetadataGeocodingImportConsentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57188A1833C2D54250CF026F /* MetadataGeocodingImportConsentTests.swift */; };
 		15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */; };
 		17B726D489077589FCF2B07A /* SyncJobProcessingTimeZoneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE378617ED2105019F256F1A /* SyncJobProcessingTimeZoneTests.swift */; };
 		17E233B3702C9E630DB8CA3A /* DownloadNamingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */; };
@@ -38,6 +39,7 @@
 		27ECC724FC87366D0FDD1079 /* VersionedAppStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 512B066026E904E8FB0B048C /* VersionedAppStorageTests.swift */; };
 		28ED5673B1733B048EC9445D /* ServerProfileRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0AB176BB0302BDD7BEE6ED8 /* ServerProfileRepositoryTests.swift */; };
 		2B397304BF5CD4EC6FD1488A /* FTPConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 619AB2C07F959ECA6F57E2BD /* FTPConnection.swift */; };
+		2B9BA322075F20D5D955CE22 /* MetadataGeocodingProviderRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49AFAD3B9A5D9477EFF888FA /* MetadataGeocodingProviderRoutingTests.swift */; };
 		2E15AFA445469D5EDA934196 /* MetadataSyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A2D6F5AD2A2701FD04AA11 /* MetadataSyncSettingsView.swift */; };
 		2F375E24D00A933DA38FD157 /* JobRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBC455448901CCC142FAFA0C /* JobRepository.swift */; };
 		32298A5A73DBAD1DAC109092 /* Version3JSONStoreConversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4361B07FCB5CAEA92777F35 /* Version3JSONStoreConversion.swift */; };
@@ -73,6 +75,7 @@
 		5662C3ECC707EE19CDE34F51 /* ConfigurationTransferCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61206E0435FCE509729F69A0 /* ConfigurationTransferCoordinatorTests.swift */; };
 		5669AFC8BB4712EDC2099D76 /* OfflineMetadataGeocodingProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B588FB6CFBA90DBCC09B4F2 /* OfflineMetadataGeocodingProviderTests.swift */; };
 		5745C7E7A629C9CCA2B88A64 /* ConfigurationTransferActivationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C7B57A47D6AE4FF9FA83D5B /* ConfigurationTransferActivationTests.swift */; };
+		58F1CC723516C65D3C03EAE8 /* MetadataGeocodingAppleConsentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E112AE6B278DB7FD67ABD28 /* MetadataGeocodingAppleConsentTests.swift */; };
 		5924A4106BF442BB4DE764B0 /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F63E1167F0C4B8DD60E70E /* MetadataPreview.swift */; };
 		5A338901500F14C192E13EBA /* LegacySignatureSQLiteAcquisitionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38340DAEFB7349C2D522EDA /* LegacySignatureSQLiteAcquisitionTests.swift */; };
 		5ADE536567FA896B1319AB32 /* MetadataAudit.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DF972CA42278237F9D4F9F1 /* MetadataAudit.swift */; };
@@ -259,12 +262,14 @@
 		3B6E699622BD45D4E5BDCAE2 /* DownloadNameMappingRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNameMappingRegistry.swift; sourceTree = "<group>"; };
 		3C0B9F766C78243FC5FFFB07 /* AppError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppError.swift; sourceTree = "<group>"; };
 		3DD62713FC38804451BD45E8 /* Version3BootstrapCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3BootstrapCoordinator.swift; sourceTree = "<group>"; };
+		3E112AE6B278DB7FD67ABD28 /* MetadataGeocodingAppleConsentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingAppleConsentTests.swift; sourceTree = "<group>"; };
 		3F6C2B251AD13D15AC460E33 /* Version3MigrationDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3MigrationDriver.swift; sourceTree = "<group>"; };
 		3FACE3FD67ADE245F727458D /* UITestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestSupport.swift; sourceTree = "<group>"; };
 		4011BEBA189EEEF704BB661B /* MetadataCalendarPausedStartupTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarPausedStartupTests.swift; sourceTree = "<group>"; };
 		442AE118CB2A317175A1EEAF /* MetadataGeocodingSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingSettingsView.swift; sourceTree = "<group>"; };
 		44DC5631E8E1F2C557CA626F /* ConfigurationTransferView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferView.swift; sourceTree = "<group>"; };
 		460965EA4D3BFCA79ADD3827 /* MetadataGeocodingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingService.swift; sourceTree = "<group>"; };
+		49AFAD3B9A5D9477EFF888FA /* MetadataGeocodingProviderRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingProviderRoutingTests.swift; sourceTree = "<group>"; };
 		4A1B40E9EED67D6C74811BBE /* EndpointEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointEditor.swift; sourceTree = "<group>"; };
 		4AF30957A97DA611D3EF011D /* MetadataAuditTrailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAuditTrailView.swift; sourceTree = "<group>"; };
 		4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStorageLayoutTests.swift; sourceTree = "<group>"; };
@@ -275,6 +280,7 @@
 		5447B2211E64F445CD7DE075 /* BookmarkAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkAccess.swift; sourceTree = "<group>"; };
 		54B31C5BE6A2973FC3F3AA51 /* MetadataGeocodingPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingPreviewTests.swift; sourceTree = "<group>"; };
 		55EEEC723D4E4695B25EFAC9 /* MetadataTimelineViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataTimelineViews.swift; sourceTree = "<group>"; };
+		57188A1833C2D54250CF026F /* MetadataGeocodingImportConsentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingImportConsentTests.swift; sourceTree = "<group>"; };
 		574C0A6D755F5DB5BAA66F7C /* MetadataGeocodingSyncIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingSyncIntegrationTests.swift; sourceTree = "<group>"; };
 		57FCBE667F129FE47DF1CB07 /* SupportBundleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportBundleTests.swift; sourceTree = "<group>"; };
 		586353B7AF5F95DB24C2CF28 /* MetadataSyncServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncServer.swift; sourceTree = "<group>"; };
@@ -636,7 +642,10 @@
 				2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */,
 				0DAF6689426FB90A37C65C06 /* MetadataCoordinateReaderTests.swift */,
 				E97321D663D13186B49EA810 /* MetadataExistingPreviewTests.swift */,
+				3E112AE6B278DB7FD67ABD28 /* MetadataGeocodingAppleConsentTests.swift */,
+				57188A1833C2D54250CF026F /* MetadataGeocodingImportConsentTests.swift */,
 				54B31C5BE6A2973FC3F3AA51 /* MetadataGeocodingPreviewTests.swift */,
+				49AFAD3B9A5D9477EFF888FA /* MetadataGeocodingProviderRoutingTests.swift */,
 				244B69E04AEFF6E5F6E014AF /* MetadataGeocodingServiceTests.swift */,
 				2AC3D876E9C3EFE0101E8DB2 /* MetadataGeocodingSettingsTests.swift */,
 				5ABF83A2D5E4F33DA420EB3E /* MetadataGeocodingStrictSidecarTests.swift */,
@@ -905,7 +914,10 @@
 				15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */,
 				A7FC7DBB95864DE714EE3F9F /* MetadataCoordinateReaderTests.swift in Sources */,
 				823F5A319880F7A836622FC6 /* MetadataExistingPreviewTests.swift in Sources */,
+				58F1CC723516C65D3C03EAE8 /* MetadataGeocodingAppleConsentTests.swift in Sources */,
+				1468F93201442C3906FFAFB5 /* MetadataGeocodingImportConsentTests.swift in Sources */,
 				49D66809DF59A8CDAFF2D61B /* MetadataGeocodingPreviewTests.swift in Sources */,
+				2B9BA322075F20D5D955CE22 /* MetadataGeocodingProviderRoutingTests.swift in Sources */,
 				04ADF954ED713673CFF0284D /* MetadataGeocodingServiceTests.swift in Sources */,
 				A340459EE3E0C2B89FD39878 /* MetadataGeocodingSettingsTests.swift in Sources */,
 				B5E4A08CEC3E44D160E14F13 /* MetadataGeocodingStrictSidecarTests.swift in Sources */,

@@ -95,7 +95,7 @@ actor MetadataGeocodingService {
         var task: Task<Void, Never>?
     }
     private struct Cached { let outcome: Outcome; let expires: TimeInterval; var access: UInt64 }
-    private let identity: Identity
+    nonisolated let identity: Identity
     private let limits: Limits
     private let provider: Provider
     private let now: @Sendable () -> TimeInterval

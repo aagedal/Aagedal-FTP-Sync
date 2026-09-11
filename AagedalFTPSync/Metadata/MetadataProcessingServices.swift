@@ -6,9 +6,26 @@ import Foundation
 struct MetadataProcessingServices: Sendable {
     static let shared = MetadataProcessingServices()
     let offlineGeocoding: MetadataGeocodingService
+    private let appleGeocoding: MetadataGeocodingService?
 
-    init(offlineGeocoding: MetadataGeocodingService = OfflineMetadataGeocodingProvider.makeService()) {
+    init(offlineGeocoding: MetadataGeocodingService = OfflineMetadataGeocodingProvider.makeService(),
+         appleGeocoding: MetadataGeocodingService? = AppleMetadataGeocodingProvider.makeService(allowSendingCoordinatesToApple: true)) {
         self.offlineGeocoding = offlineGeocoding
+        // Both factories are inert. Constructing the shared queue is not consent:
+        // every operation must pass the persisted selection check below before use.
+        self.appleGeocoding = appleGeocoding
+    }
+
+    func geocoding(for settings: MetadataGeocodingSettings) throws -> MetadataGeocodingService {
+        try settings.validate()
+        switch settings.provider {
+        case .offline: return offlineGeocoding
+        case .apple:
+            guard settings.allowSendingCoordinatesToApple, let appleGeocoding else {
+                throw MetadataGeocodingSettingsError.invalidSettings
+            }
+            return appleGeocoding
+        }
     }
 
     static func geocodingApplies(to relativePath: String, settings: MetadataGeocodingSettings?) -> Bool {

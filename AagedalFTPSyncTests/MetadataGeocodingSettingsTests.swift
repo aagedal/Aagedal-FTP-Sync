@@ -178,4 +178,122 @@ final class MetadataGeocodingSettingsTests: XCTestCase {
         raw["version"] = 2
         XCTAssertThrowsError(try ConfigurationTransferCodec.decode(bytes(raw), password: nil))
     }
+    func testOfflineSchemaOneBytesRemainExactlyUnchangedAndContainNoConsent() throws {
+        let fixture = Data(#"{"cityPolicy":"fillEmpty","countryPolicy":"overwrite","datasetIdentifier":"sha256:1c0d66422b009340135398674ec93d69366776917be9e9ef179cf1457cceb26b","localeIdentifier":"nb-NO","maximumDistanceMeters":50000,"providerIdentifier":"geonames-offline","providerVersion":"SwiftMediaMetadata-2.0.0","resolveVariables":true,"schemaVersion":1}"#.utf8)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let decoded = try JSONDecoder().decode(MetadataGeocodingSettings.self, from: fixture)
+        XCTAssertEqual(decoded, try settings())
+        XCTAssertEqual(decoded.provider, .offline)
+        XCTAssertFalse(decoded.allowSendingCoordinatesToApple)
+        XCTAssertEqual(try encoder.encode(decoded), fixture)
+        for consent in [false, true] {
+            var raw = try object(decoded); raw["allowSendingCoordinatesToApple"] = consent
+            XCTAssertThrowsError(try JSONDecoder().decode(MetadataGeocodingSettings.self, from: bytes(raw)))
+        }
+        var invalid = decoded; invalid.allowSendingCoordinatesToApple = true
+        XCTAssertThrowsError(try encoder.encode(invalid))
+    }
+
+    func testAppleSelectionIsAtomicAndRequiresAffirmativeConsentEvenWhenDisabled() throws {
+        var selected = try MetadataGeocodingSettings(localeIdentifier: "en")
+        let original = selected
+        XCTAssertThrowsError(try selected.selectProvider(.apple)) {
+            XCTAssertEqual($0 as? MetadataGeocodingSettingsError, .appleConsentRequired)
+        }
+        XCTAssertEqual(selected, original)
+        XCTAssertThrowsError(try MetadataGeocodingSettings(localeIdentifier: "en", provider: .apple))
+        try selected.selectProvider(.apple, allowSendingCoordinatesToApple: true)
+        XCTAssertEqual(selected.provider, .apple)
+        XCTAssertTrue(selected.allowSendingCoordinatesToApple)
+        XCTAssertFalse(selected.isEnabled)
+        let encoded = try object(selected)
+        XCTAssertEqual(encoded["schemaVersion"] as? Int, 2)
+        XCTAssertEqual(encoded["providerIdentifier"] as? String, "apple-online")
+        XCTAssertEqual(encoded["providerVersion"] as? String, "Apple-geocoding-policy-1")
+        XCTAssertEqual(encoded["datasetIdentifier"] as? String, "Apple-server-managed")
+        XCTAssertEqual(encoded["maximumDistanceMeters"] as? Int, 100_000)
+        XCTAssertEqual(try JSONDecoder().decode(MetadataGeocodingSettings.self, from: bytes(encoded)), selected)
+        selected.allowSendingCoordinatesToApple = false
+        XCTAssertThrowsError(try selected.validate())
+        XCTAssertThrowsError(try JSONEncoder().encode(selected))
+        try selected.selectProvider(.offline)
+        XCTAssertEqual(selected, original)
+        XCTAssertNil(try object(selected)["allowSendingCoordinatesToApple"])
+    }
+
+    func testAppleMissingNullFalseAndWrongTypeConsentOrFuturePolicyCannotDecode() throws {
+        let apple = try MetadataGeocodingSettings(cityPolicy: .fillEmpty, localeIdentifier: "en_US",
+            provider: .apple, allowSendingCoordinatesToApple: true)
+        let original = try object(apple)
+        for key in original.keys {
+            var missing = original; missing.removeValue(forKey: key)
+            XCTAssertThrowsError(try JSONDecoder().decode(MetadataGeocodingSettings.self, from: bytes(missing)))
+            var null = original; null[key] = NSNull()
+            XCTAssertThrowsError(try JSONDecoder().decode(MetadataGeocodingSettings.self, from: bytes(null)))
+        }
+        let changes: [(String, Any)] = [
+            ("allowSendingCoordinatesToApple", false), ("allowSendingCoordinatesToApple", 1),
+            ("allowSendingCoordinatesToApple", "true"), ("allowSendingCoordinatesToApple", []),
+            ("schemaVersion", 1), ("schemaVersion", 3), ("schemaVersion", true),
+            ("providerIdentifier", "geonames-offline"), ("providerIdentifier", "other-online"),
+            ("providerVersion", "MapKit-26"), ("datasetIdentifier", "future-server"),
+            ("maximumDistanceMeters", 50_000), ("localeIdentifier", "automatic"), ("futureConsent", true)
+        ]
+        for (key, value) in changes {
+            var changed = original; changed[key] = value
+            XCTAssertThrowsError(try JSONDecoder().decode(MetadataGeocodingSettings.self, from: bytes(changed))) {
+                XCTAssertEqual($0 as? MetadataGeocodingSettingsError, .invalidSettings, key)
+                XCTAssertFalse(VersionedStoreCodec.permitsBackupRecovery(after: $0))
+            }
+        }
+    }
+
+    func testAppleConsentSurvivesExplicitV3TransferButImportedJobRemainsStopped() throws {
+        var job = SyncJob(name: "Apple", isEnabled: true, startOnAppLaunch: true)
+        job.metadataGeocoding = try .init(resolveVariables: true, cityPolicy: .overwrite, localeIdentifier: "en_US",
+            provider: .apple, allowSendingCoordinatesToApple: true)
+        let transfer = ConfigurationTransfer(scope: .jobs, jobs: [job], metadataPresets: [], photographers: [])
+        XCTAssertEqual(transfer.version, 3)
+        let passwords: [String?] = [nil, "apple-consent-test-password"]
+        for password in passwords {
+            let encoded = try ConfigurationTransferCodec.encode(transfer, password: password)
+            let decoded = try ConfigurationTransferCodec.decode(encoded, password: password)
+            let imported = try XCTUnwrap(decoded.jobs.first).preparedForImport()
+            XCTAssertEqual(imported.metadataGeocoding, job.metadataGeocoding)
+            XCTAssertFalse(imported.isEnabled)
+            XCTAssertFalse(imported.startsOnAppLaunch)
+        }
+        XCTAssertThrowsError(try VersionedStoreCodec(format: .legacy, store: .jobs).encode([job], encoder: JSONEncoder()))
+        var raw = try XCTUnwrap(JSONSerialization.jsonObject(with: ConfigurationTransferCodec.encode(transfer, password: nil)) as? [String: Any])
+        raw["version"] = 2
+        XCTAssertThrowsError(try ConfigurationTransferCodec.decode(bytes(raw), password: nil))
+    }
+
+    func testMissingAppleConsentCannotRecoverOfflineBackupOrBeOverwritten() throws {
+        let layout = AppStorageLayout(root: try root(), storageFormat: .version3)
+        let codec = VersionedStoreCodec(format: .version3, store: .jobs)
+        var offline = SyncJob(name: "Retained offline")
+        offline.metadataGeocoding = try settings()
+        let backup = try codec.encode([offline], encoder: JSONEncoder())
+        try backup.write(to: layout.jobs.appendingPathExtension("backup"))
+        var apple = offline
+        try apple.metadataGeocoding?.selectProvider(.apple, allowSendingCoordinatesToApple: true)
+        let valid = try codec.encode([apple], encoder: JSONEncoder())
+        try valid.write(to: layout.jobs)
+        let repository = JobRepository(storage: layout)
+        XCTAssertEqual(try repository.load(), [apple])
+        var malformedSettings = try object(try XCTUnwrap(apple.metadataGeocoding))
+        malformedSettings.removeValue(forKey: "allowSendingCoordinatesToApple")
+        var malformedJob = try object(apple); malformedJob["metadataGeocoding"] = malformedSettings
+        for payload in [[malformedJob], [["earlierMalformedJob": true], malformedJob]] {
+            let envelope: [String: Any] = ["format": "AagedalFTPSync.store", "schemaVersion": 3,
+                "store": "jobs", "payload": payload]
+            let retained = try bytes(envelope); try retained.write(to: layout.jobs)
+            XCTAssertThrowsError(try repository.load()) { XCTAssertFalse(VersionedStoreCodec.permitsBackupRecovery(after: $0)) }
+            XCTAssertThrowsError(try repository.save([offline]))
+            XCTAssertEqual(try Data(contentsOf: layout.jobs), retained)
+            XCTAssertEqual(try Data(contentsOf: layout.jobs.appendingPathExtension("backup")), backup)
+        }
+    }
+
 }

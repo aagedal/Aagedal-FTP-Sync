@@ -256,7 +256,8 @@ enum MetadataPreviewService {
     /// Unlike the original draft-only API, this overload respects isEnabled.
     static func previewLocalFolder(
         at folderURL: URL, automation: MetadataAutomation?, geocoding: MetadataGeocodingSettings?,
-        service: MetadataGeocodingService = MetadataProcessingServices.shared.offlineGeocoding,
+        service: MetadataGeocodingService? = nil,
+        services: MetadataProcessingServices = .shared,
         filter: FileFilter = FileFilter(), arrivalDate: Date = Date(), processingTimeZone: TimeZone? = nil
     ) async throws -> MetadataPreviewResult {
         try Task.checkCancellation()
@@ -325,7 +326,7 @@ enum MetadataPreviewService {
             var detail: String?
             do {
                 let resolved = try await MetadataProcessingCoordinator.prepare(assignment: assignment,
-                    geocoding: perFileGeocoding, service: service, fileURL: canonical, relativePath: path,
+                    geocoding: perFileGeocoding, service: service, services: services, fileURL: canonical, relativePath: path,
                     processingDate: arrivalDate, processingTimeZone: processingTimeZone)
                 processing = resolved
                 if !resolved.resolutionComplete { status = .resolutionIncomplete }

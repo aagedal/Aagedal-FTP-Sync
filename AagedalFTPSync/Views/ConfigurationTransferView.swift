@@ -66,12 +66,19 @@ struct ConfigurationTransferOptionsView: View {
 
     let operation: ConfigurationTransferOperation
     let onExport: (ConfigurationTransferScope, String?) -> Bool
-    let onImport: (Data, String?) -> Bool
+    let onImport: (Data, String?, Bool) -> Bool
 
     @State private var encryptPackage = true
     @State private var password = ""
     @State private var confirmation = ""
     @State private var validationMessage: String?
+    @State private var pendingAppleImport: AppleImportRequest?
+    @State private var confirmsAppleImport = false
+
+    private struct AppleImportRequest {
+        let data: Data
+        let password: String?
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -129,6 +136,21 @@ struct ConfigurationTransferOptionsView: View {
         }
         .padding(24)
         .frame(width: dynamicTypeSize.isAccessibilitySize ? 640 : 480)
+        .confirmationDialog(
+            "Allow imported jobs to send image coordinates to Apple?",
+            isPresented: $confirmsAppleImport,
+            titleVisibility: .visible
+        ) {
+            Button("Allow Apple Coordinates and Import") {
+                guard let request = pendingAppleImport else { return }
+                pendingAppleImport = nil
+                if onImport(request.data, request.password, true) { dismiss() }
+            }
+            Button("Cancel", role: .cancel) { pendingAppleImport = nil }
+        } message: {
+            Text("This package selects Apple online geocoding. When you run these jobs or preview their metadata, image coordinates may be sent to Apple to resolve places. Network access is required. Your device location is not requested. Imported jobs remain stopped until you configure and run them. Cancel leaves your configuration unchanged.")
+        }
+        .onDisappear { pendingAppleImport = nil }
     }
 
     private var isExport: Bool {
@@ -193,7 +215,19 @@ struct ConfigurationTransferOptionsView: View {
             }
             if onExport(scope, encryptPackage ? password : nil) { dismiss() }
         case .importPackage(let data, let protection):
-            if onImport(data, protection == .encrypted ? password : nil) { dismiss() }
+            let packagePassword = protection == .encrypted ? password : nil
+            do {
+                // Authenticate and validate the package before asking for local consent.
+                let transfer = try ConfigurationTransferCodec.decode(data, password: packagePassword)
+                if transfer.jobs.contains(where: { $0.metadataGeocoding?.provider == .apple }) {
+                    pendingAppleImport = AppleImportRequest(data: data, password: packagePassword)
+                    confirmsAppleImport = true
+                } else if onImport(data, packagePassword, false) {
+                    dismiss()
+                }
+            } catch {
+                validationMessage = "The configuration could not be opened: \(error.localizedDescription)"
+            }
         }
     }
 }

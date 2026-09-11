@@ -172,7 +172,7 @@ struct JobDetailEditor: View {
                     }
                 }
 
-                Section("Offline geocoding") {
+                Section("Geocoding") {
                     MetadataGeocodingSettingsView(settings: $session.draft.metadataGeocoding,
                         store: store, savedJob: savedJob, hasUnsavedChanges: session.hasUnsavedChanges)
                 }

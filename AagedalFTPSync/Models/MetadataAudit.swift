@@ -69,7 +69,7 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
 
         init?(result: MetadataProcessingResult) {
             localeIdentifier = result.geocodingLocaleIdentifier
-            var identity: MetadataGeocodingService.Identity?
+            var identity = result.geocodingProviderIdentity
             var distance: Double?
             switch result.geocoding {
             case .notRequested: return nil

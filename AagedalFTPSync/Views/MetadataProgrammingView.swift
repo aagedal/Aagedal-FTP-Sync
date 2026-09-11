@@ -512,13 +512,14 @@ struct MetadataProgrammingView: View {
         }
     }
 
-    private func importMetadataProgramming(_ data: Data, _ password: String?) -> Bool {
+    private func importMetadataProgramming(_ data: Data, _ password: String?, _ allowAppleCoordinates: Bool) -> Bool {
         guard let metadataImportTargetJobID,
               let result = store.importConfiguration(
                   from: data,
                   password: password,
                   expectedScope: .metadata,
-                  metadataTargetJobID: metadataImportTargetJobID
+                  metadataTargetJobID: metadataImportTargetJobID,
+                  allowImportedAppleCoordinates: allowAppleCoordinates
               ) else {
             return false
         }

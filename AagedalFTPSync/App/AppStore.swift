@@ -548,7 +548,8 @@ final class AppStore: ObservableObject {
         from data: Data,
         password: String?,
         expectedScope: ConfigurationTransferScope? = nil,
-        metadataTargetJobID: UUID? = nil
+        metadataTargetJobID: UUID? = nil,
+        allowImportedAppleCoordinates: Bool = false
     ) -> ConfigurationImportResult? {
         do {
             let prepared = try configurationTransferCoordinator.prepareImport(
@@ -558,6 +559,17 @@ final class AppStore: ObservableObject {
                 expectedScope: expectedScope,
                 metadataTargetJobID: metadataTargetJobID
             )
+            // Consent recorded on another installation does not authorize this receiving user.
+            // Metadata-only imports never create job IDs or replace job-local provider settings.
+            let newJobIDs = Set(prepared.importedJobIDs.values)
+            if !allowImportedAppleCoordinates,
+               prepared.state.jobs.contains(where: {
+                   newJobIDs.contains($0.id) && $0.metadataGeocoding?.provider == .apple
+               }) {
+                throw AppError.invalidConfiguration(
+                    "This package includes Apple online geocoding. Confirm that image coordinates may be sent to Apple before importing these jobs. Network access is required; device location is not requested."
+                )
+            }
             var importedJobs = prepared.state.jobs
             let previousJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
             for index in importedJobs.indices where previousJobs[importedJobs[index].id] != importedJobs[index] {

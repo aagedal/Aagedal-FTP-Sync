@@ -94,6 +94,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
     let geocoding: MetadataProcessingGeocodingOutcome
     /// Concrete locale only when lookup was needed (including missing GPS).
     let geocodingLocaleIdentifier: String?
+    let geocodingProviderIdentity: MetadataGeocodingService.Identity?
     let places: [MetadataPlaceField: MetadataProcessingPlaceOutcome]
 
     init(changes: ResolvedMetadataChanges, context: MetadataTemplateContext?,
@@ -101,6 +102,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
          coordinateResolution: EffectiveMetadataCoordinates.Resolution? = nil,
          geocoding: MetadataProcessingGeocodingOutcome = .notRequested,
          geocodingLocaleIdentifier: String? = nil,
+         geocodingProviderIdentity: MetadataGeocodingService.Identity? = nil,
          places: [MetadataPlaceField: MetadataProcessingPlaceOutcome] = [:]) {
         self.changes = changes
         self.context = context
@@ -108,6 +110,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
         self.coordinateResolution = coordinateResolution
         self.geocoding = geocoding
         self.geocodingLocaleIdentifier = geocodingLocaleIdentifier
+        self.geocodingProviderIdentity = geocodingProviderIdentity
         self.places = places
     }
 
@@ -196,11 +199,12 @@ enum MetadataProcessingCoordinator {
                        coordinateResolution: coordinateResolution)
     }
 
-    /// Offline enrichment shares one injected service and freezes original GPS before
+    /// Enrichment shares the selected application's service (or an injected test service) and freezes original GPS before
     /// any proposal. Disabled settings retain the existing synchronous behavior.
     static func prepare(
         assignment: MetadataAssignment?, geocoding: MetadataGeocodingSettings?,
-        service: MetadataGeocodingService, fileURL: URL, relativePath: String,
+        service: MetadataGeocodingService? = nil, services: MetadataProcessingServices = .shared,
+        fileURL: URL, relativePath: String,
         processingDate: Date, processingTimeZone: TimeZone
     ) async throws -> MetadataProcessingResult {
         try Task.checkCancellation()
@@ -240,14 +244,17 @@ enum MetadataProcessingCoordinator {
             }
         }
         var stage: MetadataProcessingGeocodingOutcome = .notRequested
+        var providerIdentity: MetadataGeocodingService.Identity?
         var place: MetadataGeocodingService.Place?
         if needsLookup {
             if let pair = coordinates?.selected?.pair {
                 guard let query = MetadataGeocodingService.Query(latitude: pair.latitude,
                     longitude: pair.longitude, locale: settings.localeIdentifier) else {
-                    throw AppError.invalidConfiguration("Offline metadata requires a concrete supported locale.")
+                    throw AppError.invalidConfiguration("Geocoding requires a concrete supported locale.")
                 }
-                let outcome = await service.resolve(query)
+                let selectedService = try service ?? services.geocoding(for: settings)
+                providerIdentity = selectedService.identity
+                let outcome = await selectedService.resolve(query)
                 try Task.checkCancellation()
                 if case .cancelled = outcome { throw CancellationError() }
                 stage = .lookup(outcome)
@@ -299,6 +306,7 @@ enum MetadataProcessingCoordinator {
                 cityPolicy: settings.cityPolicy, countryPolicy: settings.countryPolicy)),
             context: context, fields: base.fields, coordinateResolution: coordinates,
             geocoding: stage, geocodingLocaleIdentifier: needsLookup ? settings.localeIdentifier : nil,
+            geocodingProviderIdentity: providerIdentity,
             places: outcomes)
     }
 

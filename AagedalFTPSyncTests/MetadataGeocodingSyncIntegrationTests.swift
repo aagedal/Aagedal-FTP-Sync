@@ -44,17 +44,58 @@ final class MetadataGeocodingSyncIntegrationTests: XCTestCase {
         try XMPSidecar.write(xmp, to: sidecar)
         return (raw, sidecar)
     }
-    private func engine(_ fixture: Fixture, failure: Bool = false, forbidSourceSessions: Bool = false) -> SyncEngine {
+    private func engine(_ fixture: Fixture, failure: Bool = false, forbidSourceSessions: Bool = false,
+                        services: MetadataProcessingServices? = nil) -> SyncEngine {
         let service = MetadataGeocodingService(identity: .init(provider: "injected", version: "1", dataset: "fixture")) { _ in
             failure ? .failure(retryAfter: nil) : .found(.init(city: "Oslo", country: "Norway", source: "local fixture", distanceMeters: 25))
         }
-        return SyncEngine(geocodingService: service,
+        return SyncEngine(geocodingService: services == nil ? service : nil, metadataServices: services ?? .shared,
             sourceSignatureRepository: SourceSignatureRepository(fileURL: fixture.root.appendingPathComponent("signatures.sqlite")),
             downloadManifestRepository: DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("manifest.json")),
             sessionFactory: { endpoint, password, managed in
                 if forbidSourceSessions { XCTFail("Standalone local reprocessing must not open source endpoint sessions"); throw CancellationError() }
                 return try EndpointSessionFactory.make(endpoint: endpoint, password: password, managedFolder: managed)
             }, now: { Date(timeIntervalSince1970: 1_704_153_600) })
+    }
+
+    func testSelectedAppleRoutesTransferAndReprocessingWithoutOfflineFallback() async throws {
+        for failure in [false, true] {
+            var f = try fixture()
+            f.job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .overwrite,
+                countryPolicy: .overwrite, localeIdentifier: "en_US", provider: .apple,
+                allowSendingCoordinatesToApple: true)
+            f.job.processedFolder = try endpoint(f.processed)
+            let source = f.source.appendingPathComponent("photo.jpg")
+            try jpeg(at: source)
+            let original = try Data(contentsOf: source)
+            let offline = MetadataGeocodingService(identity: OfflineMetadataGeocodingProvider.identity) { _ in
+                XCTFail("An Apple job must never silently use the offline provider")
+                return .noResult
+            }
+            let apple = MetadataGeocodingService(identity: AppleMetadataGeocodingProvider.identity) { query in
+                XCTAssertEqual(query.locale, "en_US")
+                return failure ? .failure(retryAfter: nil) : .found(.init(city: "Apple fixture", country: "Norway",
+                    source: "injected Apple fixture", distanceMeters: nil))
+            }
+            let services = MetadataProcessingServices(offlineGeocoding: offline, appleGeocoding: apple)
+            let selected = engine(f, services: services)
+            let result = try await selected.run(job: f.job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(result.transferred, 1)
+            XCTAssertEqual(result.processed, failure ? 0 : 1)
+            let output = f.destination.appendingPathComponent("photo.jpg")
+            if failure {
+                XCTAssertEqual(try Data(contentsOf: output), original)
+                XCTAssertEqual(try Data(contentsOf: source), original)
+            } else {
+                XCTAssertEqual(try ImageMetadata.read(from: output).iptc.city, "Apple fixture")
+                let reprocessed = try await engine(f, forbidSourceSessions: true, services: services)
+                    .reprocessExistingLocalFiles(job: f.job)
+                XCTAssertEqual(reprocessed.failed, 0)
+                XCTAssertEqual(try ImageMetadata.read(from: output).iptc.city, "Apple fixture")
+            }
+            let repeated = try await selected.run(job: f.job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(repeated.transferred, 0)
+        }
     }
 
     func testStandaloneJPEGWritesPlacesRetainsOriginalAndDoesNotTransferAgain() async throws {

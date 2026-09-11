@@ -173,7 +173,8 @@ private actor EarlyTransferState {
 
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
-    private let geocodingService: MetadataGeocodingService
+    private let geocodingService: MetadataGeocodingService?
+    private let metadataServices: MetadataProcessingServices
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
     private let now: @Sendable () -> Date
@@ -186,7 +187,8 @@ struct SyncEngine: Sendable {
     ) throws -> any EndpointSession
 
     init(
-        geocodingService: MetadataGeocodingService = MetadataProcessingServices.shared.offlineGeocoding,
+        geocodingService: MetadataGeocodingService? = nil,
+        metadataServices: MetadataProcessingServices = .shared,
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
         downloadManifestRepository: DownloadManifestRepository = DownloadManifestRepository(),
         eventLogger: any SyncEventLogging = SystemSyncEventLogger(),
@@ -207,6 +209,7 @@ struct SyncEngine: Sendable {
         }
     ) {
         self.geocodingService = geocodingService
+        self.metadataServices = metadataServices
         self.sourceSignatureRepository = sourceSignatureRepository
         self.downloadManifestRepository = downloadManifestRepository
         self.eventLogger = eventLogger
@@ -882,7 +885,7 @@ struct SyncEngine: Sendable {
             let processing: MetadataProcessingResult
             do {
                 processing = try await MetadataProcessingCoordinator.prepare(
-                    assignment: assignment, geocoding: job.metadataGeocoding, service: geocodingService, fileURL: temporaryURL, relativePath: file.relativePath,
+                    assignment: assignment, geocoding: job.metadataGeocoding, service: geocodingService, services: metadataServices, fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate,
                     processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!)
             } catch is CancellationError { throw CancellationError() }
@@ -2049,7 +2052,7 @@ struct SyncEngine: Sendable {
             var processingResult: MetadataProcessingResult?
             do {
                 let processing = try await MetadataProcessingCoordinator.prepare(
-                    assignment: metadataAssignment, geocoding: metadataGeocoding, service: geocodingService, fileURL: temporaryURL, relativePath: file.relativePath,
+                    assignment: metadataAssignment, geocoding: metadataGeocoding, service: geocodingService, services: metadataServices, fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate, processingTimeZone: processingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
                 processingResult = processing
                 if processing.context != nil && !processing.hasProposedChanges {

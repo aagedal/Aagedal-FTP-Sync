@@ -406,8 +406,8 @@ struct JobsWindowView: View {
         DispatchQueue.main.async { showSupportBundleExporter = true }
     }
 
-    private func importConfiguration(_ data: Data, _ password: String?) -> Bool {
-        guard let result = store.importConfiguration(from: data, password: password) else { return false }
+    private func importConfiguration(_ data: Data, _ password: String?, _ allowAppleCoordinates: Bool) -> Bool {
+        guard let result = store.importConfiguration(from: data, password: password, allowImportedAppleCoordinates: allowAppleCoordinates) else { return false }
         importSummary = result.summary
         return true
     }

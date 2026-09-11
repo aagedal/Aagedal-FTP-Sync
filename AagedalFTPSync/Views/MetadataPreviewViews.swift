@@ -109,6 +109,10 @@ struct MetadataFolderPreviewView: View {
                     }
                     if processing.geocoding != .notRequested {
                         Text(geocodingDetail(processing.geocoding)).font(.caption).foregroundStyle(.secondary)
+                        if let identity = processing.geocodingProviderIdentity {
+                            Text("Provider: \(identity.provider) · \(identity.version) · \(processing.geocodingLocaleIdentifier ?? "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     if let resolution = processing.coordinateResolution {
                         Text(MetadataAuditEvidencePresentation.coordinateDecision(.init(resolution)))
