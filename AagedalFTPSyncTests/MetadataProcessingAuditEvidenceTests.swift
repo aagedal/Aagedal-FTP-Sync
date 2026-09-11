@@ -94,4 +94,40 @@ final class MetadataProcessingAuditEvidenceTests: XCTestCase {
         XCTAssertEqual(evidence.fields["copyright"]?.status, .proposed)
         XCTAssertTrue(evidence.fields.values.allSatisfy { $0.reason == nil && $0.variables.isEmpty && $0.limit == nil })
     }
+
+    func testAuditPresentationUsesRecordedZoneAndDistinguishesCaptureAssumption() throws {
+        let fallback = try XCTUnwrap(MetadataCaptureDate(date: Date(timeIntervalSince1970: 100),
+            zoneSource: .persistedFallback(identifier: "America/New_York")))
+        let evidence = try XCTUnwrap(MetadataProcessingAuditEvidence(result: result(capture: fallback)))
+        XCTAssertEqual(MetadataAuditEvidencePresentation.processingTime(evidence),
+                       "Processing time: 1970-01-02 11:17:36 (Europe/Oslo)")
+        XCTAssertEqual(MetadataAuditEvidencePresentation.captureAssumption(evidence),
+                       "Original capture had no offset; assumed saved job zone: America/New_York.")
+        let explicit = try XCTUnwrap(MetadataCaptureDate(date: Date(timeIntervalSince1970: 100),
+            zoneSource: .explicitOffset(secondsFromGMT: -18_000)))
+        let explicitEvidence = try XCTUnwrap(MetadataProcessingAuditEvidence(result: result(capture: explicit)))
+        XCTAssertTrue(MetadataAuditEvidencePresentation.captureAssumption(explicitEvidence).contains("recorded offset"))
+        XCTAssertFalse(MetadataAuditEvidencePresentation.captureAssumption(explicitEvidence).contains("assumed"))
+    }
+
+    func testAuditPresentationCannotMistakeProposalForPublicationOrExposeResolvedText() throws {
+        let evidence = try XCTUnwrap(MetadataProcessingAuditEvidence(result: result(fields: [
+            .headline: .proposed, .keywords: .omitted(.template(.missingValues([.persons, .city])))
+        ])))
+        let proposal = MetadataAuditEvidencePresentation.fieldOutcome(try XCTUnwrap(evidence.fields["headline"]))
+        XCTAssertTrue(proposal.contains("not proof of a successful write"))
+        let omitted = MetadataAuditEvidencePresentation.fieldOutcome(try XCTUnwrap(evidence.fields["keywords"]))
+        XCTAssertEqual(omitted, "Omitted; missing city, people shown")
+        XCTAssertFalse((proposal + omitted).contains("PRIVATE-"))
+    }
+
+    func testUnavailableRecordedZoneDisplaysExplicitUTCFallback() throws {
+        let evidence = try XCTUnwrap(MetadataProcessingAuditEvidence(result: result()))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(evidence)) as? [String: Any])
+        object["processingTimeZoneIdentifier"] = "Unknown/FutureZone"
+        let restored = try JSONDecoder().decode(MetadataProcessingAuditEvidence.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(MetadataAuditEvidencePresentation.processingTime(restored),
+            "Processing time: 1970-01-02 10:17:36 (UTC; recorded zone is unavailable: Unknown/FutureZone)")
+    }
 }

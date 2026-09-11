@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MetadataTemplates
 
 struct MetadataFolderPreviewView: View {
     @Environment(\.dismiss) private var dismiss
@@ -103,11 +104,20 @@ struct MetadataFolderPreviewView: View {
                     if let context = processing.context {
                         Text("Frozen processing time: \(context.processingDate.formatted(Date.FormatStyle(date: .abbreviated, time: .standard, timeZone: context.processingTimeZone))) · \(context.processingTimeZone.identifier)")
                             .font(.caption).foregroundStyle(.secondary)
+                        Text(captureAssumption(context.captureDate))
+                            .font(.caption).foregroundStyle(.secondary)
                     }
+                    HStack {
+                        Text("Field").frame(width: 100, alignment: .leading)
+                        Text("Existing value").frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Proposed value or outcome").frame(maxWidth: .infinity, alignment: .leading)
+                    }.font(.caption.bold())
                     ForEach(MetadataWritableField.allCases) { field in
                         if let outcome = processing.fields[field] {
                             HStack(alignment: .top) {
                                 Text(field.title).fontWeight(.medium).frame(width: 100, alignment: .leading)
+                                Text(existingDetail(field, item: item))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                                 Text(fieldDetail(field, outcome: outcome, processing: processing))
                                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -116,6 +126,34 @@ struct MetadataFolderPreviewView: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
         }.frame(maxHeight: 170)
+    }
+
+    private func existingDetail(_ field: MetadataWritableField, item: MetadataPreviewItem) -> String {
+        guard !item.existingFieldsUnavailable, let snapshot = item.existingFields else { return "Unavailable: metadata could not be read" }
+        let values = snapshot.carriers.compactMap { carrier -> String? in
+            guard let value = carrier.fields[field] else { return nil }
+            let text: String
+            switch value {
+            case .text(let source): text = source
+            case .list(let sources): text = sources.map { "• " + $0 }.joined(separator: "\n")
+            case .position(let position):
+                text = "\(position.latitude), \(position.longitude)" + (position.altitudeMeters.map { " · \($0) m" } ?? "")
+            }
+            return carrier.name + ": " + text
+        }
+        return values.isEmpty ? "No existing value" : values.joined(separator: "\n")
+    }
+
+    private func captureAssumption(_ capture: MetadataCaptureDate?) -> String {
+        guard let capture else { return "Capture date was not needed or could not be resolved; no resolved capture-date assumption is available." }
+        switch capture.zoneSource {
+        case .explicitOffset(let seconds):
+            let absolute = abs(seconds)
+            let offset = String(format: "%@%02d:%02d", seconds < 0 ? "−" : "+", absolute / 3600, (absolute % 3600) / 60)
+            return "Capture date uses the image's explicit UTC offset \(offset)."
+        case .persistedFallback(let identifier):
+            return "Capture date had no offset; saved fallback zone assumed: \(identifier)."
+        }
     }
 
     private func fieldDetail(_ field: MetadataWritableField, outcome: MetadataProcessingFieldOutcome,

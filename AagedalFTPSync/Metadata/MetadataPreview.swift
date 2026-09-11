@@ -39,6 +39,8 @@ struct MetadataPreviewItem: Identifiable, Equatable, Sendable {
     let clipName: String?
     var processing: MetadataProcessingResult? = nil
     var detail: String? = nil
+    var existingFields: MetadataWriter.ExistingFieldsSnapshot? = nil
+    var existingFieldsUnavailable = false
 }
 
 struct MetadataPreviewResult: Equatable, Sendable {
@@ -176,6 +178,9 @@ enum MetadataPreviewService {
                 scheduledAt: scheduledAt
             ) {
                 var processing: MetadataProcessingResult?
+                // A failed read remains explicit and does not abort the folder or
+                // substitute empty values for unknown existing metadata.
+                let existing = try? MetadataWriter.existingFields(at: canonicalURL, relativePath: relativePath)
                 var detail: String?
                 let status: MetadataPreviewStatus
                 do {
@@ -217,7 +222,9 @@ enum MetadataPreviewService {
                     clipID: assignment.clip.id,
                     clipName: assignment.clip.name,
                     processing: processing,
-                    detail: detail
+                    detail: detail,
+                    existingFields: existing,
+                    existingFieldsUnavailable: existing?.readable != true
                 ))
             } else {
                 items.append(MetadataPreviewItem(

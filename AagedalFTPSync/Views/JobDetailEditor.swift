@@ -158,6 +158,13 @@ struct JobDetailEditor: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
+                    MetadataProcessingTimeZonePicker(
+                        selectedIdentifier: draft.metadataProcessingTimeZoneIdentifier,
+                        savedIdentifier: savedJob?.metadataProcessingTimeZoneIdentifier,
+                        hasActivatedTemplates: currentMetadataAutomation?.hasActivatedTemplates == true,
+                        onSelect: session.selectMetadataProcessingTimeZone
+                    )
+
                     DisclosureGroup("Metadata audit trail", isExpanded: $showMetadataAudit) {
                         MetadataAuditTrailView(entries: store.metadataAuditTrail(for: draft.id))
                             .frame(minHeight: 220, idealHeight: 300)

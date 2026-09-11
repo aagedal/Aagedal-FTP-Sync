@@ -13,6 +13,7 @@ final class JobEditingSession: ObservableObject {
     private var savedLeftPassword = ""
     private var savedRightPassword = ""
     private var credentialsLoaded = false
+    private var didSelectMetadataProcessingTimeZone = false
 
     var jobID: UUID? { hasJob ? draft.id : nil }
     var isNewJob: Bool { hasJob && savedJob == nil }
@@ -21,6 +22,7 @@ final class JobEditingSession: ObservableObject {
         guard hasJob else { return false }
         guard let savedJob else { return true }
         return draft != savedJob
+            || didSelectMetadataProcessingTimeZone
             || leftPassword != savedLeftPassword
             || rightPassword != savedRightPassword
     }
@@ -34,6 +36,7 @@ final class JobEditingSession: ObservableObject {
         savedRightPassword = ""
         credentialLoadError = nil
         credentialsLoaded = false
+        didSelectMetadataProcessingTimeZone = false
         hasJob = true
     }
 
@@ -46,6 +49,7 @@ final class JobEditingSession: ObservableObject {
         savedRightPassword = ""
         credentialLoadError = nil
         credentialsLoaded = true
+        didSelectMetadataProcessingTimeZone = false
         hasJob = true
     }
 
@@ -54,6 +58,7 @@ final class JobEditingSession: ObservableObject {
         savedJob = nil
         credentialLoadError = nil
         credentialsLoaded = false
+        didSelectMetadataProcessingTimeZone = false
     }
 
     func loadCredentials(using store: AppStore) {
@@ -75,23 +80,55 @@ final class JobEditingSession: ObservableObject {
         guard hasJob, credentialLoadError == nil else { return false }
         // Metadata is edited in its own window. Merge the latest persisted programming
         // so an older job-settings draft cannot overwrite it.
-        draft.metadataAutomation = store.jobs.first(where: { $0.id == draft.id })?.metadataAutomation
+        let latest = store.jobs.first(where: { $0.id == draft.id })
+        draft.metadataAutomation = latest?.metadataAutomation
+        // A metadata save in another window may have frozen this zone while the
+        // settings draft was open. Keep it unless this editor chose a replacement.
+        if !didSelectMetadataProcessingTimeZone,
+           draft.metadataProcessingTimeZoneIdentifier == savedJob?.metadataProcessingTimeZoneIdentifier,
+           let latest {
+            draft.metadataProcessingTimeZoneIdentifier = latest.metadataProcessingTimeZoneIdentifier
+        }
+        if didSelectMetadataProcessingTimeZone, draft.metadataProcessingTimeZoneIdentifier == nil,
+           draft.metadataAutomation?.hasActivatedTemplates == true {
+            store.alertMessage = "A job using metadata variables needs a processing time zone. Choose a zone before saving."
+            return false
+        }
+        do { _ = try draft.validatedMetadataProcessingTimeZone }
+        catch {
+            store.alertMessage = "Choose a valid processing time zone before saving this job."
+            return false
+        }
         guard store.saveJob(draft, leftPassword: leftPassword, rightPassword: rightPassword),
               let persistedJob = store.jobs.first(where: { $0.id == draft.id }) else {
             return false
         }
         draft = persistedJob
         savedJob = persistedJob
+        didSelectMetadataProcessingTimeZone = false
         savedLeftPassword = leftPassword
         savedRightPassword = rightPassword
         store.selectedJobID = persistedJob.id
         return true
     }
 
+    /// Explicit UI selection only: opening an editor never fills a missing zone.
+    func selectMetadataProcessingTimeZone(_ identifier: String?) throws {
+        if identifier == nil, draft.metadataAutomation?.hasActivatedTemplates == true {
+            throw AppError.invalidConfiguration("A job using metadata variables needs a processing time zone. Choose a zone before saving.")
+        }
+        var updated = draft
+        updated.metadataProcessingTimeZoneIdentifier = identifier
+        _ = try updated.validatedMetadataProcessingTimeZone
+        draft = updated
+        didSelectMetadataProcessingTimeZone = true
+    }
+
     func markDiscarded() {
         guard hasJob else { return }
         if let savedJob {
             draft = savedJob
+            didSelectMetadataProcessingTimeZone = false
             leftPassword = savedLeftPassword
             rightPassword = savedRightPassword
         } else {

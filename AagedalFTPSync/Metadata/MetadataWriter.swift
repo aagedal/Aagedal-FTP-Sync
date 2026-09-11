@@ -45,23 +45,70 @@ enum MetadataWriter {
         (relativePath as NSString).deletingPathExtension + ".xmp"
     }
 
+    /// In-memory preview values only. Keep carriers separate when embedded IPTC
+    /// and XMP disagree; neither is silently presented as the sole existing value.
+    struct ExistingFieldsSnapshot: Equatable, Sendable {
+        enum Value: Equatable, Sendable {
+            case text(String), list([String]), position(ScheduledGPSPosition)
+        }
+        struct Carrier: Equatable, Sendable {
+            let name: String
+            let fields: [MetadataWritableField: Value]
+        }
+        let carriers: [Carrier]
+        let readable: Bool
+    }
+
+    static func existingFields(at fileURL: URL, relativePath: String) throws -> ExistingFieldsSnapshot {
+        func xmpFields(_ xmp: XMPData) -> [MetadataWritableField: ExistingFieldsSnapshot.Value] {
+            var fields: [MetadataWritableField: ExistingFieldsSnapshot.Value] = [:]
+            if let value = xmp.headline, !value.isEmpty { fields[.headline] = .text(value) }
+            if let value = xmp.description, !value.isEmpty { fields[.description] = .text(value) }
+            if !xmp.subject.isEmpty { fields[.keywords] = .list(xmp.subject) }
+            if !xmp.creator.isEmpty { fields[.creator] = .list(xmp.creator) }
+            if let value = xmp.rights, !value.isEmpty { fields[.copyright] = .text(value) }
+            if let value = xmpGPSPosition(xmp) { fields[.gpsPosition] = .position(value) }
+            return fields
+        }
+        if usesXMPSidecar(for: relativePath) {
+            let existing = try rawPolicyMetadata(at: fileURL)
+            return ExistingFieldsSnapshot(carriers: [.init(name: existing.origin, fields: xmpFields(existing.xmp))],
+                                          readable: existing.readable)
+        }
+        let metadata = try ImageMetadata.read(from: fileURL)
+        var iptc: [MetadataWritableField: ExistingFieldsSnapshot.Value] = [:]
+        if let value = metadata.iptc.headline, !value.isEmpty { iptc[.headline] = .text(value) }
+        if let value = metadata.iptc.caption, !value.isEmpty { iptc[.description] = .text(value) }
+        if !metadata.iptc.keywords.isEmpty { iptc[.keywords] = .list(metadata.iptc.keywords) }
+        if let value = metadata.iptc.byline, !value.isEmpty { iptc[.creator] = .text(value) }
+        if let value = metadata.iptc.copyright, !value.isEmpty { iptc[.copyright] = .text(value) }
+        var carriers: [ExistingFieldsSnapshot.Carrier] = [.init(name: "Embedded IPTC", fields: iptc)]
+        if let xmp = metadata.xmp { carriers.append(.init(name: "Embedded XMP", fields: xmpFields(xmp))) }
+        if let gps = embeddedGPSPosition(metadata) { carriers.append(.init(name: "Embedded EXIF", fields: [.gpsPosition: .position(gps)])) }
+        return ExistingFieldsSnapshot(carriers: carriers, readable: true)
+    }
+
+    private static func rawPolicyMetadata(at fileURL: URL) throws -> (xmp: XMPData, origin: String, readable: Bool) {
+        let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+        if FileManager.default.fileExists(atPath: sidecar.path) {
+            return (try XMPSidecar.read(from: sidecar), "Existing XMP sidecar", true)
+        }
+        if var embedded = try? ImageMetadata.read(from: fileURL) {
+            embedded.syncIPTCToXMP()
+            var xmp = embedded.xmp ?? XMPData()
+            if xmpGPSPosition(xmp) == nil, let position = embeddedGPSPosition(embedded) { setGPS(position, on: &xmp) }
+            return (xmp, "Embedded metadata used to seed a new sidecar", true)
+        }
+        return (XMPData(), "No readable embedded metadata or sidecar", false)
+    }
+
     /// Read-only policy assessment using the same carriers as apply(). An existing
     /// RAW sidecar is authoritative; when absent, seed from embedded IPTC/XMP just
     /// as sidecar creation does. No generated sidecar or metadata write occurs here.
     static func writableFields(at fileURL: URL, relativePath: String,
                                policy: MetadataExistingFieldPolicy) throws -> Set<MetadataWritableField> {
         if usesXMPSidecar(for: relativePath) {
-            let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
-            var xmp: XMPData
-            if FileManager.default.fileExists(atPath: sidecar.path) {
-                xmp = try XMPSidecar.read(from: sidecar)
-            } else if var embedded = try? ImageMetadata.read(from: fileURL) {
-                embedded.syncIPTCToXMP()
-                xmp = embedded.xmp ?? XMPData()
-                if xmpGPSPosition(xmp) == nil, let position = embeddedGPSPosition(embedded) {
-                    setGPS(position, on: &xmp)
-                }
-            } else { xmp = XMPData() }
+            let xmp = try rawPolicyMetadata(at: fileURL).xmp
             return Set(MetadataWritableField.allCases.filter { field in
                 if policy.overwrites(field) { return true }
                 switch field {
