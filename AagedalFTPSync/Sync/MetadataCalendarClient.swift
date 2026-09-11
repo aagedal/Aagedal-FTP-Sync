@@ -41,6 +41,7 @@ struct MetadataCalendarClient: Sendable {
     }
 
     func send(_ body: MetadataCalendarRequest, address: String, deviceID: UUID, key: String, setupKey: String? = nil) async throws -> MetadataCalendarResponse {
+        if let document = body.document { try LegacyMetadataCalendarGate.validate(document) }
         func validKey(_ value: String) -> Bool {
             value.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
         }
@@ -129,6 +130,7 @@ struct MetadataCalendarClient: Sendable {
                   TimeZone(identifier: calendar.timeZone) != nil,
                   (calendar.rangeStart == nil) == (calendar.rangeEnd == nil),
                   calendar.range.map({ $0.end > $0.start }) ?? true else { throw MetadataSyncServerError.invalidResponse }
+            try LegacyMetadataCalendarGate.validate(calendar.document)
             calendar.document = try calendar.document.validated()
             result.calendar = calendar
         }

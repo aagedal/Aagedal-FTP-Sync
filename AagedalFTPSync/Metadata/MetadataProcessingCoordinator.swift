@@ -19,19 +19,19 @@ struct MetadataProcessingRequest: Equatable, Sendable {
         description: MetadataTemplateText? = nil,
         keywords: MetadataTemplateKeywords? = nil,
         copyright: MetadataTemplateText? = nil
-    ) {
-        let values = ResolvedMetadataChanges.literal(assignment)
-        self.headline = headline ?? .literal(values.headline)
-        self.description = description ?? .literal(values.description)
-        if let keywords, keywords.templateVersion == nil {
-            self.keywords = .literal(ScheduledMetadataFields(keywords: keywords.source).normalizedKeywords)
+    ) throws {
+        self.headline = try headline ?? assignment.clip.fields.validatedHeadline
+        self.description = try description ?? assignment.clip.fields.validatedDescription
+        let selectedKeywords = try keywords ?? assignment.clip.fields.validatedKeywords
+        if selectedKeywords.templateVersion == nil {
+            self.keywords = .literal(ScheduledMetadataFields(keywords: selectedKeywords.source).normalizedKeywords)
         } else {
-            self.keywords = keywords ?? .literal(values.keywords)
+            self.keywords = selectedKeywords
         }
-        self.copyright = copyright ?? .literal(values.copyright)
-        self.creator = values.creator
-        self.gpsPosition = values.gpsPosition
-        self.existingFieldPolicy = values.existingFieldPolicy
+        self.copyright = try copyright ?? assignment.photographer.validatedCopyright
+        self.creator = assignment.photographer.photographerName
+        self.gpsPosition = assignment.clip.gpsPosition
+        self.existingFieldPolicy = assignment.existingFieldPolicy
     }
 
     /// Call after reading current metadata and applying field policies. Dependencies
@@ -73,8 +73,8 @@ struct MetadataProcessingResult: Equatable, Sendable {
 enum MetadataProcessingCoordinator {
     /// Existing application paths freeze once per item and share this value between
     /// assessment and writing. No clock, parser or provider is consulted for literals.
-    static func prepareLiteral(_ assignment: MetadataAssignment) -> MetadataProcessingResult {
-        let changes = ResolvedMetadataChanges.literal(assignment)
+    static func prepareLiteral(_ assignment: MetadataAssignment) throws -> MetadataProcessingResult {
+        let changes = try ResolvedMetadataChanges.literal(assignment)
         return MetadataProcessingResult(changes: changes, context: nil, fields: [
             .headline: changes.headline.isEmpty ? .notRequested : .proposed,
             .description: changes.description.isEmpty ? .notRequested : .proposed,

@@ -15,6 +15,8 @@ struct MetadataPreset: Codable, Identifiable, Hashable, Sendable {
         self.fields = fields
     }
 
+    var hasActivatedTemplates: Bool { fields.hasActivatedTemplates }
+
     var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -26,7 +28,9 @@ struct MetadataPreset: Codable, Identifiable, Hashable, Sendable {
     func normalized() -> MetadataPreset {
         var result = self
         result.name = trimmedName
-        result.fields.keywords = fields.normalizedKeywords
+        // Active source is not a resolved keyword list. Preserve each byte and
+        // ordered entry until the template engine expands it for a specific image.
+        if fields.templateVersions["keywords"] == nil { result.fields.keywords = fields.normalizedKeywords }
         return result
     }
 }

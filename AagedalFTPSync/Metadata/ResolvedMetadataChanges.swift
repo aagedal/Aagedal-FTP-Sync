@@ -33,8 +33,12 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
 
     /// Compatibility boundary: legacy source remains literal, including braces.
     /// Keep its existing keyword normalization and photographer-name fallback.
-    static func literal(_ assignment: MetadataAssignment) -> Self {
-        Self(
+    static func literal(_ assignment: MetadataAssignment) throws -> Self {
+        guard !assignment.clip.fields.hasActivatedTemplates,
+              !assignment.photographer.hasActivatedTemplates else {
+            throw AppError.invalidConfiguration("This metadata uses variables. Activated template processing is not yet available for this workflow.")
+        }
+        return Self(
             headline: assignment.clip.fields.headline,
             description: assignment.clip.fields.description,
             keywords: assignment.clip.fields.normalizedKeywords,

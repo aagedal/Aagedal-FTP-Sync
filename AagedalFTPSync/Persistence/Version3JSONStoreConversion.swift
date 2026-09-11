@@ -121,6 +121,10 @@ enum Version3JSONStoreConversion {
             guard primaryFilenames.contains(name) else { throw ConversionError.unsupportedSource(name) }
             guard input[name]!.count <= remaining else { throw ConversionError.inputLimitExceeded }
             remaining -= input[name]!.count
+            if emitStores {
+                try validateSourceEncoding(input[name]!, source: name)
+                try VersionedStoreCodec.rejectLegacyTemplateMarkers(in: input[name]!)
+            }
             let policy: DatePolicy = name == layout.metadataCalendar.lastPathComponent ? .calendar
                 : [layout.jobs, layout.metadataPresets, layout.metadataAudit, layout.syncFailures].contains(where: { $0.lastPathComponent == name }) ? .iso8601 : .foundation
             selected[name] = try adapter.adapt(input[name]!, source: name, policy: policy)

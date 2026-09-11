@@ -870,7 +870,7 @@ struct SyncEngine: Sendable {
             guard scope.includes(assignment) else { continue }
             if scope.isClip { scanned += 1 }
 
-            let processing = MetadataProcessingCoordinator.prepareLiteral(assignment)
+            let processing = try MetadataProcessingCoordinator.prepareLiteral(assignment)
             if let assessment = try? MetadataWriter.assess(
                 processing.changes,
                 at: temporaryURL,
@@ -1967,7 +1967,7 @@ struct SyncEngine: Sendable {
         var auditEntry: MetadataAuditEntry?
         var embeddedMetadataApplied = false
         if let metadataAssignment {
-            let processing = MetadataProcessingCoordinator.prepareLiteral(metadataAssignment)
+            let processing = try MetadataProcessingCoordinator.prepareLiteral(metadataAssignment)
             do {
                 let workURL = try makeTemporaryURL(for: file)
                 let workSidecarURL = workURL.deletingPathExtension().appendingPathExtension("xmp")

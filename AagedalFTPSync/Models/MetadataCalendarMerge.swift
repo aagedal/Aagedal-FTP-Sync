@@ -30,7 +30,10 @@ struct MetadataCalendarConflictReview: Identifiable {
     let remote: SharedMetadataCalendar
 
     func plan(choices: [String: MetadataConflictChoice] = [:]) throws -> MetadataCalendarMergePlan {
-        try MetadataCalendarMerge.plan(base: binding.snapshot.document, local: local, remote: remote.document,
+        try LegacyMetadataCalendarGate.validate(binding.snapshot.document)
+        try LegacyMetadataCalendarGate.validate(local)
+        try LegacyMetadataCalendarGate.validate(remote.document)
+        return try MetadataCalendarMerge.plan(base: binding.snapshot.document, local: local, remote: remote.document,
                                       choices: choices, readOnly: remote.role == "reader")
     }
 }
@@ -49,7 +52,9 @@ enum MetadataCalendarMerge {
                 p.name = builder.value(b.name, l.name, r.name, key: key, title: title, field: "Name")
                 p.creator = builder.value(b.creator, l.creator, r.creator, key: key, title: title, field: "Creator")
                 p.filenamePrefix = builder.value(b.filenamePrefix, l.filenamePrefix, r.filenamePrefix, key: key, title: title, field: "Initials")
-                p.copyrightNotice = builder.value(b.copyrightNotice, l.copyrightNotice, r.copyrightNotice, key: key, title: title, field: "Copyright")
+                let copyright = builder.value(CopyrightPair(profile: b), CopyrightPair(profile: l), CopyrightPair(profile: r),
+                    key: key, title: title, field: "Copyright", describe: { $0.description })
+                p.copyingCopyright(from: copyright.profile)
                 return p
             }
         merged.clips = builder.records(base.clips, local.clips, remote.clips, id: \.id, kind: "clip", title: { "\($0.name) · \($0.startsAt.formatted(date: .abbreviated, time: .shortened))" }, summary: { clipSummary($0, photographers: local.photographers + remote.photographers + base.photographers) }) { b, l, r, key, title, builder in
@@ -61,9 +66,18 @@ enum MetadataCalendarMerge {
             let time = builder.value([b.startsAt, b.endsAt], [l.startsAt, l.endsAt], [r.startsAt, r.endsAt],
                 key: key, title: title, field: "Time", describe: { $0.map { $0.formatted() }.joined(separator: " – ") })
             c.startsAt = time[0]; c.endsAt = time[1]
-            c.fields.headline = builder.value(b.fields.headline, l.fields.headline, r.fields.headline, key: key, title: title, field: "Headline")
-            c.fields.description = builder.value(b.fields.description, l.fields.description, r.fields.description, key: key, title: title, field: "Description")
-            c.fields.keywords = builder.value(b.fields.keywords, l.fields.keywords, r.fields.keywords, key: key, title: title, field: "Keywords", describe: { $0.joined(separator: ", ") })
+            let headline = builder.value(FieldPair(fields: b.fields, key: "headline"),
+                FieldPair(fields: l.fields, key: "headline"), FieldPair(fields: r.fields, key: "headline"),
+                key: key, title: title, field: "Headline", describe: { $0.description })
+            c.fields.copyingHeadline(from: headline.fields)
+            let description = builder.value(FieldPair(fields: b.fields, key: "description"),
+                FieldPair(fields: l.fields, key: "description"), FieldPair(fields: r.fields, key: "description"),
+                key: key, title: title, field: "Description", describe: { $0.description })
+            c.fields.copyingDescription(from: description.fields)
+            let keywords = builder.value(FieldPair(fields: b.fields, key: "keywords"),
+                FieldPair(fields: l.fields, key: "keywords"), FieldPair(fields: r.fields, key: "keywords"),
+                key: key, title: title, field: "Keywords", describe: { $0.description })
+            c.fields.copyingKeywords(from: keywords.fields)
             c.gpsPosition = builder.value(b.gpsPosition, l.gpsPosition, r.gpsPosition, key: key, title: title, field: "Location", describe: { gps in
                 gps.map { "\($0.label ?? "") · \($0.latitude), \($0.longitude)" + ($0.altitudeMeters.map { " · \($0) m" } ?? "") } ?? "No location"
             })
@@ -182,6 +196,31 @@ enum MetadataCalendarMerge {
             if group.count > 1 { result.append(group) }
         }
         return result
+    }
+
+    private struct CopyrightPair: Equatable {
+        let profile: PhotographerProfile
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.profile.copyrightNotice == rhs.profile.copyrightNotice &&
+                lhs.profile.copyrightTemplateVersion == rhs.profile.copyrightTemplateVersion
+        }
+        var description: String { profile.copyrightNotice + (profile.copyrightTemplateVersion.map { " [template v\($0)]" } ?? " [literal]") }
+    }
+
+    private struct FieldPair: Equatable {
+        let fields: ScheduledMetadataFields
+        let key: String
+        private var source: [String] {
+            switch key {
+            case "headline": return [fields.headline]
+            case "description": return [fields.description]
+            default: return fields.keywords
+            }
+        }
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.key == rhs.key && lhs.source == rhs.source && lhs.fields.templateVersions[lhs.key] == rhs.fields.templateVersions[rhs.key]
+        }
+        var description: String { source.joined(separator: ", ") + (fields.templateVersions[key].map { " [template v\($0)]" } ?? " [literal]") }
     }
 
     private struct Builder {

@@ -33,7 +33,7 @@ struct MetadataProgrammingTransfer: Codable, Equatable, Sendable {
 }
 
 struct ConfigurationTransfer: Codable, Equatable, Sendable {
-    static let currentVersion = 2
+    static let currentVersion = 3
     static let minimumSupportedVersion = 1
     static let formatIdentifier = "aagedal-ftp-sync-configuration"
 
@@ -56,7 +56,6 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
         exportedAt: Date = Date()
     ) {
         format = Self.formatIdentifier
-        version = Self.currentVersion
         self.scope = scope
         self.exportedAt = exportedAt
 
@@ -90,6 +89,16 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
             self.metadataPresets = metadataPresets
             self.photographers = photographers
         }
+        version = metadataProgramming.contains { $0.automation.hasActivatedTemplates }
+            || self.metadataPresets.contains { $0.fields.hasActivatedTemplates }
+            || self.photographers.contains { $0.hasActivatedTemplates } ? 3 : 2
+    }
+
+    var hasActivatedTemplates: Bool {
+        metadataProgramming.contains { $0.automation.hasActivatedTemplates }
+            || metadataPresets.contains { $0.fields.hasActivatedTemplates }
+            || photographers.contains { $0.hasActivatedTemplates }
+            || jobs.contains { $0.metadataAutomation?.hasActivatedTemplates == true }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -101,6 +110,10 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         format = try container.decode(String.self, forKey: .format)
         version = try container.decode(Int.self, forKey: .version)
+        guard format == Self.formatIdentifier else { throw ConfigurationTransferError.invalidFormat }
+        guard (Self.minimumSupportedVersion...Self.currentVersion).contains(version) else {
+            throw ConfigurationTransferError.unsupportedVersion(version)
+        }
         scope = try container.decode(ConfigurationTransferScope.self, forKey: .scope)
         exportedAt = try container.decode(Date.self, forKey: .exportedAt)
         jobs = try container.decode([SyncJob].self, forKey: .jobs)
@@ -268,6 +281,7 @@ enum ConfigurationTransferCodec {
         switch try protection(of: data) {
         case .unencrypted:
             do {
+                try preflightPayload(data)
                 let transfer = try configuredDecoder.decode(ConfigurationTransfer.self, from: data)
                 try validate(transfer)
                 return transfer
@@ -318,6 +332,7 @@ enum ConfigurationTransferCodec {
                     iterations: envelope.iterations
                 )
             )
+            try preflightPayload(payload)
             let transfer = try configuredDecoder.decode(ConfigurationTransfer.self, from: payload)
             try validate(transfer)
             return transfer
@@ -328,6 +343,28 @@ enum ConfigurationTransferCodec {
         }
     }
 
+    /// Probe the inner header and legacy marker mismatch before decoding any models.
+    /// Unknown objects are also scanned: a legacy decoder must not silently strip a
+    /// recognized activation key simply because it occurs in an ignored subtree.
+    private static func preflightPayload(_ data: Data) throws {
+        guard data.count <= maximumFileSize else { throw ConfigurationTransferError.fileTooLarge }
+        let probe: FormatProbe
+        do { probe = try configuredDecoder.decode(FormatProbe.self, from: data) }
+        catch { throw ConfigurationTransferError.invalidFormat }
+        guard probe.format == ConfigurationTransfer.formatIdentifier else {
+            throw ConfigurationTransferError.invalidFormat
+        }
+        guard (ConfigurationTransfer.minimumSupportedVersion...ConfigurationTransfer.currentVersion).contains(probe.version) else {
+            throw ConfigurationTransferError.unsupportedVersion(probe.version)
+        }
+        if probe.version < 3 {
+            do { try VersionedStoreCodec.rejectLegacyTemplateMarkers(in: data) }
+            catch VersionedStoreCodec.HeaderError.requiresVersion3Storage {
+                throw ConfigurationTransferError.inconsistentContents
+            } catch { throw ConfigurationTransferError.invalidFormat }
+        }
+    }
+
     private static func validate(_ transfer: ConfigurationTransfer) throws {
         guard transfer.format == ConfigurationTransfer.formatIdentifier else {
             throw ConfigurationTransferError.invalidFormat
@@ -335,6 +372,9 @@ enum ConfigurationTransferCodec {
         guard (ConfigurationTransfer.minimumSupportedVersion ... ConfigurationTransfer.currentVersion)
             .contains(transfer.version) else {
             throw ConfigurationTransferError.unsupportedVersion(transfer.version)
+        }
+        guard transfer.version >= 3 || !transfer.hasActivatedTemplates else {
+            throw ConfigurationTransferError.inconsistentContents
         }
         let isConsistent: Bool
         switch transfer.scope {

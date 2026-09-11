@@ -14,8 +14,10 @@ struct SharedMetadataDocument: Codable, Equatable, Sendable {
 
     init(_ automation: MetadataAutomation) {
         photographers = automation.photographers.map { profile in
-            PhotographerProfile(id: profile.id, name: profile.name, filenamePrefix: profile.filenamePrefix,
+            var shared = PhotographerProfile(id: profile.id, name: profile.name, filenamePrefix: profile.filenamePrefix,
                                 creator: profile.creator, copyrightNotice: profile.copyrightNotice)
+            shared.copyingCopyright(from: profile)
+            return shared
         }.sorted { $0.id.uuidString < $1.id.uuidString }
         let rows = Dictionary(grouping: automation.photographerTracks, by: \.date)
         photographerTracks = rows.keys.sorted().flatMap { rows[$0] ?? [] }
@@ -131,4 +133,31 @@ struct MetadataCalendarMember: Codable, Identifiable, Sendable {
     var id: UUID
     var name: String
     var role: String
+}
+
+/// Protocol 2 cannot preserve activation semantics. Keep this gate separate from
+/// pure local document validation/merging so detached copies retain their pairs.
+enum LegacyMetadataCalendarGate {
+    static func validate(_ automation: MetadataAutomation) throws {
+        guard !automation.photographers.contains(where: { $0.copyrightTemplateVersion != nil }),
+              !automation.clips.contains(where: { !$0.fields.templateVersions.isEmpty }) else {
+            throw MetadataSyncFailure(message: "Activated metadata templates cannot use this calendar sync protocol. Detach the calendar and keep activation in a local copy until compatible sharing is available.", diagnosticCode: "template_protocol_required")
+        }
+    }
+
+    static func validate(_ document: SharedMetadataDocument) throws { try validate(document.automation) }
+
+    static func validate(_ proposal: MetadataCalendarReceiveProposal) throws {
+        try validate(proposal.calendar.document)
+        if let source = proposal.source.metadataAutomation { try validate(source) }
+        if let duplicate = proposal.duplicate.metadataAutomation { try validate(duplicate) }
+    }
+
+    static func validate(_ state: MetadataCalendarState) throws {
+        for binding in state.bindings {
+            try validate(binding.snapshot.document)
+            if let conflict = binding.conflict { try validate(conflict.document) }
+        }
+        if let pending = state.pendingReceive { try validate(pending) }
+    }
 }

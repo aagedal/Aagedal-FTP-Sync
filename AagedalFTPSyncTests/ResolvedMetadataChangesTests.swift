@@ -81,11 +81,11 @@ final class ResolvedMetadataChangesTests: XCTestCase {
         XCTAssertEqual(try MetadataWriter.utf8IPTCForWriting(ascii), ascii)
     }
 
-    func testLegacySnapshotKeepsBracesCanonicalNameAndKeywordBoundaries() {
+    func testLegacySnapshotKeepsBracesCanonicalNameAndKeywordBoundaries() throws {
         var photographer = PhotographerProfile(name: " Legacy Name ", filenamePrefix: "TEST", creator: "", copyrightNotice: " © {photographer} ")
         var clip = MetadataScheduleClip(photographerID: photographer.id, name: "Test", startsAt: .distantPast, endsAt: .distantFuture,
             fields: ScheduledMetadataFields(headline: " {{headline}} ", description: " {date:YYYY-MM-DD} ", keywords: [" Café ", "cafe", "One, Two", ""]))
-        let changes = ResolvedMetadataChanges.literal(MetadataAssignment(photographer: photographer, clip: clip, existingFieldPolicy: .fillEmpty))
+        let changes = try ResolvedMetadataChanges.literal(MetadataAssignment(photographer: photographer, clip: clip, existingFieldPolicy: .fillEmpty))
         photographer.creator = "Changed after snapshot"
         clip.fields.description = "Changed after snapshot"
         XCTAssertEqual(changes.headline, "{{headline}}")

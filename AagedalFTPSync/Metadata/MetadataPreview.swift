@@ -161,7 +161,7 @@ enum MetadataPreviewService {
                 for: relativePath,
                 scheduledAt: scheduledAt
             ) {
-                let processing = MetadataProcessingCoordinator.prepareLiteral(assignment)
+                let processing = try MetadataProcessingCoordinator.prepareLiteral(assignment)
                 let status: MetadataPreviewStatus
                 switch try? MetadataWriter.assess(
                     processing.changes,

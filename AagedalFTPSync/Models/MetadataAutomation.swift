@@ -1,4 +1,29 @@
 import Foundation
+import MetadataTemplates
+
+/// These errors must escape repository backup recovery: falling back to an older
+/// literal record would silently discard an active source/version pair.
+enum MetadataTemplateRecordError: Error, Equatable, Sendable {
+    case invalidMarker, unknownField, unsupportedVersion(Int), invalidSource
+}
+
+private enum MetadataTemplateRecordValidation {
+    static func version(_ version: Int?) throws {
+        if let version, version != MetadataTemplate.languageVersion {
+            throw MetadataTemplateRecordError.unsupportedVersion(version)
+        }
+    }
+    static func text(_ source: String, version: Int?) throws -> MetadataTemplateText {
+        try self.version(version)
+        do { return try MetadataTemplateText(source: source, templateVersion: version) }
+        catch { throw MetadataTemplateRecordError.invalidSource }
+    }
+    static func keywords(_ source: [String], version: Int?) throws -> MetadataTemplateKeywords {
+        try self.version(version)
+        do { return try MetadataTemplateKeywords(source: source, templateVersion: version) }
+        catch { throw MetadataTemplateRecordError.invalidSource }
+    }
+}
 
 enum MetadataTimestampPolicy: String, Codable, CaseIterable, Identifiable, Sendable {
     case sourceModification
@@ -154,6 +179,23 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
     var filenamePrefix: String
     var creator: String
     var copyrightNotice: String
+    private(set) var copyrightTemplateVersion: Int? = nil
+    var hasActivatedTemplates: Bool { copyrightTemplateVersion != nil }
+    var validatedCopyright: MetadataTemplateText {
+        get throws { try MetadataTemplateRecordValidation.text(copyrightNotice, version: copyrightTemplateVersion) }
+    }
+    mutating func setCopyright(_ value: MetadataTemplateText) {
+        copyrightNotice = value.source
+        copyrightTemplateVersion = value.templateVersion
+    }
+    mutating func replaceCopyrightSource(_ source: String) throws {
+        let replacement = try MetadataTemplateRecordValidation.text(source, version: copyrightTemplateVersion)
+        setCopyright(replacement)
+    }
+    mutating func copyingCopyright(from other: Self) {
+        copyrightNotice = other.copyrightNotice
+        copyrightTemplateVersion = other.copyrightTemplateVersion
+    }
     var workHours: PhotographerWorkHours? = nil
     var workHourOverrides: [PhotographerWorkHoursOverride]? = nil
 
@@ -203,6 +245,48 @@ struct PhotographerProfile: Codable, Identifiable, Hashable, Sendable {
         self.copyrightNotice = copyrightNotice
         self.workHours = workHours
         self.workHourOverrides = workHourOverrides
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, filenamePrefix, creator, copyrightNotice, copyrightTemplateVersion, workHours, workHourOverrides
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let marked = container.contains(.copyrightTemplateVersion)
+        if marked {
+            do { copyrightTemplateVersion = try container.decode(Int.self, forKey: .copyrightTemplateVersion) }
+            catch { throw MetadataTemplateRecordError.invalidMarker }
+            try MetadataTemplateRecordValidation.version(copyrightTemplateVersion)
+        }
+        do {
+            id = try container.decode(UUID.self, forKey: .id)
+            name = try container.decode(String.self, forKey: .name)
+            filenamePrefix = try container.decode(String.self, forKey: .filenamePrefix)
+            creator = try container.decode(String.self, forKey: .creator)
+            copyrightNotice = try container.decode(String.self, forKey: .copyrightNotice)
+            workHours = try container.decodeIfPresent(PhotographerWorkHours.self, forKey: .workHours)
+            workHourOverrides = try container.decodeIfPresent([PhotographerWorkHoursOverride].self, forKey: .workHourOverrides)
+        } catch {
+            if marked { throw MetadataTemplateRecordError.invalidSource }
+            throw error
+        }
+        _ = try validatedCopyright
+    }
+
+    func encode(to encoder: Encoder) throws {
+        // Raw legacy UI assignments can still form an invalid draft in memory.
+        // Never persist it or silently strip its existing activation marker.
+        _ = try validatedCopyright
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(filenamePrefix, forKey: .filenamePrefix)
+        try container.encode(creator, forKey: .creator)
+        try container.encode(copyrightNotice, forKey: .copyrightNotice)
+        try container.encodeIfPresent(copyrightTemplateVersion, forKey: .copyrightTemplateVersion)
+        try container.encodeIfPresent(workHours, forKey: .workHours)
+        try container.encodeIfPresent(workHourOverrides, forKey: .workHourOverrides)
     }
 
     /// Comma-separated camera filename initials, normalized for matching.
@@ -301,6 +385,93 @@ struct ScheduledMetadataFields: Codable, Hashable, Sendable {
     var headline = ""
     var description = ""
     var keywords: [String] = []
+    private(set) var templateVersions: [String: Int] = [:]
+
+    init(headline: String = "", description: String = "", keywords: [String] = []) {
+        self.headline = headline
+        self.description = description
+        self.keywords = keywords
+    }
+
+    var hasActivatedTemplates: Bool { !templateVersions.isEmpty }
+    var validatedHeadline: MetadataTemplateText {
+        get throws { try MetadataTemplateRecordValidation.text(headline, version: templateVersions["headline"]) }
+    }
+    var validatedDescription: MetadataTemplateText {
+        get throws { try MetadataTemplateRecordValidation.text(description, version: templateVersions["description"]) }
+    }
+    var validatedKeywords: MetadataTemplateKeywords {
+        get throws { try MetadataTemplateRecordValidation.keywords(keywords, version: templateVersions["keywords"]) }
+    }
+
+    mutating func setHeadline(_ value: MetadataTemplateText) {
+        headline = value.source; templateVersions["headline"] = value.templateVersion
+    }
+    mutating func setDescription(_ value: MetadataTemplateText) {
+        description = value.source; templateVersions["description"] = value.templateVersion
+    }
+    mutating func setKeywords(_ value: MetadataTemplateKeywords) {
+        keywords = value.source; templateVersions["keywords"] = value.templateVersion
+    }
+    mutating func replaceHeadlineSource(_ source: String) throws {
+        let replacement = try MetadataTemplateRecordValidation.text(source, version: templateVersions["headline"])
+        setHeadline(replacement)
+    }
+    mutating func replaceDescriptionSource(_ source: String) throws {
+        let replacement = try MetadataTemplateRecordValidation.text(source, version: templateVersions["description"])
+        setDescription(replacement)
+    }
+    mutating func replaceKeywordsSource(_ source: [String]) throws {
+        let replacement = try MetadataTemplateRecordValidation.keywords(source, version: templateVersions["keywords"])
+        setKeywords(replacement)
+    }
+    mutating func copyingHeadline(from other: Self) {
+        headline = other.headline; templateVersions["headline"] = other.templateVersions["headline"]
+    }
+    mutating func copyingDescription(from other: Self) {
+        description = other.description; templateVersions["description"] = other.templateVersions["description"]
+    }
+    mutating func copyingKeywords(from other: Self) {
+        keywords = other.keywords; templateVersions["keywords"] = other.templateVersions["keywords"]
+    }
+
+    private enum CodingKeys: String, CodingKey { case headline, description, keywords, templateVersions }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let marked = container.contains(.templateVersions)
+        if marked {
+            do { templateVersions = try container.decode([String: Int].self, forKey: .templateVersions) }
+            catch { throw MetadataTemplateRecordError.invalidMarker }
+            guard Set(templateVersions.keys).isSubset(of: ["headline", "description", "keywords"]) else {
+                throw MetadataTemplateRecordError.unknownField
+            }
+            for version in templateVersions.values { try MetadataTemplateRecordValidation.version(version) }
+        }
+        do {
+            headline = try container.decode(String.self, forKey: .headline)
+            description = try container.decode(String.self, forKey: .description)
+            keywords = try container.decode([String].self, forKey: .keywords)
+        } catch {
+            if marked { throw MetadataTemplateRecordError.invalidSource }
+            throw error
+        }
+        try validateTemplates()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try validateTemplates()
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(headline, forKey: .headline)
+        try container.encode(description, forKey: .description)
+        try container.encode(keywords, forKey: .keywords)
+        if !templateVersions.isEmpty { try container.encode(templateVersions, forKey: .templateVersions) }
+    }
+
+    private func validateTemplates() throws {
+        _ = try validatedHeadline
+        _ = try validatedDescription
+        _ = try validatedKeywords
+    }
 
     var normalizedKeywords: [String] {
         var seen = Set<String>()
@@ -708,6 +879,9 @@ struct MetadataAutomation: Codable, Hashable, Sendable {
     var photographers: [PhotographerProfile] = []
     var photographerTracks: [MetadataPhotographerTrack] = []
     var clips: [MetadataScheduleClip] = []
+    var hasActivatedTemplates: Bool {
+        photographers.contains(where: \.hasActivatedTemplates) || clips.contains { $0.fields.hasActivatedTemplates }
+    }
 
     init(
         isEnabled: Bool = false,

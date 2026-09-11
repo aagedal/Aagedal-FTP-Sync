@@ -305,9 +305,11 @@ final class Version3StartupController: ObservableObject {
     /// is shown. Our admission enum labels contain only fixed categories/paths.
     private static func safeReason(_ error: Error) -> String {
         if error is CancellationError { return "The startup attempt was cancelled; writer exclusion may have changed." }
+        if error is MetadataTemplateRecordError { return "A saved activated template has an unsupported marker or invalid source. The original store was retained." }
         if error is DecodingError { return "A saved JSON store has an invalid structure or value type." }
         if let header = error as? VersionedStoreCodec.HeaderError {
             switch header {
+            case .requiresVersion3Storage: return "Activated templates were found in legacy storage; retain this data and open its compatible versioned copy."
             case .missingStore: return "A required versioned store is missing."
             case .invalidEnvelope: return "A store header is malformed."
             case .wrongFormat: return "A store has the wrong format identity."

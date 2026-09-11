@@ -16,15 +16,15 @@ final class MetadataProcessingCoordinatorTests: XCTestCase {
         return MetadataAssignment(photographer: photographer, clip: clip, existingFieldPolicy: .overwrite)
     }
 
-    func testLiteralPreparationExactlyPreservesCompatibilityAdapter() {
+    func testLiteralPreparationExactlyPreservesCompatibilityAdapter() throws {
         let source = assignment()
-        let result = MetadataProcessingCoordinator.prepareLiteral(source)
-        XCTAssertEqual(result.changes, .literal(source))
+        let result = try MetadataProcessingCoordinator.prepareLiteral(source)
+        XCTAssertEqual(result.changes, try .literal(source))
         XCTAssertNil(result.context)
         XCTAssertTrue(result.resolutionComplete)
-        let throughResolver = MetadataProcessingCoordinator.resolve(MetadataProcessingRequest(assignment: source), context: context, writableFields: allFields)
+        let throughResolver = MetadataProcessingCoordinator.resolve(try MetadataProcessingRequest(assignment: source), context: context, writableFields: allFields)
         XCTAssertEqual(throughResolver.changes, result.changes)
-        let overridden = MetadataProcessingRequest(assignment: source,
+        let overridden = try MetadataProcessingRequest(assignment: source,
             keywords: .literal([" Café ", "cafe", "", "One, Two"]))
         XCTAssertEqual(MetadataProcessingCoordinator.resolve(overridden, context: context,
             writableFields: allFields).changes.keywords, result.changes.keywords)
@@ -32,7 +32,7 @@ final class MetadataProcessingCoordinatorTests: XCTestCase {
 
     func testFrozenDatesAndCanonicalPhotographerResolveOnceWithoutMutatingSource() throws {
         let source = assignment()
-        let request = MetadataProcessingRequest(assignment: source,
+        let request = try MetadataProcessingRequest(assignment: source,
             description: try .activated("{date:YYYY-MM-DD}. Photo: {photographer}."),
             copyright: try .activated("© {photographer}"))
         let first = MetadataProcessingCoordinator.resolve(request, context: context, writableFields: allFields)
@@ -46,7 +46,7 @@ final class MetadataProcessingCoordinatorTests: XCTestCase {
     }
 
     func testMissingDependencyOmitsWholeFieldAndKeywordListButKeepsOtherFields() throws {
-        let request = MetadataProcessingRequest(assignment: assignment(),
+        let request = try MetadataProcessingRequest(assignment: assignment(),
             headline: try .activated("{date:YYYY-MM-DD}"),
             description: try .activated("Photo in {gps:city}"),
             keywords: try .activated(["Keep?", "{persons}"]))
@@ -60,7 +60,7 @@ final class MetadataProcessingCoordinatorTests: XCTestCase {
     }
 
     func testPreservedFieldsDeclareNoDependenciesAndDoNotCountAsIncomplete() throws {
-        let request = MetadataProcessingRequest(assignment: assignment(),
+        let request = try MetadataProcessingRequest(assignment: assignment(),
             description: try .activated("{gps:city}, {gps:country}"),
             keywords: try .activated(["{persons}"]))
         let writable = allFields.subtracting([.description, .keywords])
@@ -74,7 +74,7 @@ final class MetadataProcessingCoordinatorTests: XCTestCase {
     }
 
     func testActivatedLimitsUseUTF8BytesAndPreserveCompleteKeywordList() throws {
-        let request = MetadataProcessingRequest(assignment: assignment(),
+        let request = try MetadataProcessingRequest(assignment: assignment(),
             headline: try .activated(String(repeating: "é", count: 129)),
             description: try .activated(String(repeating: "a", count: 2000)),
             keywords: try .activated(["valid", String(repeating: "é", count: 33)]),
@@ -88,16 +88,16 @@ final class MetadataProcessingCoordinatorTests: XCTestCase {
         XCTAssertFalse(result.resolutionComplete)
     }
 
-    func testLegacyOverSpecAndMalformedBracesRetainWriterBehavior() {
+    func testLegacyOverSpecAndMalformedBracesRetainWriterBehavior() throws {
         let value = String(repeating: "é", count: 300) + "{malformed"
-        let request = MetadataProcessingRequest(assignment: assignment(), headline: .literal(value))
+        let request = try MetadataProcessingRequest(assignment: assignment(), headline: .literal(value))
         let result = MetadataProcessingCoordinator.resolve(request, context: context, writableFields: allFields)
         XCTAssertEqual(result.changes.headline, value)
         XCTAssertTrue(result.resolutionComplete)
     }
 
     func testActivatedInvalidXMLCharactersAreOmitted() throws {
-        let request = MetadataProcessingRequest(assignment: assignment(),
+        let request = try MetadataProcessingRequest(assignment: assignment(),
             headline: try .activated("before\u{0}after"), keywords: try .activated(["ok", "\u{1}bad"]))
         let result = MetadataProcessingCoordinator.resolve(request, context: context, writableFields: allFields)
         XCTAssertEqual(result.fields[.headline], .omitted(.invalidXMLCharacter))
@@ -109,7 +109,7 @@ final class MetadataProcessingCoordinatorTests: XCTestCase {
     func testCaptureOffsetAndKeywordEntryBoundariesSurviveResolution() throws {
         let captured = try XCTUnwrap(MetadataCaptureDate(date: Date(timeIntervalSince1970: 0), zoneSource: .explicitOffset(secondsFromGMT: -3600)))
         let supplied = MetadataTemplateContext(processingDate: Date(timeIntervalSince1970: 0), processingTimeZone: TimeZone(secondsFromGMT: 0)!, captureDate: captured, persons: ["One", "Two"])
-        let request = MetadataProcessingRequest(assignment: assignment(), headline: try .activated("{dateCaptured:YYYY-MM-DD}"), keywords: try .activated(["{persons}", " one, two "]))
+        let request = try MetadataProcessingRequest(assignment: assignment(), headline: try .activated("{dateCaptured:YYYY-MM-DD}"), keywords: try .activated(["{persons}", " one, two "]))
         let result = MetadataProcessingCoordinator.resolve(request, context: supplied, writableFields: allFields)
         XCTAssertEqual(result.changes.headline, "1969-12-31")
         XCTAssertEqual(result.changes.keywords, ["One, Two"])
