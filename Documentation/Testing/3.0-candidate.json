@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Explicit Apple provider selection, fresh import consent and shared production routing implemented at a9a5a14. Full suite: 934 passed, 15 opt-in skips, zero failures. One native MapKit probe returned Oslo / Norge for a fixed public fixture in 0.263 seconds; no user files or device location accessed. Independent review completed and checklist updated. Native UI, supported-OS/live failure matrices, face recognition, protocol3 sharing, M5 fingerprints and release gates remain incomplete. No candidate or human acceptance implied."
+  "note": "Protocol3 server namespace/capability/deactivation and Swift wire/model foundations committed at 778c61b. Full suite: 949 passed, 15 opt-in skips, zero failures. Disposable PHP/MariaDB suites passed including actual old-server rollback and eight verified concurrent namespace races. Coordinator migration/persistence remains pending and legacy activation remains blocked. Changed isolated native selection timed out; no UI pass. Face recognition, M5 fingerprints, supported-OS and release gates remain open. No candidate or human acceptance implied."
 }
