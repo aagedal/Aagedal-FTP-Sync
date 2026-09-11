@@ -49,6 +49,7 @@ struct VersionedStoreCodec: Sendable {
             try validateHeader(data)
             do { return try decoder.decode(Payload<Value>.self, from: data).payload }
             catch let error as MetadataTemplateRecordError { throw error }
+            catch let error as MetadataGeocodingSettingsError { throw error }
             catch {
                 // An earlier malformed sibling must not hide activation or a
                 // persisted job processing zone and recover older configuration.
@@ -96,11 +97,12 @@ struct VersionedStoreCodec: Sendable {
             default: break
             }
         } catch let error as MetadataTemplateRecordError { throw error }
+        catch let error as MetadataGeocodingSettingsError { throw error }
         catch { /* Other supported payload damage retains its existing recovery policy. */ }
     }
 
     static func permitsBackupRecovery(after error: Error) -> Bool {
-        !(error is HeaderError) && !(error is MetadataTemplateRecordError)
+        !(error is HeaderError) && !(error is MetadataTemplateRecordError) && !(error is MetadataGeocodingSettingsError)
     }
 
     /// Match Foundation Codable's key selection, including duplicate JSON keys.
@@ -144,7 +146,8 @@ struct VersionedStoreCodec: Sendable {
         init(from decoder: Decoder) throws {
             if let object = try? decoder.container(keyedBy: Key.self) {
                 for key in object.allKeys {
-                    if key.stringValue == "templateVersions" || key.stringValue == "copyrightTemplateVersion" {
+                    if key.stringValue == "templateVersions" || key.stringValue == "copyrightTemplateVersion"
+                        || key.stringValue == "metadataGeocoding" {
                         throw HeaderError.requiresVersion3Storage
                     }
                     _ = try object.decode(Self.self, forKey: key)

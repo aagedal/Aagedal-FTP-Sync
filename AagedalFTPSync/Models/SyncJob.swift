@@ -283,6 +283,20 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     // Missing in legacy jobs means no frozen processing context has been selected.
     // Never fill this from the current time zone while decoding or reading a job.
     var metadataProcessingTimeZoneIdentifier: String? = nil
+    // Optional absence stays off; an explicit persisted policy requires v3.
+    var metadataGeocoding: MetadataGeocodingSettings? = nil
+
+    var requiresVersion3MetadataConfiguration: Bool {
+        metadataGeocoding != nil || metadataAutomation?.hasActivatedTemplates == true
+    }
+
+    func validateMetadataGeocodingContext() throws {
+        try metadataGeocoding?.validate()
+        guard metadataGeocoding?.isEnabled == true else { return }
+        guard direction != .bidirectional else { throw MetadataGeocodingSettingsError.requiresOneWayJob }
+        let target = direction == .leftToRight ? right : left
+        guard target.kind == .local else { throw MetadataGeocodingSettingsError.requiresLocalDestination }
+    }
 
     var validatedMetadataProcessingTimeZone: TimeZone? {
         get throws {
@@ -498,6 +512,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
                 }
             }
         }
+        do { try validateMetadataGeocodingContext() }
+        catch { return error.localizedDescription }
         if let metadataAutomation, metadataAutomation.isEnabled {
             guard direction != .bidirectional else {
                 return "Automatic metadata is only available for one-way jobs."
@@ -529,12 +545,16 @@ extension SyncJob {
         case startOnAppLaunch, latestSessionTransferCountOnly, preserveModificationDates
         case verifyFileSizes, verifyMatchingFileContents, overwriteCaseVariantDownloads
         case uploadNaming, targetCleanup, processedFolder, processedFilesLocation
-        case sortProcessedFilesByPhotographer, metadataAutomation, metadataProcessingTimeZoneIdentifier
+        case sortProcessedFilesByPhotographer, metadataAutomation, metadataProcessingTimeZoneIdentifier, metadataGeocoding
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         // Validate the new configuration before decoding any nested automation.
+        if container.contains(.metadataGeocoding) {
+            do { metadataGeocoding = try container.decode(MetadataGeocodingSettings.self, forKey: .metadataGeocoding) }
+            catch { throw MetadataGeocodingSettingsError.invalidSettings }
+        }
         if container.contains(.metadataProcessingTimeZoneIdentifier) {
             do {
                 metadataProcessingTimeZoneIdentifier = try container.decode(String.self, forKey: .metadataProcessingTimeZoneIdentifier)
@@ -563,9 +583,11 @@ extension SyncJob {
         processedFilesLocation = try container.decodeIfPresent(ProcessedFilesLocation.self, forKey: .processedFilesLocation)
         sortProcessedFilesByPhotographer = try container.decodeIfPresent(Bool.self, forKey: .sortProcessedFilesByPhotographer)
         metadataAutomation = try container.decodeIfPresent(MetadataAutomation.self, forKey: .metadataAutomation)
+        try validateMetadataGeocodingContext()
     }
 
     func encode(to encoder: Encoder) throws {
+        try validateMetadataGeocodingContext()
         _ = try validatedMetadataProcessingTimeZone
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
@@ -589,6 +611,7 @@ extension SyncJob {
         try container.encodeIfPresent(sortProcessedFilesByPhotographer, forKey: .sortProcessedFilesByPhotographer)
         try container.encodeIfPresent(metadataAutomation, forKey: .metadataAutomation)
         try container.encodeIfPresent(metadataProcessingTimeZoneIdentifier, forKey: .metadataProcessingTimeZoneIdentifier)
+        try container.encodeIfPresent(metadataGeocoding, forKey: .metadataGeocoding)
     }
 }
 

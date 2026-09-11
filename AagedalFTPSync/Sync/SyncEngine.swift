@@ -173,6 +173,7 @@ private actor EarlyTransferState {
 
 struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
+    private let geocodingService: MetadataGeocodingService
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
     private let now: @Sendable () -> Date
@@ -185,6 +186,7 @@ struct SyncEngine: Sendable {
     ) throws -> any EndpointSession
 
     init(
+        geocodingService: MetadataGeocodingService = MetadataProcessingServices.shared.offlineGeocoding,
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
         downloadManifestRepository: DownloadManifestRepository = DownloadManifestRepository(),
         eventLogger: any SyncEventLogging = SystemSyncEventLogger(),
@@ -204,6 +206,7 @@ struct SyncEngine: Sendable {
             try LocalEndpointSession(endpoint: $0, managedFolder: $1)
         }
     ) {
+        self.geocodingService = geocodingService
         self.sourceSignatureRepository = sourceSignatureRepository
         self.downloadManifestRepository = downloadManifestRepository
         self.eventLogger = eventLogger
@@ -305,6 +308,7 @@ struct SyncEngine: Sendable {
         runID: UUID
     ) async throws -> SyncResult {
         try job.validateMetadataTemplateActivationContext()
+        _ = try job.metadataOperationTimeZone
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
         let leftManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .rightToLeft
             ? .syncedFiles
@@ -742,10 +746,14 @@ struct SyncEngine: Sendable {
         rightPassword: String? = nil
     ) async throws -> MetadataReprocessResult {
         try job.validateMetadataTemplateActivationContext()
-        guard let automation = job.metadataAutomation, automation.isEnabled else {
-            throw AppError.invalidConfiguration("Enable and save automatic metadata before reprocessing files.")
+        _ = try job.metadataOperationTimeZone
+        let automation = job.metadataAutomation?.isEnabled == true ? job.metadataAutomation : nil
+        let geocodingEnabled = job.metadataGeocoding?.isEnabled == true
+        guard automation != nil || geocodingEnabled else {
+            throw AppError.invalidConfiguration("Enable and save automatic metadata or geocoding before reprocessing files.")
         }
-        if let message = automation.validationMessage {
+        if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
+        if let message = automation?.validationMessage {
             throw AppError.invalidConfiguration(message)
         }
         let scopedPhotographerID: UUID?
@@ -753,17 +761,17 @@ struct SyncEngine: Sendable {
         case .all:
             scopedPhotographerID = nil
         case .photographer(let photographerID):
-            guard automation.photographers.contains(where: { $0.id == photographerID }) else {
+            guard automation?.photographers.contains(where: { $0.id == photographerID }) == true else {
                 throw AppError.invalidConfiguration("The selected photographer is no longer part of this metadata program.")
             }
             scopedPhotographerID = photographerID
         case .clip(let clipID):
-            guard let clip = automation.clips.first(where: { $0.id == clipID }) else {
+            guard let clip = automation?.clips.first(where: { $0.id == clipID }) else {
                 throw AppError.invalidConfiguration("The selected metadata clip is no longer part of this metadata program.")
             }
             scopedPhotographerID = clip.photographerID
         }
-        guard automation.timestampPolicy != .localArrival else {
+        guard automation?.timestampPolicy != .localArrival else {
             throw AppError.invalidConfiguration(
                 "Existing files cannot be reprocessed by local arrival time because their original arrival times were not recorded. Choose source modification time or camera capture time."
             )
@@ -795,12 +803,19 @@ struct SyncEngine: Sendable {
         )
         let files = destinationFiles.values
             .filter { job.filter.includesFileType(path: $0.relativePath) }
+            .filter { automation != nil || MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding) }
             .filter { file in
                 guard let scopedPhotographerID else { return true }
-                return automation.matchingPhotographer(for: file.relativePath)?.id == scopedPhotographerID
+                return automation?.matchingPhotographer(for: file.relativePath)?.id == scopedPhotographerID
             }
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
-        if automation.timestampPolicy == .sourceModification, !job.preserveModificationDates {
+        if geocodingEnabled {
+            try validateGeneratedSidecarOutputPaths(
+                candidates: files.filter { MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding) },
+                sourceFiles: destinationFiles, automation: automation, geocoding: job.metadataGeocoding,
+                enforceLocalPathRules: true, occupiedDestinationPaths: Set(destinationFiles.keys))
+        }
+        if automation?.timestampPolicy == .sourceModification, !job.preserveModificationDates {
             let missingSourcePaths = files
                 .map(\.relativePath)
                 .filter { sourceFiles[$0] == nil }
@@ -843,71 +858,47 @@ struct SyncEngine: Sendable {
                 )
             }
 
-            guard let scheduledAt = MetadataWriter.schedulingDate(
-                for: automation.timestampPolicy,
-                sourceModifiedAt: sourceFiles[file.relativePath]?.modifiedAt ?? file.modifiedAt,
-                localArrivalAt: file.modifiedAt,
-                fileURL: temporaryURL
-            ) else {
+            let scheduledAt = automation.flatMap { automation in
+                MetadataWriter.schedulingDate(for: automation.timestampPolicy,
+                    sourceModifiedAt: sourceFiles[file.relativePath]?.modifiedAt ?? file.modifiedAt,
+                    localArrivalAt: file.modifiedAt, fileURL: temporaryURL)
+            }
+            let assignment = scheduledAt.flatMap { automation?.assignment(for: file.relativePath, scheduledAt: $0) }
+            let independentProcessing = MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: job.metadataGeocoding)
+            if assignment == nil && !independentProcessing {
                 if scope.isClip { continue }
                 skipped += 1
-                metadataReport.append(MetadataAuditEntry(
-                    runID: runID,
-                    jobID: job.id,
-                    operation: .reprocess,
-                    relativePath: file.relativePath,
-                    status: .skipped,
-                    timestampPolicy: automation.timestampPolicy,
-                    scheduledAt: nil,
-                    detail: "No valid camera capture timestamp was available."
-                ))
+                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: .skipped,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
+                    matchedPhotographer: automation?.matchingPhotographer(for: file.relativePath),
+                    detail: scheduledAt == nil ? "No valid camera capture timestamp was available."
+                        : automation.map { metadataSkipDetail(automation: $0, relativePath: file.relativePath) }))
                 continue
             }
-            guard let assignment = automation.assignment(
-                for: file.relativePath,
-                scheduledAt: scheduledAt
-            ) else {
-                if scope.isClip { continue }
-                skipped += 1
-                metadataReport.append(MetadataAuditEntry(
-                    runID: runID,
-                    jobID: job.id,
-                    operation: .reprocess,
-                    relativePath: file.relativePath,
-                    status: .skipped,
-                    timestampPolicy: automation.timestampPolicy,
-                    scheduledAt: scheduledAt,
-                    matchedPhotographer: automation.matchingPhotographer(for: file.relativePath),
-                    detail: metadataSkipDetail(
-                        automation: automation,
-                        relativePath: file.relativePath
-                    )
-                ))
-                continue
-            }
-            guard scope.includes(assignment) else { continue }
+            guard assignment.map({ scope.includes($0) }) ?? (scope == .all) else { continue }
             if scope.isClip { scanned += 1 }
 
             let processing: MetadataProcessingResult
             do {
-                processing = try MetadataProcessingCoordinator.preparePerImage(
-                    assignment: assignment, fileURL: temporaryURL, relativePath: file.relativePath,
+                processing = try await MetadataProcessingCoordinator.prepare(
+                    assignment: assignment, geocoding: job.metadataGeocoding, service: geocodingService, fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate,
-                    processingTimeZone: try job.validatedMetadataProcessingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
+                    processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!)
             } catch is CancellationError { throw CancellationError() }
             catch {
                 failed += 1
                 metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
-                    relativePath: file.relativePath, status: .failed, timestampPolicy: automation.timestampPolicy,
+                    relativePath: file.relativePath, status: .failed, timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                     scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription))
                 continue
             }
             let activated = processing.context != nil
-            if activated && !processing.fields.values.contains(.proposed) {
+            if activated && !processing.hasProposedChanges {
                 if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
                 metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
                     relativePath: file.relativePath, status: processing.resolutionComplete ? .skipped : .failed,
-                    timestampPolicy: automation.timestampPolicy, scheduledAt: scheduledAt, assignment: assignment,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt, assignment: assignment,
                     detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was retained unchanged.",
                     processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
                 continue
@@ -927,7 +918,7 @@ struct SyncEngine: Sendable {
                     operation: .reprocess,
                     relativePath: file.relativePath,
                     status: processing.resolutionComplete ? .skipped : .failed,
-                    timestampPolicy: automation.timestampPolicy,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                     scheduledAt: scheduledAt,
                     assignment: assignment,
                     detail: processing.resolutionComplete ? detail : "Some requested metadata could not resolve; existing affected fields were preserved.",
@@ -965,7 +956,7 @@ struct SyncEngine: Sendable {
                     operation: .reprocess,
                     relativePath: file.relativePath,
                     status: .failed,
-                    timestampPolicy: automation.timestampPolicy,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                     scheduledAt: scheduledAt,
                     assignment: assignment,
                     detail: error.localizedDescription,
@@ -1011,7 +1002,7 @@ struct SyncEngine: Sendable {
                 guard activated else { throw error }
                 failed += 1
                 metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
-                    relativePath: file.relativePath, status: .failed, timestampPolicy: automation.timestampPolicy,
+                    relativePath: file.relativePath, status: .failed, timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                     scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription,
                     processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
                 continue
@@ -1023,7 +1014,7 @@ struct SyncEngine: Sendable {
                 operation: .reprocess,
                 relativePath: file.relativePath,
                 status: processing.resolutionComplete ? .applied : .failed,
-                timestampPolicy: automation.timestampPolicy,
+                timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                 scheduledAt: scheduledAt,
                 assignment: assignment,
                 swiftExifWarnings: writeResult.warnings,
@@ -1044,11 +1035,11 @@ struct SyncEngine: Sendable {
     private func sourceFilesForReprocessing(
         destination: any EndpointSession,
         job: SyncJob,
-        automation: MetadataAutomation,
+        automation: MetadataAutomation?,
         leftPassword: String?,
         rightPassword: String?
     ) async throws -> [String: SyncFile] {
-        guard automation.timestampPolicy == .sourceModification else { return [:] }
+        guard automation?.timestampPolicy == .sourceModification else { return [:] }
 
         let sourceEndpoint: Endpoint
         let password: String?
@@ -1133,6 +1124,7 @@ struct SyncEngine: Sendable {
             candidates: eligible.filter { !handledSidecars.contains($0.relativePath) },
             sourceFiles: sourceFiles,
             automation: job.metadataAutomation,
+            geocoding: job.metadataGeocoding,
             enforceLocalPathRules: job.destinationEndpoint?.kind == .local,
             occupiedDestinationPaths: Set(destinationFiles.keys)
         )
@@ -1287,6 +1279,7 @@ struct SyncEngine: Sendable {
             candidates: candidates,
             sourceFiles: directoryFiles,
             automation: job.metadataAutomation,
+            geocoding: job.metadataGeocoding,
             enforceLocalPathRules: true,
             occupiedDestinationPaths: Set(destinationFiles.keys)
         )
@@ -1295,7 +1288,7 @@ struct SyncEngine: Sendable {
             potentialOutputPaths(
                 for: file,
                 sourceFiles: directoryFiles,
-                automation: job.metadataAutomation
+                automation: job.metadataAutomation, geocoding: job.metadataGeocoding
             ).allSatisfy { destinationFiles[$0] == nil }
         }
         let claimed = await state.claim(absentCandidates)
@@ -1314,8 +1307,9 @@ struct SyncEngine: Sendable {
                     preserveDate: job.preserveModificationDates,
                     verifySize: job.verifyFileSizes,
                     metadataAutomation: job.metadataAutomation,
+                    metadataGeocoding: job.metadataGeocoding,
                     processingDate: processingDate,
-                    processingTimeZone: try job.validatedMetadataProcessingTimeZone,
+                    processingTimeZone: try job.metadataOperationTimeZone,
                     sortProcessedFilesByPhotographer: false,
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
@@ -1334,6 +1328,7 @@ struct SyncEngine: Sendable {
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] : nil,
                     trackSourceSignature: job.usesDownloadModificationTime
+                        || MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: job.metadataGeocoding)
                 )
             } catch is CancellationError {
                 throw CancellationError()
@@ -1353,12 +1348,13 @@ struct SyncEngine: Sendable {
     private func potentialOutputPaths(
         for file: SyncFile,
         sourceFiles: [String: SyncFile],
-        automation: MetadataAutomation?
+        automation: MetadataAutomation?,
+        geocoding: MetadataGeocodingSettings? = nil
     ) -> [String] {
         var paths = [file.relativePath]
         guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return paths }
         let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-        if sourceFiles[sidecarPath] != nil || mayGenerateSidecar(file, automation: automation) {
+        if sourceFiles[sidecarPath] != nil || mayGenerateSidecar(file, automation: automation, geocoding: geocoding) {
             paths.append(sidecarPath)
         }
         return paths
@@ -1389,7 +1385,7 @@ struct SyncEngine: Sendable {
         var deferredFiles = earlySnapshot.deferredFiles
         var changingFiles = earlySnapshot.changingFiles
         let earlyChangingPaths = Set(changingFiles.keys.flatMap { path in
-            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation) } ?? [path]
+            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation, geocoding: job.metadataGeocoding) } ?? [path]
         })
         var deferredComparisons: Set<String> = []
         for path in deferredFiles.keys where sourceFiles[path] == nil {
@@ -1402,14 +1398,15 @@ struct SyncEngine: Sendable {
                earlySignature.matches(file, timestampTolerance: tolerance) {
                 continue
             }
-            let willRewriteMetadata = job.metadataAutomation?
+            let willRewriteMetadata = (job.metadataAutomation?
                 .matchesPhotographer(relativePath: file.relativePath) == true
+                || MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: job.metadataGeocoding))
                 && !MetadataWriter.usesXMPSidecar(for: file.relativePath)
             let destinationFile = effectiveDestinationFiles[file.relativePath]
             let sourceSidecar = MetadataWriter.usesXMPSidecar(for: file.relativePath)
                 ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] : nil
             let destinationSidecar = sourceSidecar.flatMap { effectiveDestinationFiles[$0.relativePath] }
-            let mayRewriteSidecar = mayGenerateSidecar(file, automation: job.metadataAutomation)
+            let mayRewriteSidecar = mayGenerateSidecar(file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding)
             var destinationNeedsTransfer = needsTransfer(
                 file,
                 destinationFile,
@@ -1475,7 +1472,7 @@ struct SyncEngine: Sendable {
                 }
             }
             if destinationNeedsTransfer
-                || (processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation)) {
+                || (processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding, savedSignature: savedSignatures[file.relativePath])) {
                 preliminaryCandidates.append(file)
             }
         }
@@ -1485,7 +1482,7 @@ struct SyncEngine: Sendable {
             return sourceFiles[sidecarPath] == nil ? nil : sidecarPath
         })
         let changingPaths = Set(changingFiles.keys.flatMap { path in
-            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation) } ?? [path]
+            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation, geocoding: job.metadataGeocoding) } ?? [path]
         })
         let candidates = preliminaryCandidates
             .filter { !handledSourceSidecars.contains($0.relativePath) && !changingPaths.contains($0.relativePath) }
@@ -1494,6 +1491,7 @@ struct SyncEngine: Sendable {
             candidates: candidates,
             sourceFiles: sourceFiles,
             automation: job.metadataAutomation,
+            geocoding: job.metadataGeocoding,
             enforceLocalPathRules: job.destinationEndpoint?.kind == .local,
             occupiedDestinationPaths: Set(effectiveDestinationFiles.keys)
         )
@@ -1541,7 +1539,7 @@ struct SyncEngine: Sendable {
                 if deferredComparisons.contains(file.relativePath),
                    let destinationFile = effectiveDestinationFiles[file.relativePath],
                    try await contentsMatch(file, in: source, destinationFile, in: destination),
-                   !(processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation)) {
+                   !(processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding, savedSignature: savedSignatures[file.relativePath])) {
                     continue
                 }
                 outcome = try await transfer(
@@ -1555,8 +1553,9 @@ struct SyncEngine: Sendable {
                     preserveDate: job.preserveModificationDates,
                     verifySize: job.verifyFileSizes,
                     metadataAutomation: job.metadataAutomation,
+                    metadataGeocoding: job.metadataGeocoding,
                     processingDate: processingDate,
-                    processingTimeZone: try job.validatedMetadataProcessingTimeZone,
+                    processingTimeZone: try job.metadataOperationTimeZone,
                     sortProcessedFilesByPhotographer: job.sortsProcessedFilesByPhotographer,
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
@@ -1632,10 +1631,13 @@ struct SyncEngine: Sendable {
             if earlySnapshot.signatures[file.relativePath] == nil {
                 transferred += 1
             }
-            if outcome.embeddedMetadataApplied || file.tracksRepeatedDownload || job.usesDownloadModificationTime {
+            let independentProcessing = MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: job.metadataGeocoding)
+            if !(independentProcessing && deferredFailureDescription != nil),
+               independentProcessing || outcome.embeddedMetadataApplied || file.tracksRepeatedDownload || job.usesDownloadModificationTime {
                 pendingSourceSignatures.append(file)
             }
-            if MetadataWriter.usesXMPSidecar(for: file.relativePath),
+            if !(independentProcessing && deferredFailureDescription != nil),
+               MetadataWriter.usesXMPSidecar(for: file.relativePath),
                let sidecar = sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
                 pendingSourceSignatures.append(sidecar)
             }
@@ -1938,6 +1940,7 @@ struct SyncEngine: Sendable {
         preserveDate: Bool,
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
+        metadataGeocoding: MetadataGeocodingSettings? = nil,
         processingDate: Date = Date(),
         processingTimeZone: TimeZone? = nil,
         sortProcessedFilesByPhotographer: Bool,
@@ -2042,14 +2045,14 @@ struct SyncEngine: Sendable {
         var sidecarImport: (url: URL, file: SyncFile)?
         var auditEntry: MetadataAuditEntry?
         var embeddedMetadataApplied = false
-        if let metadataAssignment {
+        if metadataAssignment != nil || MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: metadataGeocoding) {
             var processingResult: MetadataProcessingResult?
             do {
-                let processing = try MetadataProcessingCoordinator.preparePerImage(
-                    assignment: metadataAssignment, fileURL: temporaryURL, relativePath: file.relativePath,
+                let processing = try await MetadataProcessingCoordinator.prepare(
+                    assignment: metadataAssignment, geocoding: metadataGeocoding, service: geocodingService, fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate, processingTimeZone: processingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
                 processingResult = processing
-                if processing.context != nil && !processing.fields.values.contains(.proposed) {
+                if processing.context != nil && !processing.hasProposedChanges {
                     importedFile = file
                     if let sourceSidecar { sidecarImport = (temporarySidecarURL, sourceSidecar) }
                     auditEntry = MetadataAuditEntry(runID: runID, jobID: jobID, operation: .transfer,
@@ -2225,7 +2228,6 @@ struct SyncEngine: Sendable {
         var publishedProcessedPaths = Set<String>()
         if auditEntry?.status == .applied,
            auditEntry?.processingEvidence?.resolutionComplete != false,
-           let metadataAssignment,
            let processedDestination {
             do {
                 let processedFile = processedCopy(
@@ -2325,11 +2327,11 @@ struct SyncEngine: Sendable {
 
     private func processedCopy(
         of file: SyncFile,
-        assignment: MetadataAssignment,
+        assignment: MetadataAssignment?,
         automation: MetadataAutomation?,
         sortedByPhotographer: Bool
     ) -> SyncFile {
-        guard sortedByPhotographer else { return file }
+        guard sortedByPhotographer, let assignment else { return file }
         let folder = PhotographerOutputFolder.name(
             for: assignment.photographer,
             photographers: automation?.photographers ?? [assignment.photographer]
@@ -2403,6 +2405,7 @@ struct SyncEngine: Sendable {
         candidates: [SyncFile],
         sourceFiles: [String: SyncFile],
         automation: MetadataAutomation?,
+        geocoding: MetadataGeocodingSettings? = nil,
         enforceLocalPathRules: Bool,
         occupiedDestinationPaths: Set<String> = []
     ) throws {
@@ -2424,7 +2427,7 @@ struct SyncEngine: Sendable {
             guard MetadataWriter.usesXMPSidecar(for: candidate.relativePath) else { continue }
             let sidecarPath = MetadataWriter.sidecarRelativePath(for: candidate.relativePath)
             let willPublishSidecar = sourceFiles[sidecarPath] != nil
-                || mayGenerateSidecar(candidate, automation: automation)
+                || mayGenerateSidecar(candidate, automation: automation, geocoding: geocoding)
             if willPublishSidecar {
                 try register(sidecarPath, owner: candidate.relativePath)
             }
@@ -2442,8 +2445,13 @@ struct SyncEngine: Sendable {
 
     private func shouldAttemptProcessedMove(
         _ file: SyncFile,
-        automation: MetadataAutomation?
+        automation: MetadataAutomation?,
+        geocoding: MetadataGeocodingSettings? = nil,
+        savedSignature: SourceFileSignature? = nil
     ) -> Bool {
+        if MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: geocoding) {
+            return savedSignature?.matches(file, timestampTolerance: tolerance) != true
+        }
         guard let automation, automation.isEnabled,
               automation.matchesPhotographer(relativePath: file.relativePath) else {
             return false
@@ -2460,8 +2468,10 @@ struct SyncEngine: Sendable {
 
     private func mayGenerateSidecar(
         _ file: SyncFile,
-        automation: MetadataAutomation?
+        automation: MetadataAutomation?,
+        geocoding: MetadataGeocodingSettings? = nil
     ) -> Bool {
+        if MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: geocoding) { return true }
         guard let automation, automation.isEnabled else { return false }
         return automation.matchesPhotographer(relativePath: file.relativePath)
     }

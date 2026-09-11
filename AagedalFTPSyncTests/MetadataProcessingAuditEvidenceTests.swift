@@ -136,6 +136,34 @@ final class MetadataProcessingAuditEvidenceTests: XCTestCase {
         }
     }
 
+    func testGeocodingAuditRecordsLocaleProviderAndFieldOutcomesWithoutPlaceNames() throws {
+        let base = result()
+        let processing = MetadataProcessingResult(changes: .init(), context: base.context, fields: [:],
+            geocoding: .lookup(.found(.init(city: "PRIVATE-CITY", country: "PRIVATE-COUNTRY", source: "PRIVATE-LOOKUP-TEXT", distanceMeters: 1234), OfflineMetadataGeocodingProvider.identity)),
+            geocodingLocaleIdentifier: "nb", places: [.city: .preservedByPolicy, .country: .proposed])
+        let evidence = try XCTUnwrap(MetadataProcessingAuditEvidence(result: processing))
+        XCTAssertEqual(evidence.geocodingDecision?.localeIdentifier, "nb")
+        XCTAssertEqual(evidence.geocodingDecision?.provider, "geonames-offline")
+        XCTAssertEqual(evidence.geocodingDecision?.distanceMeters, 1234)
+        XCTAssertEqual(evidence.placeFields?["city"]?.status, .preservedByPolicy)
+        XCTAssertEqual(evidence.placeFields?["country"]?.status, .proposed)
+        let bytes = try JSONEncoder().encode(evidence)
+        XCTAssertFalse(try XCTUnwrap(String(data: bytes, encoding: .utf8)).contains("PRIVATE-"))
+        XCTAssertEqual(try JSONDecoder().decode(MetadataProcessingAuditEvidence.self, from: bytes), evidence)
+        XCTAssertTrue(MetadataAuditEvidencePresentation.geocodingDecision(try XCTUnwrap(evidence.geocodingDecision)).contains("field proposals"))
+    }
+
+    func testMissingPlaceLookupIsIncompleteWithSpecificAuditReason() throws {
+        let base = result()
+        let processing = MetadataProcessingResult(changes: .init(), context: base.context, fields: [:],
+            geocoding: .missingCoordinates, geocodingLocaleIdentifier: "en", places: [.city: .unavailable])
+        let evidence = try XCTUnwrap(MetadataProcessingAuditEvidence(result: processing))
+        XCTAssertFalse(evidence.resolutionComplete)
+        XCTAssertEqual(evidence.geocodingDecision?.status, .missingCoordinates)
+        XCTAssertEqual(evidence.placeFields?["city"]?.reason, .missingValues)
+        XCTAssertEqual(evidence.placeFields?["city"]?.variables, ["city"])
+    }
+
     func testPolicyPreservationAndEmptyFieldsAreCompleteResolutionNotPublication() throws {
         let evidence = try XCTUnwrap(MetadataProcessingAuditEvidence(result: result(fields: [
             .headline: .preservedByPolicy, .description: .notRequested, .copyright: .proposed

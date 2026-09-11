@@ -13,6 +13,7 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
     let copyright: String
     let gpsPosition: ScheduledGPSPosition?
     let existingFieldPolicy: MetadataExistingFieldPolicy
+    let places: ResolvedMetadataPlaceChanges?
 
     /// Keywords have already been normalized by the resolver. Preserve their
     /// entry boundaries and order, including commas inside an expanded value.
@@ -20,7 +21,8 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
         headline: String = "", description: String = "", keywords: [String] = [],
         creator: String = "", copyright: String = "",
         gpsPosition: ScheduledGPSPosition? = nil,
-        existingFieldPolicy: MetadataExistingFieldPolicy = .standard
+        existingFieldPolicy: MetadataExistingFieldPolicy = .standard,
+        places: ResolvedMetadataPlaceChanges? = nil
     ) {
         self.headline = headline.trimmingCharacters(in: .whitespacesAndNewlines)
         self.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -29,6 +31,7 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
         self.copyright = copyright.trimmingCharacters(in: .whitespacesAndNewlines)
         self.gpsPosition = gpsPosition
         self.existingFieldPolicy = existingFieldPolicy
+        self.places = places
     }
 
     /// Compatibility boundary: legacy source remains literal, including braces.

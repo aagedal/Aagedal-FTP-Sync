@@ -231,7 +231,7 @@ final class AppStore: ObservableObject {
         var resolvedJob: SyncJob
         do {
             resolvedJob = try job.resolvingServerProfiles(in: serverProfiles)
-            if resolvedJob.metadataAutomation?.hasActivatedTemplates == true,
+            if resolvedJob.metadataAutomation?.hasActivatedTemplates == true || resolvedJob.metadataGeocoding?.isEnabled == true,
                resolvedJob.metadataProcessingTimeZoneIdentifier == nil {
                 resolvedJob.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
             }
@@ -561,7 +561,7 @@ final class AppStore: ObservableObject {
             var importedJobs = prepared.state.jobs
             let previousJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
             for index in importedJobs.indices where previousJobs[importedJobs[index].id] != importedJobs[index] {
-                if importedJobs[index].metadataAutomation?.hasActivatedTemplates == true,
+                if importedJobs[index].metadataAutomation?.hasActivatedTemplates == true || importedJobs[index].metadataGeocoding?.isEnabled == true,
                    importedJobs[index].metadataProcessingTimeZoneIdentifier == nil {
                     importedJobs[index].metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
                 }
@@ -1203,8 +1203,10 @@ final class AppStore: ObservableObject {
         metadataReprocessPhases[jobID] = .running
 
         do {
-            let leftPassword = try persistenceCoordinator.password(for: job.left)
-            let rightPassword = try persistenceCoordinator.password(for: job.right)
+            let needsSource = job.metadataAutomation?.isEnabled == true
+                && job.metadataAutomation?.timestampPolicy == .sourceModification
+            let leftPassword = needsSource ? try persistenceCoordinator.password(for: job.left) : nil
+            let rightPassword = needsSource ? try persistenceCoordinator.password(for: job.right) : nil
             let result = try await engine.reprocessExistingLocalFiles(
                 job: job,
                 scope: scope,

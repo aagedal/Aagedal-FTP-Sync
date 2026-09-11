@@ -1216,9 +1216,12 @@ private func performMetadataPreview(
     let filter = job.filter
     let task = Task.detached(priority: .userInitiated) {
         _ = folderAccess
-        return try MetadataPreviewService.previewLocalFolder(
+        var enabledDraft = automation
+        enabledDraft.isEnabled = true
+        return try await MetadataPreviewService.previewLocalFolder(
             at: folderURL,
-            automation: automation,
+            automation: enabledDraft,
+            geocoding: job.metadataGeocoding,
             filter: filter,
             processingTimeZone: try job.validatedMetadataProcessingTimeZone
         )

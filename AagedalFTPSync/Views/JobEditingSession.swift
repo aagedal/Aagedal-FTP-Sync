@@ -90,8 +90,8 @@ final class JobEditingSession: ObservableObject {
             draft.metadataProcessingTimeZoneIdentifier = latest.metadataProcessingTimeZoneIdentifier
         }
         if didSelectMetadataProcessingTimeZone, draft.metadataProcessingTimeZoneIdentifier == nil,
-           draft.metadataAutomation?.hasActivatedTemplates == true {
-            store.alertMessage = "A job using metadata variables needs a processing time zone. Choose a zone before saving."
+           (draft.metadataAutomation?.hasActivatedTemplates == true || draft.metadataGeocoding?.isEnabled == true) {
+            store.alertMessage = requiredProcessingTimeZoneMessage
             return false
         }
         do { _ = try draft.validatedMetadataProcessingTimeZone }
@@ -114,14 +114,20 @@ final class JobEditingSession: ObservableObject {
 
     /// Explicit UI selection only: opening an editor never fills a missing zone.
     func selectMetadataProcessingTimeZone(_ identifier: String?) throws {
-        if identifier == nil, draft.metadataAutomation?.hasActivatedTemplates == true {
-            throw AppError.invalidConfiguration("A job using metadata variables needs a processing time zone. Choose a zone before saving.")
+        if identifier == nil, (draft.metadataAutomation?.hasActivatedTemplates == true || draft.metadataGeocoding?.isEnabled == true) {
+            throw AppError.invalidConfiguration(requiredProcessingTimeZoneMessage)
         }
         var updated = draft
         updated.metadataProcessingTimeZoneIdentifier = identifier
         _ = try updated.validatedMetadataProcessingTimeZone
         draft = updated
         didSelectMetadataProcessingTimeZone = true
+    }
+
+    private var requiredProcessingTimeZoneMessage: String {
+        draft.metadataGeocoding?.isEnabled == true
+            ? "An enabled metadata processor needs a processing time zone. Choose a zone before saving."
+            : "A job using metadata variables needs a processing time zone. Choose a zone before saving."
     }
 
     func markDiscarded() {

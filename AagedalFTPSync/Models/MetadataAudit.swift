@@ -54,6 +54,46 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
         }
     }
 
+    /// Provider decisions and immutable identity only; never names or coordinates.
+    struct GeocodingDecision: Codable, Equatable, Sendable {
+        enum Status: String, Codable, Sendable {
+            case missingCoordinates, found, noResult, tooDistant, invalidProviderResult
+            case providerFailure, backoff, overloaded, deadlineExceeded, cancelled
+        }
+        let status: Status
+        let localeIdentifier: String?
+        let provider: String?
+        let version: String?
+        let dataset: String?
+        let distanceMeters: Double?
+
+        init?(result: MetadataProcessingResult) {
+            localeIdentifier = result.geocodingLocaleIdentifier
+            var identity: MetadataGeocodingService.Identity?
+            var distance: Double?
+            switch result.geocoding {
+            case .notRequested: return nil
+            case .missingCoordinates: status = .missingCoordinates
+            case .lookup(let outcome):
+                switch outcome {
+                case .found(let place, let source): status = .found; identity = source; distance = place.distanceMeters
+                case .noResult: status = .noResult
+                case .tooDistant: status = .tooDistant
+                case .invalidProviderResult: status = .invalidProviderResult
+                case .providerFailure: status = .providerFailure
+                case .backoff: status = .backoff
+                case .overloaded: status = .overloaded
+                case .deadlineExceeded: status = .deadlineExceeded
+                case .cancelled: status = .cancelled
+                }
+            }
+            provider = identity?.provider
+            version = identity?.version
+            dataset = identity?.dataset
+            distanceMeters = distance
+        }
+    }
+
     struct CaptureAssumption: Codable, Equatable, Sendable {
         enum Source: String, Codable, Sendable { case explicitOffset, persistedFallback }
         let source: Source
@@ -107,6 +147,8 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
     let fields: [String: FieldOutcome]
     let resolutionComplete: Bool
     let coordinateDecision: CoordinateDecision?
+    let geocodingDecision: GeocodingDecision?
+    let placeFields: [String: FieldOutcome]?
 
     /// Literal processing has no frozen template context and keeps its old audit shape.
     init?(result: MetadataProcessingResult) {
@@ -126,6 +168,18 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
         fields = Dictionary(uniqueKeysWithValues: result.fields.map { ($0.key.rawValue, FieldOutcome($0.value)) })
         resolutionComplete = result.resolutionComplete
         coordinateDecision = result.coordinateResolution.map(CoordinateDecision.init)
+        geocodingDecision = GeocodingDecision(result: result)
+        placeFields = result.places.isEmpty ? nil : Dictionary(uniqueKeysWithValues: result.places.map { field, outcome in
+            let mapped: MetadataProcessingFieldOutcome
+            switch outcome {
+            case .notRequested: mapped = .notRequested
+            case .preservedByPolicy: mapped = .preservedByPolicy
+            case .proposed: mapped = .proposed
+            case .unavailable: mapped = .omitted(.template(.missingValues([field == .city ? .city : .country])))
+            case .invalidValue(let reason): mapped = .omitted(reason)
+            }
+            return (field.rawValue, FieldOutcome(mapped))
+        })
     }
 }
 

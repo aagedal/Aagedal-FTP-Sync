@@ -107,6 +107,9 @@ struct MetadataFolderPreviewView: View {
                         Text(captureAssumption(context.captureDate))
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if processing.geocoding != .notRequested {
+                        Text(geocodingDetail(processing.geocoding)).font(.caption).foregroundStyle(.secondary)
+                    }
                     if let resolution = processing.coordinateResolution {
                         Text(MetadataAuditEvidencePresentation.coordinateDecision(.init(resolution)))
                             .font(.caption).foregroundStyle(.secondary)
@@ -127,9 +130,67 @@ struct MetadataFolderPreviewView: View {
                             }
                         }
                     }
+                    ForEach(MetadataPlaceField.allCases, id: \.self) { field in
+                        if let outcome = processing.places[field] {
+                            HStack(alignment: .top) {
+                                Text(field.title).fontWeight(.medium).frame(width: 100, alignment: .leading)
+                                Text(existingPlaceDetail(field, item: item))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(placeDetail(field, outcome: outcome, processing: processing))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
                 }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
         }.frame(maxHeight: 170)
+    }
+
+    private func existingPlaceDetail(_ field: MetadataPlaceField, item: MetadataPreviewItem) -> String {
+        guard let snapshot = item.existingPlaces, snapshot.readable else { return "Existing value unavailable" }
+        let values = snapshot.carriers.compactMap { carrier -> String? in
+            guard let value = field == .city ? carrier.city : carrier.country, !value.isEmpty else { return nil }
+            return carrier.name + ": " + value
+        }
+        return values.isEmpty ? "No existing value" : values.joined(separator: "\n")
+    }
+
+    private func placeDetail(_ field: MetadataPlaceField, outcome: MetadataProcessingPlaceOutcome,
+                             processing: MetadataProcessingResult) -> String {
+        switch outcome {
+        case .notRequested: return "Disabled"
+        case .preservedByPolicy: return "Existing value preserved by field policy"
+        case .unavailable: return "No usable location name; existing value preserved"
+        case .proposed: return (field == .city ? processing.changes.places?.city : processing.changes.places?.country) ?? "No value proposed"
+        case .invalidValue(let reason):
+            switch reason {
+            case .writerByteLimit(let maximum): return "Omitted: exceeds the \(maximum)-byte field limit"
+            case .invalidXMLCharacter: return "Omitted: unsupported XML character"
+            case .invalidGPSPosition: return "Omitted: invalid location"
+            case .template: return "Omitted: location name could not be resolved safely"
+            }
+        }
+    }
+
+    private func geocodingDetail(_ stage: MetadataProcessingGeocodingOutcome) -> String {
+        switch stage {
+        case .notRequested: return "Location lookup was not needed."
+        case .missingCoordinates: return "Location lookup unavailable: no valid coordinates."
+        case .lookup(let outcome):
+            switch outcome {
+            case .found(let place, let identity):
+                let distance = place.distanceMeters.map { String(format: " · %.0f m from the matched place", $0) } ?? ""
+                return "Location lookup: \(identity.provider) · \(place.source)\(distance)"
+            case .noResult: return "Location lookup found no place."
+            case .tooDistant: return "Nearest place exceeded the configured distance limit."
+            case .invalidProviderResult: return "Location lookup returned an invalid result."
+            case .providerFailure: return "Location lookup failed."
+            case .backoff: return "Location lookup is waiting after a provider failure."
+            case .overloaded: return "Location lookup queue is full."
+            case .deadlineExceeded: return "Location lookup exceeded its deadline."
+            case .cancelled: return "Location lookup was cancelled."
+            }
+        }
     }
 
     private func existingDetail(_ field: MetadataWritableField, item: MetadataPreviewItem) -> String {

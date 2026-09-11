@@ -64,6 +64,32 @@ final class MetadataActivationAdmissionTests: XCTestCase {
         return Fixture(storage: storage, store: store, job: job)
     }
 
+    func testOfflineSettingsSaveFreezesZoneWithoutActivatingSharedSchedule() throws {
+        let f = try fixture(linked: true)
+        let calendarBefore = try Data(contentsOf: f.storage.metadataCalendar)
+        var job = f.job
+        job.metadataGeocoding = try .init(cityPolicy: .fillEmpty, countryPolicy: .fillEmpty, localeIdentifier: "en")
+        XCTAssertTrue(f.store.saveJob(job, leftPassword: "", rightPassword: ""), f.store.alertMessage ?? "")
+        let saved = try XCTUnwrap(f.store.jobs.first)
+        XCTAssertEqual(saved.metadataProcessingTimeZoneIdentifier, TimeZone.current.identifier)
+        XCTAssertEqual(saved.metadataAutomation, f.job.metadataAutomation)
+        XCTAssertEqual(saved.metadataGeocoding, job.metadataGeocoding)
+        XCTAssertEqual(try Data(contentsOf: f.storage.metadataCalendar), calendarBefore)
+        let session = JobEditingSession(); session.edit(saved)
+        XCTAssertThrowsError(try session.selectMetadataProcessingTimeZone(nil))
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testLegacyJobSaveCannotDropOfflineSettingsSilently() throws {
+        let f = try fixture(legacy: true)
+        let before = try Data(contentsOf: f.storage.jobs)
+        var job = f.job
+        job.metadataGeocoding = try .init(localeIdentifier: "en")
+        XCTAssertFalse(f.store.saveJob(job, leftPassword: "", rightPassword: ""))
+        XCTAssertNil(f.store.jobs.first?.metadataGeocoding)
+        XCTAssertEqual(try Data(contentsOf: f.storage.jobs), before)
+    }
+
     private func activeAutomation(_ job: SyncJob) throws -> MetadataAutomation {
         var automation = try XCTUnwrap(job.metadataAutomation)
         automation.clips[0].fields.setHeadline(try .activated("{photographer}"))

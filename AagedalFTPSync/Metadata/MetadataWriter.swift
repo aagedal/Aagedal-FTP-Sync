@@ -115,6 +115,83 @@ enum MetadataWriter {
         return (XMPData(), "No readable embedded metadata or sidecar", false)
     }
 
+    struct ExistingPlaceFieldsSnapshot: Equatable, Sendable {
+        struct Carrier: Equatable, Sendable {
+            let name: String
+            let city: String?
+            let country: String?
+        }
+        let carriers: [Carrier]
+        let readable: Bool
+    }
+
+    /// Only enrichment callers use this strict boundary; legacy metadata parsing
+    /// remains unchanged. The returned XMP was parsed from the validated capture.
+    static func readExistingGeocodingSidecar(at fileURL: URL) throws -> XMPData? {
+        let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: sidecar.path)
+            || (try? manager.destinationOfSymbolicLink(atPath: sidecar.path)) != nil else { return nil }
+        let values = try sidecar.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw AppError.invalidConfiguration("The existing geocoding sidecar must be a regular file without symbolic links.")
+        }
+        return try MetadataXMPValidation.read(at: sidecar)
+    }
+
+    static func existingPlaceFields(at fileURL: URL, relativePath: String) throws -> ExistingPlaceFieldsSnapshot {
+        if usesXMPSidecar(for: relativePath) {
+            if let xmp = try readExistingGeocodingSidecar(at: fileURL) {
+                return .init(carriers: [.init(name: "Existing XMP sidecar", city: xmp.city, country: xmp.country)], readable: true)
+            }
+            let raw = try rawPolicyMetadata(at: fileURL)
+            return .init(carriers: [.init(name: raw.origin, city: raw.xmp.city, country: raw.xmp.country)], readable: raw.readable)
+        }
+        let metadata = try ImageMetadata.read(from: fileURL)
+        return .init(carriers: [.init(name: "Embedded IPTC", city: metadata.iptc.city, country: metadata.iptc.countryName),
+                                .init(name: "Embedded XMP", city: metadata.xmp?.city, country: metadata.xmp?.country)], readable: true)
+    }
+
+    static func writablePlaceFields(at fileURL: URL, relativePath: String,
+                                    settings: MetadataGeocodingSettings) throws -> Set<MetadataPlaceField> {
+        // Even variable-only settings must reject a damaged sidecar before any
+        // scheduled legacy field can be assessed or written by the caller.
+        let validatedXMP = settings.isEnabled && usesXMPSidecar(for: relativePath)
+            ? try readExistingGeocodingSidecar(at: fileURL) : nil
+        guard settings.cityPolicy != .disabled || settings.countryPolicy != .disabled else { return [] }
+        let existing: ExistingPlaceFieldsSnapshot
+        if let validatedXMP {
+            existing = .init(carriers: [.init(name: "Existing XMP sidecar", city: validatedXMP.city,
+                country: validatedXMP.country)], readable: true)
+        } else { existing = try existingPlaceFields(at: fileURL, relativePath: relativePath) }
+        return Set(MetadataPlaceField.allCases.filter { field in
+            let policy = field == .city ? settings.cityPolicy : settings.countryPolicy
+            switch policy {
+            case .disabled: return false
+            case .overwrite: return true
+            case .fillEmpty:
+                return existing.carriers.allSatisfy { isEmpty(field == .city ? $0.city : $0.country) }
+            }
+        })
+    }
+
+    static func maximumPlaceUTF8Bytes(for field: MetadataPlaceField) -> Int {
+        (field == .city ? IPTCTag.city : IPTCTag.countryPrimaryLocationName).maxLength!
+    }
+
+    private static func validatePlaceChanges(_ places: ResolvedMetadataPlaceChanges?) throws {
+        guard let places else { return }
+        for field in MetadataPlaceField.allCases {
+            let policy = field == .city ? places.cityPolicy : places.countryPolicy
+            guard policy != .disabled, let value = field == .city ? places.city : places.country else { continue }
+            guard value.utf8.count <= maximumPlaceUTF8Bytes(for: field), value.unicodeScalars.allSatisfy({ scalar in
+                let v = scalar.value
+                return v == 9 || v == 10 || v == 13 || (0x20...0xD7FF).contains(v)
+                    || (0xE000...0xFFFD).contains(v) || (0x10000...0x10FFFF).contains(v)
+            }) else { throw AppError.invalidConfiguration("Resolved \(field.title) exceeds metadata limits or contains an unsupported character.") }
+        }
+    }
+
     /// Read-only policy assessment using the same carriers as apply(). An existing
     /// RAW sidecar is authoritative; when absent, seed from embedded IPTC/XMP just
     /// as sidecar creation does. No generated sidecar or metadata write occurs here.
@@ -178,11 +255,14 @@ enum MetadataWriter {
         at fileURL: URL,
         relativePath: String
     ) throws -> ApplicationAssessment {
+        try validatePlaceChanges(changes.places)
         if usesXMPSidecar(for: relativePath) {
             let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("xmp")
-            guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
-                return .willApply
+            if changes.places != nil {
+                let xmp = try readExistingGeocodingSidecar(at: fileURL) ?? rawPolicyMetadata(at: fileURL).xmp
+                return assessment(for: changes, xmp: xmp)
             }
+            guard FileManager.default.fileExists(atPath: sidecarURL.path) else { return .willApply }
             return assessment(for: changes, xmp: try XMPSidecar.read(from: sidecarURL))
         }
 
@@ -264,6 +344,7 @@ enum MetadataWriter {
 
     @discardableResult
     static func apply(_ changes: ResolvedMetadataChanges, to fileURL: URL) throws -> [String] {
+        try validatePlaceChanges(changes.places)
         var metadata = try ImageMetadata.read(from: fileURL)
         let readWarnings = metadata.warnings
         metadata.iptc = try utf8IPTCForWriting(metadata.iptc)
@@ -300,6 +381,18 @@ enum MetadataWriter {
             try metadata.iptc.setValue(copyright, for: .copyrightNotice)
             xmp.rights = copyright
         }
+        if let places = changes.places {
+            if let city = places.city, places.cityPolicy != .disabled,
+               places.cityPolicy == .overwrite || (isEmpty(metadata.iptc.city) && isEmpty(xmp.city)) {
+                try metadata.iptc.setValue(city, for: .city)
+                xmp.city = city
+            }
+            if let country = places.country, places.countryPolicy != .disabled,
+               places.countryPolicy == .overwrite || (isEmpty(metadata.iptc.countryName) && isEmpty(xmp.country)) {
+                try metadata.iptc.setValue(country, for: .countryPrimaryLocationName)
+                xmp.country = country
+            }
+        }
         metadata.xmp = xmp
         applyGPS(from: changes, to: &metadata)
         let writeWarnings = try metadata.write(to: fileURL)
@@ -329,8 +422,13 @@ enum MetadataWriter {
             return .embedded(size: try fileSize(at: fileURL), warnings: warnings)
         }
 
+        try validatePlaceChanges(changes.places)
         let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("xmp")
-        var xmp = (try? XMPSidecar.read(from: sidecarURL)) ?? XMPData()
+        // The new enrichment path must not replace an unreadable existing sidecar.
+        var xmp: XMPData
+        if changes.places != nil {
+            xmp = try readExistingGeocodingSidecar(at: fileURL) ?? XMPData()
+        } else { xmp = (try? XMPSidecar.read(from: sidecarURL)) ?? XMPData() }
         var warnings: [String] = []
         if !FileManager.default.fileExists(atPath: sidecarURL.path),
            var metadata = try? ImageMetadata.read(from: fileURL) {
@@ -375,6 +473,12 @@ enum MetadataWriter {
         }
         if !copyright.isEmpty, changes.existingFieldPolicy.overwrites(.copyright) || isEmpty(xmp.rights) {
             xmp.rights = copyright
+        }
+        if let places = changes.places {
+            if let city = places.city, places.cityPolicy != .disabled,
+               places.cityPolicy == .overwrite || isEmpty(xmp.city) { xmp.city = city }
+            if let country = places.country, places.countryPolicy != .disabled,
+               places.countryPolicy == .overwrite || isEmpty(xmp.country) { xmp.country = country }
         }
         applyGPS(from: changes, to: &xmp)
     }
@@ -428,6 +532,8 @@ enum MetadataWriter {
             into: &assessments
         )
 
+        assessPlaces(changes.places, city: [metadata.iptc.city, metadata.xmp?.city],
+                     country: [metadata.iptc.countryName, metadata.xmp?.country], into: &assessments)
         return combinedAssessment(assessments)
     }
 
@@ -459,7 +565,19 @@ enum MetadataWriter {
             into: &assessments
         )
 
+        assessPlaces(changes.places, city: [xmp.city], country: [xmp.country], into: &assessments)
         return combinedAssessment(assessments)
+    }
+
+    private static func assessPlaces(_ places: ResolvedMetadataPlaceChanges?, city: [String?], country: [String?],
+                                     into assessments: inout [FieldAssessment]) {
+        guard let places else { return }
+        if let value = places.city, places.cityPolicy != .disabled {
+            assess(value, currentValues: city, overwrite: places.cityPolicy == .overwrite, into: &assessments)
+        }
+        if let value = places.country, places.countryPolicy != .disabled {
+            assess(value, currentValues: country, overwrite: places.countryPolicy == .overwrite, into: &assessments)
+        }
     }
 
     private static func assess(

@@ -82,6 +82,14 @@ private struct MetadataAuditRow: View {
                             if let decision = evidence.coordinateDecision {
                                 Text(MetadataAuditEvidencePresentation.coordinateDecision(decision))
                             }
+                            if let decision = evidence.geocodingDecision {
+                                Text(MetadataAuditEvidencePresentation.geocodingDecision(decision))
+                            }
+                            ForEach((evidence.placeFields ?? [:]).keys.sorted(), id: \.self) { key in
+                                if let outcome = evidence.placeFields?[key] {
+                                    Text("\(key.capitalized): \(MetadataAuditEvidencePresentation.fieldOutcome(outcome))")
+                                }
+                            }
                             Text(evidence.resolutionComplete
                                  ? "Field resolution completed. The file result above reports writing and delivery."
                                  : "Field resolution was incomplete; affected fields were preserved.")
@@ -165,6 +173,29 @@ enum MetadataAuditEvidencePresentation {
         case .persistedFallback:
             return "Original capture had no offset; assumed saved job zone: \(capture.timeZoneIdentifier)."
         }
+    }
+
+    static func geocodingDecision(_ decision: MetadataProcessingAuditEvidence.GeocodingDecision) -> String {
+        let status: String
+        switch decision.status {
+        case .missingCoordinates: status = "Place lookup unavailable: no valid complete GPS pair."
+        case .found: status = "Place lookup completed; field proposals are shown separately."
+        case .noResult: status = "Place lookup found no result."
+        case .tooDistant: status = "Nearest place exceeded the permitted distance."
+        case .invalidProviderResult: status = "Place lookup returned invalid data."
+        case .providerFailure: status = "Place lookup failed."
+        case .backoff: status = "Place lookup paused after an earlier failure."
+        case .overloaded: status = "Place lookup queue was full."
+        case .deadlineExceeded: status = "Place lookup timed out."
+        case .cancelled: status = "Place lookup was cancelled."
+        }
+        var details = [status]
+        if let locale = decision.localeIdentifier { details.append("Language: " + locale + ".") }
+        if let provider = decision.provider { details.append("Provider: " + provider + ".") }
+        if let distance = decision.distanceMeters { details.append(String(format: "Nearest settlement: %.1f km away.", locale: Locale(identifier: "en_US_POSIX"), distance / 1_000)) }
+        if let version = decision.version { details.append("Version: " + version + ".") }
+        if let dataset = decision.dataset { details.append("Dataset: " + dataset + ".") }
+        return details.joined(separator: " ")
     }
 
     static func coordinateDecision(_ decision: MetadataProcessingAuditEvidence.CoordinateDecision) -> String {

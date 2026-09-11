@@ -161,7 +161,7 @@ struct JobDetailEditor: View {
                     MetadataProcessingTimeZonePicker(
                         selectedIdentifier: draft.metadataProcessingTimeZoneIdentifier,
                         savedIdentifier: savedJob?.metadataProcessingTimeZoneIdentifier,
-                        hasActivatedTemplates: currentMetadataAutomation?.hasActivatedTemplates == true,
+                        hasActivatedTemplates: currentMetadataAutomation?.hasActivatedTemplates == true || draft.metadataGeocoding?.isEnabled == true,
                         onSelect: session.selectMetadataProcessingTimeZone
                     )
 
@@ -170,6 +170,11 @@ struct JobDetailEditor: View {
                             .frame(minHeight: 220, idealHeight: 300)
                             .padding(.top, 6)
                     }
+                }
+
+                Section("Offline geocoding") {
+                    MetadataGeocodingSettingsView(settings: $session.draft.metadataGeocoding,
+                        store: store, savedJob: savedJob, hasUnsavedChanges: session.hasUnsavedChanges)
                 }
 
                 Section("After metadata") {
