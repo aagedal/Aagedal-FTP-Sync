@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Independent offline job settings, shared lookup, City/Country policies, transfer/reprocess, saved preview and controls implemented at ae62bd1. Full suite: 913 passed, 15 opt-in skips, zero failures; independent review completed. Checklist instructions updated without marking manual cases passed. Desktop deferred for active companion native testing. Apple selection/consent, face recognition, protocol3 sharing, M5 fingerprints, native/supported-OS and release gates remain incomplete. No candidate or human acceptance implied."
+  "note": "Explicit Apple provider selection, fresh import consent and shared production routing implemented at a9a5a14. Full suite: 934 passed, 15 opt-in skips, zero failures. One native MapKit probe returned Oslo / Norge for a fixed public fixture in 0.263 seconds; no user files or device location accessed. Independent review completed and checklist updated. Native UI, supported-OS/live failure matrices, face recognition, protocol3 sharing, M5 fingerprints and release gates remain incomplete. No candidate or human acceptance implied."
 }
