@@ -20,9 +20,12 @@ private struct MetadataLibraryMessageError: LocalizedError {
 @MainActor
 final class MetadataLibraryCoordinator {
     private let persistenceCoordinator: AppPersistenceCoordinator
+    private let validateActivation: ([SyncJob], [PhotographerProfile]) throws -> Void
 
-    init(persistenceCoordinator: AppPersistenceCoordinator) {
+    init(persistenceCoordinator: AppPersistenceCoordinator,
+         validateActivation: @escaping ([SyncJob], [PhotographerProfile]) throws -> Void) {
         self.persistenceCoordinator = persistenceCoordinator
+        self.validateActivation = validateActivation
     }
 
     func saveAutomation(
@@ -60,6 +63,7 @@ final class MetadataLibraryCoordinator {
             )
         }
 
+        try validateActivation([updatedJob], updatedPhotographers)
         do {
             try persistenceCoordinator.saveJobsAndPhotographers(
                 previousJobs: state.jobs,
@@ -153,6 +157,8 @@ final class MetadataLibraryCoordinator {
             try updatedJobs[jobIndex].validateMetadataTemplateActivationContext()
         }
 
+        let previousJobs = Dictionary(uniqueKeysWithValues: state.jobs.map { ($0.id, $0) })
+        try validateActivation(updatedJobs.filter { previousJobs[$0.id] != $0 }, updatedPhotographers)
         try persistenceCoordinator.saveJobsAndPhotographers(
             previousJobs: state.jobs,
             previousPhotographers: state.photographers,
@@ -224,6 +230,8 @@ final class MetadataLibraryCoordinator {
             try updatedJobs[jobIndex].validateMetadataTemplateActivationContext()
         }
 
+        let previousJobs = Dictionary(uniqueKeysWithValues: state.jobs.map { ($0.id, $0) })
+        try validateActivation(updatedJobs.filter { previousJobs[$0.id] != $0 }, updatedPhotographers)
         do {
             try persistenceCoordinator.saveJobsAndPhotographers(
                 previousJobs: state.jobs,

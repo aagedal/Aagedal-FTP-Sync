@@ -1,6 +1,7 @@
 import AppKit
 import CoreLocation
 import MapKit
+import MetadataTemplates
 import SwiftUI
 
 struct TimelineGroupDragPreview: Equatable {
@@ -809,7 +810,6 @@ struct MetadataClipEditor: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: AppStore
     @State private var draft: MetadataScheduleClip
-    @State private var keywordsText: String
     @State private var selectedPresetID: UUID?
     @State private var newPresetName: String
     @State private var presetPendingDeletion: MetadataPreset?
@@ -824,11 +824,11 @@ struct MetadataClipEditor: View {
         onSave: @escaping (MetadataScheduleClip) -> Void
     ) {
         var editorClip = clip
-        if editorClip.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if editorClip.fields.templateVersions["headline"] == nil,
+           editorClip.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             editorClip.fields.headline = clip.name
         }
         _draft = State(initialValue: editorClip)
-        _keywordsText = State(initialValue: editorClip.fields.keywords.joined(separator: ", "))
         _selectedPresetID = State(initialValue: nil)
         _newPresetName = State(initialValue: editorClip.fields.headline)
         self.photographers = photographers
@@ -845,19 +845,22 @@ struct MetadataClipEditor: View {
                 }
 
                 Section("IPTC Metadata") {
-                    TextField("Headline", text: $draft.fields.headline)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Description")
-                        TextEditor(text: $draft.fields.description)
-                            .font(.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .frame(minHeight: 90)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 5)
-                                    .stroke(.separator, lineWidth: 1)
-                            }
+                    if let headline = try? draft.fields.validatedHeadline,
+                       let description = try? draft.fields.validatedDescription,
+                       let keywords = try? draft.fields.validatedKeywords {
+                        MetadataTemplateFieldEditor(title: "Headline", value: Binding(
+                            get: { (try? draft.fields.validatedHeadline) ?? headline },
+                            set: { draft.fields.setHeadline($0) }), samplePhotographer: samplePhotographer)
+                        MetadataTemplateFieldEditor(title: "Description", value: Binding(
+                            get: { (try? draft.fields.validatedDescription) ?? description },
+                            set: { draft.fields.setDescription($0) }), multiline: true, samplePhotographer: samplePhotographer)
+                        MetadataTemplateKeywordsEditor(value: Binding(
+                            get: { (try? draft.fields.validatedKeywords) ?? keywords },
+                            set: { draft.fields.setKeywords($0) }), samplePhotographer: samplePhotographer)
+                    } else {
+                        Label("Saved variable settings are invalid. Cancel to preserve the original clip.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
                     }
-                    TextField("Keywords", text: $keywordsText, prompt: Text("politics, conference, Oslo"))
                 }
 
                 Section("GPS Location") {
@@ -934,7 +937,6 @@ struct MetadataClipEditor: View {
     }
 
     private func attemptSave() {
-        normalizeKeywords()
         let trimmedHeadline = draft.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHeadline.isEmpty else {
             validationMessage = "Give the metadata a headline."
@@ -944,7 +946,17 @@ struct MetadataClipEditor: View {
             validationMessage = "Enter a latitude from −90 to 90 and a longitude from −180 to 180."
             return
         }
-        draft.fields.headline = trimmedHeadline
+        do {
+            _ = try draft.fields.validatedHeadline
+            _ = try draft.fields.validatedDescription
+            _ = try draft.fields.validatedKeywords
+        } catch {
+            validationMessage = "Correct the variable syntax before saving. The original clip is unchanged."
+            return
+        }
+        if draft.fields.templateVersions["headline"] == nil {
+            draft.fields.setHeadline(.literal(trimmedHeadline))
+        }
         draft.name = trimmedHeadline
         validationMessage = nil
         commitSave()
@@ -955,11 +967,8 @@ struct MetadataClipEditor: View {
         dismiss()
     }
 
-    private func normalizeKeywords() {
-        draft.fields.keywords = keywordsText
-            .split(separator: ",")
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+    private var samplePhotographer: String {
+        photographers.first { $0.id == draft.photographerID }?.photographerName ?? "Sample Photographer"
     }
 
     private var selectedPreset: MetadataPreset? {
@@ -970,11 +979,9 @@ struct MetadataClipEditor: View {
     private func loadSelectedPreset() {
         guard let selectedPreset else { return }
         draft = draft.applying(selectedPreset)
-        keywordsText = draft.fields.keywords.joined(separator: ", ")
     }
 
     private func saveNewPreset() {
-        normalizeKeywords()
         let preset = MetadataPreset(name: newPresetName, fields: draft.fields)
         guard store.saveMetadataPreset(preset) else { return }
         selectedPresetID = preset.id
@@ -983,7 +990,6 @@ struct MetadataClipEditor: View {
 
     private func updateSelectedPreset() {
         guard var preset = selectedPreset else { return }
-        normalizeKeywords()
         preset.fields = draft.fields
         _ = store.saveMetadataPreset(preset)
     }

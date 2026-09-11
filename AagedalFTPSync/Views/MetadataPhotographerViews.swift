@@ -12,7 +12,18 @@ struct PhotographerEditor: View {
             Text("Separate initials from multiple cameras with commas, for example JAD, JDX.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            TextField("Copyright notice", text: $photographer.copyrightNotice)
+            if let copyright = try? photographer.validatedCopyright {
+                MetadataTemplateFieldEditor(
+                    title: "Copyright notice",
+                    value: Binding(get: { (try? photographer.validatedCopyright) ?? copyright },
+                                   set: { photographer.setCopyright($0) }),
+                    samplePhotographer: photographer.photographerName
+                )
+            } else {
+                Label("Copyright variables are invalid. Restore a valid profile before editing.",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
             Text("Used as the photographer name and IPTC Creator/byline.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

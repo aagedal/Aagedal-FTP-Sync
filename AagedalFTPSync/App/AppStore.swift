@@ -57,6 +57,7 @@ final class AppStore: ObservableObject {
     private let persistenceCoordinator: AppPersistenceCoordinator
     private let configurationTransferCoordinator = ConfigurationTransferCoordinator()
     private let metadataLibraryCoordinator: MetadataLibraryCoordinator
+    private let metadataCalendarRepository: MetadataCalendarRepository?
     private let launchAtLoginCoordinator: any LaunchAtLoginCoordinating
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
@@ -92,7 +93,8 @@ final class AppStore: ObservableObject {
         retainedCredentialIDs: Set<String> = [],
         allowsCredentialGarbageCollection: Bool = true,
         preloadedPersistence: AppPersistenceLoadResult? = nil,
-        startsJobsOnInitialization: Bool = true
+        startsJobsOnInitialization: Bool = true,
+        metadataCalendarRepository: MetadataCalendarRepository? = nil
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -106,8 +108,14 @@ final class AppStore: ObservableObject {
             allowsCredentialGarbageCollection: allowsCredentialGarbageCollection
         )
         self.persistenceCoordinator = persistenceCoordinator
+        self.metadataCalendarRepository = metadataCalendarRepository
         metadataLibraryCoordinator = MetadataLibraryCoordinator(
-            persistenceCoordinator: persistenceCoordinator
+            persistenceCoordinator: persistenceCoordinator,
+            validateActivation: { jobs, photographers in
+                try Self.validateMetadataActivation(jobs: jobs,
+                    hasActivatedLibraryValues: photographers.contains(where: \.hasActivatedTemplates),
+                    calendarRepository: metadataCalendarRepository)
+            }
         )
         self.sourceSignatureRepository = sourceSignatureRepository
         self.downloadManifestRepository = downloadManifestRepository
@@ -186,7 +194,8 @@ final class AppStore: ObservableObject {
             keychain: keychain, launchAtLoginCoordinator: launchAtLoginCoordinator,
             retainedCredentialIDs: retainedCredentialIDs,
             allowsCredentialGarbageCollection: allowsCredentialGarbageCollection,
-            preloadedPersistence: loaded, startsJobsOnInitialization: false)
+            preloadedPersistence: loaded, startsJobsOnInitialization: false,
+            metadataCalendarRepository: MetadataCalendarRepository(storage: storage))
     }
 
     deinit {
@@ -227,6 +236,7 @@ final class AppStore: ObservableObject {
                 resolvedJob.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
             }
             try resolvedJob.validateMetadataTemplateActivationContext()
+            try Self.validateMetadataActivation(jobs: [resolvedJob], calendarRepository: metadataCalendarRepository)
         } catch {
             alertMessage = error.localizedDescription
             return false
@@ -387,6 +397,8 @@ final class AppStore: ObservableObject {
     /// A received calendar only updates its linked job, not the global photographer library.
     @discardableResult
     func applySyncedMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
+        do { try LegacyMetadataCalendarGate.validate(automation) }
+        catch { alertMessage = error.localizedDescription; return false }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }), automation.validationMessage == nil else { return false }
         if jobs[index].metadataAutomation == automation { return true }
         var updated = jobs
@@ -546,10 +558,24 @@ final class AppStore: ObservableObject {
                 expectedScope: expectedScope,
                 metadataTargetJobID: metadataTargetJobID
             )
+            var importedJobs = prepared.state.jobs
+            let previousJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+            for index in importedJobs.indices where previousJobs[importedJobs[index].id] != importedJobs[index] {
+                if importedJobs[index].metadataAutomation?.hasActivatedTemplates == true,
+                   importedJobs[index].metadataProcessingTimeZoneIdentifier == nil {
+                    importedJobs[index].metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+                }
+                try importedJobs[index].validateMetadataTemplateActivationContext()
+            }
+            try Self.validateMetadataActivation(
+                jobs: importedJobs.filter { previousJobs[$0.id] != $0 },
+                hasActivatedLibraryValues: prepared.state.photographers.contains(where: \.hasActivatedTemplates)
+                    || prepared.state.metadataPresets.contains(where: \.hasActivatedTemplates),
+                calendarRepository: metadataCalendarRepository)
             try persistenceCoordinator.saveConfiguration(
                 previous: currentPersistentState,
                 updated: AppPersistentState(
-                    jobs: prepared.state.jobs,
+                    jobs: importedJobs,
                     metadataPresets: prepared.state.metadataPresets,
                     photographerLibrary: prepared.state.photographers,
                     serverProfiles: prepared.state.serverProfiles,
@@ -558,7 +584,7 @@ final class AppStore: ObservableObject {
                 )
             )
             serverProfiles = prepared.state.serverProfiles
-            jobs = prepared.state.jobs
+            jobs = importedJobs
             metadataPresets = prepared.state.metadataPresets
             photographerLibrary = prepared.state.photographers
             for importedID in prepared.importedJobIDs.values {
@@ -609,6 +635,10 @@ final class AppStore: ObservableObject {
     @discardableResult
     func saveMetadataPreset(_ preset: MetadataPreset) -> Bool {
         let normalized = preset.normalized()
+        do {
+            try Self.validateMetadataActivation(jobs: [], hasActivatedLibraryValues: normalized.hasActivatedTemplates,
+                calendarRepository: metadataCalendarRepository)
+        } catch { alertMessage = error.localizedDescription; return false }
         if let message = normalized.validationMessage {
             alertMessage = message
             return false
@@ -1203,6 +1233,33 @@ final class AppStore: ObservableObject {
             metadataAuditEntries: metadataAuditEntries,
             syncFailureEntries: syncFailureEntries
         )
+    }
+
+    /// Admission reads the durable calendar state even while its coordinator is
+    /// paused. It does not alter bindings or start sync, and never guesses a root.
+    private static func validateMetadataActivation(
+        jobs: [SyncJob], hasActivatedLibraryValues: Bool = false,
+        calendarRepository: MetadataCalendarRepository?
+    ) throws {
+        let activeJobs = jobs.filter { $0.metadataAutomation?.hasActivatedTemplates == true }
+        guard hasActivatedLibraryValues || !activeJobs.isEmpty else { return }
+        guard let calendarRepository, calendarRepository.storageFormat == .version3 else {
+            throw AppError.invalidConfiguration("Open version 3 storage before saving metadata variables. Your draft has not been saved.")
+        }
+        guard !activeJobs.isEmpty else { return }
+        let state: MetadataCalendarState
+        do { state = try calendarRepository.load() }
+        catch {
+            throw AppError.invalidConfiguration("Calendar links could not be checked. Resolve calendar storage recovery before saving metadata variables. Your draft has not been saved.")
+        }
+        var linked = Set(state.bindings.map(\.jobID))
+        if let pending = state.pendingReceive {
+            linked.insert(pending.source.id)
+            linked.insert(pending.duplicate.id)
+        }
+        if activeJobs.contains(where: { linked.contains($0.id) }) {
+            throw AppError.invalidConfiguration("Metadata variables require a newer calendar sharing protocol. Detach the linked calendar and keep the programming in a local copy before activating variables. Your draft has not been saved.")
+        }
     }
 
     private var metadataLibraryState: MetadataLibraryState {

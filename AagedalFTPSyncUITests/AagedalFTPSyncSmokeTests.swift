@@ -98,6 +98,62 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
     }
 
+    func testVariableDraftRejectsInvalidActivationAndCancelKeepsLiteralHeadline() {
+        openSeededClipEditor()
+        let headline = app.textFields["Headline"].firstMatch
+        let original = headline.value as? String
+        app.buttons["Edit Headline variables"].click()
+        let source = app.textViews["Headline source draft"].firstMatch
+        XCTAssertTrue(source.waitForExistence(timeout: 3))
+        replaceText(in: source, with: "{unknown}")
+        app.checkBoxes["Resolve Variables"].click()
+        XCTAssertFalse(app.buttons["Apply"].firstMatch.isEnabled)
+        replaceText(in: source, with: "{photographer}")
+        XCTAssertTrue(app.buttons["Apply"].firstMatch.isEnabled)
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(headline.waitForExistence(timeout: 3))
+        XCTAssertEqual(headline.value as? String, original)
+    }
+
+    func testVariableApplyRetainsSourceAndKeywordsCancelKeepsList() {
+        openSeededClipEditor()
+        app.buttons["Edit Headline variables"].click()
+        let source = app.textViews["Headline source draft"].firstMatch
+        XCTAssertTrue(source.waitForExistence(timeout: 3))
+        replaceText(in: source, with: "Photo: {photographer}")
+        app.checkBoxes["Resolve Variables"].click()
+        app.buttons["Apply"].firstMatch.click()
+        app.buttons["Edit Headline variables"].click()
+        XCTAssertTrue(source.waitForExistence(timeout: 3))
+        XCTAssertEqual(source.value as? String, "Photo: {photographer}")
+        XCTAssertEqual(String(describing: app.checkBoxes["Resolve Variables"].value ?? ""), "1")
+        app.typeKey(.escape, modifierFlags: [])
+
+        app.buttons["Edit Keywords…"].click()
+        XCTAssertTrue(element("metadata-keywords-editor").waitForExistence(timeout: 3))
+        let before = app.textFields.matching(identifier: "Keyword").count
+        app.buttons["Add Keyword"].click()
+        XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before + 1)
+        app.typeKey(.escape, modifierFlags: [])
+        app.buttons["Edit Keywords…"].click()
+        XCTAssertTrue(element("metadata-keywords-editor").waitForExistence(timeout: 3))
+        XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before)
+    }
+
+    private func openSeededClipEditor() {
+        launch(seedJob: true, seedMap: true)
+        element("open-metadata-programming").click()
+        let window = app.windows["Metadata Programming"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let clip = window.staticTexts["Map Assignment"].firstMatch
+        XCTAssertTrue(clip.waitForExistence(timeout: 3))
+        clip.click()
+        let timeline = element("metadata-programming-timeline")
+        timeline.typeKey(.rightArrow, modifierFlags: [])
+        timeline.typeKey("i", modifierFlags: .command)
+        XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
+    }
+
     func testPhotographerMapClipScrubbingAndEditing() {
         launch(seedJob: true, seedMap: true)
 
