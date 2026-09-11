@@ -210,13 +210,16 @@
       "id": "m2-001",
       "section": "M2 — Reverse geocoding",
       "title": "Offline geocoding works independently of the calendar",
-      "prerequisites": "A candidate with offline geocoding controls integrated and the bundled GeoNames dataset, photos with known GPS, a disposable one-way local destination job with no matching photographer or clip, and a network monitor scoped to the app. The standalone provider foundation does not yet enable this workflow.",
+      "prerequisites": "A tested build with Offline geocoding controls and the bundled GeoNames dataset, disposable GPS-tagged photos, a one-way job with a local destination, isolated app state, and a network monitor scoped to the app. Controls and integration exist; actual native observations remain required. Record fixture paths and expected nearby settlements before testing.",
       "steps": [
-        "Disable schedule metadata and enable only offline City/Country processing; select and record the output language.",
+        "In the job editor, disable schedule metadata. In Offline geocoding, leave Resolve place variables off, set Write city and Write country to Fill empty only, choose and record Place-name language, then save. Reopen and confirm the saved controls and Processing time zone.",
         "Disconnect network access and transfer a GPS-tagged picture, then inspect City/Country and the lookup audit.",
         "Repeat with an empty or removed calendar and a nonmatching photographer filename.",
-        "Restore connectivity, monitor app connections, and repeat after a cache reset using the documented test procedure.",
-        "Independently enable place-variable resolution on a matching clip while disabling City/Country writes and inspect the resulting caption."
+        "Restore connectivity, monitor app connections, quit/relaunch the isolated test app to clear its in-memory lookup cache, and transfer a fresh disposable source copy.",
+        "Independently enable place-variable resolution on a matching clip while disabling City/Country writes and inspect the resulting caption.",
+        "Select Preview Geocoding for saved settings and inspect existing/proposed City/Country and lookup distance. Cancel a larger preview and confirm no file bytes or timestamps changed.",
+        "On disposable destination copies, select Reprocess Saved Files, read the confirmation, and run with the schedule disabled. Confirm enrichment succeeds without a source connection and preserves RAW bytes and unrelated XMP.",
+        "Enable a processed destination in the disposable job, repeat with a fresh valid GPS source pair, and inspect both destination and processed RAW/XMP. Repeat with missing GPS: base delivery may succeed, but source removal must not occur."
       ],
       "expected": [
         "Standalone place fields work without an enabled schedule, clip or calendar.",
@@ -229,7 +232,7 @@
       "id": "m2-002",
       "section": "M2 — Reverse geocoding",
       "title": "Resolve complete GPS pairs with correct source precedence",
-      "prerequisites": "Embedded and RAW fixtures with conflicting valid EXIF/XMP pairs, a valid XMP-only pair, invalid/incomplete pairs, and a schedule capable of GPS fill-empty and overwrite. For the activated processing path, enable Resolve Variables in a disposable clip Headline using {photographer}, save a Processing time zone on the job, and use a matching test photographer. The scheduled-GPS correction is implemented; standalone geocoding and no-scheduled-GPS coordinate evidence remain integration gates.",
+      "prerequisites": "Embedded and RAW fixtures with conflicting valid EXIF/XMP pairs, a valid XMP-only pair, invalid/incomplete pairs, and a schedule capable of GPS fill-empty and overwrite. For the activated processing path, enable Resolve Variables in a disposable clip Headline using {photographer}, save a Processing time zone on the job, and use a matching test photographer. Enable a Write city policy in Offline geocoding and save. Frozen coordinate selection is now connected to offline lookup; observe each native case independently.",
       "steps": [
         "Record the expected complete effective pair for each fixture: RAW prefers valid XMP; embedded images prefer valid EXIF with XMP fallback.",
         "Preview and transfer with scheduled GPS disabled, then compare the selected coordinate source and conflict reporting.",
@@ -254,7 +257,7 @@
       "title": "Preserved place fields do not change variable meaning",
       "prerequisites": "A GPS fixture whose lookup result differs from existing City/Country, plus copies with only one of those fields empty; a caption containing both location variables.",
       "steps": [
-        "Set City to preserve/fill-empty and Country to overwrite, preview, transfer, and inspect both fields and the caption.",
+        "In Offline geocoding, enable Resolve place variables, set Write city to Fill empty only and Write country to Overwrite, then save. Use a matching clip caption with Resolve Variables enabled and both {gps:city} and {gps:country}; preview, transfer, and inspect the fields and caption.",
         "Reverse the two policies and repeat with fresh copies.",
         "Test the one-empty-field fixtures to confirm each field makes an independent decision.",
         "Disable field writing while leaving variable resolution enabled, then disable lookups and inspect dependency warnings."
