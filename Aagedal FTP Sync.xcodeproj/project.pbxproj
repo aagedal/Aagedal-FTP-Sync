@@ -126,6 +126,7 @@
 		A32476002E202A706BF45906 /* ResolvedMetadataChangesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 664FBAAE645A25CB1EBD1787 /* ResolvedMetadataChangesTests.swift */; };
 		A39D8D510D17211A72708044 /* SyncJob.swift in Sources */ = {isa = PBXBuildFile; fileRef = D33608A378F662B9B2EB5B3D /* SyncJob.swift */; };
 		A3FE2D8BFC1145F0C306FAE4 /* MetadataAutomationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E45C7CB10B1E196CE6CF8CD5 /* MetadataAutomationTests.swift */; };
+		A7FC7DBB95864DE714EE3F9F /* MetadataCoordinateReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DAF6689426FB90A37C65C06 /* MetadataCoordinateReaderTests.swift */; };
 		AB7FF1592189A667DC9AEDA5 /* Version3StartupController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A3DF99DBDE36DC3FF96B60F /* Version3StartupController.swift */; };
 		ABFA8B6182B8EED1E091C7D7 /* SwiftMediaMetadata in Frameworks */ = {isa = PBXBuildFile; productRef = 91BAA681FF6474768817AC73 /* SwiftMediaMetadata */; };
 		ADC5FA9C93F5B977E852ADD9 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 746688A9934E8F2A54705932 /* Citadel */; };
@@ -137,6 +138,7 @@
 		B303A6F6AA4B34C4F7A15E42 /* MetadataProgrammingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 821EDDD4C943D4CCD4CB022D /* MetadataProgrammingView.swift */; };
 		B8C9B52AA27DA2584D616040 /* SupportBundleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57FCBE667F129FE47DF1CB07 /* SupportBundleTests.swift */; };
 		B9BF04C89CAFAB6C8F53570A /* MetadataTemplateKeywordsEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10E2CA7C37A3B7362AE24A96 /* MetadataTemplateKeywordsEditor.swift */; };
+		BC29F5DC3FD064E95035D580 /* MetadataCoordinateReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F6E3BDBAE65CE8D302189FD /* MetadataCoordinateReader.swift */; };
 		BC36CDB0B183847E2378C219 /* RemoteTransportIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2AEF7D0A53A78EB585175E2 /* RemoteTransportIntegrationTests.swift */; };
 		BDBD311ADEDD373B29AD3937 /* AagedalFTPSyncSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF900C39827A06F26F21FF1A /* AagedalFTPSyncSmokeTests.swift */; };
 		BE2DC8F5F2557D986C3F6EE3 /* PhotographerSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 329E3435991E5099C5DB51A6 /* PhotographerSettingsView.swift */; };
@@ -156,6 +158,8 @@
 		D3C9790173E68C76900B69FD /* MetadataTemplates in Frameworks */ = {isa = PBXBuildFile; productRef = AB3F68F385FC94823FF3124B /* MetadataTemplates */; };
 		D598491D10DB7F97533E8506 /* Version3BootstrapCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C978231C3238C1EB67BF06AA /* Version3BootstrapCoordinatorTests.swift */; };
 		D625A9426837FBFCE6087393 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61136E820F1A8F3D7FAF5091 /* AppStore.swift */; };
+		D722843DE7F34CEA9CA459B0 /* MetadataXMPValidation.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5EFCF2254DA5A4D261200CF /* MetadataXMPValidation.swift */; };
+		D8D1786A1A6CF4FD38046CE6 /* MetadataScheduledCoordinateProcessingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 794DE8833BC0419B26AEB847 /* MetadataScheduledCoordinateProcessingTests.swift */; };
 		DA9400038E9517D826EB6884 /* ConfigurationTransferCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9524A5EE736DEEEC94976B /* ConfigurationTransferCoordinator.swift */; };
 		DAED589186E8BE67B3012070 /* MetadataTimelineViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55EEEC723D4E4695B25EFAC9 /* MetadataTimelineViews.swift */; };
 		DBBD9F1A882AC4A95620346D /* SharedMetadataCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8710C0C84C0F5CABFAC80B85 /* SharedMetadataCalendar.swift */; };
@@ -208,6 +212,7 @@
 		09FCF5596B7232B205E5A2D2 /* MetadataProcessingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProcessingCoordinator.swift; sourceTree = "<group>"; };
 		0CEF232CFDC8CC57E89363BB /* FTPEndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPEndpointSession.swift; sourceTree = "<group>"; };
 		0D340066C59960A94C5981FE /* ServerSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerSettingsView.swift; sourceTree = "<group>"; };
+		0DAF6689426FB90A37C65C06 /* MetadataCoordinateReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCoordinateReaderTests.swift; sourceTree = "<group>"; };
 		10E2CA7C37A3B7362AE24A96 /* MetadataTemplateKeywordsEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataTemplateKeywordsEditor.swift; sourceTree = "<group>"; };
 		11EEAAEEA8F25FFA2893352E /* MetadataAuditRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAuditRepository.swift; sourceTree = "<group>"; };
 		1230146607A0960638643931 /* SFTPEndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SFTPEndpointSession.swift; sourceTree = "<group>"; };
@@ -286,6 +291,7 @@
 		75AF960E289616BA2B1EE122 /* MetadataProcessingAuditEvidenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProcessingAuditEvidenceTests.swift; sourceTree = "<group>"; };
 		7666664A8E0B7D10BCE75842 /* ActivatedMetadataSyncIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivatedMetadataSyncIntegrationTests.swift; sourceTree = "<group>"; };
 		78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncSchedulerTests.swift; sourceTree = "<group>"; };
+		794DE8833BC0419B26AEB847 /* MetadataScheduledCoordinateProcessingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataScheduledCoordinateProcessingTests.swift; sourceTree = "<group>"; };
 		7A3135E3B7AE16B13F9085BD /* UploadNamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadNamingTests.swift; sourceTree = "<group>"; };
 		7B4996735AA685CA67FB2282 /* VersionedAppStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedAppStorage.swift; sourceTree = "<group>"; };
 		7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
@@ -298,6 +304,7 @@
 		890826A7102C45494742574C /* MetadataLibraryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataLibraryCoordinator.swift; sourceTree = "<group>"; };
 		8DF972CA42278237F9D4F9F1 /* MetadataAudit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataAudit.swift; sourceTree = "<group>"; };
 		8F06744FB64AE857F37EAEAD /* EffectiveMetadataCoordinatesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EffectiveMetadataCoordinatesTests.swift; sourceTree = "<group>"; };
+		8F6E3BDBAE65CE8D302189FD /* MetadataCoordinateReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCoordinateReader.swift; sourceTree = "<group>"; };
 		91F14102B4F8D6DAEF14EC8A /* SyncFailureRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncFailureRepository.swift; sourceTree = "<group>"; };
 		937FD9EED413E474E9F6903E /* Endpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Endpoint.swift; sourceTree = "<group>"; };
 		94E2DF65F4A8ADC16A22A273 /* Version3MigrationSourceCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3MigrationSourceCatalog.swift; sourceTree = "<group>"; };
@@ -326,6 +333,7 @@
 		AED8A942C6CBC2911165A52D /* JobsWindowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobsWindowView.swift; sourceTree = "<group>"; };
 		B2745B822AD45CDF06BB3463 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedStoreCodec.swift; sourceTree = "<group>"; };
+		B5EFCF2254DA5A4D261200CF /* MetadataXMPValidation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataXMPValidation.swift; sourceTree = "<group>"; };
 		B6F8355FC14D367480034FA8 /* EndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndpointSession.swift; sourceTree = "<group>"; };
 		BA9524A5EE736DEEEC94976B /* ConfigurationTransferCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferCoordinator.swift; sourceTree = "<group>"; };
 		BC25AACD3C7F08B23B371518 /* FileFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileFilterTests.swift; sourceTree = "<group>"; };
@@ -562,10 +570,12 @@
 				84967906FCBA9EEDD7BF6FBC /* AppleMetadataGeocodingProvider.swift */,
 				61092FD1A2C7BDF7B00C56B2 /* EffectiveMetadataCoordinates.swift */,
 				13C742D691DBA7A5E07B7A16 /* MetadataCaptureDateReader.swift */,
+				8F6E3BDBAE65CE8D302189FD /* MetadataCoordinateReader.swift */,
 				460965EA4D3BFCA79ADD3827 /* MetadataGeocodingService.swift */,
 				D7F63E1167F0C4B8DD60E70E /* MetadataPreview.swift */,
 				09FCF5596B7232B205E5A2D2 /* MetadataProcessingCoordinator.swift */,
 				9F668C295458EA4DCCB46EF8 /* MetadataWriter.swift */,
+				B5EFCF2254DA5A4D261200CF /* MetadataXMPValidation.swift */,
 				FCA8B4BCB5DE7068D2FF88EB /* OfflineMetadataGeocodingProvider.swift */,
 				3452533D474B065274D589DA /* ResolvedMetadataChanges.swift */,
 			);
@@ -600,6 +610,7 @@
 				9C80FA23E6C80A52EE89914F /* MetadataCalendarActivationTests.swift */,
 				4011BEBA189EEEF704BB661B /* MetadataCalendarPausedStartupTests.swift */,
 				2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */,
+				0DAF6689426FB90A37C65C06 /* MetadataCoordinateReaderTests.swift */,
 				E97321D663D13186B49EA810 /* MetadataExistingPreviewTests.swift */,
 				244B69E04AEFF6E5F6E014AF /* MetadataGeocodingServiceTests.swift */,
 				F03C7D4111D29271F2745A66 /* MetadataPerImageProcessingTests.swift */,
@@ -608,6 +619,7 @@
 				75AF960E289616BA2B1EE122 /* MetadataProcessingAuditEvidenceTests.swift */,
 				E350D2AA9DCE6EEF0FCA8BBD /* MetadataProcessingCoordinatorTests.swift */,
 				96BEB9DB3BA25A81D2C50D52 /* MetadataProgrammingCoordinatorTests.swift */,
+				794DE8833BC0419B26AEB847 /* MetadataScheduledCoordinateProcessingTests.swift */,
 				607698C48EA810DCC39628D4 /* MetadataSyncServerTests.swift */,
 				ABE88DF137448C1739A2ECE4 /* MetadataTemplateKeywordsDraftTests.swift */,
 				3B588FB6CFBA90DBCC09B4F2 /* OfflineMetadataGeocodingProviderTests.swift */,
@@ -861,6 +873,7 @@
 				69BD4C815EF96D98504A78EF /* MetadataCalendarActivationTests.swift in Sources */,
 				79BA78E24FD4D324D48DC134 /* MetadataCalendarPausedStartupTests.swift in Sources */,
 				15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */,
+				A7FC7DBB95864DE714EE3F9F /* MetadataCoordinateReaderTests.swift in Sources */,
 				823F5A319880F7A836622FC6 /* MetadataExistingPreviewTests.swift in Sources */,
 				04ADF954ED713673CFF0284D /* MetadataGeocodingServiceTests.swift in Sources */,
 				047B306166AE91A1DA607AEA /* MetadataPerImageProcessingTests.swift in Sources */,
@@ -869,6 +882,7 @@
 				3589B31FAAF09EF0BB33C7B4 /* MetadataProcessingAuditEvidenceTests.swift in Sources */,
 				AE9932BB50FA89C5DCB6A12C /* MetadataProcessingCoordinatorTests.swift in Sources */,
 				05E43D6C687890BD0C418A0F /* MetadataProgrammingCoordinatorTests.swift in Sources */,
+				D8D1786A1A6CF4FD38046CE6 /* MetadataScheduledCoordinateProcessingTests.swift in Sources */,
 				1905562AD67C12F229EEF2DD /* MetadataSyncServerTests.swift in Sources */,
 				6220ADFEC971BE67642F9BB0 /* MetadataTemplateKeywordsDraftTests.swift in Sources */,
 				5669AFC8BB4712EDC2099D76 /* OfflineMetadataGeocodingProviderTests.swift in Sources */,
@@ -961,6 +975,7 @@
 				FB1A07E51A16C9E7FD4F322D /* MetadataCalendarMerge.swift in Sources */,
 				419BC164587DE64BDE6DC3D5 /* MetadataCalendarSettingsView.swift in Sources */,
 				4BECE2C7328FEDA45ED1787E /* MetadataCaptureDateReader.swift in Sources */,
+				BC29F5DC3FD064E95035D580 /* MetadataCoordinateReader.swift in Sources */,
 				AEBD38C91B3DBD8DC2F3253F /* MetadataGeocodingService.swift in Sources */,
 				7C2A82E72FDC2C0AB1F73C5D /* MetadataLibraryCoordinator.swift in Sources */,
 				5FD9FAE8DB564E8AB7B74237 /* MetadataPhotographerViews.swift in Sources */,
@@ -981,6 +996,7 @@
 				B9BF04C89CAFAB6C8F53570A /* MetadataTemplateKeywordsEditor.swift in Sources */,
 				DAED589186E8BE67B3012070 /* MetadataTimelineViews.swift in Sources */,
 				666D1401F6F716D1AEF810BA /* MetadataWriter.swift in Sources */,
+				D722843DE7F34CEA9CA459B0 /* MetadataXMPValidation.swift in Sources */,
 				699B66E07FEF9CCB7565966D /* OfflineMetadataGeocodingProvider.swift in Sources */,
 				52E139C2169CE507A045D79D /* PathSafety.swift in Sources */,
 				9453177603F487C96FF5B9E1 /* PhotographerMapView.swift in Sources */,
@@ -1101,6 +1117,7 @@
 				SDKROOT = macosx;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_INCLUDE_PATHS = "$(inherited) \"$(SRCROOT)/Vendor/CExpat\"";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			};
@@ -1238,6 +1255,7 @@
 				SDKROOT = macosx;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_INCLUDE_PATHS = "$(inherited) \"$(SRCROOT)/Vendor/CExpat\"";
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_VERSION = 6.0;
 			};

@@ -12,6 +12,7 @@ settings:
   base:
     ARCHS: arm64
     SWIFT_VERSION: "6.0"
+    SWIFT_INCLUDE_PATHS: '$(inherited) "$(SRCROOT)/Vendor/CExpat"'
     CURRENT_PROJECT_VERSION: 37
     MARKETING_VERSION: 2.9.2
     CODE_SIGN_STYLE: Automatic

@@ -107,6 +107,10 @@ struct MetadataFolderPreviewView: View {
                         Text(captureAssumption(context.captureDate))
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if let resolution = processing.coordinateResolution {
+                        Text(MetadataAuditEvidencePresentation.coordinateDecision(.init(resolution)))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     HStack {
                         Text("Field").frame(width: 100, alignment: .leading)
                         Text("Existing value").frame(maxWidth: .infinity, alignment: .leading)
@@ -163,6 +167,7 @@ struct MetadataFolderPreviewView: View {
         case .preservedByPolicy: return "Existing value preserved by field policy"
         case .omitted(let reason):
             switch reason {
+            case .invalidGPSPosition: return "Omitted: invalid scheduled GPS position"
             case .invalidXMLCharacter: return "Omitted: unsupported XML character"
             case .writerByteLimit(let maximum): return "Omitted: exceeds the writer's \(maximum)-byte limit"
             case .template(let reason):

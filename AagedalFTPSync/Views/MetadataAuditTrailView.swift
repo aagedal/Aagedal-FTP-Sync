@@ -79,6 +79,9 @@ private struct MetadataAuditRow: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(MetadataAuditEvidencePresentation.processingTime(evidence))
                             Text(MetadataAuditEvidencePresentation.captureAssumption(evidence))
+                            if let decision = evidence.coordinateDecision {
+                                Text(MetadataAuditEvidencePresentation.coordinateDecision(decision))
+                            }
                             Text(evidence.resolutionComplete
                                  ? "Field resolution completed. The file result above reports writing and delivery."
                                  : "Field resolution was incomplete; affected fields were preserved.")
@@ -164,6 +167,29 @@ enum MetadataAuditEvidencePresentation {
         }
     }
 
+    static func coordinateDecision(_ decision: MetadataProcessingAuditEvidence.CoordinateDecision) -> String {
+        func name(_ source: MetadataProcessingAuditEvidence.CoordinateDecision.Source) -> String {
+            switch source {
+            case .embeddedEXIF: return "embedded camera GPS"
+            case .xmp: return "XMP GPS"
+            case .scheduled: return "scheduled GPS"
+            }
+        }
+        var parts = [decision.selectedSource.map { "Selected location: " + name($0) + "." } ?? "No valid location selected."]
+        if decision.existingConflict { parts.append("Embedded camera GPS and XMP GPS disagree.") }
+        if !decision.invalidSources.isEmpty {
+            parts.append("Invalid location data: " + decision.invalidSources.map(name).joined(separator: ", ") + ".")
+        }
+        switch decision.scheduledDisposition {
+        case .absent: parts.append("No scheduled location supplied.")
+        case .invalid: parts.append("Invalid scheduled location was omitted.")
+        case .preservedExisting: parts.append("Existing location preserved by field policy.")
+        case .filledEmpty: parts.append("Scheduled location proposed for an empty or invalid location.")
+        case .overwroteExisting: parts.append("Scheduled replacement proposed under overwrite policy.")
+        }
+        return parts.joined(separator: " ")
+    }
+
     static func fieldOutcome(_ outcome: MetadataProcessingAuditEvidence.FieldOutcome) -> String {
         switch outcome.status {
         case .proposed: return "Resolved proposal (not proof of a successful write)"
@@ -188,6 +214,7 @@ enum MetadataAuditEvidencePresentation {
                 return "Omitted; exceeds \(outcome.limit.map(String.init) ?? "the allowed") bytes"
             case .keywordEntryLimit:
                 return "Omitted; exceeds \(outcome.limit.map(String.init) ?? "the allowed") keyword entries"
+            case .invalidGPSPosition: return "Omitted; invalid scheduled GPS position"
             case .invalidXMLCharacter: return "Omitted; unsupported XML character"
             case nil: return "Omitted; no reason was recorded"
             }

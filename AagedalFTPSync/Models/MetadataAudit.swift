@@ -22,6 +22,38 @@ enum MetadataAuditOperation: String, Codable, Sendable {
 /// Resolution evidence only: this is not proof of writing or publication. Retains
 /// dependency identifiers and assumptions, never template source or resolved values.
 struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
+    /// Deliberately excludes numeric coordinates and conflicting coordinate pairs.
+    struct CoordinateDecision: Codable, Equatable, Sendable {
+        enum Source: String, Codable, Sendable { case embeddedEXIF, xmp, scheduled }
+        enum ScheduledDisposition: String, Codable, Sendable {
+            case absent, invalid, preservedExisting, filledEmpty, overwroteExisting
+        }
+        let selectedSource: Source?
+        let existingConflict: Bool
+        let invalidSources: [Source]
+        let scheduledDisposition: ScheduledDisposition
+
+        init(_ resolution: EffectiveMetadataCoordinates.Resolution) {
+            func source(_ value: EffectiveMetadataCoordinates.Source) -> Source {
+                switch value {
+                case .embeddedEXIF: return .embeddedEXIF
+                case .xmp: return .xmp
+                case .scheduled: return .scheduled
+                }
+            }
+            selectedSource = resolution.selected.map { source($0.source) }
+            existingConflict = resolution.existingConflict != nil
+            invalidSources = resolution.invalidSources.map(source).sorted { $0.rawValue < $1.rawValue }
+            switch resolution.scheduledDisposition {
+            case .absent: scheduledDisposition = .absent
+            case .invalid: scheduledDisposition = .invalid
+            case .preservedExisting: scheduledDisposition = .preservedExisting
+            case .filledEmpty: scheduledDisposition = .filledEmpty
+            case .overwroteExisting: scheduledDisposition = .overwroteExisting
+            }
+        }
+    }
+
     struct CaptureAssumption: Codable, Equatable, Sendable {
         enum Source: String, Codable, Sendable { case explicitOffset, persistedFallback }
         let source: Source
@@ -32,7 +64,7 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
     struct FieldOutcome: Codable, Equatable, Sendable {
         enum Status: String, Codable, Sendable { case proposed, notRequested, preservedByPolicy, omitted }
         enum Reason: String, Codable, Sendable {
-            case missingValues, invalidDate, outputByteLimit, keywordEntryLimit, writerByteLimit, invalidXMLCharacter
+            case missingValues, invalidDate, outputByteLimit, keywordEntryLimit, writerByteLimit, invalidXMLCharacter, invalidGPSPosition
         }
         let status: Status
         let reason: Reason?
@@ -50,6 +82,7 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
             case .omitted(let omission):
                 status = .omitted
                 switch omission {
+                case .invalidGPSPosition: reason = .invalidGPSPosition
                 case .invalidXMLCharacter: reason = .invalidXMLCharacter
                 case .writerByteLimit(let maximum): reason = .writerByteLimit; limit = maximum
                 case .template(let failure):
@@ -73,6 +106,7 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
     let captureAssumption: CaptureAssumption?
     let fields: [String: FieldOutcome]
     let resolutionComplete: Bool
+    let coordinateDecision: CoordinateDecision?
 
     /// Literal processing has no frozen template context and keeps its old audit shape.
     init?(result: MetadataProcessingResult) {
@@ -91,6 +125,7 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
         } else { captureAssumption = nil }
         fields = Dictionary(uniqueKeysWithValues: result.fields.map { ($0.key.rawValue, FieldOutcome($0.value)) })
         resolutionComplete = result.resolutionComplete
+        coordinateDecision = result.coordinateResolution.map(CoordinateDecision.init)
     }
 }
 

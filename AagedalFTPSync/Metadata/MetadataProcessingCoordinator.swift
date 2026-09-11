@@ -50,6 +50,7 @@ enum MetadataProcessingOmission: Equatable, Sendable {
     case template(MetadataTemplatePreservationReason)
     case writerByteLimit(maximum: Int)
     case invalidXMLCharacter
+    case invalidGPSPosition
 }
 
 enum MetadataProcessingFieldOutcome: Equatable, Sendable {
@@ -61,6 +62,18 @@ struct MetadataProcessingResult: Equatable, Sendable {
     let changes: ResolvedMetadataChanges
     let context: MetadataTemplateContext?
     let fields: [MetadataWritableField: MetadataProcessingFieldOutcome]
+    /// Frozen original-coordinate decision, not proof that a proposal was written.
+    /// Numeric values remain in memory; durable audit retains only source/decision labels.
+    let coordinateResolution: EffectiveMetadataCoordinates.Resolution?
+
+    init(changes: ResolvedMetadataChanges, context: MetadataTemplateContext?,
+         fields: [MetadataWritableField: MetadataProcessingFieldOutcome],
+         coordinateResolution: EffectiveMetadataCoordinates.Resolution? = nil) {
+        self.changes = changes
+        self.context = context
+        self.fields = fields
+        self.coordinateResolution = coordinateResolution
+    }
 
     /// This means resolution is complete, not that a write/publication succeeded.
     /// Future enrichment callers must also check provider and publication outcomes
@@ -95,8 +108,24 @@ enum MetadataProcessingCoordinator {
             return try prepareLiteral(assignment)
         }
         let request = try MetadataProcessingRequest(assignment: assignment)
-        let writable = try MetadataWriter.writableFields(at: fileURL, relativePath: relativePath,
+        var coordinateResolution: EffectiveMetadataCoordinates.Resolution?
+        if request.gpsPosition != nil {
+            coordinateResolution = try MetadataCoordinateReader.read(at: fileURL, relativePath: relativePath,
+                scheduled: request.gpsPosition, policy: request.existingFieldPolicy)
+        }
+        // Validate scheduled-coordinate sidecars before the legacy policy reader
+        // can parse them. Other activated/literal workflows retain their old path.
+        var writable = try MetadataWriter.writableFields(at: fileURL, relativePath: relativePath,
                                                         policy: assignment.existingFieldPolicy)
+        if let resolution = coordinateResolution {
+            // An existing RAW sidecar can lack GPS even when EXIF has a valid
+            // pair. The activated path preserves that pair under fill-empty;
+            // do not let the legacy sidecar-only policy propose a replacement.
+            switch resolution.scheduledDisposition {
+            case .filledEmpty, .overwroteExisting: writable.insert(.gpsPosition)
+            case .absent, .invalid, .preservedExisting: writable.remove(.gpsPosition)
+            }
+        }
         let required = request.requiredVariables(for: writable)
         var capture: MetadataCaptureDate?
         if required.contains(.captureDate) {
@@ -116,7 +145,8 @@ enum MetadataProcessingCoordinator {
         let context = MetadataTemplateContext(processingDate: processingDate,
             processingTimeZone: processingTimeZone, captureDate: capture,
             photographer: request.creator)
-        return resolve(request, context: context, writableFields: writable)
+        return resolve(request, context: context, writableFields: writable,
+                       coordinateResolution: coordinateResolution)
     }
 
     /// Pure resolution against one supplied context; never reads or writes images.
@@ -125,7 +155,8 @@ enum MetadataProcessingCoordinator {
     static func resolve(
         _ request: MetadataProcessingRequest,
         context suppliedContext: MetadataTemplateContext,
-        writableFields: Set<MetadataWritableField>
+        writableFields: Set<MetadataWritableField>,
+        coordinateResolution: EffectiveMetadataCoordinates.Resolution? = nil
     ) -> MetadataProcessingResult {
         // Photographer always comes from the matched assignment, never recognition
         // or a caller's unrelated sample identity. Copyright cannot reference itself.
@@ -177,14 +208,27 @@ enum MetadataProcessingCoordinator {
         let creator = writableFields.contains(.creator) ? request.creator : ""
         outcomes[.creator] = writableFields.contains(.creator)
             ? (creator.isEmpty ? .notRequested : .proposed) : .preservedByPolicy
-        let gps = writableFields.contains(.gpsPosition) ? request.gpsPosition : nil
-        outcomes[.gpsPosition] = writableFields.contains(.gpsPosition)
-            ? (gps == nil ? .notRequested : .proposed) : .preservedByPolicy
+        let gps: ScheduledGPSPosition?
+        if let requested = request.gpsPosition, !requested.isValid {
+            gps = nil
+            outcomes[.gpsPosition] = .omitted(.invalidGPSPosition)
+        } else {
+            gps = writableFields.contains(.gpsPosition) ? request.gpsPosition : nil
+            outcomes[.gpsPosition] = writableFields.contains(.gpsPosition)
+                ? (gps == nil ? .notRequested : .proposed) : .preservedByPolicy
+        }
+        var resolvedPolicy = request.existingFieldPolicy
+        if gps != nil, coordinateResolution?.scheduledDisposition == .filledEmpty {
+            // The strict reader may reject malformed EXIF that the legacy parser
+            // interprets as zero. This approved fill must reach the writer; only
+            // GPS is promoted, after freezing the original-coordinate decision.
+            resolvedPolicy.overwriteFields.insert(.gpsPosition)
+        }
         return MetadataProcessingResult(
             changes: ResolvedMetadataChanges(headline: headline, description: description,
                 keywords: keywords, creator: creator, copyright: copyright,
-                gpsPosition: gps, existingFieldPolicy: request.existingFieldPolicy),
-            context: context, fields: outcomes
+                gpsPosition: gps, existingFieldPolicy: resolvedPolicy),
+            context: context, fields: outcomes, coordinateResolution: coordinateResolution
         )
     }
 

@@ -67,13 +67,26 @@ enum MetadataWriter {
             if !xmp.subject.isEmpty { fields[.keywords] = .list(xmp.subject) }
             if !xmp.creator.isEmpty { fields[.creator] = .list(xmp.creator) }
             if let value = xmp.rights, !value.isEmpty { fields[.copyright] = .text(value) }
-            if let value = xmpGPSPosition(xmp) { fields[.gpsPosition] = .position(value) }
+            if let value = MetadataCoordinateReader.xmpPosition(in: xmp) { fields[.gpsPosition] = .position(value) }
             return fields
         }
         if usesXMPSidecar(for: relativePath) {
             let existing = try rawPolicyMetadata(at: fileURL)
-            return ExistingFieldsSnapshot(carriers: [.init(name: existing.origin, fields: xmpFields(existing.xmp))],
-                                          readable: existing.readable)
+            let embedded = try? ImageMetadata.read(from: fileURL)
+            var fields = xmpFields(existing.xmp)
+            let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+            if !FileManager.default.fileExists(atPath: sidecar.path) {
+                // Keep the legacy text seed while displaying GPS only from strict
+                // original carriers, never the legacy parser's fabricated zero.
+                let gps = embedded?.xmp.flatMap { MetadataCoordinateReader.xmpPosition(in: $0) }
+                    ?? embedded.flatMap { MetadataCoordinateReader.embeddedPosition(in: $0) }
+                fields[.gpsPosition] = gps.map { .position($0) }
+            }
+            var carriers: [ExistingFieldsSnapshot.Carrier] = [.init(name: existing.origin, fields: fields)]
+            if let embedded, let gps = MetadataCoordinateReader.embeddedPosition(in: embedded) {
+                carriers.append(.init(name: "Embedded EXIF", fields: [.gpsPosition: .position(gps)]))
+            }
+            return ExistingFieldsSnapshot(carriers: carriers, readable: existing.readable)
         }
         let metadata = try ImageMetadata.read(from: fileURL)
         var iptc: [MetadataWritableField: ExistingFieldsSnapshot.Value] = [:]
@@ -84,7 +97,7 @@ enum MetadataWriter {
         if let value = metadata.iptc.copyright, !value.isEmpty { iptc[.copyright] = .text(value) }
         var carriers: [ExistingFieldsSnapshot.Carrier] = [.init(name: "Embedded IPTC", fields: iptc)]
         if let xmp = metadata.xmp { carriers.append(.init(name: "Embedded XMP", fields: xmpFields(xmp))) }
-        if let gps = embeddedGPSPosition(metadata) { carriers.append(.init(name: "Embedded EXIF", fields: [.gpsPosition: .position(gps)])) }
+        if let gps = MetadataCoordinateReader.embeddedPosition(in: metadata) { carriers.append(.init(name: "Embedded EXIF", fields: [.gpsPosition: .position(gps)])) }
         return ExistingFieldsSnapshot(carriers: carriers, readable: true)
     }
 
@@ -579,7 +592,8 @@ enum MetadataWriter {
         return String(format: "%d,%.7f%@", locale: Locale(identifier: "en_US_POSIX"), degrees, minutes, String(direction))
     }
 
-    private static func parseXMPCoordinate(_ value: String?, isLatitude: Bool) -> Double? {
+    // Shared with the read-only effective-coordinate adapter; legacy parsing is unchanged.
+    static func parseXMPCoordinate(_ value: String?, isLatitude: Bool) -> Double? {
         guard let value else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard let direction = normalized.last,
@@ -597,7 +611,7 @@ enum MetadataWriter {
         return abs(coordinate) <= limit ? coordinate : nil
     }
 
-    private static func parseRational(_ value: String?) -> Double? {
+    static func parseRational(_ value: String?) -> Double? {
         guard let value else { return nil }
         let components = value.split(separator: "/")
         if components.count == 1 {
