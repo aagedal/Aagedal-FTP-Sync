@@ -377,15 +377,17 @@
       "id": "m3-003",
       "section": "M3 — Persistence and sharing",
       "title": "Enforce template capabilities on actual old and new servers/clients",
-      "prerequisites": "Disposable old and upgraded HTTPS PHP/MySQL servers, current and actual older client builds or recorded genuine older payloads, separate editor accounts, and the deployment guide. Install schema.sql, schema-live-sync.sql and schema-template-sync.sql before upgraded index.php/live.php/templates.php in the disposable environment. Server and Swift wire foundations pass automated tests at 778c61b; the app’s explicit new-calendar migration is still required before this full manual case can run. See 2026-09-11-M3-Protocol-Foundation.md.",
+      "prerequisites": "Disposable old and upgraded HTTPS PHP/MySQL servers, current and actual older client builds or recorded genuine older payloads, separate editor accounts, and the deployment guide. Install schema.sql, schema-live-sync.sql and schema-template-sync.sql before upgraded index.php/live.php/templates.php. New template-calendar publishing/joining is implemented; explicit conversion of an existing classic calendar remains pending, so this full acceptance case is not yet ready. See 2026-09-11-M3-Namespace-Routing.md and 2026-09-11-M3-Protocol-Foundation.md.",
       "steps": [
         "Connect 3.0 to the old server and share/edit a legacy calendar to verify existing functionality.",
         "Attempt to activate or publish variables on that shared calendar and inspect the upgrade message and server state.",
-        "On the upgraded server publish a template-enabled calendar from 3.0, then request it using an older client and actual old protocol payloads.",
+        "On the upgraded server, open Calendar settings. Under Calendar type, set Browse and create to Template-enabled — requires 3.0. Select an unlinked disposable local job, choose New shared calendar from this job, enter a unique name and click Activate Sync. Wait for a successful revision before activating variables. Confirm the linked job says Template-enabled calendar. Request the new calendar using an actual older client and old protocol payloads.",
+        "Create and copy an invitation for that template-enabled calendar. Paste the entire invitation into the second 3.0 client and click Join Calendar; confirm it selects the template-enabled list even if that client was browsing Classic. A raw invitation code requires selecting the matching calendar type. The old client must reject the new copied invitation format or the server must reject its old-protocol request without a document.",
         "Attempt old-client uploads that strip activation markers or downgrade the same document; inspect server responses and the retained document.",
         "Exercise documented handling of an older client's previously cached offline calendar and verify it cannot obtain template-bearing content or overwrite new semantics.",
         "On the legacy protocol, verify an active linked job blocks discovery, receive and publish before credentials or requests are used. Test an active cached snapshot and interrupted-receive receipt; stale literal state must not overwrite the retained incompatible cache.",
-        "On a disposable database, exercise the documented old-PHP rollback fixture and restore upgraded PHP. Confirm no v3 source appears through legacy list/read/conflict/invitation paths and a legacy cached write cannot alter the new calendar. A reused UUID must be quarantined rather than merged. Retain server/client revisions and response evidence without secrets."
+        "On a disposable database, exercise the documented old-PHP rollback fixture and restore upgraded PHP. Confirm no v3 source appears through legacy list/read/conflict/invitation paths and a legacy cached write cannot alter the new calendar. A reused UUID must be quarantined rather than merged. Retain server/client revisions and response evidence without secrets.",
+        "With a newly published template calendar still awaiting server confirmation, attempt to activate a variable and confirm the draft is retained without saving. Restore access or use Retry Now, wait for a confirmed revision, and save the variable successfully. Switching Browse and create back to Classic must not change the protocol of that already-linked job."
       ],
       "expected": [
         "Old servers remain usable for legacy calendars but cannot accept unsafe template sharing.",
@@ -404,7 +406,8 @@
         "Disconnect both clients and make conflicting edits to a template's source and activation state; reconnect and resolve the conflict through the UI.",
         "Inspect both clients and the server after the merge for the winning source and matching version/activation marker.",
         "Edit records on the first/last shared dates and just outside the range; verify the documented boundary behavior and read-only restrictions.",
-        "Receive an empty or removed remote calendar and run a local job with independent geocoding/face processing still enabled."
+        "Receive an empty or removed remote calendar and run a local job with independent geocoding/face processing still enabled.",
+        "On one 3.0 client explicitly turn off variable processing for an active retained field, save and sync. Confirm the exact field conversion reaches the server while all other activation markers remain. Repeat with a remote concurrent edit and a lost response; the next sync must preserve both the namespace and the correct source/activation pair."
       ],
       "expected": [
         "Template semantics survive merges and offline resolution, with per-picture expansion on each Mac.",
