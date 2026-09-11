@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Geocoding/coordinate foundations and pinned offline adapter implemented at de33e98. Full app suite: 739 passed, 15 opt-in skips, zero failures. Production enrichment integration, actual native UI, continuous older-writer exclusion and release validation remain incomplete. No manual gate advanced; freeze candidate identity before final testing."
+  "note": "Apple geocoding adapter and bounded completion pacing implemented at 7887a84. Full suite: 748 passed, 15 opt-in skips, zero failures. No live online lookup or manual gate passed. Production enrichment integration, supported-OS, older-writer exclusion and release validation remain incomplete. Freeze candidate identity before final testing."
 }

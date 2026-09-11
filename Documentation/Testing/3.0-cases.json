@@ -289,6 +289,7 @@
       "steps": [
         "Switch from offline to Apple lookup and verify the UI explains that image coordinates are sent to Apple before enabling it.",
         "Transfer a known GPS fixture and record adapter/provider, concrete output locale and successful result.",
+        "Run the actual candidate on macOS 14/15 and macOS 26 or newer: record the Core Location or MapKit adapter respectively. Confirm the lookup uses the photo GPS and does not request device location permission.",
         "Simulate offline access, timeout, rate limiting and a provider failure in separate runs while another independent metadata field can resolve.",
         "Inspect finite deadlines, retry/backoff outcomes and audit entries; cancel a queued lookup and verify no late publication.",
         "Confirm no failure silently switches provider or output language, then restore service and explicitly retry/reprocess."
@@ -309,7 +310,8 @@
         "Start concurrent jobs whose photos share an exact coordinate pair and inspect provider request counts for the same provider, version and concrete locale.",
         "Repeat warm, then change output language, provider and dataset/provider version using supported test setup one at a time.",
         "Use coordinates differing by a small amount near a border and verify distinct keys.",
-        "Submit more unique coordinates than the cache and queue limits, record peak pending work and cache eviction, and cancel one waiter while another still needs a coalesced result."
+        "Submit more unique coordinates than the cache and queue limits, record peak pending work and cache eviction, and cancel one waiter while another still needs a coalesced result.",
+        "For Apple lookup, hold one native request past caller cancellation and its deadline. Confirm no replacement request starts until the native callback completes, then verify the documented completion pause before the next start. Confirm unrelated coalesced callers still receive their result."
       ],
       "expected": [
         "Concurrent identical requests coalesce; materially different coordinates, versions, providers or locales do not share incorrect results.",
