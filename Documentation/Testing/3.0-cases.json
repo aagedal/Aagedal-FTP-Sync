@@ -100,9 +100,9 @@
       "title": "Insert supported variables and compare preview with delivery",
       "prerequisites": "Two disposable photos with different capture dates, a matching photographer profile and schedule, and a copied test preset; GPS/person services can remain off for this case.",
       "steps": [
-        "Open the clip/preset editor and use Insert Variable to build Headline and Description templates containing capture date, processing date and photographer.",
-        "Build keyword entries and a photographer Copyright template using the same supported variables; save the original template sources.",
-        "Preview each photo and record proposed text, existing values, decisions, and assumed time zone.",
+        "In Metadata Programming, open a copied clip. Beside Headline or Description choose Variables…, use Insert Variable (Capture date is first; insertion appends at the end), then explicitly enable Resolve Variables and choose Apply. Repeat for both fields.",
+        "Choose Edit Keywords…, Add Keyword for each separate entry, and enable Resolve variables for the entire keyword list before Apply. In Photographer Profile use Variables… beside Copyright notice and enable Resolve Variables. Save the clip/profile and use Save as New or Update under Reusable Presets. Keep these templates local unless the server explicitly supports them.",
+        "Inspect the editor sample marked Sample output only; this is a synthetic example, not a photo preview. Then run the folder preview on both photos, select each file, and record proposed text, preservation/omission decisions, and the saved processing zone. Independently inspect existing values in an external reader.",
         "Transfer each photo through the matching schedule, then compare all four fields with the corresponding preview using an external metadata reader.",
         "Reopen the preset and clip to verify stored text still contains the original variable source rather than the first photo's resolved values."
       ],
@@ -140,7 +140,7 @@
       "steps": [
         "Preview repeated and adjacent supported tokens, '{{' and '}}' literal-brace escapes, Unicode text, and the brace-containing photographer name.",
         "Try an unknown token, an unsupported date format, unmatched opening and closing braces, and input above the documented limit.",
-        "Attempt to activate each invalid template, then save or revisit it as a draft through the supported editor flow.",
+        "In Variables… enable Resolve Variables for each invalid draft and verify Apply remains disabled while the draft stays editable. Correct it without closing, then Cancel and reopen to confirm the saved source was never changed. Repeat in Edit Keywords… with one invalid row and verify the whole list is rejected.",
         "Correct the syntax and verify activation succeeds; transfer a picture using the brace-containing name."
       ],
       "expected": [
@@ -176,6 +176,7 @@
       "prerequisites": "A fixture with existing keywords, a photographer name containing a comma, Unicode examples, and a schedule with several keyword template entries.",
       "steps": [
         "Add duplicate keyword template entries, whitespace variants, repeated variable results, and one entry resolving to a comma-containing name.",
+        "Reopen Edit Keywords… and confirm each source is still its own row, including commas, duplicates and whitespace. Cancel a changed row or newly added row, reopen, and confirm cancellation preserved the exact prior list. Use Convert Entire List to Literal Text only on a copy and verify braces then stay literal.",
         "Preview and transfer with the supported preserve/fill and overwrite keyword policies in separate runs.",
         "Inspect the actual metadata keyword array using an external reader rather than only the app's comma-joined display.",
         "Verify Unicode is retained and record the normalization/deduplication behavior."
@@ -192,7 +193,7 @@
       "title": "Preview stays read-only, cancellable and keyboard accessible",
       "prerequisites": "The signed candidate, sample photos with recorded hashes and filesystem dates, and macOS VoiceOver; a slow test provider or a sufficiently large preview folder.",
       "steps": [
-        "Use the keyboard to reach clip, preset and Copyright variable controls, insert a token, open sample preview and inspect existing/proposed values.",
+        "Use Tab and keyboard activation to reach Variables… for Headline, Description and Copyright, then Insert Variable, Resolve Variables, Apply and Cancel. Repeat with Edit Keywords… and Add Keyword. Inspect sample output and missing-dependency help, then inspect the real folder preview separately.",
         "Enable VoiceOver and navigate variable help, missing-dependency messages, loading state and per-field decisions.",
         "Start a slow preview, change the selected sample or close the preview, and verify old asynchronous results do not replace the new selection.",
         "Cancel an active preview and continue using the job editor.",

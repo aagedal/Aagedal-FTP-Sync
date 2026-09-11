@@ -7,5 +7,5 @@
   "build": null,
   "appPath": null,
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Per-image template resolution, persisted zones, preview details, partial audit/source retention and conditional local reprocessing implemented at acce909. Full suite: 820 passed, 15 opt-in skips, zero failures. Variable editors, geocoding/face integration, protocol3 sharing, actual GUI/supported-OS and release gates remain incomplete. No manual gate advanced; freeze candidate identity before final testing."
+  "note": "Explicit typed template editors and save/import activation guards implemented at 7790497. Full suite: 831 passed, 15 opt-in skips, zero failures. Separate ad-hoc UI-test build passed; native execution failed before initialization because authentication was canceled, so no GUI pass is claimed. Geocoding/face integration, protocol3 sharing, actual GUI/supported-OS and release gates remain incomplete. No manual gate advanced."
 }
