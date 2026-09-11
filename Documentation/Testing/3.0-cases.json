@@ -333,7 +333,8 @@
         "Inspect documented store paths and backup metadata to confirm template source and activation/version markers are retained together. Relaunch and use Open Saved 3.0 Data; the current state must be validated without importing later edits to retained 2.9 files.",
         "Launch 2.9 using the documented downgrade workflow and inspect recovered jobs, presets and calendars without enabling transfers. Quit it before returning to 3.0. Confirm it cannot reinterpret or overwrite 3.0 template-enabled storage.",
         "Repeat a documented interrupted-migration fixture and choose Recover Prepared Copy. Verify the frozen source selection is recovered even if the legacy files changed afterward. Missing or corrupt committed data must show recovery details, never empty replacement libraries.",
-        "With only disposable jobs/files, exercise the supplied second-copy detection fixture. The menu must show an attention icon and open recovery, new work must be blocked, and calendar sync must pause. Closing the extra copy must not silently resume this runtime; quit and reopen after any active cancellation settles."
+        "With only disposable jobs/files, exercise the supplied second-copy detection fixture. The menu must show an attention icon and open recovery, new work must be blocked, and calendar sync must pause. Closing the extra copy must not silently resume this runtime; quit and reopen after any active cancellation settles.",
+        "Using only a disposable profile, replace an active record with a future language marker while retaining an older literal backup. Relaunch and attempt recovery/save: verify the incompatible primary and backup remain byte-identical, and no fallback silently removes activation."
       ],
       "expected": [
         "A consistent 2.9 backup is recoverable and the documented downgrade boundary protects new templates.",
@@ -354,7 +355,8 @@
         "Export full configuration and selected-day metadata, then import them into the second profile and resolve different sample images.",
         "Import valid legacy version 1 and 2 packages and verify new processing remains off and literal braces remain literal.",
         "Try importing a template-enabled 3.0 package in 2.9 and confirm clear rejection; export a genuinely legacy-only package and verify the documented compatibility path.",
-        "Try malformed and unsupported-new-version fixtures and inspect failure recovery. Verify imported jobs are disabled and require fresh local setup."
+        "Try malformed and unsupported-new-version fixtures and inspect failure recovery. Verify imported jobs are disabled and require fresh local setup.",
+        "Inspect exported JSON versions: selected active metadata must use package 3; literal-only and jobs-only exports remain package 2. Repeat imports with both plaintext and password-protected packages, and reject active contents relabeled as version 1 or 2."
       ],
       "expected": [
         "Portable templates retain source and semantics, never sample-expanded values.",
@@ -373,7 +375,8 @@
         "Attempt to activate or publish variables on that shared calendar and inspect the upgrade message and server state.",
         "On the upgraded server publish a template-enabled calendar from 3.0, then request it using an older client and actual old protocol payloads.",
         "Attempt old-client uploads that strip activation markers or downgrade the same document; inspect server responses and the retained document.",
-        "Exercise documented handling of an older client's previously cached offline calendar and verify it cannot obtain template-bearing content or overwrite new semantics."
+        "Exercise documented handling of an older client's previously cached offline calendar and verify it cannot obtain template-bearing content or overwrite new semantics.",
+        "On the legacy protocol, verify an active linked job blocks discovery, receive and publish before credentials or requests are used. Test an active cached snapshot and interrupted-receive receipt; stale literal state must not overwrite the retained incompatible cache."
       ],
       "expected": [
         "Old servers remain usable for legacy calendars but cannot accept unsafe template sharing.",
