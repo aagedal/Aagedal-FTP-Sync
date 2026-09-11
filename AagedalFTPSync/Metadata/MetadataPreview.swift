@@ -2,6 +2,9 @@ import Foundation
 
 enum MetadataPreviewStatus: String, Codable, Sendable {
     case willApply
+    case resolutionIncomplete
+    case previewFailed
+    case noChanges
     case alreadyApplied
     case existingMetadataPreserved
     case noMatchingPhotographer
@@ -11,6 +14,9 @@ enum MetadataPreviewStatus: String, Codable, Sendable {
     var title: String {
         switch self {
         case .willApply: "Will apply"
+        case .resolutionIncomplete: "Resolution incomplete"
+        case .previewFailed: "Preview failed"
+        case .noChanges: "No changes proposed"
         case .alreadyApplied: "Already applied"
         case .existingMetadataPreserved: "Existing metadata preserved"
         case .noMatchingPhotographer: "No matching photographer"
@@ -31,6 +37,8 @@ struct MetadataPreviewItem: Identifiable, Equatable, Sendable {
     let photographerName: String?
     let clipID: UUID?
     let clipName: String?
+    var processing: MetadataProcessingResult? = nil
+    var detail: String? = nil
 }
 
 struct MetadataPreviewResult: Equatable, Sendable {
@@ -39,7 +47,8 @@ struct MetadataPreviewResult: Equatable, Sendable {
     var scanned: Int { items.count }
     var willApply: Int { items.count { $0.status == .willApply } }
     var alreadyApplied: Int { items.count { $0.status == .alreadyApplied } }
-    var skipped: Int { scanned - willApply - alreadyApplied }
+    var needsAttention: Int { items.count { $0.status == .previewFailed || $0.status == .resolutionIncomplete } }
+    var skipped: Int { scanned - willApply - alreadyApplied - needsAttention }
 }
 
 /// Builds the same photographer and schedule assignments used during sync without
@@ -63,8 +72,12 @@ enum MetadataPreviewService {
         automation: MetadataAutomation,
         filter: FileFilter = FileFilter(),
         arrivalDate: Date = Date(),
+        processingTimeZone: TimeZone? = nil,
         fileManager: FileManager = .default
     ) throws -> MetadataPreviewResult {
+        if automation.hasActivatedTemplates && processingTimeZone == nil {
+            throw AppError.invalidConfiguration("Save a processing time zone before previewing activated templates.")
+        }
         let hasSecurityScope = folderURL.startAccessingSecurityScopedResource()
         defer {
             if hasSecurityScope { folderURL.stopAccessingSecurityScopedResource() }
@@ -105,6 +118,7 @@ enum MetadataPreviewService {
 
         var items: [MetadataPreviewItem] = []
         while let fileURL = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
             let values = try fileURL.resourceValues(forKeys: keys)
             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
 
@@ -161,21 +175,37 @@ enum MetadataPreviewService {
                 for: relativePath,
                 scheduledAt: scheduledAt
             ) {
-                let processing = try MetadataProcessingCoordinator.prepareLiteral(assignment)
+                var processing: MetadataProcessingResult?
+                var detail: String?
                 let status: MetadataPreviewStatus
-                switch try? MetadataWriter.assess(
-                    processing.changes,
-                    at: canonicalURL,
-                    relativePath: relativePath
-                ) {
-                case .alreadyApplied:
-                    status = .alreadyApplied
-                case .existingMetadataPreserved:
-                    status = .existingMetadataPreserved
-                case .willApply, nil:
-                    // Keep unreadable files as attempts: the write path will report
-                    // the concrete metadata error if reprocessing is requested.
-                    status = .willApply
+                do {
+                    let resolved = try MetadataProcessingCoordinator.preparePerImage(
+                        assignment: assignment, fileURL: canonicalURL, relativePath: relativePath,
+                        processingDate: arrivalDate, processingTimeZone: processingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
+                    processing = resolved
+                    if !resolved.resolutionComplete {
+                        status = .resolutionIncomplete
+                        detail = "Some fields could not be resolved. Review the omissions before reprocessing."
+                    } else if resolved.context != nil && !resolved.fields.values.contains(.proposed) {
+                        status = .noChanges
+                    } else {
+                        let assessment = try? MetadataWriter.assess(resolved.changes, at: canonicalURL, relativePath: relativePath)
+                        switch assessment {
+                        case .alreadyApplied: status = .alreadyApplied
+                        case .existingMetadataPreserved: status = .existingMetadataPreserved
+                        case .willApply: status = .willApply
+                        case nil:
+                            // Keep legacy preview behavior; active resolution must not
+                            // claim an assessed write when assessment failed.
+                            status = resolved.context == nil ? .willApply : .previewFailed
+                            if resolved.context != nil { detail = "The proposed metadata could not be assessed for this file." }
+                        }
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    status = .previewFailed
+                    detail = "Could not prepare metadata for this file: \(error.localizedDescription)"
                 }
                 items.append(MetadataPreviewItem(
                     relativePath: relativePath,
@@ -185,7 +215,9 @@ enum MetadataPreviewService {
                     photographerID: assignment.photographer.id,
                     photographerName: assignment.photographer.photographerName,
                     clipID: assignment.clip.id,
-                    clipName: assignment.clip.name
+                    clipName: assignment.clip.name,
+                    processing: processing,
+                    detail: detail
                 ))
             } else {
                 items.append(MetadataPreviewItem(

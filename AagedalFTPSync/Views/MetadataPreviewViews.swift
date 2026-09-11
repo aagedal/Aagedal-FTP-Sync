@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MetadataFolderPreviewView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedItemID: String?
 
     let folderName: String
     let timestampPolicy: MetadataTimestampPolicy
@@ -30,6 +31,10 @@ struct MetadataFolderPreviewView: View {
                     .labelStyle(AccessibleStatusLabelStyle(symbolColor: .blue))
                 Label("\(result.skipped) skipped", systemImage: "minus.circle.fill")
                     .foregroundStyle(.secondary)
+                if result.needsAttention > 0 {
+                    Label("\(result.needsAttention) need review", systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                }
                 Spacer()
                 Text("Read-only preview — no files were changed")
                     .font(.caption)
@@ -43,7 +48,7 @@ struct MetadataFolderPreviewView: View {
                     description: Text("The selected job’s file filter found nothing to preview in this folder.")
                 )
             } else {
-                Table(result.items) {
+                Table(result.items, selection: $selectedItemID) {
                     TableColumn("File") { item in
                         Text(item.relativePath)
                             .lineLimit(1)
@@ -76,11 +81,75 @@ struct MetadataFolderPreviewView: View {
                     }
                     .width(min: 160, ideal: 190)
                 }
+                if let item = result.items.first(where: { $0.id == selectedItemID }) {
+                    previewDetails(item)
+                } else {
+                    Text("Select a file to inspect proposed values and omissions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(20)
         .frame(minWidth: 960, minHeight: 520)
     }
+
+    @ViewBuilder
+    private func previewDetails(_ item: MetadataPreviewItem) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.relativePath).font(.headline)
+                if let detail = item.detail { Text(detail).foregroundStyle(.secondary) }
+                if let processing = item.processing {
+                    if let context = processing.context {
+                        Text("Frozen processing time: \(context.processingDate.formatted(Date.FormatStyle(date: .abbreviated, time: .standard, timeZone: context.processingTimeZone))) · \(context.processingTimeZone.identifier)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    ForEach(MetadataWritableField.allCases) { field in
+                        if let outcome = processing.fields[field] {
+                            HStack(alignment: .top) {
+                                Text(field.title).fontWeight(.medium).frame(width: 100, alignment: .leading)
+                                Text(fieldDetail(field, outcome: outcome, processing: processing))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+        }.frame(maxHeight: 170)
+    }
+
+    private func fieldDetail(_ field: MetadataWritableField, outcome: MetadataProcessingFieldOutcome,
+                             processing: MetadataProcessingResult) -> String {
+        switch outcome {
+        case .notRequested: return "No value proposed"
+        case .preservedByPolicy: return "Existing value preserved by field policy"
+        case .omitted(let reason):
+            switch reason {
+            case .invalidXMLCharacter: return "Omitted: unsupported XML character"
+            case .writerByteLimit(let maximum): return "Omitted: exceeds the writer's \(maximum)-byte limit"
+            case .template(let reason):
+                switch reason {
+                case .missingValues(let variables): return "Omitted: missing " + variables.map(\.rawValue).sorted().joined(separator: ", ")
+                case .invalidDate(let variable): return "Omitted: invalid " + variable.rawValue
+                case .outputLimitExceeded(let maximum): return "Omitted: exceeds the \(maximum)-byte output limit"
+                case .keywordEntryLimitExceeded(let maximum): return "Omitted: exceeds the \(maximum)-keyword limit"
+                }
+            }
+        case .proposed:
+            let values = processing.changes
+            switch field {
+            case .headline: return values.headline
+            case .description: return values.description
+            case .keywords: return values.keywords.joined(separator: " · ")
+            case .creator: return values.creator
+            case .copyright: return values.copyright
+            case .gpsPosition:
+                guard let gps = values.gpsPosition else { return "No position proposed" }
+                return "\(gps.latitude), \(gps.longitude)"
+            }
+        }
+    }
+
 }
 
 struct ProgrammingMonthCalendar: View {
@@ -383,6 +452,9 @@ private extension MetadataPreviewStatus {
     var symbolName: String {
         switch self {
         case .willApply: "checkmark.circle.fill"
+        case .resolutionIncomplete: "exclamationmark.triangle.fill"
+        case .previewFailed: "xmark.octagon.fill"
+        case .noChanges: "minus.circle"
         case .alreadyApplied: "checkmark.seal.fill"
         case .existingMetadataPreserved: "lock.circle.fill"
         case .noMatchingPhotographer: "person.crop.circle.badge.questionmark"
@@ -394,6 +466,9 @@ private extension MetadataPreviewStatus {
     var color: Color {
         switch self {
         case .willApply: .green
+        case .resolutionIncomplete: .orange
+        case .previewFailed: .red
+        case .noChanges: .secondary
         case .alreadyApplied: .blue
         case .existingMetadataPreserved,
              .noMatchingPhotographer,

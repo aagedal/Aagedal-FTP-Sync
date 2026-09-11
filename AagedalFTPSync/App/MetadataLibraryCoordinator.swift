@@ -40,6 +40,10 @@ final class MetadataLibraryCoordinator {
 
         var updatedJob = state.jobs[index]
         updatedJob.metadataAutomation = normalizedAutomation
+        if normalizedAutomation.hasActivatedTemplates, updatedJob.metadataProcessingTimeZoneIdentifier == nil {
+            updatedJob.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+        }
+        try updatedJob.validateMetadataTemplateActivationContext()
         if let message = updatedJob.validationMessage {
             throw MetadataLibraryMessageError(message: message)
         }
@@ -142,6 +146,11 @@ final class MetadataLibraryCoordinator {
                 throw AppError.invalidConfiguration("\(updatedJobs[jobIndex].name): \(message)")
             }
             updatedJobs[jobIndex].metadataAutomation = automation
+            if automation.hasActivatedTemplates,
+               updatedJobs[jobIndex].metadataProcessingTimeZoneIdentifier == nil {
+                updatedJobs[jobIndex].metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+            }
+            try updatedJobs[jobIndex].validateMetadataTemplateActivationContext()
         }
 
         try persistenceCoordinator.saveJobsAndPhotographers(
@@ -208,6 +217,11 @@ final class MetadataLibraryCoordinator {
                 throw MetadataLibraryMessageError(message: "\(updatedJobs[jobIndex].name): \(message)")
             }
             updatedJobs[jobIndex].metadataAutomation = automation
+            if automation.hasActivatedTemplates,
+               updatedJobs[jobIndex].metadataProcessingTimeZoneIdentifier == nil {
+                updatedJobs[jobIndex].metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+            }
+            try updatedJobs[jobIndex].validateMetadataTemplateActivationContext()
         }
 
         do {

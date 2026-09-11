@@ -1214,13 +1214,19 @@ private func performMetadataPreview(
         usesManagedFolderStructure: job.usesManagedFolderStructure
     )
     let filter = job.filter
-    let result = try await Task.detached(priority: .userInitiated) {
+    let task = Task.detached(priority: .userInitiated) {
         _ = folderAccess
         return try MetadataPreviewService.previewLocalFolder(
             at: folderURL,
             automation: automation,
-            filter: filter
+            filter: filter,
+            processingTimeZone: try job.validatedMetadataProcessingTimeZone
         )
-    }.value
+    }
+    let result = try await withTaskCancellationHandler {
+        try await task.value
+    } onCancel: {
+        task.cancel()
+    }
     return MetadataProgrammingPreview(folderName: folderURL.lastPathComponent, result: result)
 }

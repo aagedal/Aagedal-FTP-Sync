@@ -20,14 +20,17 @@ struct PhotographerLibraryTransfer: Codable, Equatable, Sendable {
     }
 }
 
-enum PhotographerLibraryTransferError: LocalizedError {
+enum PhotographerLibraryTransferError: LocalizedError, Equatable {
     case invalidFormat
     case unsupportedVersion(Int)
+    case activatedTemplatesRequireConfigurationPackage
 
     var errorDescription: String? {
         switch self {
         case .invalidFormat:
             "This is not an Aagedal FTP Sync photographer list."
+        case .activatedTemplatesRequireConfigurationPackage:
+            "Photographers with Copyright variables require a version 3 configuration package. Use Export Metadata Programming instead."
         case .unsupportedVersion(let version):
             "This photographer list uses unsupported format version \(version)."
         }
@@ -36,31 +39,39 @@ enum PhotographerLibraryTransferError: LocalizedError {
 
 enum PhotographerLibraryTransferCodec {
     static func encode(_ photographers: [PhotographerProfile]) throws -> Data {
-        try JSONEncoder.photographerProfileConfigured.encode(
+        guard !photographers.contains(where: \.hasActivatedTemplates) else {
+            throw PhotographerLibraryTransferError.activatedTemplatesRequireConfigurationPackage
+        }
+        return try JSONEncoder.photographerProfileConfigured.encode(
             PhotographerLibraryTransfer(photographers: photographers)
         )
     }
 
     static func decode(_ data: Data) throws -> [PhotographerProfile] {
         let decoder = JSONDecoder.photographerProfileConfigured
-        let transfer: PhotographerLibraryTransfer
-        do {
-            transfer = try decoder.decode(PhotographerLibraryTransfer.self, from: data)
-        } catch {
-            // Accept the raw array used by the on-disk v1 repository as a legacy
-            // interchange format, while all new exports use the versioned envelope.
+        // The standalone list remains a literal-only v1 interchange contract.
+        // Scan before either domain decoder so malformed/ignored markers cannot be
+        // stripped, including in the legacy raw-array path.
+        do { try VersionedStoreCodec.rejectLegacyTemplateMarkers(in: data) }
+        catch VersionedStoreCodec.HeaderError.requiresVersion3Storage {
+            throw PhotographerLibraryTransferError.activatedTemplatesRequireConfigurationPackage
+        } catch { throw PhotographerLibraryTransferError.invalidFormat }
+        struct Header: Decodable { let format: String; let version: Int }
+        guard let header = try? decoder.decode(Header.self, from: data) else {
             if let photographers = try? decoder.decode([PhotographerProfile].self, from: data) {
                 return photographers
             }
             throw PhotographerLibraryTransferError.invalidFormat
         }
-
-        guard transfer.format == PhotographerLibraryTransfer.formatIdentifier else {
+        guard header.format == PhotographerLibraryTransfer.formatIdentifier else {
             throw PhotographerLibraryTransferError.invalidFormat
         }
-        guard transfer.version == PhotographerLibraryTransfer.currentVersion else {
-            throw PhotographerLibraryTransferError.unsupportedVersion(transfer.version)
+        guard header.version == PhotographerLibraryTransfer.currentVersion else {
+            throw PhotographerLibraryTransferError.unsupportedVersion(header.version)
         }
+        let transfer: PhotographerLibraryTransfer
+        do { transfer = try decoder.decode(PhotographerLibraryTransfer.self, from: data) }
+        catch { throw PhotographerLibraryTransferError.invalidFormat }
         return transfer.photographers
     }
 }

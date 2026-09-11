@@ -45,6 +45,49 @@ enum MetadataWriter {
         (relativePath as NSString).deletingPathExtension + ".xmp"
     }
 
+    /// Read-only policy assessment using the same carriers as apply(). An existing
+    /// RAW sidecar is authoritative; when absent, seed from embedded IPTC/XMP just
+    /// as sidecar creation does. No generated sidecar or metadata write occurs here.
+    static func writableFields(at fileURL: URL, relativePath: String,
+                               policy: MetadataExistingFieldPolicy) throws -> Set<MetadataWritableField> {
+        if usesXMPSidecar(for: relativePath) {
+            let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+            var xmp: XMPData
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                xmp = try XMPSidecar.read(from: sidecar)
+            } else if var embedded = try? ImageMetadata.read(from: fileURL) {
+                embedded.syncIPTCToXMP()
+                xmp = embedded.xmp ?? XMPData()
+                if xmpGPSPosition(xmp) == nil, let position = embeddedGPSPosition(embedded) {
+                    setGPS(position, on: &xmp)
+                }
+            } else { xmp = XMPData() }
+            return Set(MetadataWritableField.allCases.filter { field in
+                if policy.overwrites(field) { return true }
+                switch field {
+                case .headline: return isEmpty(xmp.headline)
+                case .description: return isEmpty(xmp.description)
+                case .keywords: return xmp.subject.isEmpty
+                case .creator: return xmp.creator.isEmpty
+                case .copyright: return isEmpty(xmp.rights)
+                case .gpsPosition: return xmpGPSPosition(xmp) == nil
+                }
+            })
+        }
+        let metadata = try ImageMetadata.read(from: fileURL)
+        return Set(MetadataWritableField.allCases.filter { field in
+            if policy.overwrites(field) { return true }
+            switch field {
+            case .headline: return isEmpty(metadata.iptc.headline) && isEmpty(metadata.xmp?.headline)
+            case .description: return isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)
+            case .keywords: return metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)
+            case .creator: return isEmpty(metadata.iptc.byline) && (metadata.xmp?.creator.isEmpty ?? true)
+            case .copyright: return isEmpty(metadata.iptc.copyright) && isEmpty(metadata.xmp?.rights)
+            case .gpsPosition: return embeddedGPSPosition(metadata) == nil && metadata.xmp.flatMap(xmpGPSPosition) == nil
+            }
+        })
+    }
+
     static func schedulingDate(
         for policy: MetadataTimestampPolicy,
         sourceModifiedAt: Date,

@@ -280,6 +280,35 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var sortProcessedFilesByPhotographer: Bool? = nil
     // Optional so jobs saved by earlier versions continue to decode.
     var metadataAutomation: MetadataAutomation? = nil
+    // Missing in legacy jobs means no frozen processing context has been selected.
+    // Never fill this from the current time zone while decoding or reading a job.
+    var metadataProcessingTimeZoneIdentifier: String? = nil
+
+    var validatedMetadataProcessingTimeZone: TimeZone? {
+        get throws {
+            guard let identifier = metadataProcessingTimeZoneIdentifier else { return nil }
+            guard !identifier.isEmpty, let zone = TimeZone(identifier: identifier) else {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+            return zone
+        }
+    }
+
+    func requiredMetadataProcessingTimeZone() throws -> TimeZone {
+        guard let zone = try validatedMetadataProcessingTimeZone else {
+            throw MetadataTemplateRecordError.invalidSource
+        }
+        return zone
+    }
+
+    /// Save/activation boundaries opt into this requirement; older stored jobs
+    /// remain decodable without inventing a processing zone.
+    func validateMetadataTemplateActivationContext() throws {
+        _ = try validatedMetadataProcessingTimeZone
+        if metadataAutomation?.hasActivatedTemplates == true {
+            _ = try requiredMetadataProcessingTimeZone()
+        }
+    }
 
     var startsOnAppLaunch: Bool {
         get { startOnAppLaunch ?? isEnabled }
@@ -489,6 +518,77 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
             }
         }
         return nil
+    }
+}
+
+// Keeping Codable's implementation outside the type preserves its memberwise
+// initializer. The old required and optional keys retain their original behavior.
+extension SyncJob {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, left, right, direction, filter, intervalSeconds, isEnabled
+        case startOnAppLaunch, latestSessionTransferCountOnly, preserveModificationDates
+        case verifyFileSizes, verifyMatchingFileContents, overwriteCaseVariantDownloads
+        case uploadNaming, targetCleanup, processedFolder, processedFilesLocation
+        case sortProcessedFilesByPhotographer, metadataAutomation, metadataProcessingTimeZoneIdentifier
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Validate the new configuration before decoding any nested automation.
+        if container.contains(.metadataProcessingTimeZoneIdentifier) {
+            do {
+                metadataProcessingTimeZoneIdentifier = try container.decode(String.self, forKey: .metadataProcessingTimeZoneIdentifier)
+                _ = try validatedMetadataProcessingTimeZone
+            } catch {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+        }
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        left = try container.decode(Endpoint.self, forKey: .left)
+        right = try container.decode(Endpoint.self, forKey: .right)
+        direction = try container.decode(SyncDirection.self, forKey: .direction)
+        filter = try container.decode(FileFilter.self, forKey: .filter)
+        intervalSeconds = try container.decode(Double.self, forKey: .intervalSeconds)
+        isEnabled = try container.decode(Bool.self, forKey: .isEnabled)
+        startOnAppLaunch = try container.decodeIfPresent(Bool.self, forKey: .startOnAppLaunch)
+        latestSessionTransferCountOnly = try container.decodeIfPresent(Bool.self, forKey: .latestSessionTransferCountOnly)
+        preserveModificationDates = try container.decode(Bool.self, forKey: .preserveModificationDates)
+        verifyFileSizes = try container.decode(Bool.self, forKey: .verifyFileSizes)
+        verifyMatchingFileContents = try container.decodeIfPresent(Bool.self, forKey: .verifyMatchingFileContents)
+        overwriteCaseVariantDownloads = try container.decodeIfPresent(Bool.self, forKey: .overwriteCaseVariantDownloads)
+        uploadNaming = try container.decodeIfPresent(UploadNaming.self, forKey: .uploadNaming)
+        targetCleanup = try container.decodeIfPresent(TargetCleanup.self, forKey: .targetCleanup)
+        processedFolder = try container.decodeIfPresent(Endpoint.self, forKey: .processedFolder)
+        processedFilesLocation = try container.decodeIfPresent(ProcessedFilesLocation.self, forKey: .processedFilesLocation)
+        sortProcessedFilesByPhotographer = try container.decodeIfPresent(Bool.self, forKey: .sortProcessedFilesByPhotographer)
+        metadataAutomation = try container.decodeIfPresent(MetadataAutomation.self, forKey: .metadataAutomation)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        _ = try validatedMetadataProcessingTimeZone
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(left, forKey: .left)
+        try container.encode(right, forKey: .right)
+        try container.encode(direction, forKey: .direction)
+        try container.encode(filter, forKey: .filter)
+        try container.encode(intervalSeconds, forKey: .intervalSeconds)
+        try container.encode(isEnabled, forKey: .isEnabled)
+        try container.encodeIfPresent(startOnAppLaunch, forKey: .startOnAppLaunch)
+        try container.encodeIfPresent(latestSessionTransferCountOnly, forKey: .latestSessionTransferCountOnly)
+        try container.encode(preserveModificationDates, forKey: .preserveModificationDates)
+        try container.encode(verifyFileSizes, forKey: .verifyFileSizes)
+        try container.encodeIfPresent(verifyMatchingFileContents, forKey: .verifyMatchingFileContents)
+        try container.encodeIfPresent(overwriteCaseVariantDownloads, forKey: .overwriteCaseVariantDownloads)
+        try container.encodeIfPresent(uploadNaming, forKey: .uploadNaming)
+        try container.encodeIfPresent(targetCleanup, forKey: .targetCleanup)
+        try container.encodeIfPresent(processedFolder, forKey: .processedFolder)
+        try container.encodeIfPresent(processedFilesLocation, forKey: .processedFilesLocation)
+        try container.encodeIfPresent(sortProcessedFilesByPhotographer, forKey: .sortProcessedFilesByPhotographer)
+        try container.encodeIfPresent(metadataAutomation, forKey: .metadataAutomation)
+        try container.encodeIfPresent(metadataProcessingTimeZoneIdentifier, forKey: .metadataProcessingTimeZoneIdentifier)
     }
 }
 

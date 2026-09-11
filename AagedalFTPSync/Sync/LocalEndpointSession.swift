@@ -7,6 +7,8 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     private let fileManager = FileManager.default
     private let holdingURLFactory: @Sendable (URL) -> URL
     private let holdingRemoval: @Sendable (URL) throws -> Void
+    enum MatchingImportPhase: Sendable { case originalsHeld, published(Int), beforeCommit }
+    private let matchingImportHook: @Sendable (MatchingImportPhase) throws -> Void
 
     init(
         endpoint: Endpoint,
@@ -18,11 +20,13 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         },
         holdingRemoval: @escaping @Sendable (URL) throws -> Void = {
             try FileManager.default.removeItem(at: $0)
-        }
+        },
+        matchingImportHook: @escaping @Sendable (MatchingImportPhase) throws -> Void = { _ in }
     ) throws {
         access = try BookmarkAccess(endpoint: endpoint)
         self.holdingURLFactory = holdingURLFactory
         self.holdingRemoval = holdingRemoval
+        self.matchingImportHook = matchingImportHook
         if let managedFolder {
             rootURL = try managedFolder.url(inside: access.url, createIfNeeded: true)
         } else {
@@ -216,6 +220,135 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             if publicationError is CancellationError { throw CancellationError() }
             throw publicationError
         }
+    }
+
+    /// Per-image publication (image and optional sidecar). Originals are held by
+    /// exclusive rename, then compared by bytes, never just size/date. Conflicting
+    /// edits and originals that cannot be restored are retained in the recovery
+    /// directory. This is not filesystem isolation from already-open writer FDs.
+    func importFilesTransactionallyMatching(
+        _ imports: [EndpointFileImport], replacing originals: [EndpointFileImport],
+        preserveDate: Bool, verifySize: Bool
+    ) async throws {
+        guard !imports.isEmpty, imports.count <= 2, !originals.isEmpty, originals.count <= 2,
+              Set(imports.map(\.file.relativePath)).count == imports.count,
+              Set(originals.map(\.file.relativePath)).count == originals.count else {
+            throw AppError.transferFailed("Byte-matched publication requires one image and at most one sidecar, with unique paths.")
+        }
+        struct Original { let destination: URL; let held: URL; let expected: URL; let replaced: Bool }
+        struct Output { let destination: URL; let staged: URL; let expected: URL; let identity: FileIdentity }
+        let recovery = rootURL.appendingPathComponent(".aagedal-sync-\(UUID().uuidString).transaction", isDirectory: true)
+        try fileManager.createDirectory(at: recovery, withIntermediateDirectories: false,
+                                        attributes: [.posixPermissions: 0o700])
+        var originalsPrepared: [Original] = [], outputs: [Output] = []
+        var heldIndices: [Int] = [], publishedIndices: [Int] = []
+        var retainRecovery = false
+        defer { if !retainRecovery { try? fileManager.removeItem(at: recovery) } }
+        do {
+            // Freeze caller-owned immutable inputs before altering any destination.
+            for (index, original) in originals.enumerated() {
+                try Task.checkCancellation()
+                let destination = try safeURL(for: original.file.relativePath)
+                _ = try regularIdentity(destination)
+                _ = try regularIdentity(original.localURL)
+                let expected = recovery.appendingPathComponent("original-copy-\(index)")
+                try fileManager.copyItem(at: original.localURL, to: expected)
+                try SourceRemovalVerification.validate(expected, matches: original.localURL)
+                originalsPrepared.append(Original(destination: destination,
+                    held: recovery.appendingPathComponent("original-held-\(index)"), expected: expected,
+                    replaced: imports.contains { $0.file.relativePath == original.file.relativePath }))
+            }
+            for (index, item) in imports.enumerated() {
+                try Task.checkCancellation()
+                let destination = try safeURL(for: item.file.relativePath)
+                try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                _ = try regularIdentity(item.localURL)
+                let staged = recovery.appendingPathComponent("output-stage-\(index)")
+                let expected = recovery.appendingPathComponent("output-copy-\(index)")
+                try fileManager.copyItem(at: item.localURL, to: staged)
+                if verifySize {
+                    let size = try fileManager.attributesOfItem(atPath: staged.path)[.size] as? NSNumber
+                    guard size?.int64Value == item.file.size else { throw AppError.transferFailed("The staged replacement size did not match its expected size.") }
+                }
+                try SourceRemovalVerification.validate(staged, matches: item.localURL)
+                try fileManager.setAttributes([.modificationDate: preserveDate ? item.file.modifiedAt : Date()], ofItemAtPath: staged.path)
+                try fileManager.copyItem(at: staged, to: expected)
+                outputs.append(Output(destination: destination, staged: staged, expected: expected,
+                                      identity: try regularIdentity(staged)))
+            }
+            for (index, original) in originalsPrepared.enumerated() {
+                try Task.checkCancellation()
+                try moveExclusively(from: original.destination, to: original.held)
+                heldIndices.append(index)
+            }
+            try matchingImportHook(.originalsHeld)
+            for original in originalsPrepared { try SourceRemovalVerification.validate(original.held, matches: original.expected) }
+            for (index, output) in outputs.enumerated() {
+                try Task.checkCancellation()
+                try moveExclusively(from: output.staged, to: output.destination)
+                publishedIndices.append(index)
+                try matchingImportHook(.published(index))
+            }
+            try matchingImportHook(.beforeCommit)
+            try Task.checkCancellation()
+            for original in originalsPrepared { try SourceRemovalVerification.validate(original.held, matches: original.expected) }
+            for output in outputs {
+                guard try regularIdentity(output.destination) == output.identity else {
+                    throw AppError.transferFailed("A published replacement changed before commit.")
+                }
+                try SourceRemovalVerification.validate(output.destination, matches: output.expected)
+            }
+            // Guard-only RAW inputs return via rename: bytes, inode and date survive.
+            for index in heldIndices.reversed() where !originalsPrepared[index].replaced {
+                let original = originalsPrepared[index]
+                try moveExclusively(from: original.held, to: original.destination)
+                heldIndices.removeAll { $0 == index }
+            }
+        } catch {
+            let failure = error
+            // Revoke only our unchanged output. A replacement or edited inode is
+            // restored exclusively or retained; never unlink a concurrently edited path.
+            for index in publishedIndices.reversed() {
+                let output = outputs[index]
+                let quarantine = recovery.appendingPathComponent("rollback-output-\(index)")
+                do {
+                    try moveExclusively(from: output.destination, to: quarantine)
+                    if try regularIdentity(quarantine) == output.identity,
+                       fileManager.contentsEqual(atPath: quarantine.path, andPath: output.expected.path) {
+                        try fileManager.removeItem(at: quarantine)
+                    } else {
+                        try moveExclusively(from: quarantine, to: output.destination)
+                    }
+                } catch { retainRecovery = true }
+            }
+            for index in heldIndices.reversed() {
+                let original = originalsPrepared[index]
+                do { try moveExclusively(from: original.held, to: original.destination) }
+                catch { retainRecovery = true }
+            }
+            if retainRecovery {
+                throw AppError.transferFailed("Replacement stopped; concurrent edits were not overwritten. Recover retained files at \(recovery.path). Cause: \(failure.localizedDescription)")
+            }
+            throw failure
+        }
+        // Publication has committed. A cleanup failure retains the remaining old
+        // originals; do not attempt a partial rollback after deleting any backup.
+        for index in heldIndices {
+            do { try fileManager.removeItem(at: originalsPrepared[index].held) }
+            catch {
+                retainRecovery = true
+                throw AppError.transferFailed("Replacement was published, but original backup cleanup failed. Retained files: \(recovery.path)")
+            }
+        }
+    }
+
+    private struct FileIdentity: Equatable { let device: dev_t; let inode: ino_t }
+    private func regularIdentity(_ url: URL) throws -> FileIdentity {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1 else {
+            throw AppError.transferFailed("Byte-matched replacement requires regular files without symbolic or hard links.")
+        }
+        return FileIdentity(device: info.st_dev, inode: info.st_ino)
     }
 
     private func moveExclusively(from source: URL, to destination: URL) throws {

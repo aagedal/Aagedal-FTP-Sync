@@ -219,9 +219,14 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) -> Bool {
-        let resolvedJob: SyncJob
+        var resolvedJob: SyncJob
         do {
             resolvedJob = try job.resolvingServerProfiles(in: serverProfiles)
+            if resolvedJob.metadataAutomation?.hasActivatedTemplates == true,
+               resolvedJob.metadataProcessingTimeZoneIdentifier == nil {
+                resolvedJob.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+            }
+            try resolvedJob.validateMetadataTemplateActivationContext()
         } catch {
             alertMessage = error.localizedDescription
             return false

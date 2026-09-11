@@ -50,9 +50,9 @@ struct VersionedStoreCodec: Sendable {
             do { return try decoder.decode(Payload<Value>.self, from: data).payload }
             catch let error as MetadataTemplateRecordError { throw error }
             catch {
-                // An earlier malformed sibling must not hide a later active record
-                // and permit recovery from an older literal backup.
-                if carriesTemplateRecords, (try? Self.hasTemplateMarkers(in: data)) == true {
+                // An earlier malformed sibling must not hide activation or a
+                // persisted job processing zone and recover older configuration.
+                if carriesTemplateRecords, (try? hasRecoverySensitiveRecords(in: data)) == true {
                     throw MetadataTemplateRecordError.invalidSource
                 }
                 throw error
@@ -112,6 +112,32 @@ struct VersionedStoreCodec: Sendable {
     private static func hasTemplateMarkers(in data: Data) throws -> Bool {
         do { try rejectLegacyTemplateMarkers(in: data); return false }
         catch HeaderError.requiresVersion3Storage { return true }
+    }
+
+    private func hasRecoverySensitiveRecords(in data: Data) throws -> Bool {
+        if try Self.hasTemplateMarkers(in: data) { return true }
+        guard store == .jobs else { return false }
+        do {
+            _ = try JSONDecoder().decode(ProcessingZoneProbe.self, from: data)
+            return false
+        } catch is MetadataTemplateRecordError { return true }
+    }
+
+    /// A valid zone is allowed in literal legacy storage. Only the v3 jobs
+    /// recovery check uses this probe, including when an earlier record failed.
+    private struct ProcessingZoneProbe: Decodable {
+        init(from decoder: Decoder) throws {
+            if let object = try? decoder.container(keyedBy: Key.self) {
+                for key in object.allKeys {
+                    if key.stringValue == "metadataProcessingTimeZoneIdentifier" {
+                        throw MetadataTemplateRecordError.invalidSource
+                    }
+                    _ = try object.decode(Self.self, forKey: key)
+                }
+            } else if var array = try? decoder.unkeyedContainer() {
+                while !array.isAtEnd { _ = try array.decode(Self.self) }
+            }
+        }
     }
 
     private struct LegacyTemplateProbe: Decodable {

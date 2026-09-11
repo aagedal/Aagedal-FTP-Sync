@@ -82,6 +82,7 @@ private struct ChangingSourceFile: LocalizedError {
 }
 
 private struct EarlyTransferSnapshot: Sendable {
+    var processingDates: [String: Date] = [:]
     let signatures: [String: SourceFileSignature]
     let result: SyncResult
     let sourceSignaturesToPersist: [SyncFile]
@@ -102,6 +103,12 @@ private struct EarlyTransferSnapshot: Sendable {
 }
 
 private actor EarlyTransferState {
+    private var processingDates: [String: Date] = [:]
+    func processingDate(for path: String, proposed: Date) -> Date {
+        if let saved = processingDates[path] { return saved }
+        processingDates[path] = proposed
+        return proposed
+    }
     private let maximumTransfers: Int
     private var signatures: [String: SourceFileSignature] = [:]
     private var transferred = 0
@@ -147,6 +154,7 @@ private actor EarlyTransferState {
 
     func snapshot() -> EarlyTransferSnapshot {
         EarlyTransferSnapshot(
+            processingDates: processingDates,
             signatures: signatures,
             result: SyncResult(
                 transferred: transferred,
@@ -167,6 +175,8 @@ struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
+    private let now: @Sendable () -> Date
+    private let localReprocessSessionFactory: @Sendable (Endpoint, ManagedOutputFolder?) throws -> LocalEndpointSession
     private let eventLogger: any SyncEventLogging
     private let sessionFactory: @Sendable (
         Endpoint,
@@ -188,12 +198,18 @@ struct SyncEngine: Sendable {
                 password: password,
                 managedFolder: managedFolder
             )
+        },
+        now: @escaping @Sendable () -> Date = { Date() },
+        localReprocessSessionFactory: @escaping @Sendable (Endpoint, ManagedOutputFolder?) throws -> LocalEndpointSession = {
+            try LocalEndpointSession(endpoint: $0, managedFolder: $1)
         }
     ) {
         self.sourceSignatureRepository = sourceSignatureRepository
         self.downloadManifestRepository = downloadManifestRepository
         self.eventLogger = eventLogger
+        self.now = now
         self.sessionFactory = sessionFactory
+        self.localReprocessSessionFactory = localReprocessSessionFactory
     }
 
     func run(job: SyncJob, leftPassword: String?, rightPassword: String?) async throws -> SyncResult {
@@ -288,6 +304,7 @@ struct SyncEngine: Sendable {
         rightPassword: String?,
         runID: UUID
     ) async throws -> SyncResult {
+        try job.validateMetadataTemplateActivationContext()
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
         let leftManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .rightToLeft
             ? .syncedFiles
@@ -724,6 +741,7 @@ struct SyncEngine: Sendable {
         leftPassword: String? = nil,
         rightPassword: String? = nil
     ) async throws -> MetadataReprocessResult {
+        try job.validateMetadataTemplateActivationContext()
         guard let automation = job.metadataAutomation, automation.isEnabled else {
             throw AppError.invalidConfiguration("Enable and save automatic metadata before reprocessing files.")
         }
@@ -764,9 +782,8 @@ struct SyncEngine: Sendable {
             throw AppError.invalidConfiguration("Metadata reprocessing requires a local destination folder.")
         }
 
-        let destination = try LocalEndpointSession(
-            endpoint: destinationEndpoint,
-            managedFolder: job.usesManagedFolderStructure ? .syncedFiles : nil
+        let destination = try localReprocessSessionFactory(
+            destinationEndpoint, job.usesManagedFolderStructure ? .syncedFiles : nil
         )
         let destinationFiles = try await destination.listFiles()
         let sourceFiles = try await sourceFilesForReprocessing(
@@ -805,6 +822,7 @@ struct SyncEngine: Sendable {
 
         for file in files {
             try Task.checkCancellation()
+            let processingDate = now()
             let temporaryURL = try makeTemporaryURL(for: file)
             let temporarySidecarURL = temporaryURL.deletingPathExtension().appendingPathExtension("xmp")
             defer {
@@ -870,13 +888,36 @@ struct SyncEngine: Sendable {
             guard scope.includes(assignment) else { continue }
             if scope.isClip { scanned += 1 }
 
-            let processing = try MetadataProcessingCoordinator.prepareLiteral(assignment)
+            let processing: MetadataProcessingResult
+            do {
+                processing = try MetadataProcessingCoordinator.preparePerImage(
+                    assignment: assignment, fileURL: temporaryURL, relativePath: file.relativePath,
+                    processingDate: processingDate,
+                    processingTimeZone: try job.validatedMetadataProcessingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                failed += 1
+                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: .failed, timestampPolicy: automation.timestampPolicy,
+                    scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription))
+                continue
+            }
+            let activated = processing.context != nil
+            if activated && !processing.fields.values.contains(.proposed) {
+                if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
+                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: processing.resolutionComplete ? .skipped : .failed,
+                    timestampPolicy: automation.timestampPolicy, scheduledAt: scheduledAt, assignment: assignment,
+                    detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was retained unchanged.",
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                continue
+            }
             if let assessment = try? MetadataWriter.assess(
                 processing.changes,
                 at: temporaryURL,
                 relativePath: file.relativePath
             ), assessment != .willApply {
-                skipped += 1
+                if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
                 let detail = assessment == .alreadyApplied
                     ? "The programmed metadata is already applied."
                     : "Existing non-empty metadata was preserved; no programmed fields needed changing."
@@ -885,23 +926,38 @@ struct SyncEngine: Sendable {
                     jobID: job.id,
                     operation: .reprocess,
                     relativePath: file.relativePath,
-                    status: .skipped,
+                    status: processing.resolutionComplete ? .skipped : .failed,
                     timestampPolicy: automation.timestampPolicy,
                     scheduledAt: scheduledAt,
                     assignment: assignment,
-                    detail: detail
+                    detail: processing.resolutionComplete ? detail : "Some requested metadata could not resolve; existing affected fields were preserved.",
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)
                 ))
                 continue
             }
 
             let writeResult: MetadataWriter.WriteResult
+            var immutableOriginals: [EndpointFileImport] = []
+            defer { for original in immutableOriginals { try? FileManager.default.removeItem(at: original.localURL) } }
             do {
+                if activated {
+                    let originalURL = try makeTemporaryURL(for: file)
+                    try FileManager.default.copyItem(at: temporaryURL, to: originalURL)
+                    immutableOriginals.append(EndpointFileImport(localURL: originalURL, file: file))
+                    if MetadataWriter.usesXMPSidecar(for: file.relativePath),
+                       let sidecar = destinationFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
+                        let snapshot = try makeTemporaryURL(for: sidecar)
+                        try FileManager.default.copyItem(at: temporarySidecarURL, to: snapshot)
+                        immutableOriginals.append(EndpointFileImport(localURL: snapshot, file: sidecar))
+                    }
+                }
                 writeResult = try MetadataWriter.apply(
                     processing.changes,
                     to: temporaryURL,
                     relativePath: file.relativePath
                 )
-            } catch {
+            } catch is CancellationError { throw CancellationError() }
+            catch {
                 failed += 1
                 metadataReport.append(MetadataAuditEntry(
                     runID: runID,
@@ -912,57 +968,67 @@ struct SyncEngine: Sendable {
                     timestampPolicy: automation.timestampPolicy,
                     scheduledAt: scheduledAt,
                     assignment: assignment,
-                    detail: error.localizedDescription
+                    detail: error.localizedDescription,
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)
                 ))
                 continue
             }
 
-            switch writeResult {
-            case .embedded(let rewrittenSize, _):
-                try await destination.importFile(
-                    from: temporaryURL,
-                    as: SyncFile(
-                        relativePath: file.relativePath,
-                        size: rewrittenSize,
-                        modifiedAt: file.modifiedAt
-                    ),
-                    preserveDate: true,
-                    verifySize: true
-                )
-                try await downloadManifestRepository.record(
-                    relativePaths: [file.relativePath],
-                    jobID: job.id,
-                    destinationEndpoint: destinationEndpoint
-                )
-            case .sidecar(let localURL, let sidecarSize, _):
-                let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-                try await destination.importFile(
-                    from: localURL,
-                    as: SyncFile(
-                        relativePath: sidecarPath,
-                        size: sidecarSize,
-                        modifiedAt: file.modifiedAt
-                    ),
-                    preserveDate: true,
-                    verifySize: true
-                )
-                try await downloadManifestRepository.record(
-                    relativePaths: [sidecarPath],
-                    jobID: job.id,
-                    destinationEndpoint: destinationEndpoint
-                )
+            do {
+                switch writeResult {
+                case .embedded(let rewrittenSize, _):
+                    let output = EndpointFileImport(localURL: temporaryURL, file: SyncFile(relativePath: file.relativePath,
+                        size: rewrittenSize, modifiedAt: file.modifiedAt))
+                    if activated {
+                        try await destination.importFilesTransactionallyMatching([output], replacing: immutableOriginals,
+                            preserveDate: true, verifySize: true)
+                    } else {
+                        try await destination.importFile(from: output.localURL, as: output.file, preserveDate: true, verifySize: true)
+                    }
+                    try await downloadManifestRepository.record(
+                        relativePaths: [file.relativePath],
+                        jobID: job.id,
+                        destinationEndpoint: destinationEndpoint
+                    )
+                case .sidecar(let localURL, let sidecarSize, _):
+                    let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+                    let output = EndpointFileImport(localURL: localURL, file: SyncFile(relativePath: sidecarPath,
+                        size: sidecarSize, modifiedAt: file.modifiedAt))
+                    if activated {
+                        try await destination.importFilesTransactionallyMatching([output], replacing: immutableOriginals,
+                            preserveDate: true, verifySize: true)
+                    } else {
+                        try await destination.importFile(from: output.localURL, as: output.file, preserveDate: true, verifySize: true)
+                    }
+                    try await downloadManifestRepository.record(
+                        relativePaths: [sidecarPath],
+                        jobID: job.id,
+                        destinationEndpoint: destinationEndpoint
+                    )
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                guard activated else { throw error }
+                failed += 1
+                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: .failed, timestampPolicy: automation.timestampPolicy,
+                    scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription,
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                continue
             }
-            applied += 1
+            if processing.resolutionComplete { applied += 1 } else { failed += 1 }
             metadataReport.append(MetadataAuditEntry(
                 runID: runID,
                 jobID: job.id,
                 operation: .reprocess,
                 relativePath: file.relativePath,
-                status: .applied,
+                status: processing.resolutionComplete ? .applied : .failed,
                 timestampPolicy: automation.timestampPolicy,
                 scheduledAt: scheduledAt,
                 assignment: assignment,
-                swiftExifWarnings: writeResult.warnings
+                swiftExifWarnings: writeResult.warnings,
+                detail: processing.resolutionComplete ? nil : "Partial metadata was applied; unresolved fields were preserved.",
+                processingEvidence: MetadataProcessingAuditEvidence(result: processing)
             ))
         }
 
@@ -1234,6 +1300,7 @@ struct SyncEngine: Sendable {
         }
         let claimed = await state.claim(absentCandidates)
         for file in claimed {
+            let processingDate = await state.processingDate(for: file.relativePath, proposed: now())
             do {
                 try Task.checkCancellation()
                 let outcome = try await transfer(
@@ -1247,6 +1314,8 @@ struct SyncEngine: Sendable {
                     preserveDate: job.preserveModificationDates,
                     verifySize: job.verifyFileSizes,
                     metadataAutomation: job.metadataAutomation,
+                    processingDate: processingDate,
+                    processingTimeZone: try job.validatedMetadataProcessingTimeZone,
                     sortProcessedFilesByPhotographer: false,
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
@@ -1444,10 +1513,13 @@ struct SyncEngine: Sendable {
         // attempt. Put their single retry behind every unattempted candidate.
         var queue = candidates.filter { deferredFiles[$0.relativePath] == nil }.map { (file: $0, isRetry: false) }
             + candidates.filter { deferredFiles[$0.relativePath] != nil }.map { (file: $0, isRetry: true) }
+        var processingDates = earlySnapshot.processingDates.filter { !changedEarlyPaths.contains($0.key) }
         var queueIndex = 0
         var exhaustedFiles: [String: String] = [:]
         while queueIndex < queue.count {
             let (file, isRetry) = queue[queueIndex]
+            let processingDate = processingDates[file.relativePath] ?? now()
+            processingDates[file.relativePath] = processingDate
             queueIndex += 1
             do {
                 try Task.checkCancellation()
@@ -1483,6 +1555,8 @@ struct SyncEngine: Sendable {
                     preserveDate: job.preserveModificationDates,
                     verifySize: job.verifyFileSizes,
                     metadataAutomation: job.metadataAutomation,
+                    processingDate: processingDate,
+                    processingTimeZone: try job.validatedMetadataProcessingTimeZone,
                     sortProcessedFilesByPhotographer: job.sortsProcessedFilesByPhotographer,
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
@@ -1864,6 +1938,8 @@ struct SyncEngine: Sendable {
         preserveDate: Bool,
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
+        processingDate: Date = Date(),
+        processingTimeZone: TimeZone? = nil,
         sortProcessedFilesByPhotographer: Bool,
         sourceSidecar: SyncFile?,
         sourceRole: SyncLogEndpointRole,
@@ -1967,54 +2043,74 @@ struct SyncEngine: Sendable {
         var auditEntry: MetadataAuditEntry?
         var embeddedMetadataApplied = false
         if let metadataAssignment {
-            let processing = try MetadataProcessingCoordinator.prepareLiteral(metadataAssignment)
+            var processingResult: MetadataProcessingResult?
             do {
-                let workURL = try makeTemporaryURL(for: file)
-                let workSidecarURL = workURL.deletingPathExtension().appendingPathExtension("xmp")
-                metadataTemporaryURL = workURL
-                metadataTemporarySidecarURL = workSidecarURL
-                try FileManager.default.copyItem(at: temporaryURL, to: workURL)
-                if sourceSidecar != nil {
-                    try FileManager.default.copyItem(at: temporarySidecarURL, to: workSidecarURL)
-                }
-
-                let writeResult = try MetadataWriter.apply(
-                    processing.changes,
-                    to: workURL,
-                    relativePath: file.relativePath
-                )
-                importedURL = workURL
-                switch writeResult {
-                case .embedded(let rewrittenSize, _):
-                    importedFile = SyncFile(
-                        relativePath: file.relativePath,
-                        size: rewrittenSize,
-                        modifiedAt: file.modifiedAt
-                    )
-                    embeddedMetadataApplied = true
-                case .sidecar(let localURL, let sidecarSize, _):
+                let processing = try MetadataProcessingCoordinator.preparePerImage(
+                    assignment: metadataAssignment, fileURL: temporaryURL, relativePath: file.relativePath,
+                    processingDate: processingDate, processingTimeZone: processingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
+                processingResult = processing
+                if processing.context != nil && !processing.fields.values.contains(.proposed) {
                     importedFile = file
-                    sidecarImport = (
-                        localURL,
-                        SyncFile(
-                            relativePath: MetadataWriter.sidecarRelativePath(for: file.relativePath),
-                            size: sidecarSize,
+                    if let sourceSidecar { sidecarImport = (temporarySidecarURL, sourceSidecar) }
+                    auditEntry = MetadataAuditEntry(runID: runID, jobID: jobID, operation: .transfer,
+                        relativePath: file.relativePath, status: processing.resolutionComplete ? .skipped : .failed,
+                        timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
+                        scheduledAt: scheduledAt, assignment: metadataAssignment,
+                        detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was transferred unchanged.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing))
+                } else {
+                    let workURL = try makeTemporaryURL(for: file)
+                    let workSidecarURL = workURL.deletingPathExtension().appendingPathExtension("xmp")
+                    metadataTemporaryURL = workURL
+                    metadataTemporarySidecarURL = workSidecarURL
+                    try FileManager.default.copyItem(at: temporaryURL, to: workURL)
+                    if sourceSidecar != nil {
+                        try FileManager.default.copyItem(at: temporarySidecarURL, to: workSidecarURL)
+                    }
+
+                    let writeResult = try MetadataWriter.apply(
+                        processing.changes,
+                        to: workURL,
+                        relativePath: file.relativePath
+                    )
+                    importedURL = workURL
+                    switch writeResult {
+                    case .embedded(let rewrittenSize, _):
+                        importedFile = SyncFile(
+                            relativePath: file.relativePath,
+                            size: rewrittenSize,
                             modifiedAt: file.modifiedAt
                         )
+                        embeddedMetadataApplied = true
+                    case .sidecar(let localURL, let sidecarSize, _):
+                        importedFile = file
+                        sidecarImport = (
+                            localURL,
+                            SyncFile(
+                                relativePath: MetadataWriter.sidecarRelativePath(for: file.relativePath),
+                                size: sidecarSize,
+                                modifiedAt: file.modifiedAt
+                            )
+                        )
+                    }
+                    auditEntry = MetadataAuditEntry(
+                        runID: runID,
+                        jobID: jobID,
+                        operation: .transfer,
+                        relativePath: file.relativePath,
+                        status: processing.resolutionComplete ? .applied : .failed,
+                        timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
+                        scheduledAt: scheduledAt,
+                        assignment: metadataAssignment,
+                        swiftExifWarnings: writeResult.warnings,
+                        detail: processing.resolutionComplete ? nil : "Partial metadata was applied; unresolved fields were preserved and the source was retained.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)
                     )
                 }
-                auditEntry = MetadataAuditEntry(
-                    runID: runID,
-                    jobID: jobID,
-                    operation: .transfer,
-                    relativePath: file.relativePath,
-                    status: .applied,
-                    timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
-                    scheduledAt: scheduledAt,
-                    assignment: metadataAssignment,
-                    swiftExifWarnings: writeResult.warnings
-                )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
+                importedURL = temporaryURL
                 importedFile = file
                 if let sourceSidecar {
                     sidecarImport = (temporarySidecarURL, sourceSidecar)
@@ -2028,7 +2124,8 @@ struct SyncEngine: Sendable {
                     timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
                     scheduledAt: scheduledAt,
                     assignment: metadataAssignment,
-                    detail: error.localizedDescription
+                    detail: error.localizedDescription,
+                    processingEvidence: processingResult.flatMap(MetadataProcessingAuditEvidence.init(result:))
                 )
             }
         } else {
@@ -2127,6 +2224,7 @@ struct SyncEngine: Sendable {
         var movedToProcessed = false
         var publishedProcessedPaths = Set<String>()
         if auditEntry?.status == .applied,
+           auditEntry?.processingEvidence?.resolutionComplete != false,
            let metadataAssignment,
            let processedDestination {
             do {

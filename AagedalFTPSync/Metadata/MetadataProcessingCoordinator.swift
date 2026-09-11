@@ -85,9 +85,43 @@ enum MetadataProcessingCoordinator {
         ])
     }
 
+    /// Freeze activated values once for this image. The persisted processing zone
+    /// also supplies the explicit fallback for an offset-free original capture.
+    /// Missing enrichment stays a field omission; no provider or writer is invoked.
+    static func preparePerImage(assignment: MetadataAssignment, fileURL: URL,
+                                relativePath: String, processingDate: Date,
+                                processingTimeZone: TimeZone) throws -> MetadataProcessingResult {
+        guard assignment.clip.fields.hasActivatedTemplates || assignment.photographer.hasActivatedTemplates else {
+            return try prepareLiteral(assignment)
+        }
+        let request = try MetadataProcessingRequest(assignment: assignment)
+        let writable = try MetadataWriter.writableFields(at: fileURL, relativePath: relativePath,
+                                                        policy: assignment.existingFieldPolicy)
+        let required = request.requiredVariables(for: writable)
+        var capture: MetadataCaptureDate?
+        if required.contains(.captureDate) {
+            var result = MetadataCaptureDateReader.read(from: fileURL,
+                persistedFallbackTimeZoneIdentifier: processingTimeZone.identifier)
+            if case .unavailable = result, MetadataWriter.usesXMPSidecar(for: relativePath) {
+                let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+                if FileManager.default.fileExists(atPath: sidecar.path) {
+                    result = MetadataCaptureDateReader.read(from: sidecar,
+                        persistedFallbackTimeZoneIdentifier: processingTimeZone.identifier)
+                }
+            }
+            // Invalid/ambiguous embedded originals remain unavailable; a sidecar
+            // cannot silently replace contradictory capture evidence.
+            if case .resolved(let value, _) = result { capture = value }
+        }
+        let context = MetadataTemplateContext(processingDate: processingDate,
+            processingTimeZone: processingTimeZone, captureDate: capture,
+            photographer: request.creator)
+        return resolve(request, context: context, writableFields: writable)
+    }
+
     /// Pure resolution against one supplied context; never reads or writes images.
     /// The caller supplies writability determined from original embedded/XMP metadata.
-    /// This API is not yet called with activated values by production persistence/UI.
+    /// preparePerImage supplies carrier-aware policy and frozen per-image inputs.
     static func resolve(
         _ request: MetadataProcessingRequest,
         context suppliedContext: MetadataTemplateContext,
