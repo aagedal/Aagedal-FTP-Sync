@@ -137,7 +137,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             && !store.isJobBusy(loadedJobID)
     }
 
-    var previewValidationMessage: String? {
+    func previewValidationMessage(for job: SyncJob?) -> String? {
+        if let blocker = job?.metadataFaceRecognitionRuntimeBlocker { return blocker }
         var enabledDraft = draft
         enabledDraft.isEnabled = true
         return enabledDraft.validationMessage
@@ -146,12 +147,12 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func canPreviewMetadata(for job: SyncJob?) -> Bool {
         loadedJobID != nil
             && metadataLocalEndpoint(for: job)?.bookmark != nil
-            && previewValidationMessage == nil
+            && previewValidationMessage(for: job) == nil
             && !isPreviewingMetadata
     }
 
     func previewHelp(for job: SyncJob?) -> String {
-        if let previewValidationMessage {
+        if let previewValidationMessage = previewValidationMessage(for: job) {
             return previewValidationMessage
         }
         guard let metadataLocalEndpoint = metadataLocalEndpoint(for: job) else {
@@ -231,6 +232,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     func previewConfiguredLocalFolder(for job: SyncJob?) {
         guard let job,
+              previewValidationMessage(for: job) == nil,
               let metadataLocalEndpoint = metadataLocalEndpoint(for: job) else { return }
         let previewDraft = draft
         let previewOperation = self.previewOperation
@@ -1208,6 +1210,9 @@ private func performMetadataPreview(
     endpoint: Endpoint,
     automation: MetadataAutomation
 ) async throws -> MetadataProgrammingPreview {
+    if let message = job.metadataFaceRecognitionRuntimeBlocker {
+        throw AppError.invalidConfiguration(message)
+    }
     let folderAccess = try BookmarkAccess(endpoint: endpoint)
     let folderURL = try MetadataPreviewService.localFolderURL(
         selectedRoot: folderAccess.url,

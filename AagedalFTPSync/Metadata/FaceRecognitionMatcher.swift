@@ -111,20 +111,44 @@ enum FaceRecognitionMatchOutcome: Equatable, Sendable {
 enum FaceRecognitionMatcher {
     static func match(embedding: FaceRecognitionEmbedding, quality: Double?, gallery: FaceRecognitionGallery,
                       policy: FaceRecognitionAcceptancePolicy) -> FaceRecognitionMatchOutcome {
+        // Compatibility entry point for already bounded synchronous callers.
+        // Recognition pipelines use the throwing path so cancellation can stop
+        // a large gallery scan between vector chunks.
+        try! matchCancellable(embedding: embedding, quality: quality, gallery: gallery,
+                              policy: policy, checkCancellation: {})
+    }
+
+    static func matchCancellable(
+        embedding: FaceRecognitionEmbedding,
+        quality: Double?,
+        gallery: FaceRecognitionGallery,
+        policy: FaceRecognitionAcceptancePolicy,
+        checkCancellation: () throws -> Void = Task.checkCancellation
+    ) throws -> FaceRecognitionMatchOutcome {
+        try checkCancellation()
         if let quality {
-            guard quality.isFinite, (0...1).contains(quality) else { return .invalidQuality }
+            guard quality.isFinite, (0...1).contains(quality) else {
+                try checkCancellation(); return .invalidQuality
+            }
             guard quality >= policy.minimumCaptureQuality else {
+                try checkCancellation()
                 return .insufficientQuality(actual: quality, minimum: policy.minimumCaptureQuality)
             }
-        } else if policy.unavailableQualityPolicy == .reject { return .qualityUnavailable }
+        } else if policy.unavailableQualityPolicy == .reject {
+            try checkCancellation(); return .qualityUnavailable
+        }
 
         var best: FaceRecognitionCandidate?
         var runnerUp: FaceRecognitionCandidate?
         // Every example of every person is visited. Neither a perfect match nor
         // the acceptance cutoff can discard a later, ambiguity-relevant person.
         for person in gallery.people {
-            let distance = person.examples.reduce(2.0) { minimum, example in
-                min(minimum, cosineDistance(embedding, example))
+            try checkCancellation()
+            var distance = 2.0
+            for example in person.examples {
+                distance = min(distance, try cosineDistance(
+                    embedding, example, checkCancellation: checkCancellation
+                ))
             }
             let candidate = FaceRecognitionCandidate(personID: person.id, name: person.name, cosineDistance: distance)
             if let currentBest = best {
@@ -132,6 +156,7 @@ enum FaceRecognitionMatcher {
                 else if runnerUp == nil || precedes(candidate, runnerUp!) { runnerUp = candidate }
             } else { best = candidate }
         }
+        try checkCancellation()
         guard let best else { return .noMatch(best: nil, runnerUp: nil) }
         guard best.cosineDistance < policy.maximumCosineDistance else {
             return .noMatch(best: best, runnerUp: runnerUp)
@@ -148,14 +173,20 @@ enum FaceRecognitionMatcher {
             (first.cosineDistance == second.cosineDistance && first.personID.uuidString < second.personID.uuidString)
     }
 
-    private static func cosineDistance(_ first: FaceRecognitionEmbedding, _ second: FaceRecognitionEmbedding) -> Double {
+    private static func cosineDistance(
+        _ first: FaceRecognitionEmbedding,
+        _ second: FaceRecognitionEmbedding,
+        checkCancellation: () throws -> Void
+    ) throws -> Double {
         // Float32-normalized arrays retain minute rounding error. Dividing by
         // their actual norms ensures identical vectors have distance zero.
         var dot = 0.0, firstSquared = 0.0, secondSquared = 0.0
-        for (a, b) in zip(first.values, second.values) {
-            let a = Double(a), b = Double(b)
+        for (index, pair) in zip(first.values, second.values).enumerated() {
+            if index.isMultiple(of: 64) { try checkCancellation() }
+            let a = Double(pair.0), b = Double(pair.1)
             dot += a * b; firstSquared += a * a; secondSquared += b * b
         }
+        try checkCancellation()
         let similarity = dot / (firstSquared * secondSquared).squareRoot()
         return 1 - min(1, max(-1, similarity))
     }

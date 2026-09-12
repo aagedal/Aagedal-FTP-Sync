@@ -92,7 +92,7 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
         version = metadataProgramming.contains { $0.automation.hasActivatedTemplates }
             || self.metadataPresets.contains { $0.fields.hasActivatedTemplates }
             || self.photographers.contains { $0.hasActivatedTemplates }
-            || self.jobs.contains { $0.metadataGeocoding != nil } ? 3 : 2
+            || self.jobs.contains { $0.metadataGeocoding != nil || $0.metadataFaceRecognition != nil } ? 3 : 2
     }
 
     var hasActivatedTemplates: Bool {
@@ -102,7 +102,11 @@ struct ConfigurationTransfer: Codable, Equatable, Sendable {
             || jobs.contains { $0.metadataAutomation?.hasActivatedTemplates == true }
     }
 
-    var requiresVersion3Contents: Bool { hasActivatedTemplates || jobs.contains { $0.metadataGeocoding != nil } }
+    var requiresVersion3Contents: Bool {
+        hasActivatedTemplates || jobs.contains {
+            $0.metadataGeocoding != nil || $0.metadataFaceRecognition != nil
+        }
+    }
 
     private enum CodingKeys: String, CodingKey {
         case format, version, scope, exportedAt, jobs, serverProfiles
@@ -379,7 +383,10 @@ enum ConfigurationTransferCodec {
         guard transfer.version >= 3 || !transfer.requiresVersion3Contents else {
             throw ConfigurationTransferError.inconsistentContents
         }
-        for job in transfer.jobs { try job.metadataGeocoding?.validate() }
+        for job in transfer.jobs {
+            try job.metadataGeocoding?.validate()
+            try job.validateMetadataFaceRecognitionContext()
+        }
         let isConsistent: Bool
         switch transfer.scope {
         case .jobs:

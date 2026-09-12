@@ -1049,6 +1049,27 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNotNil(coordinator.metadataPreviewError)
     }
 
+    func testPreviewRejectsUnavailableSavedRecognitionWithoutInvokingOperation() async {
+        let calls = PreviewCallCounter()
+        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+            await calls.increment()
+            return MetadataProgrammingPreview(folderName: "Unexpected", result: .init(items: []))
+        }
+        var job = previewJob()
+        job.metadataFaceRecognition = .init()
+        coordinator.loadedJobID = job.id
+
+        XCTAssertFalse(coordinator.canPreviewMetadata(for: job))
+        XCTAssertTrue(coordinator.previewHelp(for: job).contains("cannot run"))
+        coordinator.previewConfiguredLocalFolder(for: job)
+        await Task.yield()
+
+        let callCount = await calls.value
+        XCTAssertEqual(callCount, 0)
+        XCTAssertFalse(coordinator.isPreviewingMetadata)
+        XCTAssertNil(coordinator.metadataPreview)
+    }
+
     func testReplacementPreviewIgnoresCancelledRequest() async {
         let previews = PreviewSequence()
         let coordinator = MetadataProgrammingCoordinator { _, _, _ in
@@ -1126,6 +1147,11 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
 private enum PreviewFailure: Error {
     case expected
+}
+
+private actor PreviewCallCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
 }
 
 private actor PreviewSequence {

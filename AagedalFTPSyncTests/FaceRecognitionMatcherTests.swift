@@ -142,6 +142,32 @@ final class FaceRecognitionMatcherTests: XCTestCase {
             policy: try policy(unavailable: .allow)) else { return XCTFail("Unavailable quality requires explicit permission") }
     }
 
+    func testCancellableMatcherChecksBeforeWorkAndInsideVectorScan() throws {
+        enum Stop: Error { case requested }
+        let gallery = try FaceRecognitionGallery(people: [person(1, similarity: 1)])
+        var checks = 0
+        XCTAssertThrowsError(try FaceRecognitionMatcher.matchCancellable(
+            embedding: vector(), quality: 1, gallery: gallery, policy: policy()
+        ) {
+            checks += 1
+            if checks == 4 { throw Stop.requested }
+        }) {
+            XCTAssertTrue($0 is Stop)
+        }
+        // Start + person boundary + component 0 + component 64. A single
+        // 512-float comparison therefore cannot postpone cancellation to return.
+        XCTAssertEqual(checks, 4)
+
+        checks = 0
+        XCTAssertThrowsError(try FaceRecognitionMatcher.matchCancellable(
+            embedding: vector(), quality: 1, gallery: gallery, policy: policy()
+        ) {
+            checks += 1
+            throw Stop.requested
+        })
+        XCTAssertEqual(checks, 1)
+    }
+
     func testPolicyAndGalleryValidationRejectInvalidAdmission() throws {
         for distance in [Double.nan, .infinity, -1, 0, 2.01] { XCTAssertThrowsError(try policy(distance: distance)) }
         for gap in [Double.nan, .infinity, -1, 2.01] { XCTAssertThrowsError(try policy(gap: gap)) }

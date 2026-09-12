@@ -313,6 +313,9 @@ struct SyncEngine: Sendable {
         try job.validateMetadataTemplateActivationContext()
         _ = try job.metadataOperationTimeZone
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
+        if let message = job.metadataFaceRecognitionRuntimeBlocker {
+            throw AppError.invalidConfiguration(message)
+        }
         let leftManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .rightToLeft
             ? .syncedFiles
             : nil
@@ -750,6 +753,9 @@ struct SyncEngine: Sendable {
     ) async throws -> MetadataReprocessResult {
         try job.validateMetadataTemplateActivationContext()
         _ = try job.metadataOperationTimeZone
+        if let message = job.metadataFaceRecognitionRuntimeBlocker {
+            throw AppError.invalidConfiguration(message)
+        }
         let automation = job.metadataAutomation?.isEnabled == true ? job.metadataAutomation : nil
         let geocodingEnabled = job.metadataGeocoding?.isEnabled == true
         guard automation != nil || geocodingEnabled else {

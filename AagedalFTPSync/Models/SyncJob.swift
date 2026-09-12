@@ -285,9 +285,13 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
     var metadataProcessingTimeZoneIdentifier: String? = nil
     // Optional absence stays off; an explicit persisted policy requires v3.
     var metadataGeocoding: MetadataGeocodingSettings? = nil
+    // Optional absence stays off. Model, library and acceptance policy are
+    // validated runtime dependencies rather than portable job settings.
+    var metadataFaceRecognition: MetadataFaceRecognitionSettings? = nil
 
     var requiresVersion3MetadataConfiguration: Bool {
-        metadataGeocoding != nil || metadataAutomation?.hasActivatedTemplates == true
+        metadataGeocoding != nil || metadataFaceRecognition != nil
+            || metadataAutomation?.hasActivatedTemplates == true
     }
 
     func validateMetadataGeocodingContext() throws {
@@ -296,6 +300,18 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
         guard direction != .bidirectional else { throw MetadataGeocodingSettingsError.requiresOneWayJob }
         let target = direction == .leftToRight ? right : left
         guard target.kind == .local else { throw MetadataGeocodingSettingsError.requiresLocalDestination }
+    }
+
+    func validateMetadataFaceRecognitionContext() throws {
+        try metadataFaceRecognition?.validate()
+        guard metadataFaceRecognition != nil else { return }
+        guard direction != .bidirectional else {
+            throw MetadataFaceRecognitionSettingsError.requiresOneWayJob
+        }
+        let target = direction == .leftToRight ? right : left
+        guard target.kind == .local else {
+            throw MetadataFaceRecognitionSettingsError.requiresLocalDestination
+        }
     }
 
     var validatedMetadataProcessingTimeZone: TimeZone? {
@@ -514,6 +530,8 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
         }
         do { try validateMetadataGeocodingContext() }
         catch { return error.localizedDescription }
+        do { try validateMetadataFaceRecognitionContext() }
+        catch { return error.localizedDescription }
         if let metadataAutomation, metadataAutomation.isEnabled {
             guard direction != .bidirectional else {
                 return "Automatic metadata is only available for one-way jobs."
@@ -546,6 +564,7 @@ extension SyncJob {
         case verifyFileSizes, verifyMatchingFileContents, overwriteCaseVariantDownloads
         case uploadNaming, targetCleanup, processedFolder, processedFilesLocation
         case sortProcessedFilesByPhotographer, metadataAutomation, metadataProcessingTimeZoneIdentifier, metadataGeocoding
+        case metadataFaceRecognition
     }
 
     init(from decoder: Decoder) throws {
@@ -554,6 +573,16 @@ extension SyncJob {
         if container.contains(.metadataGeocoding) {
             do { metadataGeocoding = try container.decode(MetadataGeocodingSettings.self, forKey: .metadataGeocoding) }
             catch { throw MetadataGeocodingSettingsError.invalidSettings }
+        }
+        if container.contains(.metadataFaceRecognition) {
+            do {
+                metadataFaceRecognition = try container.decode(
+                    MetadataFaceRecognitionSettings.self,
+                    forKey: .metadataFaceRecognition
+                )
+            } catch {
+                throw MetadataFaceRecognitionSettingsError.invalidSettings
+            }
         }
         if container.contains(.metadataProcessingTimeZoneIdentifier) {
             do {
@@ -584,10 +613,12 @@ extension SyncJob {
         sortProcessedFilesByPhotographer = try container.decodeIfPresent(Bool.self, forKey: .sortProcessedFilesByPhotographer)
         metadataAutomation = try container.decodeIfPresent(MetadataAutomation.self, forKey: .metadataAutomation)
         try validateMetadataGeocodingContext()
+        try validateMetadataFaceRecognitionContext()
     }
 
     func encode(to encoder: Encoder) throws {
         try validateMetadataGeocodingContext()
+        try validateMetadataFaceRecognitionContext()
         _ = try validatedMetadataProcessingTimeZone
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
@@ -612,6 +643,7 @@ extension SyncJob {
         try container.encodeIfPresent(metadataAutomation, forKey: .metadataAutomation)
         try container.encodeIfPresent(metadataProcessingTimeZoneIdentifier, forKey: .metadataProcessingTimeZoneIdentifier)
         try container.encodeIfPresent(metadataGeocoding, forKey: .metadataGeocoding)
+        try container.encodeIfPresent(metadataFaceRecognition, forKey: .metadataFaceRecognition)
     }
 }
 
