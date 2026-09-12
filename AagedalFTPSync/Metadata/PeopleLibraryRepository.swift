@@ -111,6 +111,14 @@ struct PeopleLibraryRepository: Sendable {
         return snapshot
     }
 
+    /// Revalidates one unpacked immutable package without reading or changing the
+    /// repository's current selection. Export uses this before copying private data.
+    func validateSnapshot(at directory: URL) throws -> PeopleLibrarySnapshot {
+        let descriptor = try Self.openDirectory(directory.path)
+        defer { close(descriptor) }
+        return try loadSnapshot(descriptor, directory: directory)
+    }
+
     func removeCurrentSnapshot() throws {
         guard FileManager.default.fileExists(atPath: root.path) else { return }
         let rootFD = try Self.openRoot(root, create: false)
@@ -139,6 +147,15 @@ struct PeopleLibraryRepository: Sendable {
         let payload = try PeopleLibraryPayload.decode(
             Self.verifiedFile(fd, declaration: payloadDeclaration), limits: limits)
         try manifest.validate(payload: payload, limits: limits)
+        if let editorPayload = manifest.editorPayload {
+            guard let declaration = declarations[editorPayload.path] else { throw Failure.unexpectedFiles }
+            _ = try PeopleLibraryEditorPayload.decode(
+                Self.verifiedFile(fd, declaration: declaration),
+                manifest: manifest,
+                payload: payload,
+                limits: limits
+            )
+        }
         var people: [FaceRecognitionPerson] = []
         for person in payload.people {
             try Task.checkCancellation()
@@ -308,7 +325,7 @@ struct PeopleLibraryRepository: Sendable {
             var info = stat()
             guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw Failure.io }
             if info.st_mode & S_IFMT == S_IFDIR {
-                guard prefix.isEmpty, ["embeddings", "thumbnails", "embedding_thumbnails"].contains(name) else { throw Failure.unexpectedFiles }
+                guard prefix.isEmpty, ["embeddings", "thumbnails", "embedding_thumbnails", "editor"].contains(name) else { throw Failure.unexpectedFiles }
                 let child = try openChildDirectory(fd, name)
                 defer { close(child) }
                 let nested = try enumerate(child, maximum: maximum - result.count, prefix: name + "/")

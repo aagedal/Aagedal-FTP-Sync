@@ -103,10 +103,32 @@ struct PeopleLibraryManifest: Codable, Equatable, Sendable {
         }
     }
 
+    struct EditorPayloadDescriptor: Codable, Equatable, Sendable {
+        static let filePath = "editor/photo-agent.json"
+        static let contentType = "application/vnd.aagedal.photo-agent-known-people+json;version=1"
+        let path: String
+        let mediaType: String
+        let byteCount: Int
+        let sha256: String
+        init(byteCount: Int, sha256: String) throws {
+            path = Self.filePath; mediaType = Self.contentType
+            let file = try FileDeclaration(path: path, byteCount: byteCount, sha256: sha256)
+            self.byteCount = file.byteCount; self.sha256 = file.sha256
+        }
+        init(from decoder: Decoder) throws {
+            let c = try PeopleLibraryCoding.object(decoder, required: ["path", "mediaType", "byteCount", "sha256"])
+            guard try c.decode(String.self, forKey: .init("path")) == Self.filePath,
+                  try c.decode(String.self, forKey: .init("mediaType")) == Self.contentType else { throw ValidationError.invalidSchema }
+            try self.init(byteCount: c.decode(Int.self, forKey: .init("byteCount")), sha256: c.decode(String.self, forKey: .init("sha256")))
+        }
+    }
+
     let format: String
     let schemaVersion: Int
     let libraryID: UUID
     let revision: String
+    let coreRevision: String
+    let editorPayload: EditorPayloadDescriptor?
     /// Exactly yyyy-MM-dd'T'HH:mm:ss.SSS'Z', in UTC; independent of JSON date strategies.
     let exportedAt: String
     let exporter: Exporter
@@ -116,11 +138,14 @@ struct PeopleLibraryManifest: Codable, Equatable, Sendable {
     let files: [FileDeclaration]
 
     init(libraryID: UUID, exportedAt: String, exporter: Exporter, peopleCount: Int, embeddingCount: Int,
-         files: [FileDeclaration], contract: EmbeddingContract = .auraFaceV1) throws {
+         files: [FileDeclaration], contract: EmbeddingContract = .auraFaceV1, editorPayload: EditorPayloadDescriptor? = nil) throws {
         format = Self.formatIdentifier; schemaVersion = 2
         self.libraryID = libraryID; self.exportedAt = exportedAt; self.exporter = exporter
         self.peopleCount = peopleCount; self.embeddingCount = embeddingCount; self.files = files; self.contract = contract
-        revision = try Self.revision(libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount, files: files)
+        self.editorPayload = editorPayload
+        coreRevision = try Self.revision(libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount,
+            files: files.filter { $0.path != EditorPayloadDescriptor.filePath })
+        revision = try Self.overallRevision(coreRevision: coreRevision, editorPayload: editorPayload)
         try validate()
     }
 
@@ -164,7 +189,14 @@ struct PeopleLibraryManifest: Codable, Equatable, Sendable {
         guard paths.contains(Self.payloadFileName), files.filter({ $0.path.hasPrefix("embeddings/") }).count == embeddingCount else {
             throw ValidationError.invalidCounts
         }
-        guard try Self.revision(libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount, files: files) == revision else {
+        let editorFiles = files.filter { $0.path == EditorPayloadDescriptor.filePath }
+        if let editorPayload {
+            guard editorFiles.count == 1, editorFiles[0].byteCount == editorPayload.byteCount,
+                  editorFiles[0].sha256 == editorPayload.sha256 else { throw ValidationError.invalidReference }
+        } else if !editorFiles.isEmpty { throw ValidationError.invalidReference }
+        guard try Self.revision(libraryID: libraryID, contract: contract, peopleCount: peopleCount, embeddingCount: embeddingCount,
+                  files: files.filter { $0.path != EditorPayloadDescriptor.filePath }) == coreRevision,
+              try Self.overallRevision(coreRevision: coreRevision, editorPayload: editorPayload) == revision else {
             throw ValidationError.revisionMismatch
         }
     }
@@ -172,6 +204,7 @@ struct PeopleLibraryManifest: Codable, Equatable, Sendable {
     func validate(payload: PeopleLibraryPayload, limits: Limits = .init()) throws {
         try validate(limits: limits); try payload.validate(limits: limits)
         var referenced: Set<String> = [Self.payloadFileName]
+        if editorPayload != nil { referenced.insert(EditorPayloadDescriptor.filePath) }
         var examples = 0
         for person in payload.people {
             if let path = person.thumbnailPath { guard referenced.insert(path).inserted else { throw ValidationError.duplicatePath } }
@@ -198,12 +231,22 @@ struct PeopleLibraryManifest: Codable, Equatable, Sendable {
         return SHA256.hash(data: try encoder.encode(value)).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Separate domain prevents an editor-only change from changing recognition identity.
+    private static func overallRevision(coreRevision: String, editorPayload: EditorPayloadDescriptor?) throws -> String {
+        struct Input: Encodable { let format: String; let schemaVersion: Int; let coreRevision: String; let editorPayload: EditorPayloadDescriptor? }
+        let value = Input(format: "aagedal-known-people-snapshot", schemaVersion: 2, coreRevision: coreRevision, editorPayload: editorPayload)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return SHA256.hash(data: try encoder.encode(value)).map { String(format: "%02x", $0) }.joined()
+    }
+
     init(from decoder: Decoder) throws {
-        let c = try PeopleLibraryCoding.object(decoder, required: ["format", "schemaVersion", "libraryID", "revision", "exportedAt", "exporter", "contract", "peopleCount", "embeddingCount", "files"])
+        let c = try PeopleLibraryCoding.object(decoder, required: ["format", "schemaVersion", "libraryID", "revision", "coreRevision", "exportedAt", "exporter", "contract", "peopleCount", "embeddingCount", "files"], optional: ["editorPayload"])
         format = try c.decode(String.self, forKey: .init("format")); schemaVersion = try c.decode(Int.self, forKey: .init("schemaVersion"))
         guard format == Self.formatIdentifier, schemaVersion == 2 else { throw ValidationError.invalidSchema }
         contract = try c.decode(EmbeddingContract.self, forKey: .init("contract"))
         libraryID = try PeopleLibraryCoding.id(from: c, key: "libraryID"); revision = try c.decode(String.self, forKey: .init("revision"))
+        coreRevision = try c.decode(String.self, forKey: .init("coreRevision"))
+        editorPayload = c.contains(.init("editorPayload")) ? try c.decode(EditorPayloadDescriptor.self, forKey: .init("editorPayload")) : nil
         exportedAt = try c.decode(String.self, forKey: .init("exportedAt")); exporter = try c.decode(Exporter.self, forKey: .init("exporter"))
         peopleCount = try c.decode(Int.self, forKey: .init("peopleCount")); embeddingCount = try c.decode(Int.self, forKey: .init("embeddingCount"))
         files = try PeopleLibraryCoding.array(FileDeclaration.self, from: c, key: "files", maximum: Limits().maximumFiles)
@@ -214,6 +257,8 @@ struct PeopleLibraryManifest: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: PeopleLibraryCoding.Key.self)
         try c.encode(format, forKey: .init("format")); try c.encode(schemaVersion, forKey: .init("schemaVersion"))
         try c.encode(libraryID.uuidString.lowercased(), forKey: .init("libraryID")); try c.encode(revision, forKey: .init("revision"))
+        try c.encode(coreRevision, forKey: .init("coreRevision"))
+        try c.encodeIfPresent(editorPayload, forKey: .init("editorPayload"))
         try c.encode(exportedAt, forKey: .init("exportedAt")); try c.encode(exporter, forKey: .init("exporter"))
         try c.encode(contract, forKey: .init("contract")); try c.encode(peopleCount, forKey: .init("peopleCount"))
         try c.encode(embeddingCount, forKey: .init("embeddingCount")); try c.encode(files, forKey: .init("files"))
@@ -398,7 +443,7 @@ private enum PeopleLibraryCoding {
         guard id.uuidString != "00000000-0000-0000-0000-000000000000" else { throw PeopleLibraryManifest.ValidationError.invalidIdentity }
     }
     static func validatePath(_ path: String) throws {
-        if path == PeopleLibraryManifest.payloadFileName { return }
+        if path == PeopleLibraryManifest.payloadFileName || path == PeopleLibraryManifest.EditorPayloadDescriptor.filePath { return }
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         guard components.count == 2 else { throw PeopleLibraryManifest.ValidationError.invalidPath }
         let folder = String(components[0]), name = String(components[1])
