@@ -36,6 +36,11 @@ Focused result:
 
 - Result bundle: `build/DerivedData-people-settings/Logs/Test/Test-AagedalFTPSync-2026.09.12_15-42-37-+0200.xcresult`
 - 14 passed, zero failed, zero skipped.
+- Adversarial installer result bundle: `build/DerivedData-face-installer-adversarial/Logs/Test/Test-AagedalFTPSync-2026.09.12_16-14-38-+0200.xcresult`
+- 11 passed, zero failed, zero skipped. This adds explicit rejection coverage for
+  ZIP64 sentinels/extras, duplicate and case-colliding entries, special-file
+  attributes, local/central metadata disagreement, and cancellation after
+  extraction but before publication.
 
 A full run discovered 1,069 tests and recorded 898 passes, 156 failures and 15
 opt-in skips. The broad failure cluster is environmental: existing suites were
@@ -50,11 +55,15 @@ This run is not release evidence. The earlier clean full-suite result at
   Swift preprocessor say RGB/Torch 2.8. Recognition publication remains blocked.
 - No dedicated production model-distribution public key or fixed production
   descriptor/signature URLs are embedded.
-- Photo Agent's current packager and signed artifacts use schema 1 and forced
-  ZIP64 local headers. The hardened FTP Sync contract requires a canonical
-  schema-2 descriptor with exact per-file sizes and a deterministic ZIP32 STORED
-  archive. The producer and artifacts must be regenerated and re-signed.
+- Photo Agent now has a schema-2 directory contract and reader, but its production
+  exporter still writes the legacy schema-1 package and its model packager forces
+  ZIP64 local headers. The hardened FTP Sync contract requires a schema-2 export
+  plus a deterministic ZIP32 STORED model archive. Both producers and their
+  artifacts must be regenerated and re-signed.
+- The Core ML artifact is excluded from Photo Agent's Git history. RGB is declared
+  by code and manifests, but no committed labeled fixture compares the source
+  ONNX output with Core ML for both channel orders. This proof must be non-skipping
+  before the production analyzer can become reachable.
 - Future recognition integration must load and validate a Core ML model from the
   signed package without reintroducing a mutable filesystem URL, then prove the
   preprocessing contract with pinned vectors and labeled faces.
-
