@@ -5,6 +5,16 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class AuraFaceComponentInstallerTests: XCTestCase {
+    private struct ZIPEntry {
+        var path: String
+        let bytes: Data
+        var centralExtra = Data()
+        var externalAttributes = UInt32(S_IFREG | 0o600) << 16
+        var localCRCOverride: UInt32?
+        var centralCompressedSizeOverride: UInt32?
+        var centralUncompressedSizeOverride: UInt32?
+    }
+
     private struct Fixture {
         let key: Curve25519.Signing.PrivateKey
         let trust: AuraFaceDistributionTrust
@@ -138,6 +148,71 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("current").path))
     }
 
+    func testZIP64SentinelAndExtraAreRejectedBeforeExtraction() async throws {
+        var sentinelEntries = archiveEntries()
+        sentinelEntries[0].centralCompressedSizeOverride = UInt32.max
+        sentinelEntries[0].centralUncompressedSizeOverride = UInt32.max
+        try await assertArchiveRejected(zip(sentinelEntries))
+
+        var extraEntries = archiveEntries()
+        var zip64Extra = Data()
+        zip64Extra.le16(0x0001)
+        zip64Extra.le16(0)
+        extraEntries[0].centralExtra = zip64Extra
+        try await assertArchiveRejected(zip(extraEntries))
+    }
+
+    func testDuplicateAndCaseCollidingEntriesAreRejectedBeforeExtraction() async throws {
+        var duplicateEntries = archiveEntries()
+        duplicateEntries[1].path = duplicateEntries[0].path
+        try await assertArchiveRejected(zip(duplicateEntries))
+
+        var caseCollisionEntries = archiveEntries()
+        caseCollisionEntries[1].path = caseCollisionEntries[0].path.uppercased()
+        try await assertArchiveRejected(zip(caseCollisionEntries))
+    }
+
+    func testSpecialFileExternalAttributesAreRejectedBeforeExtraction() async throws {
+        var entries = archiveEntries()
+        entries[0].externalAttributes = UInt32(S_IFLNK | 0o777) << 16
+        try await assertArchiveRejected(zip(entries))
+    }
+
+    func testLocalAndCentralMetadataMismatchIsRejectedBeforeExtraction() async throws {
+        var entries = archiveEntries()
+        entries[0].localCRCOverride = crc32(entries[0].bytes) ^ 1
+        try await assertArchiveRejected(zip(entries))
+    }
+
+    func testCancellationAtCompilerBoundaryAfterExtractionDoesNotPublish() async throws {
+        let fixture = try makeFixture()
+        let root = try temporaryRoot()
+        let probe = DownloadProbe()
+        probe.install([
+            fixture.trust.descriptorURL: fixture.descriptorData,
+            fixture.trust.signatureURL: fixture.signatureData,
+            fixture.descriptor.downloadURL: fixture.archiveData,
+        ])
+        let observedPackage = LockedFlag()
+        let expectedPaths = Array(packageFiles().keys)
+        let installer = try AuraFaceComponentInstaller(
+            trust: fixture.trust, root: root, downloads: probe.client()
+        ) { package, _ in
+            let extracted = expectedPaths.allSatisfy {
+                FileManager.default.fileExists(atPath: package.appendingPathComponent($0).path)
+            }
+            observedPackage.set(extracted)
+            throw CancellationError()
+        }
+
+        await XCTAssertThrowsErrorAsync(try await installer.downloadAndInstall()) {
+            XCTAssertTrue($0 is CancellationError)
+        }
+        XCTAssertTrue(observedPackage.value)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("current").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("rollback").path))
+    }
+
     func testInterruptedPublicationRecoversVerifiedRollbackWithoutNetwork() async throws {
         let fixture = try makeFixture()
         let root = try temporaryRoot()
@@ -221,29 +296,58 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
         ]
     }
 
+    private func archiveEntries() -> [ZIPEntry] {
+        packageFiles().map {
+            ZIPEntry(path: AuraFaceDistributionContract.packageDirectory + "/" + $0.key, bytes: $0.value)
+        }.sorted { $0.path < $1.path }
+    }
+
+    private func assertArchiveRejected(_ archive: Data) async throws {
+        let fixture = try makeFixture(archiveOverride: archive)
+        let root = try temporaryRoot()
+        let probe = DownloadProbe()
+        probe.install([
+            fixture.trust.descriptorURL: fixture.descriptorData,
+            fixture.trust.signatureURL: fixture.signatureData,
+            fixture.descriptor.downloadURL: fixture.archiveData,
+        ])
+        let installer = try makeInstaller(fixture: fixture, root: root, client: probe.client())
+        await XCTAssertThrowsErrorAsync(try await installer.downloadAndInstall()) {
+            XCTAssertNotNil($0 as? AuraFaceComponentError)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("current").path))
+    }
+
     private func sha(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private func zip(_ entries: [(String, Data)]) -> Data {
-        struct Central { let name: Data; let bytes: Data; let crc: UInt32; let offset: UInt32 }
+        zip(entries.map { ZIPEntry(path: $0.0, bytes: $0.1) })
+    }
+
+    private func zip(_ entries: [ZIPEntry]) -> Data {
+        struct Central { let entry: ZIPEntry; let name: Data; let crc: UInt32; let offset: UInt32 }
         var result = Data(), central: [Central] = []
-        for (path, bytes) in entries.sorted(by: { $0.0 < $1.0 }) {
-            let name = Data(path.utf8), crc = crc32(bytes), offset = UInt32(result.count)
+        for entry in entries.sorted(by: { $0.path < $1.path }) {
+            let name = Data(entry.path.utf8), crc = crc32(entry.bytes), offset = UInt32(result.count)
             result.le32(0x0403_4b50); result.le16(20); result.le16(0x0800); result.le16(0)
-            result.le16(0); result.le16(0); result.le32(crc); result.le32(UInt32(bytes.count))
-            result.le32(UInt32(bytes.count)); result.le16(UInt16(name.count)); result.le16(0)
-            result.append(name); result.append(bytes)
-            central.append(.init(name: name, bytes: bytes, crc: crc, offset: offset))
+            result.le16(0); result.le16(0); result.le32(entry.localCRCOverride ?? crc)
+            result.le32(UInt32(entry.bytes.count)); result.le32(UInt32(entry.bytes.count))
+            result.le16(UInt16(name.count)); result.le16(0)
+            result.append(name); result.append(entry.bytes)
+            central.append(.init(entry: entry, name: name, crc: crc, offset: offset))
         }
         let centralOffset = UInt32(result.count)
         for item in central {
             result.le32(0x0201_4b50); result.le16(UInt16(3 << 8) | 20); result.le16(20)
             result.le16(0x0800); result.le16(0); result.le16(0); result.le16(0); result.le32(item.crc)
-            result.le32(UInt32(item.bytes.count)); result.le32(UInt32(item.bytes.count))
-            result.le16(UInt16(item.name.count)); result.le16(0); result.le16(0); result.le16(0)
-            result.le16(0); result.le32(UInt32(S_IFREG | 0o600) << 16); result.le32(item.offset)
-            result.append(item.name)
+            result.le32(item.entry.centralCompressedSizeOverride ?? UInt32(item.entry.bytes.count))
+            result.le32(item.entry.centralUncompressedSizeOverride ?? UInt32(item.entry.bytes.count))
+            result.le16(UInt16(item.name.count)); result.le16(UInt16(item.entry.centralExtra.count))
+            result.le16(0); result.le16(0); result.le16(0)
+            result.le32(item.entry.externalAttributes); result.le32(item.offset)
+            result.append(item.name); result.append(item.entry.centralExtra)
         }
         let centralSize = UInt32(result.count) - centralOffset
         result.le32(0x0605_4b50); result.le16(0); result.le16(0)
@@ -260,6 +364,14 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
         }
         return value ^ 0xffff_ffff
     }
+}
+
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool { lock.withLock { stored } }
+    func set(_ value: Bool) { lock.withLock { stored = value } }
 }
 
 private extension Data {
