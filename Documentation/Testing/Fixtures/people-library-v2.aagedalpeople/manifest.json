@@ -8,12 +8,12 @@
     "preprocessingRevision" : "photo-agent-eyes112-rgb-v3",
     "vectorEncoding" : "fem2-float32-le"
   },
-  "coreRevision" : "ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281",
+  "coreRevision" : "636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83",
   "editorPayload" : {
     "byteCount" : 655,
     "mediaType" : "application/vnd.aagedal.photo-agent-known-people+json;version=1",
     "path" : "editor/photo-agent.json",
-    "sha256" : "97957271343108a13df0df5dfdd608ad0046b9e7ffaf73eef54b546f8af95d5a"
+    "sha256" : "3135e29a2ba54766bc199d2c9e486aec39b94c66289f098fd26cde9828fb5efb"
   },
   "embeddingCount" : 1,
   "exportedAt" : "2026-09-12T13:30:00.000Z",
@@ -26,12 +26,12 @@
     {
       "byteCount" : 2056,
       "path" : "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2",
-      "sha256" : "c94edda6beea6aff7a41e7d6b6d6b9def72e024a8b10ccc78f7f900d0cd8c718"
+      "sha256" : "11515e45513a5f28a7e15321d1caa573c3dc1e70a112ac813dd8019f2900f1be"
     },
     {
       "byteCount" : 655,
       "path" : "editor/photo-agent.json",
-      "sha256" : "97957271343108a13df0df5dfdd608ad0046b9e7ffaf73eef54b546f8af95d5a"
+      "sha256" : "3135e29a2ba54766bc199d2c9e486aec39b94c66289f098fd26cde9828fb5efb"
     },
     {
       "byteCount" : 310,
@@ -42,6 +42,6 @@
   "format" : "aagedal-known-people",
   "libraryID" : "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
   "peopleCount" : 1,
-  "revision" : "87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709",
+  "revision" : "12324ae00b79094d239447531d81348e4c6450b7a65fbc329daab261c08025ba",
   "schemaVersion" : 2
 }

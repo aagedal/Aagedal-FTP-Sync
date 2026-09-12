@@ -84,6 +84,8 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         XCTAssertFalse(runtime.calendar.busy)
         XCTAssertFalse(runtime.admission.allowsCredentialGarbageCollection)
         XCTAssertEqual(runtime.admission.storage.root, root.appendingPathComponent("v3", isDirectory: true))
+        XCTAssertNotNil(runtime.appStore.peopleLibraryController)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: runtime.admission.storage.peopleLibraryDirectory.path))
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("jobs-v2.json")), legacy)
         try runtime.validateLease()
         assertLeaseHeld(root)

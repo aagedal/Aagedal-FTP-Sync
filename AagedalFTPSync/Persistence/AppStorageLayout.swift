@@ -37,4 +37,5 @@ struct AppStorageLayout: Equatable, Sendable {
     var downloadManifest: URL { root.appendingPathComponent("download-manifest-v1.json") }
     var downloadNamesDirectory: URL { root.appendingPathComponent("download-names-v1", isDirectory: true) }
     var downloadNameRegistry: URL { root.appendingPathComponent("download-name-registry-v3.json") }
+    var peopleLibraryDirectory: URL { root.appendingPathComponent("people-library-v2", isDirectory: true) }
 }

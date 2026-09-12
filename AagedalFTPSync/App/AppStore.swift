@@ -4,7 +4,7 @@ import Foundation
 import ServiceManagement
 
 enum AppSettingsTab: Hashable {
-    case servers, photographers, metadataSync
+    case servers, photographers, metadataSync, peopleLibrary
 }
 
 enum MetadataSyncSettingsTab: Hashable {
@@ -58,6 +58,7 @@ final class AppStore: ObservableObject {
     private let configurationTransferCoordinator = ConfigurationTransferCoordinator()
     private let metadataLibraryCoordinator: MetadataLibraryCoordinator
     private let metadataCalendarRepository: MetadataCalendarRepository?
+    let peopleLibraryController: PeopleLibraryController?
     private let launchAtLoginCoordinator: any LaunchAtLoginCoordinating
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
@@ -94,7 +95,9 @@ final class AppStore: ObservableObject {
         allowsCredentialGarbageCollection: Bool = true,
         preloadedPersistence: AppPersistenceLoadResult? = nil,
         startsJobsOnInitialization: Bool = true,
-        metadataCalendarRepository: MetadataCalendarRepository? = nil
+        metadataCalendarRepository: MetadataCalendarRepository? = nil,
+        peopleLibraryRepository: PeopleLibraryRepository? = nil,
+        peopleLibraryPackageService: PeopleLibraryPackageService = PeopleLibraryPackageService()
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -109,6 +112,9 @@ final class AppStore: ObservableObject {
         )
         self.persistenceCoordinator = persistenceCoordinator
         self.metadataCalendarRepository = metadataCalendarRepository
+        peopleLibraryController = peopleLibraryRepository.map {
+            PeopleLibraryController(repository: $0, packageService: peopleLibraryPackageService)
+        }
         metadataLibraryCoordinator = MetadataLibraryCoordinator(
             persistenceCoordinator: persistenceCoordinator,
             validateActivation: { jobs, photographers in
@@ -195,7 +201,8 @@ final class AppStore: ObservableObject {
             retainedCredentialIDs: retainedCredentialIDs,
             allowsCredentialGarbageCollection: allowsCredentialGarbageCollection,
             preloadedPersistence: loaded, startsJobsOnInitialization: false,
-            metadataCalendarRepository: MetadataCalendarRepository(storage: storage))
+            metadataCalendarRepository: MetadataCalendarRepository(storage: storage),
+            peopleLibraryRepository: PeopleLibraryRepository(root: storage.peopleLibraryDirectory))
     }
 
     deinit {
@@ -1024,6 +1031,7 @@ final class AppStore: ObservableObject {
     func suspendForExternalWriter() {
         guard !isSuspendedForExternalWriter else { return }
         isSuspendedForExternalWriter = true
+        peopleLibraryController?.suspend()
         scheduler.cancelAll()
         for task in metadataReprocessTasks.values { task.cancel() }
         for task in resetTasks.values { task.cancel() }

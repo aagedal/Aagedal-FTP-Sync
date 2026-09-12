@@ -2,6 +2,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 extension UTType {
+    static let aagedalPeopleLibrary = UTType(
+        exportedAs: "no.aagedal.people-library",
+        conformingTo: .package
+    )
     static let aagedalFTPSyncConfiguration = UTType(
         exportedAs: "no.aagedal.aftpsync.configuration",
         conformingTo: .data

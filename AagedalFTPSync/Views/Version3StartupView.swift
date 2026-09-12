@@ -114,6 +114,11 @@ struct RuntimeSettingsView: View {
             MetadataSyncSettingsView()
                 .tabItem { Label("Metadata Sync", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(AppSettingsTab.metadataSync)
+            if let controller = store.peopleLibraryController {
+                PeopleLibrarySettingsView(controller: controller)
+                    .tabItem { Label("People Library", systemImage: "person.crop.rectangle.stack") }
+                    .tag(AppSettingsTab.peopleLibrary)
+            }
         }
     }
 }

@@ -5,5 +5,5 @@
   "people" : { "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" : {
       "updatedAt" : 812345678.123456, "createdAt" : -0.125,
       "representativeThumbnailID" : "cccccccc-cccc-cccc-cccc-cccccccccccc", "notes" : "  Preserve exactly {value}", "role" : "" } },
-  "coreRevision" : "ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281", "libraryID" : "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "coreRevision" : "636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83", "libraryID" : "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
   "schemaVersion" : 1, "format" : "aagedal-photo-agent-known-people-editor" }

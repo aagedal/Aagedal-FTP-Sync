@@ -10,10 +10,13 @@ Pinned identities:
 - library: `aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa`
 - person: `bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb`
 - example: `cccccccc-cccc-cccc-cccc-cccccccccccc`
-- core revision: `ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281`
-- overall revision: `87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709`
+- core revision: `636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83`
+- overall revision: `12324ae00b79094d239447531d81348e4c6450b7a65fbc329daab261c08025ba`
 
-The FEM2 vector has value `1.0` in dimension zero and zeros elsewhere. Its
+The FEM2 vector has raw Float32 values `0.60003` and `0.8` in its first two
+dimensions and zeros elsewhere. Its norm is within the admission tolerance but
+normalizing it changes the raw bytes; re-export must copy the declared file rather
+than regenerate it from decoded values. Its
 little-endian header is the pinned integer magic `0x46454D32`, followed by the
 dimension `512`. Valid FEM2 structure establishes vector validity only; the
 manifest provides the required AuraFace model and preprocessing provenance.
@@ -25,13 +28,13 @@ slashes. Core file declarations are sorted by ASCII path. `exportedAt` and
 Core revision input:
 
 ```json
-{"contract":{"componentID":"auraface-r100-coreml","dimension":512,"embeddingSpaceVersion":3,"l2Normalized":true,"modelID":"AuraFace-v1/glintr100","preprocessingRevision":"photo-agent-eyes112-rgb-v3","vectorEncoding":"fem2-float32-le"},"embeddingCount":1,"files":[{"byteCount":2056,"path":"embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2","sha256":"c94edda6beea6aff7a41e7d6b6d6b9def72e024a8b10ccc78f7f900d0cd8c718"},{"byteCount":310,"path":"people.json","sha256":"defe59be76163a68585a9d56a54ab55ffd54385fb72167a400e634f9fd24a901"}],"format":"aagedal-known-people","libraryID":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","peopleCount":1,"schemaVersion":2}
+{"contract":{"componentID":"auraface-r100-coreml","dimension":512,"embeddingSpaceVersion":3,"l2Normalized":true,"modelID":"AuraFace-v1/glintr100","preprocessingRevision":"photo-agent-eyes112-rgb-v3","vectorEncoding":"fem2-float32-le"},"embeddingCount":1,"files":[{"byteCount":2056,"path":"embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2","sha256":"11515e45513a5f28a7e15321d1caa573c3dc1e70a112ac813dd8019f2900f1be"},{"byteCount":310,"path":"people.json","sha256":"defe59be76163a68585a9d56a54ab55ffd54385fb72167a400e634f9fd24a901"}],"format":"aagedal-known-people","libraryID":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","peopleCount":1,"schemaVersion":2}
 ```
 
 Overall revision input:
 
 ```json
-{"coreRevision":"ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281","editorPayload":{"byteCount":655,"mediaType":"application/vnd.aagedal.photo-agent-known-people+json;version=1","path":"editor/photo-agent.json","sha256":"97957271343108a13df0df5dfdd608ad0046b9e7ffaf73eef54b546f8af95d5a"},"format":"aagedal-known-people-snapshot","schemaVersion":2}
+{"coreRevision":"636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83","editorPayload":{"byteCount":655,"mediaType":"application/vnd.aagedal.photo-agent-known-people+json;version=1","path":"editor/photo-agent.json","sha256":"3135e29a2ba54766bc199d2c9e486aec39b94c66289f098fd26cde9828fb5efb"},"format":"aagedal-known-people-snapshot","schemaVersion":2}
 ```
 
 The editor JSON intentionally uses noncanonical whitespace and key order. Empty

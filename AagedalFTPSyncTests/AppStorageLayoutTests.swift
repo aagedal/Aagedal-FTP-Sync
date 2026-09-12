@@ -39,6 +39,9 @@ final class AppStorageLayoutTests: XCTestCase {
         XCTAssertTrue(try SyncFailureRepository(storage: layout).loadResult().entries.isEmpty)
         XCTAssertTrue(try MetadataCalendarRepository(storage: layout).load().accounts.isEmpty)
         _ = DownloadManifestRepository(storage: layout)
+        XCTAssertEqual(layout.peopleLibraryDirectory,
+                       layout.root.appendingPathComponent("people-library-v2", isDirectory: true))
+        XCTAssertNil(try PeopleLibraryRepository(root: layout.peopleLibraryDirectory).currentSnapshot())
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
     }
 

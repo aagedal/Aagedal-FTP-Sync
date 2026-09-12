@@ -33,6 +33,23 @@
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>
+				<string>com.apple.package</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Aagedal People Library</string>
+			<key>UTTypeIdentifier</key>
+			<string>no.aagedal.people-library</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>aagedalpeople</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
 				<string>public.data</string>
 			</array>
 			<key>UTTypeDescription</key>

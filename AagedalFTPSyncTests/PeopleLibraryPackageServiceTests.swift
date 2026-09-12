@@ -59,8 +59,8 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
             .appendingPathComponent("Documentation/Testing/Fixtures/people-library-v2.aagedalpeople")
         let repository = PeopleLibraryRepository(root: repositoryRoot.appendingPathComponent("repository"))
         let snapshot = try PeopleLibraryPackageService().importPackage(at: fixture, into: repository)
-        XCTAssertEqual(snapshot.manifest.coreRevision, "ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281")
-        XCTAssertEqual(snapshot.manifest.revision, "87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709")
+        XCTAssertEqual(snapshot.manifest.coreRevision, "636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83")
+        XCTAssertEqual(snapshot.manifest.revision, "12324ae00b79094d239447531d81348e4c6450b7a65fbc329daab261c08025ba")
         let output = repositoryRoot.appendingPathComponent("roundtrip.aagedalpeople")
         try PeopleLibraryPackageService().export(snapshot, to: output)
         for path in snapshot.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName] {
