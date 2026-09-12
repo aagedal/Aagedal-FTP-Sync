@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0E6A6D4599F305F1A4172888 /* AuraFaceComponentController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3776D688C0BAF52A4AD881C2 /* AuraFaceComponentController.swift */; };
+		122DC5A2206B68EF5BEA6C7E /* AuraFaceComponentInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 290165ACF25B589606298EE4 /* AuraFaceComponentInstallerTests.swift */; };
+		27E7BD2CDBEDCDAB09FBF6D5 /* AuraFaceZIPArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB582AC8D7110D975955A366 /* AuraFaceZIPArchive.swift */; };
+		8734B597726B88A8D17D2A2C /* MetadataFaceNameWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4089B77F75F490FAB0B3F42 /* MetadataFaceNameWriterTests.swift */; };
+		F927908C97B32A4F8780A7E8 /* AuraFaceComponentInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3542B133997241071BB70115 /* AuraFaceComponentInstaller.swift */; };
+		FB223B8567027C6F47D75F5E /* AuraFaceDistribution.swift in Sources */ = {isa = PBXBuildFile; fileRef = B308B5291043C6CC1ED0FFB1 /* AuraFaceDistribution.swift */; };
 		02ECC949E0CD2F017A4C7D26 /* JobRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E29CC609150B77D9F9FCA70E /* JobRepositoryTests.swift */; };
 		02FF57E6BFBFF76A9457E642 /* SyncFailureRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91F14102B4F8D6DAEF14EC8A /* SyncFailureRepository.swift */; };
 		047B306166AE91A1DA607AEA /* MetadataPerImageProcessingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F03C7D4111D29271F2745A66 /* MetadataPerImageProcessingTests.swift */; };
@@ -242,6 +248,12 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		290165ACF25B589606298EE4 /* AuraFaceComponentInstallerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceComponentInstallerTests.swift; sourceTree = "<group>"; };
+		3542B133997241071BB70115 /* AuraFaceComponentInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceComponentInstaller.swift; sourceTree = "<group>"; };
+		3776D688C0BAF52A4AD881C2 /* AuraFaceComponentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceComponentController.swift; sourceTree = "<group>"; };
+		A4089B77F75F490FAB0B3F42 /* MetadataFaceNameWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataFaceNameWriterTests.swift; sourceTree = "<group>"; };
+		AB582AC8D7110D975955A366 /* AuraFaceZIPArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceZIPArchive.swift; sourceTree = "<group>"; };
+		B308B5291043C6CC1ED0FFB1 /* AuraFaceDistribution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceDistribution.swift; sourceTree = "<group>"; };
 		03AE89625F40B3AEE6C3E650 /* DownloadNameMappingRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNameMappingRegistryTests.swift; sourceTree = "<group>"; };
 		04FC16304FAD1EE7D8FE7C2E /* JobEditingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JobEditingSession.swift; sourceTree = "<group>"; };
 		052561673651EFAEC20483A2 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
@@ -485,6 +497,17 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		E0756CF0AC48CD77A8E63DBA /* FaceRecognition */ = {
+			isa = PBXGroup;
+			children = (
+				3776D688C0BAF52A4AD881C2 /* AuraFaceComponentController.swift */,
+				3542B133997241071BB70115 /* AuraFaceComponentInstaller.swift */,
+				B308B5291043C6CC1ED0FFB1 /* AuraFaceDistribution.swift */,
+				AB582AC8D7110D975955A366 /* AuraFaceZIPArchive.swift */,
+			);
+			path = FaceRecognition;
+			sourceTree = "<group>";
+		};
 		121CD36A1B4D4AA104D4869F /* Resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -680,6 +703,7 @@
 			children = (
 				72DF71068E9E9D0728672731 /* ActivatedMetadataPreviewTests.swift */,
 				7666664A8E0B7D10BCE75842 /* ActivatedMetadataSyncIntegrationTests.swift */,
+				290165ACF25B589606298EE4 /* AuraFaceComponentInstallerTests.swift */,
 				A0B83602EE5BDE908A257014 /* AppleMetadataGeocodingProviderTests.swift */,
 				4FA2EE5D72C430D4544BFF2A /* AppPersistenceCoordinatorTests.swift */,
 				4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */,
@@ -713,6 +737,7 @@
 				ACEA8673B657D6551A67B513 /* MetadataCalendarProtocol3ClientTests.swift */,
 				393ED60149A90C7A28C835AA /* MetadataCalendarProtocolModelTests.swift */,
 				2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */,
+				A4089B77F75F490FAB0B3F42 /* MetadataFaceNameWriterTests.swift */,
 				0DAF6689426FB90A37C65C06 /* MetadataCoordinateReaderTests.swift */,
 				E97321D663D13186B49EA810 /* MetadataExistingPreviewTests.swift */,
 				3E112AE6B278DB7FD67ABD28 /* MetadataGeocodingAppleConsentTests.swift */,
@@ -817,6 +842,7 @@
 			isa = PBXGroup;
 			children = (
 				CA3CBEB14631279FC5B75ED0 /* App */,
+				E0756CF0AC48CD77A8E63DBA /* FaceRecognition */,
 				B5270C0798695023436C85DF /* Metadata */,
 				4850166515EB6D062E4E2600 /* Models */,
 				98E1D5D0526F4F5954182595 /* Persistence */,
@@ -967,6 +993,7 @@
 			files = (
 				B08DFD533C505513FF3BD59D /* ActivatedMetadataPreviewTests.swift in Sources */,
 				0E7DDF8D1BE60E54522E7EF5 /* ActivatedMetadataSyncIntegrationTests.swift in Sources */,
+				122DC5A2206B68EF5BEA6C7E /* AuraFaceComponentInstallerTests.swift in Sources */,
 				68B68175A5690C2817E2E2C2 /* AppPersistenceCoordinatorTests.swift in Sources */,
 				24D31589FC2F7FD31749C35E /* AppStorageLayoutTests.swift in Sources */,
 				4BC09059CA26CBE02F7E39D7 /* AppleMetadataGeocodingProviderTests.swift in Sources */,
@@ -1000,6 +1027,7 @@
 				220959C52BC659698D26471C /* MetadataCalendarProtocol3ClientTests.swift in Sources */,
 				FB716EB7F7C7B3EB53163A03 /* MetadataCalendarProtocolModelTests.swift in Sources */,
 				15469B228D2AD5332FF165D4 /* MetadataCaptureDateReaderTests.swift in Sources */,
+				8734B597726B88A8D17D2A2C /* MetadataFaceNameWriterTests.swift in Sources */,
 				A7FC7DBB95864DE714EE3F9F /* MetadataCoordinateReaderTests.swift in Sources */,
 				823F5A319880F7A836622FC6 /* MetadataExistingPreviewTests.swift in Sources */,
 				58F1CC723516C65D3C03EAE8 /* MetadataGeocodingAppleConsentTests.swift in Sources */,
@@ -1076,6 +1104,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				5C34E41AD9A2ED138D0CBA51 /* AagedalFTPSyncApp.swift in Sources */,
+				0E6A6D4599F305F1A4172888 /* AuraFaceComponentController.swift in Sources */,
+				F927908C97B32A4F8780A7E8 /* AuraFaceComponentInstaller.swift in Sources */,
+				FB223B8567027C6F47D75F5E /* AuraFaceDistribution.swift in Sources */,
+				27E7BD2CDBEDCDAB09FBF6D5 /* AuraFaceZIPArchive.swift in Sources */,
 				B2778FECE9235A88F9E701C2 /* AboutView.swift in Sources */,
 				6A864A27210E8CDFE1DE4FC5 /* AppError.swift in Sources */,
 				76B434A2DBF3769A17310DE3 /* AppPersistenceCoordinator.swift in Sources */,

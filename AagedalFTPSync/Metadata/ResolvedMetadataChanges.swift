@@ -1,5 +1,32 @@
 import Foundation
 
+/// Literal recognized names accepted for this image. Names retain their entry
+/// boundaries: commas and template-like braces are ordinary name characters.
+struct ResolvedFaceNameChanges: Equatable, Sendable {
+    let names: [String]
+    let appendToKeywords: Bool
+
+    init(names: [String], appendToKeywords: Bool = false) {
+        var seen: Set<String> = []
+        self.names = names.compactMap { name in
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let key = Self.normalizationKey(trimmed)
+            guard seen.insert(key).inserted else { return nil }
+            return trimmed
+        }
+        self.appendToKeywords = appendToKeywords
+    }
+
+    /// A fixed locale keeps deduplication stable across machines and launches.
+    static func normalizationKey(_ value: String) -> String {
+        value.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: Locale(identifier: "en_US_POSIX")
+        )
+    }
+}
+
 /// One immutable set of final values shared by assessment and writing. This is
 /// deliberately not Codable: resolved text must never replace stored templates.
 /// Empty values mean no proposed write; they never erase existing metadata.
@@ -14,6 +41,7 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
     let gpsPosition: ScheduledGPSPosition?
     let existingFieldPolicy: MetadataExistingFieldPolicy
     let places: ResolvedMetadataPlaceChanges?
+    let faceNames: ResolvedFaceNameChanges?
 
     /// Keywords have already been normalized by the resolver. Preserve their
     /// entry boundaries and order, including commas inside an expanded value.
@@ -22,7 +50,8 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
         creator: String = "", copyright: String = "",
         gpsPosition: ScheduledGPSPosition? = nil,
         existingFieldPolicy: MetadataExistingFieldPolicy = .standard,
-        places: ResolvedMetadataPlaceChanges? = nil
+        places: ResolvedMetadataPlaceChanges? = nil,
+        faceNames: ResolvedFaceNameChanges? = nil
     ) {
         self.headline = headline.trimmingCharacters(in: .whitespacesAndNewlines)
         self.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -32,6 +61,7 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
         self.gpsPosition = gpsPosition
         self.existingFieldPolicy = existingFieldPolicy
         self.places = places
+        self.faceNames = faceNames
     }
 
     /// Compatibility boundary: legacy source remains literal, including braces.
