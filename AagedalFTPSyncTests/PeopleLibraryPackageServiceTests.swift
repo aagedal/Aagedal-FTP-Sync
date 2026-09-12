@@ -48,6 +48,27 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         XCTAssertTrue(try stages(f).isEmpty)
     }
 
+    func testCommittedCrossAppGoldenPackageAndExactReexport() throws {
+        let repositoryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("people-golden-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: repositoryRoot) }
+        try FileManager.default.createDirectory(at: repositoryRoot, withIntermediateDirectories: false)
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Documentation/Testing/Fixtures/people-library-v2.aagedalpeople")
+        let repository = PeopleLibraryRepository(root: repositoryRoot.appendingPathComponent("repository"))
+        let snapshot = try PeopleLibraryPackageService().importPackage(at: fixture, into: repository)
+        XCTAssertEqual(snapshot.manifest.coreRevision, "ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281")
+        XCTAssertEqual(snapshot.manifest.revision, "87b48b311ab1056288116e2e90b57a585aca647e70d089f3636d6ae32cff3709")
+        let output = repositoryRoot.appendingPathComponent("roundtrip.aagedalpeople")
+        try PeopleLibraryPackageService().export(snapshot, to: output)
+        for path in snapshot.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName] {
+            XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(path)),
+                           try Data(contentsOf: fixture.appendingPathComponent(path)), path)
+        }
+    }
+
     func testExactByteExportAndImportIntoSeparateRepository() throws {
         let f = try fixture(), service = PeopleLibraryPackageService()
         let output = f.parent.appendingPathComponent("shared.aagedalpeople")

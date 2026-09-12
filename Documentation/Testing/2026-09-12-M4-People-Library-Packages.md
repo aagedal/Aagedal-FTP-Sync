@@ -64,6 +64,13 @@ Focused package suite: **7 passed, zero failures**, 0.587 seconds. Log
 `/tmp/ftp-m4-package-focused-2.log`, SHA-256
 `9e2ed510cc27d5f31e04298ac9ea46566c1ec02dfb967a4e263e5f47f2893347`.
 
+The committed cross-app golden package is
+`Documentation/Testing/Fixtures/people-library-v2.aagedalpeople`, with its exact
+revision inputs documented beside it. FTP Sync admitted and re-exported all four
+declared files byte-for-byte in the dedicated test: **1 passed, zero failures**,
+0.042 seconds. Log `/tmp/ftp-m4-golden-fixture.log`, SHA-256
+`42fe8cf842ceb32bcd4a7633df7dfb49e6b7d211b7a77db7236fd229f9718de4`.
+
 Full suite: **1,045 discovered, 1,030 passed, 15 opt-in skips, zero failures**,
 50.738 seconds (51.180 wall), completed 2026-09-12 13:22:32 +0200 on macOS
 27.0 (26A428), arm64, Xcode 26.6 (17F113). The standard repository command used

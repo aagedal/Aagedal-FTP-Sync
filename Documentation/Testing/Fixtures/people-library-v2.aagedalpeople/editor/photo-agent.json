@@ -1,0 +1,9 @@
+{ "examples" : {
+    "cccccccc-cccc-cccc-cccc-cccccccccccc" : { "recognitionMode" : "faceClothing", "addedAt" : 42.125,
+      "sourceDescription" : "/private/source/Å face.jpg" }
+  },
+  "people" : { "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb" : {
+      "updatedAt" : 812345678.123456, "createdAt" : -0.125,
+      "representativeThumbnailID" : "cccccccc-cccc-cccc-cccc-cccccccccccc", "notes" : "  Preserve exactly {value}", "role" : "" } },
+  "coreRevision" : "ba115ddf964e6e809ae82ac416347e12475d1b2df2a01940fabeff2a5392a281", "libraryID" : "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "schemaVersion" : 1, "format" : "aagedal-photo-agent-known-people-editor" }

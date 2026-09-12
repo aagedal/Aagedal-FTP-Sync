@@ -1,0 +1,14 @@
+{
+  "people" : [
+    {
+      "examples" : [
+        {
+          "embeddingPath" : "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2",
+          "id" : "cccccccc-cccc-cccc-cccc-cccccccccccc"
+        }
+      ],
+      "id" : "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name" : "Åda {persons}"
+    }
+  ]
+}
