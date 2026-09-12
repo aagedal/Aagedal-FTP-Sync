@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-22ebc7e-auraface-runtime",
+  "id": "development-3ba4070-bigint-manifest",
   "status": "IMPLEMENTING",
-  "commit": "22ebc7e83b757f273e82eb31de28603fef6aefbc",
+  "commit": "3ba4070be64d4d7d0904cc535aff8c0e554a2d05",
   "version": "2.9.2",
   "build": "37",
   "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-face-runtime-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-12-M4-Face-Runtime-Foundation.md",
-  "note": "Development build only, not ready for human acceptance. Through 22ebc7e, FTP Sync can revalidate and immutably load a signed AuraFace component, run bounded orientation-aware Vision detection and quality analysis, reproduce the companion eye alignment and RGB NCHW Core ML inference contract, normalize strict 512-value embeddings, and construct the existing bounded matching service. Photo Agent now has canonical schema-2/ZIP32 production and committed channel-asymmetric RGB reference evidence. FTP Sync's opt-in pinned-model check verified model and fixture hashes, passed the RGB cosine threshold and BGR negative, and the broader affected selection passed 70 tests with zero skips or failures. A macOS Release build passed with code signing disabled. Prior clean full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). Recognition remains disabled by default. A dedicated production trust key and fixed hosts, identity-bound startup wiring, calibrated policy and authorized labeled real-face fixtures, integrated audit/outcome UI, measured resource-cap tuning, shared App Group sync, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
+  "evidence": "Documentation/Testing/2026-09-12-BigInt-Xcode27-Manifest.md",
+  "note": "Development build only, not ready for human acceptance. At 3ba4070, transitive BigInt 5.7.0 is pinned locally at its exact resolved upstream revision with the MIT license and unchanged source tokens; its package manifest raises only the obsolete watchOS 4 floor to watchOS 9. The security baseline, 9 Citadel key tests, a Debug build and an exact-clean macOS Release build passed without the reported Xcode 27 BigInt warning. Through 22ebc7e, FTP Sync can revalidate and immutably load a signed AuraFace component, run bounded orientation-aware Vision detection and quality analysis, reproduce the companion eye alignment and RGB NCHW Core ML inference contract, normalize strict 512-value embeddings, and construct the existing bounded matching service. The broader affected selection passed 70 tests with zero skips or failures. Prior clean full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). Recognition remains disabled by default. Production trust, identity-bound startup wiring, calibrated policy and authorized labeled real-face fixtures, integrated audit/outcome UI, measured resource-cap tuning, shared App Group sync, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
 }
