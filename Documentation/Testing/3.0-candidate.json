@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-da3579e-people-library-settings",
+  "id": "development-dc09b9f-people-library-zip",
   "status": "IMPLEMENTING",
-  "commit": "da3579e81320e7cb1ecac03d5d2faae93ddfed05",
+  "commit": "dc09b9fed9c49dcf4deedc44eff6236194bc8481",
   "version": "2.9.2",
   "build": "37",
   "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-people-settings/Build/Products/Debug/AagedalFTPSync.app",
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Development build only, not ready for human acceptance. Lossless editor extension, exact directory-package import/export, v3 storage lifecycle and settings UI at da3579e; Photo Agent remains the intended sole editor. Full suite: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). ZIP extraction, companion exporter/provenance proof, App Group sync, model/runtime recognition integration, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
+  "note": "Development build only, not ready for human acceptance. Lossless editor extension, exact directory-package import/export, v3 storage lifecycle, settings UI and bounded ZIP32 import are implemented through dc09b9f; Photo Agent remains the intended sole editor. Final ZIP suite: 13 passed, zero failures. Prior full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). Companion exporter/provenance proof, App Group sync, model/runtime recognition integration, calibration, native/supported-OS and release gates remain open. The pinned model BGR/RGB contract discrepancy blocks recognition publication. Prior candidate result sets are preserved."
 }

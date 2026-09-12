@@ -2,7 +2,9 @@
 
 Package foundation implemented at `2dc18e9c4df7328eb59cb0503d7febcbad4acd56`;
 settings and admitted-runtime lifecycle implemented at
-`da3579e81320e7cb1ecac03d5d2faae93ddfed05`. This is the FTP Sync side of the
+`da3579e81320e7cb1ecac03d5d2faae93ddfed05`; bounded ZIP import implemented at
+`8fcb5e70d1993bbbe3f78ea75d76bd39dea10edb` and review findings closed at
+`dc09b9fed9c49dcf4deedc44eff6236194bc8481`. This is the FTP Sync side of the
 proposed Photo Agent interchange contract. It does not claim companion-app
 compatibility until Photo Agent ships and verifies the matching exporter/importer.
 
@@ -47,14 +49,20 @@ explicit re-enrollment before it can produce a schema-2 package.
   publication hook can observe a stage, later failures preserve it instead of risking
   deletion of a substituted child.
 
-This slice intentionally handles directory packages only. The v3 settings panel can
+The v3 settings panel can
 import a selected package, export the selected immutable snapshot under a new name,
 show its non-private summary and clear the current selection. Operations run outside
 the main actor, serialize, retain the prior selection on failure, suppress stale
 completion after suspension and hold security-scoped access for the whole operation.
 The repository is rooted only in admitted v3 storage and is suspended with the rest
-of the app before an external writer can take over. Bounded ZIP extraction, App Group
-entitlements and automatic synchronization remain open.
+of the app before an external writer can take over. Import also accepts an archive
+named `.aagedalpeople.zip`. A subprocess-free ZIP32 reader admits stored and raw-DEFLATE
+entries at archive root or under one package wrapper, then validates all exact bytes
+through the same manifest/repository path. It rejects ZIP64, encryption, unsupported
+flags/methods, traversal, links/special files, duplicate and case-colliding names,
+undeclared files, corrupt CRC/headers/descriptors, hidden gaps, expansion overflow,
+hardlinked input archives and source changes. App Group entitlements and automatic
+synchronization remain open.
 The automatic design is opt-in: Photo Agent is the sole editor/publisher, both apps
 read one immutable current pointer in a shared App Group container, and neither app
 reads the other's private Application Support directory.
@@ -66,6 +74,18 @@ applied before repository mutation, and post-hook cleanup could remove a substit
 child. Both were fixed. A later review requested an editor-bearing opaque round trip;
 the added integration test imports, exports, reimports and re-exports deliberately
 noncanonical JSON while preserving exact bytes. No source blocker remained.
+
+A ZIP-specific independent review found four gaps: partial extraction could outlive
+cancellation, a hostile central directory had too large an in-memory ceiling,
+signatureless data descriptors with a signature-valued CRC were ambiguous, and two
+malicious-metadata tests rejected for unrelated undeclared-file reasons. The importer
+now records and removes owned inodes during failed writes, caps central metadata and
+entry count independently of payload size, chooses 12/16-byte descriptors by exact
+record boundary and checks malicious metadata on declared files with expected errors.
+A follow-up review caught an over-tight entry-count formula and the last pre-identity
+cleanup edge. The final patch restores the manifest's full valid file ceiling, installs
+cleanup before the first `fstat`, and exercises signed, signatureless and
+signature-valued-CRC descriptor forms.
 
 Focused package suite: **7 passed, zero failures**, 0.587 seconds. Log
 `/tmp/ftp-m4-package-focused-2.log`, SHA-256
@@ -92,6 +112,10 @@ library suites passed in that run. A later golden-only rerun encountered a stale
 global SDK stat-cache path before tests started. Re-running the documented unsigned,
 serial command with isolated DerivedData passed all non-opt-in tests.
 
-No native/manual settings UI, ZIP extraction, shared-container synchronization, companion
+No native/manual settings UI, shared-container synchronization, companion
 round trip, real model, real face, supported-macOS matrix or release acceptance is
 claimed. The human result file remains absent.
+
+Final ZIP package run: **13 passed, zero failures**, 1.655 seconds (1.660 wall),
+completed 2026-09-12 14:54:19 +0200. Result bundle:
+`build/DerivedData-people-settings/Logs/Test/Test-AagedalFTPSync-2026.09.12_14-54-05-+0200.xcresult`.
