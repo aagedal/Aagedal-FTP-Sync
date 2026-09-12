@@ -58,8 +58,9 @@ run is not counted as regression evidence.
 - No production admission token or model-backed detector/alignment/embedding
   operation exists. The BGR/RGB preprocessing discrepancy must be resolved with
   committed reference-vector evidence first.
-- Queue size, pending-byte, deadline and people-gallery work budgets are not yet
-  implemented around the future runtime.
+- Commit `4f26d6e` did not yet include queue, pending-byte, deadline or gallery
+  caps. Later implementation evidence records provisional safety caps; measured
+  benchmark-derived budgets and tuning remain open.
 - Durable redacted recognition audit projection is not yet implemented.
 - Photo Agent still needs a canonical schema-2 ZIP32 exporter and signed artifacts.
   Neither app has the shared App Group entitlement needed for automatic local sync.

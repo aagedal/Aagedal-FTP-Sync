@@ -446,7 +446,7 @@
       "title": "Install, remove and recover the optional face model",
       "prerequisites": "The actual verified model distribution, a compatible authorized library, a test network environment, and installer failure fixtures for invalid hash/signature and interrupted download/compile.",
       "steps": [
-        "Start with no model and inspect status while confirming an ordinary transfer still works.",
+        "Start with no model. In the job editor open Face recognition, turn on Recognize people locally, and verify Face recognition status explains the missing runtime. Turn it off again, save, and confirm an ordinary transfer still works.",
         "Install the real component, record download size/model version and successful verification, then disconnect the network and recognize a fixture.",
         "Exercise offline first-install, invalid signature/hash, interrupted download, cancelled install and interrupted compilation through supported test fixtures.",
         "When replacing an existing working model fails, verify the prior verified installation still works.",
@@ -465,11 +465,11 @@
       "title": "Import and replace a compatible immutable people snapshot",
       "prerequisites": "Two compatible exports from the companion Photo Agent exporter: revision A and revision B with a renamed person, a removed person, and updated examples; a usable model and a slow multi-image recognition run.",
       "steps": [
-        "Import revision A and compare library identity, revision, person/example counts and names with the export.",
+        "In the job editor choose Manage People Library…; in Settings choose Import People Library… for revision A, then compare the displayed library identity, revision, person/example counts and names with the export.",
         "Start recognition of several files, then replace the library with revision B while one operation is in progress.",
         "Inspect per-operation provenance and results to verify an operation uses a single library/model snapshot.",
         "Start a new operation and verify it sees B, including renamed/removed entries and updated examples.",
-        "Remove the library, restart the app and inspect status and ordinary transfer availability."
+        "Choose Export People Library… and verify the exported package round-trips exactly. Then choose Remove Current Library…, restart the app, and inspect status and ordinary transfer availability."
       ],
       "expected": [
         "Replacement reflects the full snapshot, including removals and edits to existing IDs.",
@@ -503,9 +503,9 @@
       "title": "Recognize locally and merge Person Shown, Keywords and persons templates",
       "prerequisites": "A verified model and compatible library, authorized images with one and multiple known people, duplicate appearances, existing Person Shown/Keywords and brace-containing names; include an independent face-only job with no schedule.",
       "steps": [
-        "Run standalone recognition with no schedule and inspect accepted names appended to existing Person Shown.",
+        "Turn off Automatic syncing enabled and Enable automatically on app launch. In Face recognition, turn on Recognize people locally, save, then run standalone recognition with no schedule and inspect accepted names appended to existing Person Shown.",
         "Repeat a multiple/duplicate-person fixture and verify stable name order with no duplicates.",
-        "Enable optional keyword names and test both scheduled keyword preserve and overwrite policies on fresh copies.",
+        "Turn on Add recognized names to Keywords and test both scheduled keyword preserve and overwrite policies on fresh copies.",
         "Enable a matching Description template containing '{persons}' and '{photographer}', including a detected person whose name contains braces.",
         "Inspect metadata arrays and caption in an external reader; compare the photographer field with the matched photographer profile."
       ],
