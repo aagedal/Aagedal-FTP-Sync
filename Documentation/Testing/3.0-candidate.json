@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-dc09b9f-people-library-zip",
+  "id": "development-f6f8407-face-component-foundation",
   "status": "IMPLEMENTING",
-  "commit": "dc09b9fed9c49dcf4deedc44eff6236194bc8481",
+  "commit": "f6f84079efba38de74d6a8c31ec79fb2aa2752a5",
   "version": "2.9.2",
   "build": "37",
   "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-people-settings/Build/Products/Debug/AagedalFTPSync.app",
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Development build only, not ready for human acceptance. Lossless editor extension, exact directory-package import/export, v3 storage lifecycle, settings UI and bounded ZIP32 import are implemented through dc09b9f; Photo Agent remains the intended sole editor. Final ZIP suite: 13 passed, zero failures. Prior full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). Companion exporter/provenance proof, App Group sync, model/runtime recognition integration, calibration, native/supported-OS and release gates remain open. The pinned model BGR/RGB contract discrepancy blocks recognition publication. Prior candidate result sets are preserved."
+  "note": "Development build only, not ready for human acceptance. Face-name metadata append and an isolated signed model-component foundation are implemented through f6f8407; recognition remains structurally disabled. Focused writer/component suite: 14 passed, zero failures. Prior clean full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). A later broad run was invalidated by macOS 27/Xcode 27 denying existing suites access to /private/tmp and is not release evidence. Companion schema-2 ZIP32 artifacts, a dedicated key and fixed hosts, BGR/RGB compatibility proof, App Group sync, recognition integration, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
 }
