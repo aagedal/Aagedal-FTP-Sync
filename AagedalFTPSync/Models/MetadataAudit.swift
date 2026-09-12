@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import MetadataTemplates
 
@@ -183,6 +184,183 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
     }
 }
 
+/// Strictly redacted durable evidence for one local recognition decision.
+///
+/// This projection deliberately retains no names, person/library identifiers,
+/// embeddings, scores, face geometry, file paths, or provider error text. The
+/// compatibility and policy revisions are sufficient to distinguish immutable
+/// processing inputs without identifying the selected people-library snapshot.
+struct FaceRecognitionAuditEvidence: Codable, Equatable, Sendable {
+    struct Provenance: Codable, Equatable, Sendable {
+        enum ValidationError: Error, Equatable { case invalidRuntimeRevision }
+
+        let librarySchemaVersion: Int
+        let embeddingSpaceVersion: Int
+        let componentID: String
+        let modelID: String
+        let preprocessingRevision: String
+        let vectorEncoding: String
+        let embeddingDimension: Int
+        /// SHA-256 of the admitted runtime artifact, never a local model path.
+        let runtimeRevision: String
+        /// SHA-256 of the exact calibrated policy values, never raw thresholds.
+        let acceptancePolicyRevision: String
+
+        init(
+            contract: PeopleLibraryManifest.EmbeddingContract,
+            runtimeRevision: String,
+            acceptancePolicy: FaceRecognitionAcceptancePolicy
+        ) throws {
+            guard runtimeRevision.utf8.count == 64,
+                  runtimeRevision.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+            else { throw ValidationError.invalidRuntimeRevision }
+            librarySchemaVersion = 2
+            embeddingSpaceVersion = contract.embeddingSpaceVersion
+            componentID = contract.componentID
+            modelID = contract.modelID
+            preprocessingRevision = contract.preprocessingRevision
+            vectorEncoding = contract.vectorEncoding
+            embeddingDimension = contract.dimension
+            self.runtimeRevision = runtimeRevision
+            acceptancePolicyRevision = Self.policyRevision(acceptancePolicy)
+        }
+
+        private static func policyRevision(_ policy: FaceRecognitionAcceptancePolicy) -> String {
+            func hex(_ value: Double) -> String {
+                let source = String(value.bitPattern, radix: 16)
+                return String(repeating: "0", count: 16 - source.count) + source
+            }
+            let quality = policy.unavailableQualityPolicy == .reject ? "reject" : "allow"
+            let canonical = [
+                "face-acceptance-policy-v1",
+                hex(policy.maximumCosineDistance),
+                hex(policy.minimumRunnerUpGap),
+                hex(policy.minimumCaptureQuality),
+                quality
+            ].joined(separator: "\n")
+            return SHA256.hash(data: Data(canonical.utf8))
+                .map { String(format: "%02x", $0) }
+                .joined()
+        }
+    }
+
+    struct OutcomeCounts: Codable, Equatable, Sendable {
+        let detectedFaces: Int
+        let accepted: Int
+        let noMatch: Int
+        let ambiguous: Int
+        let insufficientQuality: Int
+        let qualityUnavailable: Int
+        let invalidQuality: Int
+
+        fileprivate init(_ outcomes: [FaceRecognitionMatchOutcome]) {
+            var accepted = 0, noMatch = 0, ambiguous = 0, insufficientQuality = 0
+            var qualityUnavailable = 0, invalidQuality = 0
+            for outcome in outcomes {
+                switch outcome {
+                case .accepted: accepted += 1
+                case .noMatch: noMatch += 1
+                case .ambiguous: ambiguous += 1
+                case .insufficientQuality: insufficientQuality += 1
+                case .qualityUnavailable: qualityUnavailable += 1
+                case .invalidQuality: invalidQuality += 1
+                }
+            }
+            detectedFaces = outcomes.count
+            self.accepted = accepted
+            self.noMatch = noMatch
+            self.ambiguous = ambiguous
+            self.insufficientQuality = insufficientQuality
+            self.qualityUnavailable = qualityUnavailable
+            self.invalidQuality = invalidQuality
+        }
+    }
+
+    enum Status: String, Codable, Sendable { case completed, unavailable, rejected, failed, cancelled }
+    enum UnavailableReason: String, Codable, Sendable {
+        case unverifiedPreprocessingContract, componentUnavailable
+        case peopleLibraryUnavailable, acceptancePolicyUnavailable
+    }
+    enum FailureReason: String, Codable, Sendable {
+        case invalidMaximumFaces, invalidLimits, invalidStagedInputByteCount
+        case stagedInputLeaseAlreadySubmitted, queueLimitExceeded, pendingByteLimitExceeded
+        case galleryPeopleLimitExceeded, galleryEmbeddingLimitExceeded
+        case galleryComparisonLimitExceeded, faceLimitExceeded, invalidFaceOrdinals
+        case invalidCaptureQuality, operationFailed, matchingFailed, deadlineExceeded
+    }
+
+    let status: Status
+    let outcomes: OutcomeCounts?
+    let unavailableReason: UnavailableReason?
+    let failureReason: FailureReason?
+    /// Redacted resource-bound context. These values are aggregate counts only.
+    let maximum: Int?
+    let actual: Int?
+    let pending: Int?
+    let requested: Int?
+    let provenance: Provenance
+
+    init(result: FaceRecognitionAnalysisResult, provenance: Provenance) {
+        self.provenance = provenance
+        outcomes = {
+            guard case .completed(let values, _) = result else { return nil }
+            return OutcomeCounts(values)
+        }()
+        unavailableReason = {
+            guard case .unavailable(let reason) = result else { return nil }
+            switch reason {
+            case .unverifiedPreprocessingContract: return .unverifiedPreprocessingContract
+            case .componentUnavailable: return .componentUnavailable
+            case .peopleLibraryUnavailable: return .peopleLibraryUnavailable
+            case .acceptancePolicyUnavailable: return .acceptancePolicyUnavailable
+            }
+        }()
+
+        var mappedFailure: FailureReason?
+        var maximum: Int?, actual: Int?, pending: Int?, requested: Int?
+        let error: FaceRecognitionAnalysisError?
+        switch result {
+        case .completed: status = .completed; error = nil
+        case .unavailable: status = .unavailable; error = nil
+        case .rejected(let value): status = .rejected; error = value
+        case .failed(let value): status = .failed; error = value
+        case .cancelled: status = .cancelled; error = nil
+        }
+        if let error {
+            switch error {
+            case .invalidMaximumFaces: mappedFailure = .invalidMaximumFaces
+            case .invalidLimits: mappedFailure = .invalidLimits
+            case .invalidStagedInputByteCount: mappedFailure = .invalidStagedInputByteCount
+            case .stagedInputLeaseAlreadySubmitted: mappedFailure = .stagedInputLeaseAlreadySubmitted
+            case .queueLimitExceeded(let value): mappedFailure = .queueLimitExceeded; maximum = value
+            case .pendingByteLimitExceeded(let limit, let current, let request):
+                mappedFailure = .pendingByteLimitExceeded; maximum = limit; pending = current; requested = request
+            case .galleryPeopleLimitExceeded(let limit, let count):
+                mappedFailure = .galleryPeopleLimitExceeded; maximum = limit; actual = count
+            case .galleryEmbeddingLimitExceeded(let limit, let count):
+                mappedFailure = .galleryEmbeddingLimitExceeded; maximum = limit; actual = count
+            case .galleryComparisonLimitExceeded(let limit, let count):
+                mappedFailure = .galleryComparisonLimitExceeded; maximum = limit; actual = count
+            case .faceLimitExceeded(let limit, let count):
+                mappedFailure = .faceLimitExceeded; maximum = limit; actual = count
+            case .invalidFaceOrdinals: mappedFailure = .invalidFaceOrdinals
+            case .invalidCaptureQuality:
+                // The face ordinal is intentionally omitted. Persisted evidence
+                // records only the typed validation failure, not per-face detail.
+                mappedFailure = .invalidCaptureQuality
+            case .operationFailed: mappedFailure = .operationFailed
+            case .matchingFailed: mappedFailure = .matchingFailed
+            case .deadlineExceeded: mappedFailure = .deadlineExceeded
+            }
+        }
+        failureReason = mappedFailure
+        self.maximum = maximum
+        self.actual = actual
+        self.pending = pending
+        self.requested = requested
+    }
+}
+
 /// One durable record of the metadata decision made for a file.
 ///
 /// Names are stored alongside identifiers so an audit remains readable after a
@@ -204,6 +382,7 @@ struct MetadataAuditEntry: Codable, Identifiable, Equatable, Sendable {
     let swiftExifWarnings: [String]
     let detail: String?
     let processingEvidence: MetadataProcessingAuditEvidence?
+    let recognitionEvidence: FaceRecognitionAuditEvidence?
 
     init(
         id: UUID = UUID(),
@@ -220,7 +399,8 @@ struct MetadataAuditEntry: Codable, Identifiable, Equatable, Sendable {
         matchedClip: MetadataScheduleClip? = nil,
         swiftExifWarnings: [String] = [],
         detail: String? = nil,
-        processingEvidence: MetadataProcessingAuditEvidence? = nil
+        processingEvidence: MetadataProcessingAuditEvidence? = nil,
+        recognitionEvidence: FaceRecognitionAuditEvidence? = nil
     ) {
         self.id = id
         self.runID = runID
@@ -240,6 +420,7 @@ struct MetadataAuditEntry: Codable, Identifiable, Equatable, Sendable {
         self.swiftExifWarnings = Self.uniqueWarnings(swiftExifWarnings)
         self.detail = detail
         self.processingEvidence = processingEvidence
+        self.recognitionEvidence = recognitionEvidence
     }
 
     private static func uniqueWarnings(_ warnings: [String]) -> [String] {

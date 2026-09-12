@@ -27,6 +27,7 @@ final class MetadataProcessingAuditEvidenceTests: XCTestCase {
         let data = try JSONEncoder().encode(old)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertNil(object["processingEvidence"])
+        XCTAssertNil(object["recognitionEvidence"])
         XCTAssertEqual(try JSONDecoder().decode(MetadataAuditEntry.self, from: data), old)
         let resolved = result()
         let literal = MetadataProcessingResult(changes: resolved.changes, context: nil, fields: resolved.fields)
@@ -209,5 +210,89 @@ final class MetadataProcessingAuditEvidenceTests: XCTestCase {
             from: JSONSerialization.data(withJSONObject: object))
         XCTAssertEqual(MetadataAuditEvidencePresentation.processingTime(restored),
             "Processing time: 1970-01-02 10:17:36 (UTC; recorded zone is unavailable: Unknown/FutureZone)")
+    }
+
+    func testRecognitionEvidencePersistsOnlyTypedAggregatesAndImmutableProvenance() throws {
+        let personID = UUID()
+        let privateBest = FaceRecognitionCandidate(personID: personID, name: "PRIVATE-PERSON",
+                                                    cosineDistance: 0.123456)
+        let privateRunnerUp = FaceRecognitionCandidate(personID: UUID(), name: "PRIVATE-RUNNER-UP",
+                                                        cosineDistance: 0.234567)
+        let result = FaceRecognitionAnalysisResult.completed(outcomes: [
+            .accepted(best: privateBest, runnerUp: privateRunnerUp),
+            .noMatch(best: privateBest, runnerUp: privateRunnerUp),
+            .ambiguous(best: privateBest, runnerUp: privateRunnerUp),
+            .insufficientQuality(actual: 0.1, minimum: 0.5),
+            .qualityUnavailable,
+            .invalidQuality
+        ], faceNames: ResolvedFaceNameChanges(names: ["PRIVATE-PERSON"], appendToKeywords: true))
+        let policy = try FaceRecognitionAcceptancePolicy(maximumCosineDistance: 0.4,
+            minimumRunnerUpGap: 0.05, minimumCaptureQuality: 0.5, unavailableQualityPolicy: .reject)
+        let provenance = try FaceRecognitionAuditEvidence.Provenance(
+            contract: .auraFaceV1, runtimeRevision: String(repeating: "a", count: 64),
+            acceptancePolicy: policy)
+        let evidence = FaceRecognitionAuditEvidence(result: result, provenance: provenance)
+
+        XCTAssertEqual(evidence.status, .completed)
+        XCTAssertEqual(evidence.outcomes?.detectedFaces, 6)
+        XCTAssertEqual(evidence.outcomes?.accepted, 1)
+        XCTAssertEqual(evidence.outcomes?.noMatch, 1)
+        XCTAssertEqual(evidence.outcomes?.ambiguous, 1)
+        XCTAssertEqual(evidence.outcomes?.insufficientQuality, 1)
+        XCTAssertEqual(evidence.outcomes?.qualityUnavailable, 1)
+        XCTAssertEqual(evidence.outcomes?.invalidQuality, 1)
+        XCTAssertEqual(provenance.librarySchemaVersion, 2)
+        XCTAssertEqual(provenance.acceptancePolicyRevision.utf8.count, 64)
+
+        let auditEntry = entry(evidence: nil)
+        let storedEntry = MetadataAuditEntry(id: auditEntry.id, runID: auditEntry.runID,
+            jobID: auditEntry.jobID, occurredAt: auditEntry.occurredAt, operation: auditEntry.operation,
+            relativePath: auditEntry.relativePath, status: auditEntry.status,
+            timestampPolicy: auditEntry.timestampPolicy, scheduledAt: auditEntry.scheduledAt,
+            recognitionEvidence: evidence)
+        let bytes = try JSONEncoder().encode(storedEntry)
+        let text = try XCTUnwrap(String(data: bytes, encoding: .utf8))
+        for forbidden in ["PRIVATE-", personID.uuidString, "0.123456", "0.234567",
+                          "cosineDistance", "personID", "faceNames", "\"values\"", "imageURL"] {
+            XCTAssertFalse(text.contains(forbidden), "Unexpected private recognition value: \(forbidden)")
+        }
+        XCTAssertEqual(try JSONDecoder().decode(MetadataAuditEntry.self, from: bytes), storedEntry)
+        XCTAssertTrue(MetadataAuditEvidencePresentation.recognitionDecision(evidence).contains("6 faces"))
+        XCTAssertTrue(MetadataAuditEvidencePresentation.recognitionProvenance(provenance).contains("AuraFace-v1/glintr100"))
+    }
+
+    func testRecognitionFailuresAreStableTypedAndRedacted() throws {
+        let policy = try FaceRecognitionAcceptancePolicy(maximumCosineDistance: 0.4,
+            minimumRunnerUpGap: 0.05, minimumCaptureQuality: 0.5, unavailableQualityPolicy: .allow)
+        let provenance = try FaceRecognitionAuditEvidence.Provenance(
+            contract: .auraFaceV1, runtimeRevision: String(repeating: "b", count: 64),
+            acceptancePolicy: policy)
+        let evidence = FaceRecognitionAuditEvidence(result: .rejected(.pendingByteLimitExceeded(
+            maximum: 100, pending: 60, requested: 50)), provenance: provenance)
+        XCTAssertEqual(evidence.status, .rejected)
+        XCTAssertEqual(evidence.failureReason, .pendingByteLimitExceeded)
+        XCTAssertEqual(evidence.maximum, 100)
+        XCTAssertEqual(evidence.pending, 60)
+        XCTAssertEqual(evidence.requested, 50)
+        XCTAssertNil(evidence.actual)
+        XCTAssertNil(evidence.outcomes)
+        XCTAssertNil(evidence.unavailableReason)
+        XCTAssertEqual(try JSONDecoder().decode(FaceRecognitionAuditEvidence.self,
+                                                from: JSONEncoder().encode(evidence)), evidence)
+        XCTAssertEqual(MetadataAuditEvidencePresentation.recognitionDecision(evidence),
+                       "Recognition was rejected: staged byte limit exceeded (maximum 100, pending 60, requested 50).")
+    }
+
+    func testRecognitionProvenanceRejectsAnythingExceptLowercaseSHA256RuntimeRevision() throws {
+        let policy = try FaceRecognitionAcceptancePolicy(maximumCosineDistance: 0.4,
+            minimumRunnerUpGap: 0.05, minimumCaptureQuality: 0.5, unavailableQualityPolicy: .reject)
+        for invalid in ["", String(repeating: "A", count: 64), String(repeating: "g", count: 64),
+                        String(repeating: "a", count: 63), "/private/model.mlmodelc"] {
+            XCTAssertThrowsError(try FaceRecognitionAuditEvidence.Provenance(
+                contract: .auraFaceV1, runtimeRevision: invalid, acceptancePolicy: policy)) {
+                XCTAssertEqual($0 as? FaceRecognitionAuditEvidence.Provenance.ValidationError,
+                               .invalidRuntimeRevision)
+            }
+        }
     }
 }

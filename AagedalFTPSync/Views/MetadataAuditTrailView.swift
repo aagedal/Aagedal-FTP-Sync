@@ -107,6 +107,20 @@ private struct MetadataAuditRow: View {
                     .accessibilityLabel("Processing details for \(entry.relativePath)")
                 }
 
+                if let evidence = entry.recognitionEvidence {
+                    DisclosureGroup("Recognition details") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(MetadataAuditEvidencePresentation.recognitionDecision(evidence))
+                            Text(MetadataAuditEvidencePresentation.recognitionProvenance(evidence.provenance))
+                        }
+                        .font(.caption)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.caption)
+                    .accessibilityLabel("Recognition details for \(entry.relativePath)")
+                }
+
                 ForEach(Array(entry.swiftExifWarnings.enumerated()), id: \.offset) { _, warning in
                     Label(warning, systemImage: "exclamationmark.triangle")
                         .font(.caption2)
@@ -150,6 +164,57 @@ private struct MetadataAuditRow: View {
 }
 
 enum MetadataAuditEvidencePresentation {
+    static func recognitionDecision(_ evidence: FaceRecognitionAuditEvidence) -> String {
+        switch evidence.status {
+        case .completed:
+            guard let counts = evidence.outcomes else { return "Recognition completed without outcome counts." }
+            return "Recognition completed: \(counts.detectedFaces) faces; \(counts.accepted) accepted, \(counts.noMatch) unmatched, \(counts.ambiguous) ambiguous, \(counts.insufficientQuality) below quality, \(counts.qualityUnavailable) without quality, \(counts.invalidQuality) invalid."
+        case .unavailable:
+            let reason: String
+            switch evidence.unavailableReason {
+            case .unverifiedPreprocessingContract: reason = "the preprocessing contract is unverified"
+            case .componentUnavailable: reason = "the model component is unavailable"
+            case .peopleLibraryUnavailable: reason = "the people library is unavailable"
+            case .acceptancePolicyUnavailable: reason = "the calibrated acceptance policy is unavailable"
+            case nil: reason = "no reason was recorded"
+            }
+            return "Recognition was unavailable: \(reason)."
+        case .rejected, .failed:
+            let prefix = evidence.status == .rejected ? "Recognition was rejected" : "Recognition failed"
+            let reason: String
+            switch evidence.failureReason {
+            case .invalidMaximumFaces: reason = "invalid face limit"
+            case .invalidLimits: reason = "invalid resource limits"
+            case .invalidStagedInputByteCount: reason = "invalid staged input size"
+            case .stagedInputLeaseAlreadySubmitted: reason = "staged input was already submitted"
+            case .queueLimitExceeded: reason = "analysis queue limit exceeded"
+            case .pendingByteLimitExceeded: reason = "staged byte limit exceeded"
+            case .galleryPeopleLimitExceeded: reason = "people count limit exceeded"
+            case .galleryEmbeddingLimitExceeded: reason = "reference embedding limit exceeded"
+            case .galleryComparisonLimitExceeded: reason = "comparison limit exceeded"
+            case .faceLimitExceeded: reason = "detected face limit exceeded"
+            case .invalidFaceOrdinals: reason = "invalid analyzer result ordering"
+            case .invalidCaptureQuality: reason = "invalid analyzer quality value"
+            case .operationFailed: reason = "local analysis failed"
+            case .matchingFailed: reason = "local matching failed"
+            case .deadlineExceeded: reason = "analysis deadline exceeded"
+            case nil: reason = "no reason was recorded"
+            }
+            var bounds: [String] = []
+            if let maximum = evidence.maximum { bounds.append("maximum \(maximum)") }
+            if let actual = evidence.actual { bounds.append("actual \(actual)") }
+            if let pending = evidence.pending { bounds.append("pending \(pending)") }
+            if let requested = evidence.requested { bounds.append("requested \(requested)") }
+            return prefix + ": " + reason + (bounds.isEmpty ? "." : " (" + bounds.joined(separator: ", ") + ").")
+        case .cancelled:
+            return "Recognition was cancelled."
+        }
+    }
+
+    static func recognitionProvenance(_ provenance: FaceRecognitionAuditEvidence.Provenance) -> String {
+        "Recognition provenance: model \(provenance.modelID), component \(provenance.componentID), preprocessing \(provenance.preprocessingRevision), embedding space \(provenance.embeddingSpaceVersion), \(provenance.vectorEncoding)/\(provenance.embeddingDimension), library schema \(provenance.librarySchemaVersion), runtime \(provenance.runtimeRevision), policy \(provenance.acceptancePolicyRevision)."
+    }
+
     static func processingTime(_ evidence: MetadataProcessingAuditEvidence) -> String {
         let savedZone = TimeZone(identifier: evidence.processingTimeZoneIdentifier)
         let formatter = DateFormatter()
