@@ -757,6 +757,49 @@ final class FTPListingTests: XCTestCase {
         XCTAssertEqual(storedFiles, [first.relativePath: first, second.relativePath: second])
     }
 
+    func testCompletedDirectoryMetadataTransferRecordsFingerprintBeforeFullScan() async throws {
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let raw = SyncFile(relativePath: "FX_EARLY.CR3", size: 5, modifiedAt: date)
+        let timeline = FastStartTimeline()
+        let source = IncrementalSource(
+            snapshots: [directorySnapshot("", files: [raw])],
+            finalFiles: [raw.relativePath: raw],
+            timeline: timeline
+        )
+        let destination = ConditionalDestination(timeline: timeline)
+        var job = partialFailureJob()
+        job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+        let photographer = PhotographerProfile(
+            name: "Fixture", filenamePrefix: "FX", creator: "Fixture", copyrightNotice: ""
+        )
+        job.metadataAutomation = MetadataAutomation(
+            isEnabled: true,
+            timestampPolicy: .sourceModification,
+            existingFieldPolicy: .overwrite,
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Early",
+                startsAt: date.addingTimeInterval(-60),
+                endsAt: date.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Early delivery")
+            )]
+        )
+
+        let result = try await retryTestEngine(source: source, destination: destination).run(
+            job: job, leftPassword: "secret", rightPassword: nil
+        )
+
+        let events = await timeline.events
+        let fullListingIndex = try XCTUnwrap(events.firstIndex(of: "source-full-list"))
+        let firstImportIndex = try XCTUnwrap(events.firstIndex(of: "conditional-import:FX_EARLY.CR3"))
+        XCTAssertLessThan(firstImportIndex, fullListingIndex)
+        XCTAssertEqual(result.transferred, 1)
+        let entry = try XCTUnwrap(result.metadataReport.entries.first)
+        XCTAssertEqual(entry.status, .applied)
+        XCTAssertNotNil(entry.processingFingerprint)
+    }
+
     func testCompletedDirectoryRejectsSameStemRAWOwnersBeforePublication() async throws {
         let date = Date(timeIntervalSince1970: 1_800_000_000)
         let cr2 = SyncFile(relativePath: "desk/JAD_SAME.CR2", size: 5, modifiedAt: date)

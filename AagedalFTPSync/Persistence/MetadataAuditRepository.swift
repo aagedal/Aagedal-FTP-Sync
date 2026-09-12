@@ -53,6 +53,28 @@ struct MetadataAuditRepository: Sendable {
         }
     }
 
+    /// The newest durable processing outcome for every destination path.
+    ///
+    /// A later incomplete or failed outcome intentionally replaces an older
+    /// fingerprint in this index. Callers must not treat a previously complete
+    /// result as current after a newer attempt observed a different outcome.
+    func latestEntries(jobID: UUID) throws -> [String: MetadataAuditEntry] {
+        try load(jobID: jobID).reduce(into: [:]) { latest, entry in
+            guard let current = latest[entry.relativePath] else {
+                latest[entry.relativePath] = entry
+                return
+            }
+            if Self.oldestFirst(current, entry) {
+                latest[entry.relativePath] = entry
+            }
+        }
+    }
+
+    /// Complete processing receipts from the newest outcome for each path.
+    func latestProcessingFingerprints(jobID: UUID) throws -> [String: MetadataProcessingFingerprint] {
+        try latestEntries(jobID: jobID).compactMapValues(\.processingFingerprint)
+    }
+
     @discardableResult
     func append(_ report: MetadataRunReport) throws -> [MetadataAuditEntry] {
         guard report.hasActivity else { return try load() }
@@ -115,4 +137,3 @@ private extension JSONDecoder {
         return decoder
     }
 }
-

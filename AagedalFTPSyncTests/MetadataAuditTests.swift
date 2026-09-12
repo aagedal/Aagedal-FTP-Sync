@@ -94,6 +94,52 @@ final class MetadataAuditTests: XCTestCase {
         XCTAssertEqual(try repository.load().map(\.relativePath), ["1.jpg", "2.jpg"])
     }
 
+    func testLatestProcessingIndexDoesNotResurrectReceiptBeforeNewerFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-audit-index-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json"))
+        let fixture = AuditFixture()
+        let output = root.appendingPathComponent("published.jpg")
+        try Data("published".utf8).write(to: output)
+        let source = SyncFile(relativePath: "published.jpg", size: 9, modifiedAt: fixture.timestamp)
+        let fingerprint = try MetadataProcessingFingerprint(
+            sourceFile: source, sourceSidecar: nil, assignment: fixture.assignment,
+            geocoding: nil, faceRecognition: nil, timestampPolicy: .sourceModification,
+            processingTimeZone: try XCTUnwrap(TimeZone(identifier: "Etc/UTC")),
+            outputArtifacts: [.init(role: "primary", relativePath: source.relativePath, fileURL: output)]
+        )
+        let complete = MetadataAuditEntry(
+            runID: fixture.runID, jobID: fixture.jobID, occurredAt: fixture.timestamp,
+            operation: .transfer, relativePath: source.relativePath, status: .applied,
+            timestampPolicy: .sourceModification, scheduledAt: fixture.timestamp,
+            assignment: fixture.assignment, processingFingerprint: fingerprint
+        )
+        let laterFailure = MetadataAuditEntry(
+            runID: UUID(), jobID: fixture.jobID,
+            occurredAt: fixture.timestamp.addingTimeInterval(1), operation: .reprocess,
+            relativePath: source.relativePath, status: .failed,
+            timestampPolicy: .sourceModification, scheduledAt: fixture.timestamp,
+            assignment: fixture.assignment, detail: "A later attempt was incomplete"
+        )
+        let otherPath = MetadataAuditEntry(
+            runID: UUID(), jobID: fixture.jobID,
+            occurredAt: fixture.timestamp.addingTimeInterval(2), operation: .transfer,
+            relativePath: "other.jpg", status: .applied,
+            timestampPolicy: .sourceModification, scheduledAt: fixture.timestamp,
+            assignment: fixture.assignment, processingFingerprint: fingerprint
+        )
+        try repository.save([laterFailure, otherPath, complete])
+
+        let latest = try repository.latestEntries(jobID: fixture.jobID)
+        XCTAssertEqual(latest[source.relativePath], laterFailure)
+        XCTAssertEqual(latest[otherPath.relativePath], otherPath)
+        let receipts = try repository.latestProcessingFingerprints(jobID: fixture.jobID)
+        XCTAssertNil(receipts[source.relativePath])
+        XCTAssertEqual(receipts[otherPath.relativePath], fingerprint)
+    }
+
     func testAuditRepositoryRecoversFromLastValidBackup() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metadata-audit-recovery-\(UUID().uuidString)", isDirectory: true)

@@ -76,6 +76,31 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: f.destination.appendingPathComponent("FX_BAD.jpg")), invalid)
         XCTAssertEqual(try ImageMetadata.read(from: f.destination.appendingPathComponent("FX_GOOD.jpg")).iptc.headline, "2024-01-02")
         XCTAssertTrue(FileManager.default.fileExists(atPath: f.source.appendingPathComponent("FX_BAD.jpg").path))
+        let successfulEntry = try XCTUnwrap(result.metadataReport.entries.first {
+            $0.relativePath == "FX_GOOD.jpg" && $0.status == .applied
+        })
+        XCTAssertNotNil(successfulEntry.processingFingerprint)
+        XCTAssertNil(result.metadataReport.entries.first {
+            $0.relativePath == "FX_BAD.jpg"
+        }?.processingFingerprint)
+    }
+
+    func testAlreadyAppliedReprocessRecordsCompleteFingerprintWithoutRewriting() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_READY.jpg", root: f.source)
+        _ = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let target = f.destination.appendingPathComponent("FX_READY.jpg")
+        let before = try FileManager.default.attributesOfItem(atPath: target.path)
+
+        let result = try await engine(f).reprocessExistingLocalFiles(job: f.job)
+
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertEqual(result.skipped, 1)
+        let entry = try XCTUnwrap(result.metadataReport.entries.first)
+        XCTAssertEqual(entry.status, .skipped)
+        XCTAssertNotNil(entry.processingFingerprint)
+        let after = try FileManager.default.attributesOfItem(atPath: target.path)
+        XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
     }
 
     func testReprocessResolutionFailureIsPerFileAndOtherFilePublishes() async throws {

@@ -883,6 +883,18 @@ struct SyncEngine: Sendable {
                     localArrivalAt: file.modifiedAt, fileURL: temporaryURL)
             }
             let assignment = scheduledAt.flatMap { automation?.assignment(for: file.relativePath, scheduledAt: $0) }
+            let sourceEvidence = sourceFiles[file.relativePath]
+                ?? savedSourceSignatures[file.relativePath].map {
+                    SyncFile(relativePath: file.relativePath, size: $0.size, modifiedAt: $0.modifiedAt)
+                }
+                ?? file
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+            let sourceSidecarEvidence = sourceFiles[sidecarPath]
+                ?? savedSourceSignatures[sidecarPath].map {
+                    SyncFile(relativePath: sidecarPath, size: $0.size, modifiedAt: $0.modifiedAt)
+                }
+            let existingOutputSidecarURL = FileManager.default.fileExists(atPath: temporarySidecarURL.path)
+                ? temporarySidecarURL : nil
             let independentProcessing = MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: job.metadataGeocoding)
             if assignment == nil && !independentProcessing {
                 if scope.isClip { continue }
@@ -914,12 +926,31 @@ struct SyncEngine: Sendable {
             }
             let activated = processing.context != nil
             if activated && !processing.hasProposedChanges {
-                if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
-                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
-                    relativePath: file.relativePath, status: processing.resolutionComplete ? .skipped : .failed,
-                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt, assignment: assignment,
-                    detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was retained unchanged.",
-                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                do {
+                    let fingerprint = try makeProcessingFingerprint(
+                        sourceFile: sourceEvidence, sourceSidecar: sourceSidecarEvidence,
+                        assignment: assignment, geocoding: job.metadataGeocoding,
+                        faceRecognition: job.metadataFaceRecognition,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                        processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
+                        processing: processing, primaryURL: temporaryURL,
+                        relativePath: file.relativePath, sidecarURL: existingOutputSidecarURL)
+                    if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
+                    metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: processing.resolutionComplete ? .skipped : .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt, assignment: assignment,
+                        detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was retained unchanged.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        processingFingerprint: fingerprint))
+                } catch {
+                    failed += 1
+                    metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
+                        assignment: assignment,
+                        detail: "Processing provenance could not be recorded; the original file was retained unchanged. \(error.localizedDescription)",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                }
                 continue
             }
             if let assessment = try? MetadataWriter.assess(
@@ -927,22 +958,38 @@ struct SyncEngine: Sendable {
                 at: temporaryURL,
                 relativePath: file.relativePath
             ), assessment != .willApply {
-                if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
-                let detail = assessment == .alreadyApplied
-                    ? "The programmed metadata is already applied."
-                    : "Existing non-empty metadata was preserved; no programmed fields needed changing."
-                metadataReport.append(MetadataAuditEntry(
-                    runID: runID,
-                    jobID: job.id,
-                    operation: .reprocess,
-                    relativePath: file.relativePath,
-                    status: processing.resolutionComplete ? .skipped : .failed,
-                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
-                    scheduledAt: scheduledAt,
-                    assignment: assignment,
-                    detail: processing.resolutionComplete ? detail : "Some requested metadata could not resolve; existing affected fields were preserved.",
-                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)
-                ))
+                do {
+                    let fingerprint = try makeProcessingFingerprint(
+                        sourceFile: sourceEvidence, sourceSidecar: sourceSidecarEvidence,
+                        assignment: assignment, geocoding: job.metadataGeocoding,
+                        faceRecognition: job.metadataFaceRecognition,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                        processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
+                        processing: processing, primaryURL: temporaryURL,
+                        relativePath: file.relativePath, sidecarURL: existingOutputSidecarURL)
+                    if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
+                    let detail = assessment == .alreadyApplied
+                        ? "The programmed metadata is already applied."
+                        : "Existing non-empty metadata was preserved; no programmed fields needed changing."
+                    metadataReport.append(MetadataAuditEntry(
+                        runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath,
+                        status: processing.resolutionComplete ? .skipped : .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                        scheduledAt: scheduledAt, assignment: assignment,
+                        detail: processing.resolutionComplete ? detail : "Some requested metadata could not resolve; existing affected fields were preserved.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        processingFingerprint: fingerprint
+                    ))
+                } catch {
+                    failed += 1
+                    metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
+                        assignment: assignment,
+                        detail: "Processing provenance could not be recorded; the original file was retained unchanged. \(error.localizedDescription)",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                }
                 continue
             }
 
@@ -984,54 +1031,25 @@ struct SyncEngine: Sendable {
                 continue
             }
 
-            let sourceEvidence = sourceFiles[file.relativePath]
-                ?? savedSourceSignatures[file.relativePath].map {
-                    SyncFile(relativePath: file.relativePath, size: $0.size, modifiedAt: $0.modifiedAt)
-                }
-                ?? file
-            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-            let sourceSidecarEvidence = sourceFiles[sidecarPath]
-                ?? savedSourceSignatures[sidecarPath].map {
-                    SyncFile(relativePath: sidecarPath, size: $0.size, modifiedAt: $0.modifiedAt)
-                }
-            var outputArtifacts = [MetadataProcessingFingerprint.OutputArtifact(
-                role: "primary",
-                relativePath: file.relativePath,
-                fileURL: temporaryURL
-            )]
-            switch writeResult {
-            case .embedded:
-                if FileManager.default.fileExists(atPath: temporarySidecarURL.path) {
-                    outputArtifacts.append(.init(
-                        role: "sidecar", relativePath: sidecarPath, fileURL: temporarySidecarURL
-                    ))
-                }
-            case .sidecar(let localURL, _, _):
-                outputArtifacts.append(.init(
-                    role: "sidecar", relativePath: sidecarPath, fileURL: localURL
-                ))
-            }
-            var dependencyRevisions = ["metadata-writer": "SwiftMediaMetadata-2.0.0"]
-            if let identity = processing.geocodingProviderIdentity {
-                dependencyRevisions["geocoder-provider"] = identity.provider
-                dependencyRevisions["geocoder-version"] = identity.version
-                dependencyRevisions["geocoder-dataset"] = identity.dataset
-            }
             // Hash before publication: a provenance failure must not leave a
             // changed destination without a receipt describing the exact output.
             let processingFingerprint: MetadataProcessingFingerprint?
             do {
-                processingFingerprint = processing.resolutionComplete ? try MetadataProcessingFingerprint(
-                    sourceFile: sourceEvidence,
-                    sourceSidecar: sourceSidecarEvidence,
-                    assignment: assignment,
-                    geocoding: job.metadataGeocoding,
+                let outputSidecarURL: URL?
+                switch writeResult {
+                case .embedded:
+                    outputSidecarURL = existingOutputSidecarURL
+                case .sidecar(let localURL, _, _):
+                    outputSidecarURL = localURL
+                }
+                processingFingerprint = try makeProcessingFingerprint(
+                    sourceFile: sourceEvidence, sourceSidecar: sourceSidecarEvidence,
+                    assignment: assignment, geocoding: job.metadataGeocoding,
                     faceRecognition: job.metadataFaceRecognition,
                     timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                     processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
-                    dependencyRevisions: dependencyRevisions,
-                    outputArtifacts: outputArtifacts
-                ) : nil
+                    processing: processing, primaryURL: temporaryURL,
+                    relativePath: file.relativePath, sidecarURL: outputSidecarURL)
             } catch {
                 failed += 1
                 metadataReport.append(MetadataAuditEntry(
@@ -1393,6 +1411,7 @@ struct SyncEngine: Sendable {
                     verifySize: job.verifyFileSizes,
                     metadataAutomation: job.metadataAutomation,
                     metadataGeocoding: job.metadataGeocoding,
+                    metadataFaceRecognition: job.metadataFaceRecognition,
                     processingDate: processingDate,
                     processingTimeZone: try job.metadataOperationTimeZone,
                     sortProcessedFilesByPhotographer: false,
@@ -1639,6 +1658,7 @@ struct SyncEngine: Sendable {
                     verifySize: job.verifyFileSizes,
                     metadataAutomation: job.metadataAutomation,
                     metadataGeocoding: job.metadataGeocoding,
+                    metadataFaceRecognition: job.metadataFaceRecognition,
                     processingDate: processingDate,
                     processingTimeZone: try job.metadataOperationTimeZone,
                     sortProcessedFilesByPhotographer: job.sortsProcessedFilesByPhotographer,
@@ -2014,6 +2034,51 @@ struct SyncEngine: Sendable {
         return hasher.finalize()
     }
 
+    private func makeProcessingFingerprint(
+        sourceFile: SyncFile,
+        sourceSidecar: SyncFile?,
+        assignment: MetadataAssignment?,
+        geocoding: MetadataGeocodingSettings?,
+        faceRecognition: MetadataFaceRecognitionSettings?,
+        timestampPolicy: MetadataTimestampPolicy,
+        processingTimeZone: TimeZone,
+        processing: MetadataProcessingResult,
+        primaryURL: URL,
+        relativePath: String,
+        sidecarURL: URL?
+    ) throws -> MetadataProcessingFingerprint? {
+        guard processing.resolutionComplete else { return nil }
+        var dependencies = ["metadata-writer": "SwiftMediaMetadata-2.0.0"]
+        if let identity = processing.geocodingProviderIdentity {
+            dependencies["geocoder-provider"] = identity.provider
+            dependencies["geocoder-version"] = identity.version
+            dependencies["geocoder-dataset"] = identity.dataset
+        }
+        var outputs = [MetadataProcessingFingerprint.OutputArtifact(
+            role: "primary",
+            relativePath: relativePath,
+            fileURL: primaryURL
+        )]
+        if let sidecarURL {
+            outputs.append(.init(
+                role: "sidecar",
+                relativePath: MetadataWriter.sidecarRelativePath(for: relativePath),
+                fileURL: sidecarURL
+            ))
+        }
+        return try MetadataProcessingFingerprint(
+            sourceFile: sourceFile,
+            sourceSidecar: sourceSidecar,
+            assignment: assignment,
+            geocoding: geocoding,
+            faceRecognition: faceRecognition,
+            timestampPolicy: timestampPolicy,
+            processingTimeZone: processingTimeZone,
+            dependencyRevisions: dependencies,
+            outputArtifacts: outputs
+        )
+    }
+
     private func transfer(
         _ file: SyncFile,
         from source: any EndpointSession,
@@ -2026,6 +2091,7 @@ struct SyncEngine: Sendable {
         verifySize: Bool,
         metadataAutomation: MetadataAutomation?,
         metadataGeocoding: MetadataGeocodingSettings? = nil,
+        metadataFaceRecognition: MetadataFaceRecognitionSettings? = nil,
         processingDate: Date = Date(),
         processingTimeZone: TimeZone? = nil,
         sortProcessedFilesByPhotographer: Bool,
@@ -2126,26 +2192,37 @@ struct SyncEngine: Sendable {
         }
 
         var importedURL = temporaryURL
-        let importedFile: SyncFile
+        var importedFile = file
         var sidecarImport: (url: URL, file: SyncFile)?
         var auditEntry: MetadataAuditEntry?
         var embeddedMetadataApplied = false
         if metadataAssignment != nil || MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: metadataGeocoding) {
             var processingResult: MetadataProcessingResult?
             do {
+                let effectiveProcessingTimeZone = processingTimeZone ?? TimeZone(secondsFromGMT: 0)!
                 let processing = try await MetadataProcessingCoordinator.prepare(
                     assignment: metadataAssignment, geocoding: metadataGeocoding, service: geocodingService, services: metadataServices, fileURL: temporaryURL, relativePath: file.relativePath,
-                    processingDate: processingDate, processingTimeZone: processingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
+                    processingDate: processingDate, processingTimeZone: effectiveProcessingTimeZone)
                 processingResult = processing
                 if processing.context != nil && !processing.hasProposedChanges {
                     importedFile = file
                     if let sourceSidecar { sidecarImport = (temporarySidecarURL, sourceSidecar) }
+                    let fingerprint = try makeProcessingFingerprint(
+                        sourceFile: file, sourceSidecar: sourceSidecar,
+                        assignment: metadataAssignment, geocoding: metadataGeocoding,
+                        faceRecognition: metadataFaceRecognition,
+                        timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
+                        processingTimeZone: effectiveProcessingTimeZone,
+                        processing: processing, primaryURL: temporaryURL,
+                        relativePath: file.relativePath,
+                        sidecarURL: sourceSidecar == nil ? nil : temporarySidecarURL)
                     auditEntry = MetadataAuditEntry(runID: runID, jobID: jobID, operation: .transfer,
                         relativePath: file.relativePath, status: processing.resolutionComplete ? .skipped : .failed,
                         timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
                         scheduledAt: scheduledAt, assignment: metadataAssignment,
                         detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was transferred unchanged.",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing))
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        processingFingerprint: fingerprint)
                 } else {
                     let workURL = try makeTemporaryURL(for: file)
                     let workSidecarURL = workURL.deletingPathExtension().appendingPathExtension("xmp")
@@ -2181,6 +2258,14 @@ struct SyncEngine: Sendable {
                             )
                         )
                     }
+                    let fingerprint = try makeProcessingFingerprint(
+                        sourceFile: file, sourceSidecar: sourceSidecar,
+                        assignment: metadataAssignment, geocoding: metadataGeocoding,
+                        faceRecognition: metadataFaceRecognition,
+                        timestampPolicy: activeAutomation?.timestampPolicy ?? .sourceModification,
+                        processingTimeZone: effectiveProcessingTimeZone,
+                        processing: processing, primaryURL: importedURL,
+                        relativePath: file.relativePath, sidecarURL: sidecarImport?.url)
                     auditEntry = MetadataAuditEntry(
                         runID: runID,
                         jobID: jobID,
@@ -2192,7 +2277,8 @@ struct SyncEngine: Sendable {
                         assignment: metadataAssignment,
                         swiftExifWarnings: writeResult.warnings,
                         detail: processing.resolutionComplete ? nil : "Partial metadata was applied; unresolved fields were preserved and the source was retained.",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        processingFingerprint: fingerprint
                     )
                 }
             } catch is CancellationError {
@@ -2200,9 +2286,7 @@ struct SyncEngine: Sendable {
             } catch {
                 importedURL = temporaryURL
                 importedFile = file
-                if let sourceSidecar {
-                    sidecarImport = (temporarySidecarURL, sourceSidecar)
-                }
+                sidecarImport = sourceSidecar.map { (temporarySidecarURL, $0) }
                 auditEntry = MetadataAuditEntry(
                     runID: runID,
                     jobID: jobID,
