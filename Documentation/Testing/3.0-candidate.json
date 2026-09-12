@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-9d0a152-face-component-foundation",
+  "id": "development-4f26d6e-face-orchestration-foundation",
   "status": "IMPLEMENTING",
-  "commit": "9d0a152fd9096e104492af06f94fe3bed1caaf4c",
+  "commit": "4f26d6eb3e6c5bfa462b120d9432d52a32c1a870",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-people-settings/Build/Products/Debug/AagedalFTPSync.app",
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-face-orchestration-release/Build/Products/Release/AagedalFTPSync.app",
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Development build only, not ready for human acceptance. Face-name metadata append and an isolated signed model-component foundation are implemented through 9d0a152; recognition remains structurally disabled. Focused writer/component suite: 14 passed, zero failures. Adversarial installer suite: 11 passed, zero failures. Prior clean full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). A later broad run was invalidated by macOS 27/Xcode 27 denying existing suites access to /private/tmp and is not release evidence. Photo Agent has the schema-2 directory reader, but its production exporter is still schema 1 and its model packager forces ZIP64. Deterministic schema-2 ZIP32 producers, a dedicated key and fixed hosts, committed BGR/RGB cross-runtime proof, App Group sync, recognition integration, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
+  "note": "Development build only, not ready for human acceptance. Face-name metadata append, the isolated signed model-component foundation, strict persisted recognition settings and fail-closed bounded orchestration are implemented through 4f26d6e; Release code still cannot construct a ready recognition runtime. Focused orchestration suite: 31 passed, zero failures. Broader affected persistence/transfer suite: 67 passed, zero failures. A macOS Release build passed with code signing disabled. Prior clean full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). A later broad run was invalidated by macOS 27/Xcode 27 denying existing suites access to /private/tmp and is not release evidence. Photo Agent has the schema-2 directory reader, but its production exporter is still schema 1 and its model packager forces ZIP64. Deterministic schema-2 ZIP32 producers, a dedicated key and fixed hosts, committed BGR/RGB cross-runtime proof, App Group sync, identity-bound production admission, queue/deadline/gallery budgets, durable redacted audit, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
 }
