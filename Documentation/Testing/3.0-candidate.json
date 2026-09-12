@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-e5ae9a7-matching-foundation",
+  "id": "development-0beef3c-library-foundation",
   "status": "IMPLEMENTING",
-  "commit": "e5ae9a76e3f662fba62567fe1b33255c163a1a01",
+  "commit": "0beef3c0edae7f89d5f1c7b178f46464cf8cd1b3",
   "version": "2.9.2",
   "build": "37",
   "appPath": "/Users/truls.aagedal/Library/Developer/Xcode/DerivedData/Aagedal_FTP_Sync-chqrijudhplttvgsyeeekhmacadi/Build/Products/Debug/AagedalFTPSync.app",
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Development build only, not ready for human acceptance. Validated embeddings, strict FEM2 codec and exhaustive matcher at e5ae9a7. Full suite: 1013 passed, 15 opt-in skips, zero failures (1028 discovered). Recognition runtime/library/model integration, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
+  "note": "Development build only, not ready for human acceptance. Strict hash-bound people-library schema and atomic immutable snapshot selection at 0beef3c. Full suite: 1020 passed, 15 opt-in skips, zero failures (1035 discovered). Archive, companion exporter, model/runtime/UI integration, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
 }
