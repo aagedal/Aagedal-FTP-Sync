@@ -89,6 +89,17 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(result.applied, 1)
         XCTAssertEqual(try Data(contentsOf: f.destination.appendingPathComponent("FX_BAD.jpg")), Data("not a JPEG".utf8))
         XCTAssertEqual(try ImageMetadata.read(from: f.destination.appendingPathComponent("FX_GOOD.jpg")).iptc.headline, "2024-01-02")
+        let successfulEntry = try XCTUnwrap(result.metadataReport.entries.first {
+            $0.relativePath == "FX_GOOD.jpg" && $0.status == .applied
+        })
+        let fingerprint = try XCTUnwrap(successfulEntry.processingFingerprint)
+        XCTAssertEqual(fingerprint.sourceRevision.utf8.count, 64)
+        XCTAssertEqual(fingerprint.settingsRevision.utf8.count, 64)
+        XCTAssertEqual(fingerprint.dependencyRevision.utf8.count, 64)
+        XCTAssertEqual(fingerprint.outputRevision.utf8.count, 64)
+        XCTAssertNil(result.metadataReport.entries.first {
+            $0.relativePath == "FX_BAD.jpg"
+        }?.processingFingerprint)
     }
 
     func testUnresolvedRawWithPreservedCreatorDoesNotRewriteExistingSidecar() async throws {

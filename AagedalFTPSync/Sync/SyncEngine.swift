@@ -810,6 +810,16 @@ struct SyncEngine: Sendable {
             leftPassword: leftPassword,
             rightPassword: rightPassword
         )
+        let savedSourceSignatures: [String: SourceFileSignature]
+        if let sourceEndpoint = job.sourceEndpoint {
+            savedSourceSignatures = try await sourceSignatureRepository.signatures(
+                jobID: job.id,
+                sourceEndpoint: sourceEndpoint,
+                relativePaths: destinationFiles.keys
+            )
+        } else {
+            savedSourceSignatures = [:]
+        }
         let files = destinationFiles.values
             .filter { job.filter.includesFileType(path: $0.relativePath) }
             .filter { automation != nil || MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding) }
@@ -974,6 +984,71 @@ struct SyncEngine: Sendable {
                 continue
             }
 
+            let sourceEvidence = sourceFiles[file.relativePath]
+                ?? savedSourceSignatures[file.relativePath].map {
+                    SyncFile(relativePath: file.relativePath, size: $0.size, modifiedAt: $0.modifiedAt)
+                }
+                ?? file
+            let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+            let sourceSidecarEvidence = sourceFiles[sidecarPath]
+                ?? savedSourceSignatures[sidecarPath].map {
+                    SyncFile(relativePath: sidecarPath, size: $0.size, modifiedAt: $0.modifiedAt)
+                }
+            var outputArtifacts = [MetadataProcessingFingerprint.OutputArtifact(
+                role: "primary",
+                relativePath: file.relativePath,
+                fileURL: temporaryURL
+            )]
+            switch writeResult {
+            case .embedded:
+                if FileManager.default.fileExists(atPath: temporarySidecarURL.path) {
+                    outputArtifacts.append(.init(
+                        role: "sidecar", relativePath: sidecarPath, fileURL: temporarySidecarURL
+                    ))
+                }
+            case .sidecar(let localURL, _, _):
+                outputArtifacts.append(.init(
+                    role: "sidecar", relativePath: sidecarPath, fileURL: localURL
+                ))
+            }
+            var dependencyRevisions = ["metadata-writer": "SwiftMediaMetadata-2.0.0"]
+            if let identity = processing.geocodingProviderIdentity {
+                dependencyRevisions["geocoder-provider"] = identity.provider
+                dependencyRevisions["geocoder-version"] = identity.version
+                dependencyRevisions["geocoder-dataset"] = identity.dataset
+            }
+            // Hash before publication: a provenance failure must not leave a
+            // changed destination without a receipt describing the exact output.
+            let processingFingerprint: MetadataProcessingFingerprint?
+            do {
+                processingFingerprint = processing.resolutionComplete ? try MetadataProcessingFingerprint(
+                    sourceFile: sourceEvidence,
+                    sourceSidecar: sourceSidecarEvidence,
+                    assignment: assignment,
+                    geocoding: job.metadataGeocoding,
+                    faceRecognition: job.metadataFaceRecognition,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                    processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
+                    dependencyRevisions: dependencyRevisions,
+                    outputArtifacts: outputArtifacts
+                ) : nil
+            } catch {
+                failed += 1
+                metadataReport.append(MetadataAuditEntry(
+                    runID: runID,
+                    jobID: job.id,
+                    operation: .reprocess,
+                    relativePath: file.relativePath,
+                    status: .failed,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                    scheduledAt: scheduledAt,
+                    assignment: assignment,
+                    detail: "Processing provenance could not be recorded; the original file was retained unchanged. \(error.localizedDescription)",
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                ))
+                continue
+            }
+
             do {
                 switch writeResult {
                 case .embedded(let rewrittenSize, _):
@@ -1028,7 +1103,8 @@ struct SyncEngine: Sendable {
                 assignment: assignment,
                 swiftExifWarnings: writeResult.warnings,
                 detail: processing.resolutionComplete ? nil : "Partial metadata was applied; unresolved fields were preserved.",
-                processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                processingFingerprint: processingFingerprint
             ))
         }
 

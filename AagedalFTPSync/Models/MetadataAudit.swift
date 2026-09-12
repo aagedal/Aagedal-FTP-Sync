@@ -361,6 +361,289 @@ struct FaceRecognitionAuditEvidence: Codable, Equatable, Sendable {
     }
 }
 
+/// A privacy-preserving receipt for one completely published metadata result.
+///
+/// Each revision is a SHA-256 digest of a length-delimited canonical payload. The
+/// receipt deliberately stores neither template text, coordinates, people-library
+/// identifiers, local paths nor resolved metadata values. Source evidence retains
+/// the same size/date meaning as `SourceFileSignature`; it is not presented as a
+/// content hash. Output evidence is content-hashed so a later user edit can be
+/// distinguished from a result that is merely stale because policy changed.
+struct MetadataProcessingFingerprint: Codable, Equatable, Sendable {
+    static let schemaVersion = 1
+
+    enum Freshness: String, Codable, Equatable, Sendable {
+        case current
+        case sourceChanged
+        case settingsChanged
+        case dependenciesChanged
+        case outputChanged
+    }
+
+    struct OutputArtifact: Sendable {
+        let role: String
+        let relativePath: String
+        let fileURL: URL
+
+        init(role: String, relativePath: String, fileURL: URL) {
+            self.role = role
+            self.relativePath = relativePath
+            self.fileURL = fileURL
+        }
+    }
+
+    let sourceRevision: String
+    let settingsRevision: String
+    let dependencyRevision: String
+    let outputRevision: String
+
+    init(
+        sourceFile: SyncFile,
+        sourceSidecar: SyncFile?,
+        assignment: MetadataAssignment?,
+        geocoding: MetadataGeocodingSettings?,
+        faceRecognition: MetadataFaceRecognitionSettings?,
+        timestampPolicy: MetadataTimestampPolicy,
+        processingTimeZone: TimeZone,
+        dependencyRevisions: [String: String] = [:],
+        outputArtifacts: [OutputArtifact]
+    ) throws {
+        sourceRevision = Self.sourceRevision(primary: sourceFile, companion: sourceSidecar)
+        settingsRevision = try Self.settingsRevision(
+            assignment: assignment,
+            geocoding: geocoding,
+            faceRecognition: faceRecognition,
+            timestampPolicy: timestampPolicy,
+            processingTimeZone: processingTimeZone
+        )
+        dependencyRevision = Self.dependencyRevision(dependencyRevisions)
+        outputRevision = try Self.outputRevision(outputArtifacts)
+    }
+
+    func freshness(
+        sourceRevision currentSourceRevision: String,
+        settingsRevision currentSettingsRevision: String,
+        dependencyRevision currentDependencyRevision: String,
+        outputRevision currentOutputRevision: String
+    ) -> Freshness {
+        if sourceRevision != currentSourceRevision { return .sourceChanged }
+        if settingsRevision != currentSettingsRevision { return .settingsChanged }
+        if dependencyRevision != currentDependencyRevision { return .dependenciesChanged }
+        if outputRevision != currentOutputRevision { return .outputChanged }
+        return .current
+    }
+
+    static func sourceRevision(primary: SyncFile, companion: SyncFile?) -> String {
+        var canonical = CanonicalDigest(domain: "metadata-source-v1")
+        canonical.appendFile(role: "primary", file: primary)
+        canonical.appendOptional(companion) { digest, file in
+            digest.appendFile(role: "companion", file: file)
+        }
+        return canonical.finalize()
+    }
+
+    static func settingsRevision(
+        assignment: MetadataAssignment?,
+        geocoding: MetadataGeocodingSettings?,
+        faceRecognition: MetadataFaceRecognitionSettings?,
+        timestampPolicy: MetadataTimestampPolicy,
+        processingTimeZone: TimeZone
+    ) throws -> String {
+        var canonical = CanonicalDigest(domain: "metadata-settings-v1")
+        canonical.append(timestampPolicy.rawValue)
+        canonical.append(processingTimeZone.identifier)
+        try canonical.appendOptional(assignment) { digest, assignment in
+            let request = try MetadataProcessingRequest(assignment: assignment)
+            digest.append(assignment.photographer.id.uuidString)
+            digest.append(assignment.photographer.name)
+            digest.append(request.creator)
+            digest.append(request.photographer)
+            digest.appendTemplate(request.copyright)
+            digest.append(assignment.clip.id.uuidString)
+            digest.append(assignment.clip.name)
+            digest.append(assignment.clip.startsAt)
+            digest.append(assignment.clip.endsAt)
+            digest.appendTemplate(request.headline)
+            digest.appendTemplate(request.description)
+            digest.appendTemplate(request.keywords)
+            digest.appendOptional(request.gpsPosition) { digest, position in
+                digest.append(position.latitude)
+                digest.append(position.longitude)
+                digest.append(position.altitudeMeters)
+                digest.append(position.label)
+            }
+            for field in request.existingFieldPolicy.overwriteFields.map(\.rawValue).sorted() {
+                digest.append(field)
+            }
+        }
+        canonical.appendOptional(geocoding?.isEnabled == true ? geocoding : nil) { digest, settings in
+            digest.append(settings.provider == .offline ? "offline" : "apple")
+            digest.append(settings.resolveVariables)
+            digest.append(settings.cityPolicy.rawValue)
+            digest.append(settings.countryPolicy.rawValue)
+            digest.append(settings.localeIdentifier)
+            digest.append(settings.allowSendingCoordinatesToApple)
+        }
+        canonical.appendOptional(faceRecognition) { digest, settings in
+            digest.append(settings.appendToKeywords)
+        }
+        return canonical.finalize()
+    }
+
+    static func dependencyRevision(_ revisions: [String: String]) -> String {
+        var canonical = CanonicalDigest(domain: "metadata-dependencies-v1")
+        for key in revisions.keys.sorted() {
+            canonical.append(key)
+            canonical.append(revisions[key]!)
+        }
+        return canonical.finalize()
+    }
+
+    static func outputRevision(_ artifacts: [OutputArtifact]) throws -> String {
+        var canonical = CanonicalDigest(domain: "metadata-output-v1")
+        for artifact in artifacts.sorted(by: {
+            if $0.role != $1.role { return $0.role < $1.role }
+            return $0.relativePath < $1.relativePath
+        }) {
+            canonical.append(artifact.role)
+            canonical.append(artifact.relativePath)
+            canonical.append(try contentRevision(at: artifact.fileURL))
+        }
+        return canonical.finalize()
+    }
+
+    private static func contentRevision(at url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+            try Task.checkCancellation()
+            hasher.update(data: data)
+        }
+        return hasher.finalize().hexString
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion, sourceRevision, settingsRevision, dependencyRevision, outputRevision
+    }
+
+    init(from decoder: Decoder) throws {
+        let keys = try decoder.container(keyedBy: AnyCodingKey.self)
+        guard Set(keys.allKeys.map(\.stringValue)) == Set(CodingKeys.allCases.map(\.rawValue)) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Processing fingerprint fields are incomplete or unsupported."
+            ))
+        }
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard try values.decode(Int.self, forKey: .schemaVersion) == Self.schemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: values,
+                debugDescription: "Unsupported processing fingerprint version."
+            )
+        }
+        sourceRevision = try values.decode(String.self, forKey: .sourceRevision)
+        settingsRevision = try values.decode(String.self, forKey: .settingsRevision)
+        dependencyRevision = try values.decode(String.self, forKey: .dependencyRevision)
+        outputRevision = try values.decode(String.self, forKey: .outputRevision)
+        guard [sourceRevision, settingsRevision, dependencyRevision, outputRevision].allSatisfy(Self.isSHA256) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Processing fingerprint revisions must be lowercase SHA-256 values."
+            ))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        guard [sourceRevision, settingsRevision, dependencyRevision, outputRevision].allSatisfy(Self.isSHA256) else {
+            throw EncodingError.invalidValue(self, .init(
+                codingPath: encoder.codingPath,
+                debugDescription: "Processing fingerprint revisions must be lowercase SHA-256 values."
+            ))
+        }
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(Self.schemaVersion, forKey: .schemaVersion)
+        try values.encode(sourceRevision, forKey: .sourceRevision)
+        try values.encode(settingsRevision, forKey: .settingsRevision)
+        try values.encode(dependencyRevision, forKey: .dependencyRevision)
+        try values.encode(outputRevision, forKey: .outputRevision)
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    private struct AnyCodingKey: CodingKey {
+        let stringValue: String
+        let intValue: Int? = nil
+        init?(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { return nil }
+    }
+
+    private struct CanonicalDigest {
+        private var data = Data()
+
+        init(domain: String) { append(domain) }
+
+        mutating func append(_ value: String) {
+            appendBytes(Data(value.utf8))
+        }
+
+        mutating func append(_ value: String?) {
+            appendOptional(value) { digest, value in digest.append(value) }
+        }
+
+        mutating func append(_ value: Bool) { append(value ? "true" : "false") }
+        mutating func append(_ value: Date) { append(value.timeIntervalSince1970.bitPattern.description) }
+        mutating func append(_ value: Double) { append(value.bitPattern.description) }
+        mutating func append(_ value: Double?) {
+            appendOptional(value) { digest, value in digest.append(value) }
+        }
+
+        mutating func appendFile(role: String, file: SyncFile) {
+            append(role)
+            append(file.relativePath)
+            append(String(file.size))
+            append(file.modifiedAt)
+        }
+
+        mutating func appendTemplate(_ value: MetadataTemplateText) {
+            append(value.source)
+            append(value.templateVersion.map(String.init))
+        }
+
+        mutating func appendTemplate(_ value: MetadataTemplateKeywords) {
+            append(value.templateVersion.map(String.init))
+            append(String(value.source.count))
+            for keyword in value.source { append(keyword) }
+        }
+
+        mutating func appendOptional<Value>(
+            _ value: Value?,
+            body: (inout CanonicalDigest, Value) throws -> Void
+        ) rethrows {
+            guard let value else { append("nil"); return }
+            append("some")
+            try body(&self, value)
+        }
+
+        mutating private func appendBytes(_ value: Data) {
+            var count = UInt64(value.count).bigEndian
+            withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
+            data.append(value)
+        }
+
+        func finalize() -> String { SHA256.hash(data: data).hexString }
+    }
+}
+
+private extension Digest {
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
+}
+
 /// One durable record of the metadata decision made for a file.
 ///
 /// Names are stored alongside identifiers so an audit remains readable after a
@@ -382,6 +665,7 @@ struct MetadataAuditEntry: Codable, Identifiable, Equatable, Sendable {
     let swiftExifWarnings: [String]
     let detail: String?
     let processingEvidence: MetadataProcessingAuditEvidence?
+    let processingFingerprint: MetadataProcessingFingerprint?
     let recognitionEvidence: FaceRecognitionAuditEvidence?
 
     init(
@@ -400,6 +684,7 @@ struct MetadataAuditEntry: Codable, Identifiable, Equatable, Sendable {
         swiftExifWarnings: [String] = [],
         detail: String? = nil,
         processingEvidence: MetadataProcessingAuditEvidence? = nil,
+        processingFingerprint: MetadataProcessingFingerprint? = nil,
         recognitionEvidence: FaceRecognitionAuditEvidence? = nil
     ) {
         self.id = id
@@ -420,6 +705,7 @@ struct MetadataAuditEntry: Codable, Identifiable, Equatable, Sendable {
         self.swiftExifWarnings = Self.uniqueWarnings(swiftExifWarnings)
         self.detail = detail
         self.processingEvidence = processingEvidence
+        self.processingFingerprint = processingFingerprint
         self.recognitionEvidence = recognitionEvidence
     }
 

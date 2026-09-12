@@ -112,6 +112,162 @@ final class MetadataAuditTests: XCTestCase {
         XCTAssertEqual(result.entries, [recoverable])
     }
 
+    func testProcessingFingerprintDetectsIndependentStalenessDimensions() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-fingerprint-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("published.jpg")
+        try Data("published-v1".utf8).write(to: output)
+        let fixture = AuditFixture()
+        let source = SyncFile(relativePath: "incoming/JAD_0001.jpg", size: 12,
+                              modifiedAt: fixture.timestamp)
+        let fingerprint = try MetadataProcessingFingerprint(
+            sourceFile: source,
+            sourceSidecar: nil,
+            assignment: fixture.assignment,
+            geocoding: nil,
+            faceRecognition: nil,
+            timestampPolicy: .sourceModification,
+            processingTimeZone: try XCTUnwrap(TimeZone(identifier: "Europe/Oslo")),
+            dependencyRevisions: ["writer": "SwiftMediaMetadata-2.0.0"],
+            outputArtifacts: [.init(role: "primary", relativePath: source.relativePath, fileURL: output)]
+        )
+
+        XCTAssertEqual(fingerprint.freshness(
+            sourceRevision: fingerprint.sourceRevision,
+            settingsRevision: fingerprint.settingsRevision,
+            dependencyRevision: fingerprint.dependencyRevision,
+            outputRevision: fingerprint.outputRevision
+        ), .current)
+        XCTAssertEqual(fingerprint.freshness(
+            sourceRevision: String(repeating: "0", count: 64),
+            settingsRevision: fingerprint.settingsRevision,
+            dependencyRevision: fingerprint.dependencyRevision,
+            outputRevision: fingerprint.outputRevision
+        ), .sourceChanged)
+        XCTAssertEqual(fingerprint.freshness(
+            sourceRevision: fingerprint.sourceRevision,
+            settingsRevision: String(repeating: "1", count: 64),
+            dependencyRevision: fingerprint.dependencyRevision,
+            outputRevision: fingerprint.outputRevision
+        ), .settingsChanged)
+        XCTAssertEqual(fingerprint.freshness(
+            sourceRevision: fingerprint.sourceRevision,
+            settingsRevision: fingerprint.settingsRevision,
+            dependencyRevision: String(repeating: "2", count: 64),
+            outputRevision: fingerprint.outputRevision
+        ), .dependenciesChanged)
+        XCTAssertEqual(fingerprint.freshness(
+            sourceRevision: fingerprint.sourceRevision,
+            settingsRevision: fingerprint.settingsRevision,
+            dependencyRevision: fingerprint.dependencyRevision,
+            outputRevision: String(repeating: "3", count: 64)
+        ), .outputChanged)
+    }
+
+    func testProcessingFingerprintIsCanonicalAndSeparatesSourceSettingsDependenciesAndOutput() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-fingerprint-canonical-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let primary = root.appendingPathComponent("primary")
+        let sidecar = root.appendingPathComponent("sidecar")
+        try Data("primary bytes".utf8).write(to: primary)
+        try Data("sidecar bytes".utf8).write(to: sidecar)
+        let fixture = AuditFixture()
+        let source = SyncFile(relativePath: "photo.dng", size: 10, modifiedAt: fixture.timestamp)
+        let companion = SyncFile(relativePath: "photo.xmp", size: 20, modifiedAt: fixture.timestamp)
+        let zone = try XCTUnwrap(TimeZone(identifier: "Etc/UTC"))
+        let artifacts = [
+            MetadataProcessingFingerprint.OutputArtifact(role: "sidecar", relativePath: "photo.xmp", fileURL: sidecar),
+            .init(role: "primary", relativePath: "photo.dng", fileURL: primary)
+        ]
+        func make(
+            sourceFile: SyncFile = source,
+            assignment: MetadataAssignment? = fixture.assignment,
+            dependencies: [String: String] = ["model": "b", "library": "a"],
+            outputs: [MetadataProcessingFingerprint.OutputArtifact] = artifacts
+        ) throws -> MetadataProcessingFingerprint {
+            try MetadataProcessingFingerprint(
+                sourceFile: sourceFile, sourceSidecar: companion, assignment: assignment,
+                geocoding: nil, faceRecognition: nil, timestampPolicy: .cameraCapture,
+                processingTimeZone: zone, dependencyRevisions: dependencies,
+                outputArtifacts: outputs
+            )
+        }
+
+        let first = try make()
+        let reordered = try make(
+            dependencies: ["library": "a", "model": "b"],
+            outputs: Array(artifacts.reversed())
+        )
+        XCTAssertEqual(first, reordered)
+
+        let changedSource = try make(sourceFile: SyncFile(
+            relativePath: source.relativePath, size: source.size + 1, modifiedAt: source.modifiedAt
+        ))
+        XCTAssertNotEqual(first.sourceRevision, changedSource.sourceRevision)
+        XCTAssertEqual(first.settingsRevision, changedSource.settingsRevision)
+
+        let changedAssignment = MetadataAssignment(
+            photographer: fixture.assignment.photographer,
+            clip: fixture.assignment.clip,
+            existingFieldPolicy: .fillEmpty
+        )
+        let changedSettings = try make(assignment: changedAssignment)
+        XCTAssertNotEqual(first.settingsRevision, changedSettings.settingsRevision)
+        XCTAssertEqual(first.sourceRevision, changedSettings.sourceRevision)
+
+        let changedDependencies = try make(dependencies: ["library": "a", "model": "c"])
+        XCTAssertNotEqual(first.dependencyRevision, changedDependencies.dependencyRevision)
+
+        try Data("user edited bytes".utf8).write(to: primary)
+        let changedOutput = try make()
+        XCTAssertNotEqual(first.outputRevision, changedOutput.outputRevision)
+    }
+
+    func testProcessingFingerprintPersistsAndRejectsMalformedOrFutureReceipts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("metadata-fingerprint-codec-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let output = root.appendingPathComponent("published.jpg")
+        try Data("published".utf8).write(to: output)
+        let fixture = AuditFixture()
+        let source = SyncFile(relativePath: "published.jpg", size: 9, modifiedAt: fixture.timestamp)
+        let fingerprint = try MetadataProcessingFingerprint(
+            sourceFile: source, sourceSidecar: nil, assignment: fixture.assignment,
+            geocoding: nil, faceRecognition: nil, timestampPolicy: .sourceModification,
+            processingTimeZone: try XCTUnwrap(TimeZone(identifier: "Etc/UTC")),
+            outputArtifacts: [.init(role: "primary", relativePath: source.relativePath, fileURL: output)]
+        )
+        let entry = MetadataAuditEntry(
+            runID: fixture.runID, jobID: fixture.jobID, occurredAt: fixture.timestamp,
+            operation: .transfer, relativePath: source.relativePath, status: .applied,
+            timestampPolicy: .sourceModification, scheduledAt: fixture.timestamp,
+            assignment: fixture.assignment, processingFingerprint: fingerprint
+        )
+        let encoded = try JSONEncoder().encode(entry)
+        XCTAssertEqual(try JSONDecoder().decode(MetadataAuditEntry.self, from: encoded), entry)
+
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        var receipt = try XCTUnwrap(object["processingFingerprint"] as? [String: Any])
+        receipt["sourceRevision"] = "not-a-digest"
+        object["processingFingerprint"] = receipt
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            MetadataAuditEntry.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        ))
+        receipt["sourceRevision"] = fingerprint.sourceRevision
+        receipt["schemaVersion"] = 2
+        object["processingFingerprint"] = receipt
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            MetadataAuditEntry.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        ))
+    }
+
     @MainActor
     func testAppStorePublishesPersistedAuditTrail() throws {
         let root = FileManager.default.temporaryDirectory
