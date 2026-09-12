@@ -1,5 +1,9 @@
 # M4 redacted face-recognition audit evidence
 
+Later update: an admitted runtime and pinned RGB reference proof are now present;
+see [the runtime foundation evidence](2026-09-12-M4-Face-Runtime-Foundation.md).
+The audit projection is still not connected to application paths.
+
 Date: 2026-09-12  
 App-code commit: `33c3a0268fca673c8d7415ff15c0a406416f1f16`  
 Machine: MacBook Pro (Mac17,8), Apple M5 Pro, 64 GB  
@@ -73,11 +77,10 @@ adjacent boundaries.
 
 ## Remaining acceptance work
 
-- Admit an identity-bound production runtime only after the pinned BGR/RGB contract
-  discrepancy and companion schema-2 artifact requirements are resolved.
+- Supply production trust/hosts and identity-bound startup admission for the now
+  implemented runtime foundation.
 - Attach the projection to preview, transfer and reprocessing paths without exposing
   private recognition details.
 - Run supported-OS, native UI/VoiceOver, real-model, real-face and calibrated accuracy
   verification.
 - Measure and tune the provisional resource caps with representative workloads.
-

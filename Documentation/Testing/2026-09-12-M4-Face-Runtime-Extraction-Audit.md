@@ -1,5 +1,12 @@
 # M4 face runtime extraction audit
 
+Resolution update: the companion's later pinned RGB reference and FTP Sync's
+production-path reproduction resolve the channel-order discrepancy for the
+hash-pinned artifact. See
+[the admitted runtime evidence](2026-09-12-M4-Face-Runtime-Foundation.md). The
+historical finding below is retained because it explains why recognition stayed
+disabled until that proof existed.
+
 Inspected the adjacent Photo Agent at source
 `0556d321cd3cf2f04bf2b25c8ea090bf70d5b9fc` without modifying or launching it.
 Production files were read from Git because that checkout has unrelated active work.

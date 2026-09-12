@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-5a47980-bounded-face-controls",
+  "id": "development-22ebc7e-auraface-runtime",
   "status": "IMPLEMENTING",
-  "commit": "5a4798076c263c9d5cdac6c3e3d843295a2fee86",
+  "commit": "22ebc7e83b757f273e82eb31de28603fef6aefbc",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-face-bounds-ui-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Development build only, not ready for human acceptance. Through 5a47980, face-name metadata append, the isolated signed model-component foundation, strict persisted recognition settings, provisional queue/staged-byte/deadline/gallery caps, one-shot staged-input lifetime and reviewable job controls are implemented; Release code still cannot construct a ready recognition runtime. The latest focused selection passed 31 tests with zero failures or skips. The prior broader affected persistence/transfer suite passed 67 tests with zero failures. A macOS Release build passed with code signing disabled after the final source changes. Prior clean full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). A later broad run was invalidated by macOS 27/Xcode 27 denying existing suites access to /private/tmp and is not release evidence. Photo Agent has the schema-2 directory reader, but its production exporter is still schema 1 and its model packager forces ZIP64. Deterministic schema-2 ZIP32 producers, a dedicated key and fixed hosts, committed BGR/RGB cross-runtime proof, shared runtime ownership, App Group sync, benchmark-derived cap tuning, durable redacted audit, model/outcome UI, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-face-runtime-release/Build/Products/Release/AagedalFTPSync.app",
+  "evidence": "Documentation/Testing/2026-09-12-M4-Face-Runtime-Foundation.md",
+  "note": "Development build only, not ready for human acceptance. Through 22ebc7e, FTP Sync can revalidate and immutably load a signed AuraFace component, run bounded orientation-aware Vision detection and quality analysis, reproduce the companion eye alignment and RGB NCHW Core ML inference contract, normalize strict 512-value embeddings, and construct the existing bounded matching service. Photo Agent now has canonical schema-2/ZIP32 production and committed channel-asymmetric RGB reference evidence. FTP Sync's opt-in pinned-model check verified model and fixture hashes, passed the RGB cosine threshold and BGR negative, and the broader affected selection passed 70 tests with zero skips or failures. A macOS Release build passed with code signing disabled. Prior clean full suite at da3579e: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). Recognition remains disabled by default. A dedicated production trust key and fixed hosts, identity-bound startup wiring, calibrated policy and authorized labeled real-face fixtures, integrated audit/outcome UI, measured resource-cap tuning, shared App Group sync, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
 }
