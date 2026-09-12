@@ -36,7 +36,7 @@ struct PeopleLibrarySettingsView: View {
                         if summary.includesEditorMetadata { Text("Photo Agent editor metadata included") }
                     }
                 }.accessibilityIdentifier("peopleLibrary.summary")
-                Text("Import a people library package from Photo Agent. Importing selects a local copy; it does not enable recognition or automatic sync.")
+                Text("Import a .aagedalpeople package or .aagedalpeople.zip archive from Photo Agent. Importing selects a local copy; it does not enable recognition or automatic sync.")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("Import People Library…") { panelError = nil; importing = true }
                     .accessibilityIdentifier("peopleLibrary.import")
@@ -60,7 +60,7 @@ struct PeopleLibrarySettingsView: View {
         .formStyle(.grouped).frame(minWidth: 600, minHeight: 420)
         .task { await controller.refresh() }
         .onDisappear { operation?.cancel(); controller.cancel() }
-        .fileImporter(isPresented: $importing, allowedContentTypes: [.aagedalPeopleLibrary], allowsMultipleSelection: false) { result in
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.aagedalPeopleLibrary, .zip], allowsMultipleSelection: false) { result in
             select(result, importing: true)
         }
         .fileImporter(isPresented: $choosingExportFolder, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in

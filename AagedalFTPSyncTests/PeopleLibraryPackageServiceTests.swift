@@ -1,6 +1,8 @@
 import CryptoKit
+import Darwin
 import Foundation
 import XCTest
+import zlib
 @testable import AagedalFTPSync
 
 final class PeopleLibraryPackageServiceTests: XCTestCase {
@@ -46,6 +48,93 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
     }
     private func assertNoStages(_ f: Fixture) throws {
         XCTAssertTrue(try stages(f).isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(at: f.parent, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".aagedalpeople-import-") }.isEmpty)
+    }
+
+    private struct ZIPEntry {
+        let name: String
+        let data: Data
+        var method: UInt16 = 0
+        var versionMadeBy: UInt16 = UInt16(3 << 8) | 20
+        var externalAttributes: UInt32 = UInt32(S_IFREG | 0o600) << 16
+        var extra = Data()
+        var declaredSize: UInt32?
+        var crcOverride: UInt32?
+        var usesDataDescriptor = false
+    }
+    private func packageEntries(_ f: Fixture, root: String = "") throws -> [ZIPEntry] {
+        try (f.snapshot.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName]).map { path in
+            ZIPEntry(name: root + path, data: try Data(contentsOf: f.snapshot.directoryURL.appendingPathComponent(path)),
+                     method: path == PeopleLibraryManifest.payloadFileName ? 8 : 0,
+                     usesDataDescriptor: path == PeopleLibraryManifest.payloadFileName)
+        }
+    }
+    private func zip(_ entries: [ZIPEntry], at url: URL) throws {
+        struct Central { let entry: ZIPEntry; let compressed: Data; let crc: UInt32; let offset: UInt32 }
+        var bytes = Data(), central: [Central] = []
+        for entry in entries {
+            let name = Data(entry.name.utf8)
+            let compressed = entry.method == 8 ? try deflateRaw(entry.data) : entry.data
+            let crc = entry.crcOverride ?? crc32(entry.data)
+            let size = entry.declaredSize ?? UInt32(entry.data.count)
+            let offset = UInt32(bytes.count)
+            let flags: UInt16 = entry.usesDataDescriptor ? 0x0808 : 0x0800
+            bytes.le32(0x0403_4b50); bytes.le16(20); bytes.le16(flags); bytes.le16(entry.method)
+            bytes.le16(0); bytes.le16(0)
+            bytes.le32(entry.usesDataDescriptor ? 0 : crc)
+            bytes.le32(entry.usesDataDescriptor ? 0 : UInt32(compressed.count))
+            bytes.le32(entry.usesDataDescriptor ? 0 : size)
+            bytes.le16(UInt16(name.count)); bytes.le16(UInt16(entry.extra.count)); bytes.append(name)
+            bytes.append(entry.extra); bytes.append(compressed)
+            if entry.usesDataDescriptor {
+                bytes.le32(crc); bytes.le32(UInt32(compressed.count)); bytes.le32(size)
+            }
+            central.append(.init(entry: entry, compressed: compressed, crc: crc, offset: offset))
+        }
+        let centralOffset = UInt32(bytes.count)
+        for item in central {
+            let name = Data(item.entry.name.utf8), size = item.entry.declaredSize ?? UInt32(item.entry.data.count)
+            bytes.le32(0x0201_4b50); bytes.le16(item.entry.versionMadeBy); bytes.le16(20)
+            bytes.le16(item.entry.usesDataDescriptor ? 0x0808 : 0x0800)
+            bytes.le16(item.entry.method); bytes.le16(0); bytes.le16(0)
+            bytes.le32(item.crc); bytes.le32(UInt32(item.compressed.count)); bytes.le32(size)
+            bytes.le16(UInt16(name.count)); bytes.le16(UInt16(item.entry.extra.count)); bytes.le16(0)
+            bytes.le16(0); bytes.le16(0); bytes.le32(item.entry.externalAttributes); bytes.le32(item.offset)
+            bytes.append(name); bytes.append(item.entry.extra)
+        }
+        let centralSize = UInt32(bytes.count) - centralOffset
+        bytes.le32(0x0605_4b50); bytes.le16(0); bytes.le16(0); bytes.le16(UInt16(entries.count))
+        bytes.le16(UInt16(entries.count)); bytes.le32(centralSize); bytes.le32(centralOffset); bytes.le16(0)
+        try bytes.write(to: url)
+    }
+    private func deflateRaw(_ data: Data) throws -> Data {
+        var stream = z_stream(), output = Data(count: Int(compressBound(uLong(data.count))))
+        guard deflateInit2_(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8,
+                           Z_DEFAULT_STRATEGY, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+            throw Failure.injected
+        }
+        defer { deflateEnd(&stream) }
+        let status: Int32 = data.withUnsafeBytes { input in
+            output.withUnsafeMutableBytes { destination in
+                stream.next_in = UnsafeMutablePointer<Bytef>(mutating: input.bindMemory(to: Bytef.self).baseAddress!)
+                stream.avail_in = uInt(input.count)
+                stream.next_out = destination.bindMemory(to: Bytef.self).baseAddress!
+                stream.avail_out = uInt(destination.count)
+                return deflate(&stream, Z_FINISH)
+            }
+        }
+        guard status == Z_STREAM_END else { throw Failure.injected }
+        output.count = Int(stream.total_out)
+        return output
+    }
+    private func crc32(_ data: Data) -> UInt32 {
+        var value: UInt32 = 0xffff_ffff
+        for byte in data {
+            value ^= UInt32(byte)
+            for _ in 0..<8 { value = value & 1 == 1 ? (value >> 1) ^ 0xedb8_8320 : value >> 1 }
+        }
+        return value ^ 0xffff_ffff
     }
 
     func testCommittedCrossAppGoldenPackageAndExactReexport() throws {
@@ -84,6 +173,87 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         XCTAssertEqual(imported.gallery, f.snapshot.gallery)
         XCTAssertEqual(imported.gallery.people[0].name, "  {persons}, Å  ")
         XCTAssertEqual(try f.repository.currentSnapshot()?.manifest, f.snapshot.manifest)
+        try assertNoStages(f)
+    }
+
+    func testWrappedZIPImportsStoredAndDeflatedFilesByteForByte() throws {
+        let f = try fixture(), archive = f.parent.appendingPathComponent("shared.aagedalpeople.zip")
+        try zip(packageEntries(f, root: "shared.aagedalpeople/"), at: archive)
+        let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("zip-receiver"))
+        let imported = try PeopleLibraryPackageService().importPackage(at: archive, into: receiver)
+        XCTAssertEqual(imported.manifest, f.snapshot.manifest)
+        XCTAssertEqual(imported.gallery, f.snapshot.gallery)
+        for path in f.snapshot.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName] {
+            XCTAssertEqual(try Data(contentsOf: imported.directoryURL.appendingPathComponent(path)),
+                           try Data(contentsOf: f.snapshot.directoryURL.appendingPathComponent(path)), path)
+        }
+        try assertNoStages(f)
+    }
+
+    func testZIPRejectsUnsafeEntriesAndAmbiguousRootsBeforeRepositoryMutation() throws {
+        let f = try fixture(), base = try packageEntries(f)
+        let payloadIndex = try XCTUnwrap(base.firstIndex { $0.name == PeopleLibraryManifest.payloadFileName })
+        var symlinkEntries = base
+        symlinkEntries[payloadIndex].externalAttributes = UInt32(S_IFLNK | 0o777) << 16
+        var nonUnixSymlinkEntries = symlinkEntries
+        nonUnixSymlinkEntries[payloadIndex].versionMadeBy = 20
+        var hardlinkEntries = base
+        hardlinkEntries[payloadIndex].extra = Data([0x0d, 0x00, 0x00, 0x00])
+        let variants: [[ZIPEntry]] = [
+            base + [.init(name: "../escape", data: Data([1]))],
+            symlinkEntries,
+            nonUnixSymlinkEntries,
+            base + [.init(name: "PEOPLE.JSON", data: Data([1]))],
+            base + [.init(name: "undeclared", data: Data([1]))],
+            hardlinkEntries,
+            try packageEntries(f, root: "one.aagedalpeople/") +
+                [.init(name: "two.aagedalpeople/extra", data: Data([1]))],
+        ]
+        for (index, entries) in variants.enumerated() {
+            let archive = f.parent.appendingPathComponent("unsafe-\(index).aagedalpeople.zip")
+            try zip(entries, at: archive)
+            let receiverRoot = f.parent.appendingPathComponent("unsafe-receiver-\(index)")
+            XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(
+                at: archive, into: .init(root: receiverRoot)), "variant \(index)") { error in
+                if index == 1 || index == 2 || index == 5 {
+                    XCTAssertEqual(error as? PeopleLibraryPackageService.Failure, .unsafeFile)
+                }
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: receiverRoot.path), "variant \(index)")
+            try assertNoStages(f)
+        }
+    }
+
+    func testZIPRejectsDeclaredExpansionAndCorruptionWithoutLeavingStage() throws {
+        let f = try fixture()
+        var oversized = try packageEntries(f)
+        let payloadIndex = try XCTUnwrap(oversized.firstIndex { $0.name == PeopleLibraryManifest.payloadFileName })
+        oversized[payloadIndex].declaredSize = UInt32(PeopleLibraryManifest.Limits().maximumFileBytes + 1)
+        let oversizedURL = f.parent.appendingPathComponent("oversized.aagedalpeople.zip")
+        try zip(oversized, at: oversizedURL)
+        let oversizedRoot = f.parent.appendingPathComponent("oversized-receiver")
+        XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: oversizedURL, into: .init(root: oversizedRoot)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oversizedRoot.path))
+
+        var corrupt = try packageEntries(f)
+        corrupt[payloadIndex].crcOverride = 0
+        let corruptURL = f.parent.appendingPathComponent("corrupt.aagedalpeople.zip")
+        try zip(corrupt, at: corruptURL)
+        let corruptRoot = f.parent.appendingPathComponent("corrupt-receiver")
+        XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: corruptURL, into: .init(root: corruptRoot)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corruptRoot.path))
+        try assertNoStages(f)
+    }
+
+    func testZIPArchiveHardlinkIsRejectedBeforeRepositoryMutation() throws {
+        let f = try fixture(), archive = f.parent.appendingPathComponent("shared.aagedalpeople.zip")
+        try zip(try packageEntries(f), at: archive)
+        let hardlink = f.parent.appendingPathComponent("linked.aagedalpeople.zip")
+        try FileManager.default.linkItem(at: archive, to: hardlink)
+        let receiverRoot = f.parent.appendingPathComponent("hardlink-receiver")
+        XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(
+            at: hardlink, into: .init(root: receiverRoot)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: receiverRoot.path))
         try assertNoStages(f)
     }
 
@@ -229,5 +399,15 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: receiverRoot.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
         try assertNoStages(f)
+    }
+}
+
+private extension Data {
+    mutating func le16(_ value: UInt16) {
+        append(UInt8(truncatingIfNeeded: value)); append(UInt8(truncatingIfNeeded: value >> 8))
+    }
+    mutating func le32(_ value: UInt32) {
+        append(UInt8(truncatingIfNeeded: value)); append(UInt8(truncatingIfNeeded: value >> 8))
+        append(UInt8(truncatingIfNeeded: value >> 16)); append(UInt8(truncatingIfNeeded: value >> 24))
     }
 }
