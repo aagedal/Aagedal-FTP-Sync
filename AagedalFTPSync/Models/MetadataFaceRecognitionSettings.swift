@@ -73,6 +73,14 @@ extension SyncJob {
     /// but a run must never silently ignore a requested stage.
     var metadataFaceRecognitionRuntimeBlocker: String? {
         guard metadataFaceRecognition != nil else { return nil }
-        return "Face recognition is saved but cannot run until the AuraFace preprocessing contract and calibrated acceptance policy are verified. Disable face recognition to run this job without it."
+        return "Face recognition cannot run until the AuraFace preprocessing contract and calibrated acceptance policy are verified. Disable face recognition to run this job without it."
+    }
+
+    /// Until the requested runtime can be admitted, a saved future policy must
+    /// not turn a healthy automatic job into an immediate retry loop.
+    var metadataFaceRecognitionSchedulingBlocker: String? {
+        guard metadataFaceRecognitionRuntimeBlocker != nil,
+              isEnabled || startsOnAppLaunch else { return nil }
+        return "Turn off Automatic syncing enabled and Enable automatically on app launch before saving face recognition. The job can remain configured while stopped."
     }
 }

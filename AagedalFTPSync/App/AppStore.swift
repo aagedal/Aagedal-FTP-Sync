@@ -156,7 +156,9 @@ final class AppStore: ObservableObject {
                 || jobs[index].right.serverProfileID != nil
             let requiresRecoveredConfigurationReview = persistenceLoad.jobsRecoveredFromBackup
                 || (persistenceLoad.serverProfilesRecoveredFromBackup && usesServerProfile)
-            let shouldStart = startsJobsOnInitialization && !requiresRecoveredConfigurationReview && configuredToStart
+            let runtimeBlocked = jobs[index].metadataFaceRecognitionRuntimeBlocker != nil
+            let shouldStart = startsJobsOnInitialization && !requiresRecoveredConfigurationReview
+                && !runtimeBlocked && configuredToStart
             jobs[index].startOnAppLaunch = configuredToStart
             jobs[index].isEnabled = shouldStart
             phases[jobs[index].id] = .stopped
@@ -249,6 +251,10 @@ final class AppStore: ObservableObject {
             return false
         }
         if let message = resolvedJob.validationMessage {
+            alertMessage = message
+            return false
+        }
+        if let message = resolvedJob.metadataFaceRecognitionSchedulingBlocker {
             alertMessage = message
             return false
         }
@@ -765,6 +771,10 @@ final class AppStore: ObservableObject {
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
         guard !isSuspendedForExternalWriter else { return }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        if enabled, let message = jobs[index].metadataFaceRecognitionRuntimeBlocker {
+            alertMessage = message
+            return
+        }
         let wasEnabled = jobs[index].isEnabled
         var updatedJobs = jobs
         updatedJobs[index].isEnabled = enabled
@@ -1042,13 +1052,22 @@ final class AppStore: ObservableObject {
     func startAll() {
         guard !isSuspendedForExternalWriter else { return }
         var updatedJobs = jobs
-        let newlyEnabledJobIDs = updatedJobs.compactMap { $0.isEnabled ? nil : $0.id }
+        let blockedJobs = updatedJobs.filter { $0.metadataFaceRecognitionRuntimeBlocker != nil }
+        let newlyEnabledJobIDs = updatedJobs.compactMap {
+            $0.isEnabled || $0.metadataFaceRecognitionRuntimeBlocker != nil ? nil : $0.id
+        }
         for index in updatedJobs.indices {
-            updatedJobs[index].isEnabled = true
+            if updatedJobs[index].metadataFaceRecognitionRuntimeBlocker == nil {
+                updatedJobs[index].isEnabled = true
+            }
         }
         guard persistAndPublishJobs(updatedJobs) else { return }
         for jobID in newlyEnabledJobIDs { transferTotals.reset(jobID: jobID) }
         scheduler.restart(with: jobs)
+        if !blockedJobs.isEmpty {
+            let names = blockedJobs.map(\.name).joined(separator: ", ")
+            alertMessage = "Face recognition is not ready, so these jobs remain stopped: \(names). Disable face recognition to run them without it."
+        }
     }
 
     func stopAll() {

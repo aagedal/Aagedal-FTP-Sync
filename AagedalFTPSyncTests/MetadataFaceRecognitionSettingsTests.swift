@@ -115,12 +115,24 @@ final class MetadataFaceRecognitionSettingsTests: XCTestCase {
 
     func testStoredSettingsExposeActionableRuntimeBlockerUntilRuntimeIsAdmitted() {
         var job = SyncJob(name: "Faces")
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
         XCTAssertNil(job.metadataFaceRecognitionRuntimeBlocker)
+        XCTAssertNil(job.metadataFaceRecognitionSchedulingBlocker)
         job.metadataFaceRecognition = .init()
         let message = job.metadataFaceRecognitionRuntimeBlocker
         XCTAssertNotNil(message)
         XCTAssertTrue(message?.contains("cannot run") == true)
         XCTAssertTrue(message?.contains("Disable face recognition") == true)
+        XCTAssertNil(job.metadataFaceRecognitionSchedulingBlocker)
+
+        job.isEnabled = true
+        XCTAssertTrue(job.metadataFaceRecognitionSchedulingBlocker?.contains("Turn off Automatic syncing") == true)
+        job.isEnabled = false
+        job.startsOnAppLaunch = true
+        XCTAssertTrue(job.metadataFaceRecognitionSchedulingBlocker?.contains("Enable automatically on app launch") == true)
+        job.metadataFaceRecognition = nil
+        XCTAssertNil(job.metadataFaceRecognitionSchedulingBlocker)
     }
 
     func testReprocessingRejectsSavedRecognitionBeforeOpeningAnyFiles() async {

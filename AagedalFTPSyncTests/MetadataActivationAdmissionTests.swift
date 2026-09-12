@@ -81,6 +81,35 @@ final class MetadataActivationAdmissionTests: XCTestCase {
         XCTAssertFalse(session.hasUnsavedChanges)
     }
 
+    func testUnavailableFacePolicyCannotActivateAutomaticRetryLoop() throws {
+        let f = try fixture()
+        var job = f.job
+        job.metadataFaceRecognition = .init(appendToKeywords: true)
+        job.isEnabled = true
+        job.startsOnAppLaunch = true
+
+        XCTAssertFalse(f.store.saveJob(job, leftPassword: "", rightPassword: ""))
+        XCTAssertTrue(f.store.alertMessage?.contains("Turn off Automatic syncing") == true)
+        XCTAssertNil(try XCTUnwrap(f.store.jobs.first).metadataFaceRecognition)
+
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        XCTAssertTrue(f.store.saveJob(job, leftPassword: "", rightPassword: ""), f.store.alertMessage ?? "")
+        let saved = try XCTUnwrap(f.store.jobs.first)
+        XCTAssertEqual(saved.metadataFaceRecognition, job.metadataFaceRecognition)
+        XCTAssertFalse(saved.isEnabled)
+        XCTAssertFalse(saved.startsOnAppLaunch)
+
+        f.store.setEnabled(true, for: saved.id)
+        XCTAssertFalse(try XCTUnwrap(f.store.jobs.first).isEnabled)
+        XCTAssertTrue(f.store.alertMessage?.contains("Face recognition cannot run") == true)
+
+        f.store.startAll()
+        XCTAssertFalse(try XCTUnwrap(f.store.jobs.first).isEnabled)
+        XCTAssertTrue(f.store.alertMessage?.contains("remain stopped") == true)
+        XCTAssertEqual(try JobRepository(storage: f.storage).load().first?.isEnabled, false)
+    }
+
     func testLegacyJobSaveCannotDropOfflineSettingsSilently() throws {
         let f = try fixture(legacy: true)
         let before = try Data(contentsOf: f.storage.jobs)

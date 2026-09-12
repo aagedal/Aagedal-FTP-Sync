@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct JobDetailEditor: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @ObservedObject var session: JobEditingSession
     let onDiscardNewJob: () -> Void
     @State private var showDeleteConfirmation = false
@@ -175,6 +176,53 @@ struct JobDetailEditor: View {
                 Section("Geocoding") {
                     MetadataGeocodingSettingsView(settings: $session.draft.metadataGeocoding,
                         store: store, savedJob: savedJob, hasUnsavedChanges: session.hasUnsavedChanges)
+                }
+
+                Section("Face recognition") {
+                    Toggle("Recognize people locally", isOn: faceRecognitionEnabledBinding)
+                        .accessibilityIdentifier("face-recognition-enabled")
+
+                    Toggle("Add recognized names to Keywords", isOn: faceRecognitionKeywordsBinding)
+                        .disabled(draft.metadataFaceRecognition == nil)
+                        .accessibilityIdentifier("face-recognition-keywords")
+
+                    Text("Accepted names are appended to existing Person Shown values. When available, recognition runs locally and never enrolls new reference faces.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let blocker = draft.metadataFaceRecognitionRuntimeBlocker {
+                        Label(blocker, systemImage: "exclamationmark.triangle.fill")
+                            .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("face-recognition-status")
+                            .accessibilityLabel("Face recognition status")
+                            .accessibilityValue(blocker)
+                    } else {
+                        Label("Face recognition is off.", systemImage: "pause.circle")
+                            .labelStyle(AccessibleStatusLabelStyle(symbolColor: .secondary))
+                            .accessibilityIdentifier("face-recognition-status")
+                            .accessibilityLabel("Face recognition status")
+                            .accessibilityValue("Off")
+                    }
+
+                    if let schedulingBlocker = draft.metadataFaceRecognitionSchedulingBlocker {
+                        Text(schedulingBlocker)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("face-recognition-scheduling-status")
+                    }
+
+                    Button("Manage People Library…") {
+                        store.settingsTab = .peopleLibrary
+                        RegularWindowController.shared.prepareForOpening()
+                        openSettings()
+                    }
+                    .disabled(store.peopleLibraryController == nil)
+                    .help(store.peopleLibraryController == nil
+                        ? "People Library becomes available after version 3 storage is admitted."
+                        : "Open People Library settings.")
+                    .accessibilityIdentifier("open-people-library-settings")
                 }
 
                 Section("After metadata") {
@@ -630,6 +678,31 @@ struct JobDetailEditor: View {
             ? "1 photographer"
             : "\(metadata.photographers.count) photographers"
         return metadata.isEnabled ? "On · \(profiles)" : "Off · \(profiles)"
+    }
+
+    private var faceRecognitionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { draft.metadataFaceRecognition != nil },
+            set: { enabled in
+                if enabled {
+                    if draft.metadataFaceRecognition == nil {
+                        draft.metadataFaceRecognition = MetadataFaceRecognitionSettings()
+                    }
+                } else {
+                    draft.metadataFaceRecognition = nil
+                }
+            }
+        )
+    }
+
+    private var faceRecognitionKeywordsBinding: Binding<Bool> {
+        Binding(
+            get: { draft.metadataFaceRecognition?.appendToKeywords ?? false },
+            set: { enabled in
+                guard draft.metadataFaceRecognition != nil else { return }
+                draft.metadataFaceRecognition?.appendToKeywords = enabled
+            }
+        )
     }
 
     private var currentMetadataAutomation: MetadataAutomation? {
