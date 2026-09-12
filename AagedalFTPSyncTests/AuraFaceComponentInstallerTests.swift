@@ -96,6 +96,25 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
         XCTAssertEqual(removed.availability, .notInstalled)
     }
 
+    func testRuntimeAdmissionRejectsCompilerOutputThatIsNotTheDeclaredCoreMLInterface() async throws {
+        let fixture = try makeFixture()
+        let root = try temporaryRoot()
+        let probe = DownloadProbe()
+        probe.install([
+            fixture.trust.descriptorURL: fixture.descriptorData,
+            fixture.trust.signatureURL: fixture.signatureData,
+            fixture.descriptor.downloadURL: fixture.archiveData,
+        ])
+        let installer = try makeInstaller(fixture: fixture, root: root, client: probe.client())
+        _ = try await installer.downloadAndInstall()
+
+        await XCTAssertThrowsErrorAsync(try await installer.admitInstalledRuntime()) {
+            XCTAssertEqual($0 as? AuraFaceRecognitionRuntime.Failure, .incompatibleModelInterface)
+        }
+        let resolution = try await installer.resolveInstalled()
+        XCTAssertEqual(resolution.availability, .installed(version: fixture.descriptor.modelVersion))
+    }
+
     func testRedirectAndCancellationNeverPublishCandidate() async throws {
         let fixture = try makeFixture()
         let redirectRoot = try temporaryRoot()

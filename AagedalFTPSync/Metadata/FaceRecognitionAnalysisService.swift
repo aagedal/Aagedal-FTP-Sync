@@ -372,7 +372,8 @@ struct FaceRecognitionAnalysisService: Sendable {
     let limits: Limits
     private let backend: Backend
 
-    /// Safe production foundation while model preprocessing remains unverified.
+    /// Safe production default while a verified component and calibrated policy
+    /// have not been admitted by the application runtime.
     init() {
         limits = .standard
         backend = .unavailable(.unverifiedPreprocessingContract)
@@ -384,6 +385,31 @@ struct FaceRecognitionAnalysisService: Sendable {
     ) {
         self.limits = limits
         backend = .unavailable(reason)
+    }
+
+    /// Release-capable construction requires an in-memory runtime admitted by
+    /// the signed component installer. Application wiring remains responsible
+    /// for supplying an immutable library and separately calibrated policy.
+    init(
+        admittedRuntime runtime: AuraFaceRecognitionRuntime,
+        limits: Limits = .standard,
+        sleep: @escaping Sleep = { try? await Task.sleep(for: .seconds($0)) }
+    ) {
+        self.limits = limits
+        backend = .ready(ReadyBackend(
+            operation: { imageURL, maximumFaces in
+                try await runtime.analyze(imageURL: imageURL, maximumFaces: maximumFaces)
+            },
+            resolver: { observation, gallery, policy in
+                try FaceRecognitionMatcher.matchCancellable(
+                    embedding: observation.embedding,
+                    quality: observation.captureQuality,
+                    gallery: gallery,
+                    policy: policy
+                )
+            },
+            worker: Worker(limits: limits, sleep: sleep)
+        ))
     }
 
     #if DEBUG
@@ -499,6 +525,8 @@ struct FaceRecognitionAnalysisService: Sendable {
             observations = try await operation(imageURL, limits.maximumFaces)
         } catch is CancellationError {
             return .cancelled
+        } catch let error as FaceRecognitionAnalysisError {
+            return .rejected(error)
         } catch {
             return .failed(.operationFailed)
         }

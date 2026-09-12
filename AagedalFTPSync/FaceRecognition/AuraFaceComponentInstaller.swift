@@ -1,4 +1,5 @@
 import CoreML
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -200,6 +201,32 @@ actor AuraFaceComponentInstaller {
         let lock = try acquireRootLock()
         defer { releaseRootLock(lock) }
         return try resolveInstalledLocked()
+    }
+
+    /// Revalidates and loads the current model while holding the installer lock.
+    /// The returned runtime retains the loaded `MLModel`, so later component
+    /// updates or removal cannot retarget an already admitted operation.
+    func admitInstalledRuntime() throws -> AuraFaceRecognitionRuntime? {
+        try prepareRoot()
+        let lock = try acquireRootLock()
+        defer { releaseRootLock(lock) }
+        _ = try resolveInstalledLocked()
+        let current = root.appendingPathComponent("current", isDirectory: true)
+        guard files.fileExists(atPath: current.path) else { return nil }
+        let descriptor = try verifyDirectory(current)
+        let canonical = try AuraFaceDistributionContract.canonicalData(for: descriptor)
+        let revision = SHA256.hash(data: canonical)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let modelURL = current.appendingPathComponent(
+            AuraFaceDistributionContract.compiledDirectory,
+            isDirectory: true
+        )
+        return try AuraFaceRecognitionRuntime(
+            admittedDescriptor: descriptor,
+            compiledModelURL: modelURL,
+            runtimeRevision: revision
+        )
     }
 
     private func resolveInstalledLocked() throws -> AuraFaceComponentResolution {
