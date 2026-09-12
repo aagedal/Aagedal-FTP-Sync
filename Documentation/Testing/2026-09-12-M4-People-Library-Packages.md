@@ -1,9 +1,10 @@
 # M4 lossless people-library packages
 
-Implemented at `2dc18e9c4df7328eb59cb0503d7febcbad4acd56`. This is
-the FTP Sync side of the proposed Photo Agent interchange contract. It is not yet
-enabled in settings and does not claim companion-app compatibility until Photo Agent
-ships and verifies the matching exporter/importer.
+Package foundation implemented at `2dc18e9c4df7328eb59cb0503d7febcbad4acd56`;
+settings and admitted-runtime lifecycle implemented at
+`da3579e81320e7cb1ecac03d5d2faae93ddfed05`. This is the FTP Sync side of the
+proposed Photo Agent interchange contract. It does not claim companion-app
+compatibility until Photo Agent ships and verifies the matching exporter/importer.
 
 ## Portable contract
 
@@ -46,8 +47,14 @@ explicit re-enrollment before it can produce a schema-2 package.
   publication hook can observe a stage, later failures preserve it instead of risking
   deletion of a substituted child.
 
-This slice intentionally handles directory packages only. Bounded ZIP extraction,
-settings panels, App Group entitlements and automatic synchronization remain open.
+This slice intentionally handles directory packages only. The v3 settings panel can
+import a selected package, export the selected immutable snapshot under a new name,
+show its non-private summary and clear the current selection. Operations run outside
+the main actor, serialize, retain the prior selection on failure, suppress stale
+completion after suspension and hold security-scoped access for the whole operation.
+The repository is rooted only in admitted v3 storage and is suspended with the rest
+of the app before an external writer can take over. Bounded ZIP extraction, App Group
+entitlements and automatic synchronization remain open.
 The automatic design is opt-in: Photo Agent is the sole editor/publisher, both apps
 read one immutable current pointer in a shared App Group container, and neither app
 reads the other's private Application Support directory.
@@ -66,25 +73,25 @@ Focused package suite: **7 passed, zero failures**, 0.587 seconds. Log
 
 The committed cross-app golden package is
 `Documentation/Testing/Fixtures/people-library-v2.aagedalpeople`, with its exact
-revision inputs documented beside it. FTP Sync admitted and re-exported all four
-declared files byte-for-byte in the dedicated test: **1 passed, zero failures**,
-0.042 seconds. Log `/tmp/ftp-m4-golden-fixture.log`, SHA-256
-`42fe8cf842ceb32bcd4a7633df7dfb49e6b7d211b7a77db7236fd229f9718de4`.
+revision inputs documented beside it. Its accepted vector has deliberate norm drift
+within the contract tolerance, so normalization and re-encoding changes bytes. FTP
+Sync admitted and re-exported all four declared files byte-for-byte in the integrated
+focused run.
 
-Full suite: **1,045 discovered, 1,030 passed, 15 opt-in skips, zero failures**,
-50.738 seconds (51.180 wall), completed 2026-09-12 13:22:32 +0200 on macOS
-27.0 (26A428), arm64, Xcode 26.6 (17F113). The standard repository command used
-`CODE_SIGNING_ALLOWED=NO -parallel-testing-enabled NO`. Log
-`build/m4-library-package/full-tests.log`, SHA-256
-`201cb05e37ba0125a917c4f3ebe5e9e47127e7ba2656a8bc986d181ae3c86fc0`.
-Result bundle:
-`/Users/truls.aagedal/Library/Developer/Xcode/DerivedData/Aagedal_FTP_Sync-chqrijudhplttvgsyeeekhmacadi/Logs/Test/Test-AagedalFTPSync-2026.09.12_13-21-38-+0200.xcresult`.
+Integrated focused run: **25 passed, zero failures**, covering the controller,
+package service, storage layout and v3 bootstrap. Full suite: **1,050 discovered,
+1,035 passed, 15 opt-in skips, zero failures**, 58.156 seconds (58.435 wall),
+completed 2026-09-12 14:06:47 +0200 on macOS 27.0 (26A428), arm64,
+Xcode 27.0 (27A266a). Both runs used `CODE_SIGNING_ALLOWED=NO`, serial testing and
+the isolated `build/DerivedData-people-settings` path. Full result bundle:
+`build/DerivedData-people-settings/Logs/Test/Test-AagedalFTPSync-2026.09.12_14-05-45-+0200.xcresult`.
 
 An earlier signed/default full-suite invocation ran the sandboxed host and produced
 157 unrelated permission/loopback failures against `/private/tmp`; the focused people
-library suites passed in that run. Re-running the documented unsigned, serial command
-passed all non-opt-in tests.
+library suites passed in that run. A later golden-only rerun encountered a stale
+global SDK stat-cache path before tests started. Re-running the documented unsigned,
+serial command with isolated DerivedData passed all non-opt-in tests.
 
-No native/manual UI, ZIP extraction, shared-container synchronization, companion
+No native/manual settings UI, ZIP extraction, shared-container synchronization, companion
 round trip, real model, real face, supported-macOS matrix or release acceptance is
 claimed. The human result file remains absent.

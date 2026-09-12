@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-2dc18e9-lossless-library-package",
+  "id": "development-da3579e-people-library-settings",
   "status": "IMPLEMENTING",
-  "commit": "2dc18e9c4df7328eb59cb0503d7febcbad4acd56",
+  "commit": "da3579e81320e7cb1ecac03d5d2faae93ddfed05",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Library/Developer/Xcode/DerivedData/Aagedal_FTP_Sync-chqrijudhplttvgsyeeekhmacadi/Build/Products/Debug/AagedalFTPSync.app",
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-people-settings/Build/Products/Debug/AagedalFTPSync.app",
   "evidence": "Documentation/3.0-Readiness.md",
-  "note": "Development build only, not ready for human acceptance. Lossless editor extension and exact directory-package import/export at 2dc18e9; Photo Agent remains the intended sole editor. Full suite: 1030 passed, 15 opt-in skips, zero failures (1045 discovered). ZIP extraction, companion exporter/provenance proof, App Group sync, model/runtime/UI integration, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
+  "note": "Development build only, not ready for human acceptance. Lossless editor extension, exact directory-package import/export, v3 storage lifecycle and settings UI at da3579e; Photo Agent remains the intended sole editor. Full suite: 1035 passed, 15 opt-in skips, zero failures (1050 discovered). ZIP extraction, companion exporter/provenance proof, App Group sync, model/runtime recognition integration, calibration, native/supported-OS and release gates remain open. Prior candidate result sets are preserved."
 }
