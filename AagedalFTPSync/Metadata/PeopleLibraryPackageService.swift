@@ -3,6 +3,21 @@ import Darwin
 import Foundation
 import zlib
 
+enum PeopleLibraryZIPDataDescriptor {
+    static func matches(_ bytes: Data, crc32: UInt32, compressedSize: UInt32,
+                        uncompressedSize: UInt32) -> Bool {
+        if bytes.count == 12 {
+            return bytes.u32(0) == crc32 && bytes.u32(4) == compressedSize &&
+                bytes.u32(8) == uncompressedSize
+        }
+        if bytes.count == 16 {
+            return bytes.u32(0) == 0x0807_4b50 && bytes.u32(4) == crc32 &&
+                bytes.u32(8) == compressedSize && bytes.u32(12) == uncompressedSize
+        }
+        return false
+    }
+}
+
 /// A recognition snapshot package, not a lossless backup of companion-app editor
 /// state. The strict manifest declares every exported file. Directory packages
 /// and bounded ZIP packages are admitted without a subprocess. No app-group
@@ -270,21 +285,26 @@ struct PeopleLibraryPackageService: Sendable {
         defer { close(directory) }
         let fd = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { throw Failure.io }
-        var initial = stat()
-        guard fstat(fd, &initial) == 0, initial.st_mode & S_IFMT == S_IFREG,
-              initial.st_nlink == 1 else { close(fd); throw Failure.unsafeFile }
-        let identity = FileIdentity(device: initial.st_dev, inode: initial.st_ino)
+        var identity: FileIdentity?
         var completed = false
         defer {
             close(fd)
             if !completed {
                 var named = stat()
-                if fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                if let identity,
+                   fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
                    named.st_dev == identity.device, named.st_ino == identity.inode {
+                    _ = unlinkat(directory, name, 0)
+                } else if identity == nil {
+                    // The stage is mode 0700 and this call exclusively created the name.
                     _ = unlinkat(directory, name, 0)
                 }
             }
         }
+        var initial = stat()
+        guard fstat(fd, &initial) == 0, initial.st_mode & S_IFMT == S_IFREG,
+              initial.st_nlink == 1 else { throw Failure.unsafeFile }
+        identity = FileIdentity(device: initial.st_dev, inode: initial.st_ino)
         try bytes.withUnsafeBytes { buffer in
             var offset = 0
             while offset < buffer.count {
@@ -297,11 +317,11 @@ struct PeopleLibraryPackageService: Sendable {
         }
         var final = stat()
         guard fsync(fd) == 0, fsync(directory) == 0, fstat(fd, &final) == 0,
-              final.st_dev == identity.device, final.st_ino == identity.inode,
+              final.st_dev == identity!.device, final.st_ino == identity!.inode,
               final.st_mode & S_IFMT == S_IFREG, final.st_nlink == 1,
               final.st_size == bytes.count else { throw Failure.unsafeFile }
         completed = true
-        return identity
+        return identity!
     }
     private static func sameFile(_ lhs: stat, _ rhs: stat) -> Bool {
         lhs.st_dev == rhs.st_dev && lhs.st_ino == rhs.st_ino &&
@@ -394,7 +414,7 @@ struct PeopleLibraryPackageService: Sendable {
             }) else { throw Failure.invalidPackage }
             guard tail.u16(eocd + 4) == 0, tail.u16(eocd + 6) == 0 else { throw Failure.invalidPackage }
             let diskCount = Int(tail.u16(eocd + 8)), count = Int(tail.u16(eocd + 10))
-            let maximumArchiveEntries = min(limits.maximumFiles + 6, limits.maximumEmbeddings + 6)
+            let maximumArchiveEntries = limits.maximumFiles + 6
             guard diskCount == count, count > 0, count <= maximumArchiveEntries else { throw Failure.invalidPackage }
             let centralSize32 = tail.u32(eocd + 12), centralOffset32 = tail.u32(eocd + 16)
             guard centralSize32 != UInt32.max, centralOffset32 != UInt32.max,
@@ -479,15 +499,15 @@ struct PeopleLibraryPackageService: Sendable {
                     var matches = false
                     if dataEnd + 12 == boundary {
                         let descriptor = try Self.read(fd, offset: dataEnd, count: 12)
-                        matches = descriptor.u32(0) == entry.crc32 &&
-                            descriptor.u32(4) == UInt32(entry.compressedSize) &&
-                            descriptor.u32(8) == UInt32(entry.uncompressedSize)
+                        matches = PeopleLibraryZIPDataDescriptor.matches(descriptor, crc32: entry.crc32,
+                            compressedSize: UInt32(entry.compressedSize),
+                            uncompressedSize: UInt32(entry.uncompressedSize))
                     }
                     if !matches, dataEnd + 16 == boundary {
                         let descriptor = try Self.read(fd, offset: dataEnd, count: 16)
-                        matches = descriptor.u32(0) == 0x0807_4b50 && descriptor.u32(4) == entry.crc32 &&
-                            descriptor.u32(8) == UInt32(entry.compressedSize) &&
-                            descriptor.u32(12) == UInt32(entry.uncompressedSize)
+                        matches = PeopleLibraryZIPDataDescriptor.matches(descriptor, crc32: entry.crc32,
+                            compressedSize: UInt32(entry.compressedSize),
+                            uncompressedSize: UInt32(entry.uncompressedSize))
                     }
                     guard matches else { throw Failure.invalidPackage }
                 } else {

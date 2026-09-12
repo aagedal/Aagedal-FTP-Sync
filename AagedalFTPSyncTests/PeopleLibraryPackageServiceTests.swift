@@ -62,6 +62,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         var declaredSize: UInt32?
         var crcOverride: UInt32?
         var usesDataDescriptor = false
+        var signedDataDescriptor = false
     }
     private func packageEntries(_ f: Fixture, root: String = "") throws -> [ZIPEntry] {
         try (f.snapshot.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName]).map { path in
@@ -88,6 +89,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
             bytes.le16(UInt16(name.count)); bytes.le16(UInt16(entry.extra.count)); bytes.append(name)
             bytes.append(entry.extra); bytes.append(compressed)
             if entry.usesDataDescriptor {
+                if entry.signedDataDescriptor { bytes.le32(0x0807_4b50) }
                 bytes.le32(crc); bytes.le32(UInt32(compressed.count)); bytes.le32(size)
             }
             central.append(.init(entry: entry, compressed: compressed, crc: crc, offset: offset))
@@ -178,7 +180,11 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
     func testWrappedZIPImportsStoredAndDeflatedFilesByteForByte() throws {
         let f = try fixture(), archive = f.parent.appendingPathComponent("shared.aagedalpeople.zip")
-        try zip(packageEntries(f, root: "shared.aagedalpeople/"), at: archive)
+        var entries = try packageEntries(f, root: "shared.aagedalpeople/")
+        let manifestIndex = try XCTUnwrap(entries.firstIndex { $0.name.hasSuffix(PeopleLibraryManifest.fileName) })
+        entries[manifestIndex].usesDataDescriptor = true
+        entries[manifestIndex].signedDataDescriptor = true
+        try zip(entries, at: archive)
         let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("zip-receiver"))
         let imported = try PeopleLibraryPackageService().importPackage(at: archive, into: receiver)
         XCTAssertEqual(imported.manifest, f.snapshot.manifest)
@@ -188,6 +194,20 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
                            try Data(contentsOf: f.snapshot.directoryURL.appendingPathComponent(path)), path)
         }
         try assertNoStages(f)
+    }
+
+    func testDataDescriptorDistinguishesSignatureFromSignatureValuedCRC() {
+        var unsigned = Data()
+        unsigned.le32(0x0807_4b50); unsigned.le32(23); unsigned.le32(42)
+        XCTAssertTrue(PeopleLibraryZIPDataDescriptor.matches(
+            unsigned, crc32: 0x0807_4b50, compressedSize: 23, uncompressedSize: 42))
+
+        var signed = Data()
+        signed.le32(0x0807_4b50); signed.le32(0x1234_5678); signed.le32(23); signed.le32(42)
+        XCTAssertTrue(PeopleLibraryZIPDataDescriptor.matches(
+            signed, crc32: 0x1234_5678, compressedSize: 23, uncompressedSize: 42))
+        XCTAssertFalse(PeopleLibraryZIPDataDescriptor.matches(
+            signed, crc32: 0x0807_4b50, compressedSize: 23, uncompressedSize: 42))
     }
 
     func testZIPRejectsUnsafeEntriesAndAmbiguousRootsBeforeRepositoryMutation() throws {
