@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-b270e11-transfer-resources",
+  "id": "development-21e9ed2-sandboxed-startup",
   "status": "IMPLEMENTING",
-  "commit": "b270e11d1c362a400b57b9aa771727885f00a19c",
+  "commit": "21e9ed29bf1ff4caf9e6c8d16ed6b1114a824cc6",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Library/Developer/Xcode/DerivedData/Aagedal_FTP_Sync-chqrijudhplttvgsyeeekhmacadi/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-13-M0-Delivery-Resource-Burst.md",
-  "note": "Development build only, not ready for human acceptance. App production sources remain those verified at 419d031; b270e11 adds release-only transport resource instrumentation. The live five-sample FTP/SFTP harness passed the provisional 256 MiB process-footprint and 0.100-second publication-stage cancellation gates with a 154.7 MiB maximum and sub-0.002-second cancellation, but SFTP completion showed enough variance to keep the earlier completion gate open. The focused benchmark compile/skip, live benchmark, security baseline and unsigned arm64 Release build passed. The prior complete suite passed 1126 tests with 16 opt-in skips and zero failures. Production face trust/artifacts and calibration, authorized actual-face fixtures, native/supported-OS evidence, enriched performance, full M5 verification and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/startup-sandbox-fix-release/Build/Products/Release/AagedalFTPSync.app",
+  "evidence": "Documentation/Testing/2026-09-13-M3-Sandboxed-Startup.md",
+  "note": "Development build only, not ready for human acceptance. A separately identified sandboxed QA build exposed a first-run unsafeRoot lease failure and completed empty-store version 3 preparation after the fix at 21e9ed2. The native post-migration UI kept jobs and calendar sync paused and showed the expected unconfigured-model state. All 1142 application tests completed with 1126 passed, 16 opt-in skips and zero failures; the security/current-identity guards and an unsigned arm64 Release build passed. Populated migration/recovery, production face trust/artifacts and calibration, authorized actual-face fixtures, supported-OS evidence, enriched performance, full M5 verification and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
 }

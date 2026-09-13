@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Allow the version 3 startup lease to open its already-validated Application
+  Support directory inside App Sandbox while retaining final-symlink and
+  replacement checks. This fixes first-run preparation failing before migration.
 - Add explicit AuraFace model status, download/install, cancellation, retry and
   removal controls to People Library settings. Model changes take effect after
   relaunch, and unconfigured builds keep recognition visibly disabled.
