@@ -245,6 +245,8 @@ def write_report(
     rows = []
     comparison_rows = []
     throughput_rows = []
+    memory_rows = []
+    cancellation_rows = []
     burst_mebibytes = (
         arguments.recent_files * arguments.recent_file_bytes / (1024 * 1024)
     )
@@ -281,6 +283,20 @@ def write_report(
                 f"| {str(result['protocolName']).upper()} | {state} | "
                 f"{throughput:.2f} |"
             )
+        for state, key in (
+            ("Cold", "coldPeakResidentMiB"),
+            ("Warm", "warmPeakResidentMiB"),
+        ):
+            summary = result[key]
+            memory_rows.append(
+                f"| {str(result['protocolName']).upper()} | {state} | "
+                f"{summary['median']:.1f} | {summary['p95']:.1f} |"
+            )
+        cancellation = result["cancellationLatency"]
+        cancellation_rows.append(
+            f"| {str(result['protocolName']).upper()} | "
+            f"{cancellation['median']:.3f} | {cancellation['p95']:.3f} |"
+        )
 
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     matches_baseline = (
@@ -312,6 +328,8 @@ Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using th
 - {arguments.recent_files:,} JPEG(s), each {arguments.recent_file_bytes:,} bytes, had current modification dates and all other files used 2000-01-01. The sync job's one-hour recent-file filter therefore published exactly that burst. Payload files are deterministic transport fixtures, not decoded photographs.
 - Each cell used one unrecorded warm-up and {payload['iterations']} measured iterations. Cold means a new protocol connection for each iteration; warm means a reused authenticated connection. Both states benefit from the host filesystem cache after warm-up.
 - Full scan measures `EndpointSession.listFiles()`. First publication is timestamped when the destination accepts the first eligible file; burst completion includes authoritative listing, publication of every eligible file, and reconciliation before another sample starts.
+- Peak resident memory is sampled in the XCTest process while each destination import still holds its payload data. It includes the test runner and loaded app code, so it is an absolute process-footprint ceiling for this fixture rather than an allocation delta.
+- Cancellation is requested after a real remote listing and export reaches a deliberately suspended destination import. The measurement ends only after rollback, endpoint closure and child-task draining return `CancellationError`; no destination path may be committed.
 - The historical comparison baseline was recorded on September 1, 2026 before completed-directory publication was implemented, using 100,000 files and five measured samples. Comparisons are shown only for matching fixture parameters.
 
 ## Results (seconds)
@@ -327,6 +345,18 @@ End-to-end payload throughput divides the {burst_mebibytes:.2f} MiB eligible bur
 | Protocol | Connection | Median MiB/s |
 |---|---|---:|
 {os.linesep.join(throughput_rows)}
+
+## Peak resident memory
+
+| Protocol | Connection | Median MiB | p95 MiB |
+|---|---|---:|---:|
+{os.linesep.join(memory_rows)}
+
+## Cancellation latency
+
+| Protocol | Median seconds | p95 seconds |
+|---|---:|---:|
+{os.linesep.join(cancellation_rows)}
 
 ## Change from pre-implementation baseline
 

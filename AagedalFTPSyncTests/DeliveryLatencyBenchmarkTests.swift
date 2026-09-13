@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import AagedalFTPSync
 
@@ -154,8 +155,61 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
             coldFirstPublication: Summary(samples: coldPublication.map(\.firstPublication)),
             warmFirstPublication: Summary(samples: warmPublication.map(\.firstPublication)),
             coldBurstCompletion: Summary(samples: coldPublication.map(\.completion)),
-            warmBurstCompletion: Summary(samples: warmPublication.map(\.completion))
+            warmBurstCompletion: Summary(samples: warmPublication.map(\.completion)),
+            coldPeakResidentMiB: Summary(samples: coldPublication.map(\.peakResidentMiB)),
+            warmPeakResidentMiB: Summary(samples: warmPublication.map(\.peakResidentMiB)),
+            cancellationLatency: Summary(samples: try await measureCancellation(
+                endpoint: endpoint,
+                password: password,
+                iterations: iterations
+            ))
         )
+    }
+
+    private func measureCancellation(
+        endpoint: Endpoint,
+        password: String,
+        iterations: Int
+    ) async throws -> [Double] {
+        var samples: [Double] = []
+        samples.reserveCapacity(iterations)
+        for _ in 0..<iterations {
+            let source = try EndpointSessionFactory.make(endpoint: endpoint, password: password)
+            let destination = BenchmarkDestination(importDelayNanoseconds: 60_000_000_000)
+            let stateDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("delivery-benchmark-cancel-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: stateDirectory) }
+            let engine = makeEngine(
+                stateDirectory: stateDirectory,
+                source: source,
+                destination: destination
+            )
+            let job = makeJob(endpoint: endpoint)
+            let runTask = Task {
+                try await engine.run(job: job, leftPassword: password, rightPassword: nil)
+            }
+            do {
+                try await destination.waitUntilImportStarts(timeoutNanoseconds: 30_000_000_000)
+            } catch {
+                runTask.cancel()
+                _ = await runTask.result
+                throw error
+            }
+            let cancelledAt = DispatchTime.now().uptimeNanoseconds
+            runTask.cancel()
+            do {
+                _ = try await runTask.value
+                XCTFail("The benchmark run must remain cancelled.")
+            } catch is CancellationError {
+                // Expected. The latency includes rollback, session close and task draining.
+            }
+            let finishedAt = DispatchTime.now().uptimeNanoseconds
+            let importedPaths = await destination.importedPaths
+            XCTAssertTrue(importedPaths.isEmpty)
+            samples.append(Double(finishedAt - cancelledAt) / 1_000_000_000)
+        }
+        return samples
     }
 
     private func runPublication(
@@ -175,28 +229,12 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
         defer {
             try? FileManager.default.removeItem(at: stateDirectory)
         }
-        let engine = SyncEngine(
-            sourceSignatureRepository: SourceSignatureRepository(
-                fileURL: stateDirectory.appendingPathComponent("signatures.json")
-            ),
-            downloadManifestRepository: DownloadManifestRepository(
-                fileURL: stateDirectory.appendingPathComponent("manifest.json")
-            ),
-            sessionFactory: { requestedEndpoint, _, _ in
-                requestedEndpoint.kind.isRemote ? sourceForRun : destination
-            }
+        let engine = makeEngine(
+            stateDirectory: stateDirectory,
+            source: sourceForRun,
+            destination: destination
         )
-        var job = SyncJob()
-        job.left = endpoint
-        job.right = Endpoint(
-            kind: .local,
-            localPath: "/benchmark-output",
-            bookmark: Data("benchmark".utf8)
-        )
-        job.direction = .leftToRight
-        job.filter = FileFilter(preset: .photos, recentHours: 1)
-        job.isEnabled = false
-        job.preserveModificationDates = true
+        let job = makeJob(endpoint: endpoint)
 
         let start = DispatchTime.now().uptimeNanoseconds
         let result = try await engine.run(job: job, leftPassword: password, rightPassword: nil)
@@ -208,8 +246,42 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
         XCTAssertEqual(importedPaths, expectedPublishedPaths)
         return PublicationTiming(
             firstPublication: Double(firstImport - start) / 1_000_000_000,
-            completion: Double(completion - start) / 1_000_000_000
+            completion: Double(completion - start) / 1_000_000_000,
+            peakResidentMiB: Double(await destination.peakResidentBytes) / (1024 * 1024)
         )
+    }
+
+    private func makeEngine(
+        stateDirectory: URL,
+        source: any EndpointSession,
+        destination: BenchmarkDestination
+    ) -> SyncEngine {
+        SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(
+                fileURL: stateDirectory.appendingPathComponent("signatures.json")
+            ),
+            downloadManifestRepository: DownloadManifestRepository(
+                fileURL: stateDirectory.appendingPathComponent("manifest.json")
+            ),
+            sessionFactory: { requestedEndpoint, _, _ in
+                requestedEndpoint.kind.isRemote ? source : destination
+            }
+        )
+    }
+
+    private func makeJob(endpoint: Endpoint) -> SyncJob {
+        var job = SyncJob()
+        job.left = endpoint
+        job.right = Endpoint(
+            kind: .local,
+            localPath: "/benchmark-output",
+            bookmark: Data("benchmark".utf8)
+        )
+        job.direction = .leftToRight
+        job.filter = FileFilter(preset: .photos, recentHours: 1)
+        job.isEnabled = false
+        job.preserveModificationDates = true
+        return job
     }
 
     private func measure(
@@ -300,12 +372,14 @@ private enum BenchmarkConfigurationError: LocalizedError {
     case missing(String)
     case invalidInteger(String, String)
     case emptyRecentPaths
+    case importDidNotStart
 
     var errorDescription: String? {
         switch self {
         case .missing(let name): "Missing benchmark environment variable \(name)."
         case .invalidInteger(let name, let value): "Benchmark variable \(name) is not a positive integer: \(value)."
         case .emptyRecentPaths: "Benchmark recent paths must contain at least one path."
+        case .importDidNotStart: "Benchmark cancellation import did not start before the deadline."
         }
     }
 }
@@ -325,11 +399,15 @@ private struct ProtocolBenchmarkResult: Encodable {
     let warmFirstPublication: Summary
     let coldBurstCompletion: Summary
     let warmBurstCompletion: Summary
+    let coldPeakResidentMiB: Summary
+    let warmPeakResidentMiB: Summary
+    let cancellationLatency: Summary
 }
 
 private struct PublicationTiming {
     let firstPublication: Double
     let completion: Double
+    let peakResidentMiB: Double
 }
 
 private struct Summary: Encodable {
@@ -386,6 +464,22 @@ private struct NonClosingEndpointSession: EndpointSession {
 private actor BenchmarkDestination: EndpointSession {
     private(set) var importedPaths: Set<String> = []
     private(set) var firstImportUptimeNanoseconds: UInt64?
+    private(set) var peakResidentBytes = currentResidentMemoryBytes()
+    private let importDelayNanoseconds: UInt64
+
+    init(importDelayNanoseconds: UInt64 = 0) {
+        self.importDelayNanoseconds = importDelayNanoseconds
+    }
+
+    func waitUntilImportStarts(timeoutNanoseconds: UInt64) async throws {
+        let deadline = DispatchTime.now().uptimeNanoseconds + timeoutNanoseconds
+        while firstImportUptimeNanoseconds == nil {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                throw BenchmarkConfigurationError.importDidNotStart
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
 
     func listFiles() async throws -> [String: SyncFile] { [:] }
 
@@ -399,10 +493,15 @@ private actor BenchmarkDestination: EndpointSession {
         preserveDate: Bool,
         verifySize: Bool
     ) async throws {
-        _ = try Data(contentsOf: localURL)
         if firstImportUptimeNanoseconds == nil {
             firstImportUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
         }
+        if importDelayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: importDelayNanoseconds)
+        }
+        let payload = try Data(contentsOf: localURL)
+        peakResidentBytes = max(peakResidentBytes, currentResidentMemoryBytes())
+        _ = payload.count
         importedPaths.insert(file.relativePath)
     }
 
@@ -423,4 +522,23 @@ private actor BenchmarkDestination: EndpointSession {
             )
         }
     }
+}
+
+private func currentResidentMemoryBytes() -> UInt64 {
+    var information = mach_task_basic_info()
+    var count = mach_msg_type_number_t(
+        MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size
+    )
+    let result = withUnsafeMutablePointer(to: &information) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+            task_info(
+                mach_task_self_,
+                task_flavor_t(MACH_TASK_BASIC_INFO),
+                $0,
+                &count
+            )
+        }
+    }
+    guard result == KERN_SUCCESS else { return 0 }
+    return UInt64(information.resident_size)
 }
