@@ -85,7 +85,7 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         }?.processingFingerprint)
     }
 
-    func testAlreadyAppliedReprocessRecordsCompleteFingerprintWithoutRewriting() async throws {
+    func testAlreadyAppliedReprocessBootstrapsCompleteFingerprintFromDurableSourceEvidence() async throws {
         let f = try fixture()
         try write(jpeg(), name: "FX_READY.jpg", root: f.source)
         _ = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
@@ -99,8 +99,41 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         let entry = try XCTUnwrap(result.metadataReport.entries.first)
         XCTAssertEqual(entry.status, .skipped)
         XCTAssertNotNil(entry.processingFingerprint)
+        XCTAssertTrue(entry.detail?.contains("bootstrapped from durable source evidence") == true)
         let after = try FileManager.default.attributesOfItem(atPath: target.path)
         XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
+    }
+
+    func testAlreadyAppliedLegacyDestinationWithoutDurableSourceEvidenceRemainsIncomplete() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_UNOWNED.jpg", root: f.source)
+        _ = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let target = f.destination.appendingPathComponent("FX_UNOWNED.jpg")
+        let before = try FileManager.default.attributesOfItem(atPath: target.path)
+        let emptyEvidenceEngine = SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(
+                fileURL: f.root.appendingPathComponent("empty-signatures.sqlite")
+            ),
+            downloadManifestRepository: DownloadManifestRepository(
+                fileURL: f.root.appendingPathComponent("empty-manifest.json")
+            ),
+            now: { Date(timeIntervalSince1970: 1_704_153_600) }
+        )
+
+        let result = try await emptyEvidenceEngine.reprocessExistingLocalFiles(
+            job: f.job, filter: .staleOrIncomplete
+        )
+
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertEqual(result.failed, 1)
+        let entry = try XCTUnwrap(result.metadataReport.entries.first)
+        XCTAssertEqual(entry.status, .failed)
+        XCTAssertNil(entry.processingFingerprint)
+        XCTAssertTrue(entry.detail?.contains("no durable source receipt") == true)
+        let after = try FileManager.default.attributesOfItem(atPath: target.path)
+        XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
+        XCTAssertEqual(before[.modificationDate] as? Date, after[.modificationDate] as? Date)
     }
 
     func testReceiptFilteredReprocessSkipsCurrentOutputWithoutRewriting() async throws {
@@ -295,6 +328,39 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                           transfer.metadataReport.entries[0].processingFingerprint?.sourceRevision)
     }
 
+    func testRemovedSourceSidecarMakesReceiptStaleInsteadOfReusingSavedCompanionEvidence() async throws {
+        let f = try fixture()
+        try write(Data("synthetic RAW".utf8), name: "FX_REMOVED.cr3", root: f.source)
+        let sourceSidecar = f.source.appendingPathComponent("FX_REMOVED.xmp")
+        try XMPSidecar.write(XMPData(), to: sourceSidecar)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)],
+            ofItemAtPath: sourceSidecar.path
+        )
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let previousEntry = try XCTUnwrap(transfer.metadataReport.entries.first)
+        try FileManager.default.removeItem(at: sourceSidecar)
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: f.job,
+            filter: .staleOrIncomplete,
+            latestOutcomes: ["FX_REMOVED.cr3": previousEntry]
+        )
+
+        XCTAssertEqual(result.conflicts, [])
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertEqual(result.failed, 0)
+        XCTAssertNotEqual(
+            result.metadataReport.entries.first?.processingFingerprint?.sourceRevision,
+            previousEntry.processingFingerprint?.sourceRevision
+        )
+        XCTAssertEqual(
+            try XMPSidecar.read(from: f.destination.appendingPathComponent("FX_REMOVED.xmp")).headline,
+            "2024-01-02"
+        )
+    }
+
     func testReprocessResolutionFailureIsPerFileAndOtherFilePublishes() async throws {
         let f = try fixture()
         for root in [f.source, f.destination] {
@@ -333,6 +399,7 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         let result = try await engine(f).reprocessExistingLocalFiles(job: f.job)
         XCTAssertEqual(result.failed, 1)
         XCTAssertEqual(result.applied, 0)
+        XCTAssertNil(result.metadataReport.entries.first?.processingFingerprint)
         XCTAssertEqual(try Data(contentsOf: sidecar), before)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: sidecar.path)[.systemFileNumber] as? NSNumber,
                        attributes[.systemFileNumber] as? NSNumber)

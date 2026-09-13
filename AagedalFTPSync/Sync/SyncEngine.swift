@@ -936,24 +936,56 @@ struct SyncEngine: Sendable {
                     localArrivalAt: file.modifiedAt, fileURL: temporaryURL)
             }
             let assignment = scheduledAt.flatMap { automation?.assignment(for: file.relativePath, scheduledAt: $0) }
-            let sourceEvidence = sourceFiles[file.relativePath]
-                ?? savedSourceSignatures[file.relativePath].map {
+            let savedPrimarySignature = savedSourceSignatures[file.relativePath]
+            let liveSourceEvidence = sourceFiles[file.relativePath]
+            let sourceEvidence = liveSourceEvidence
+                ?? savedPrimarySignature.map {
                     SyncFile(relativePath: file.relativePath, size: $0.size, modifiedAt: $0.modifiedAt)
                 }
                 ?? file
             let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-            let sourceSidecarEvidence = sourceFiles[sidecarPath]
-                ?? savedSourceSignatures[sidecarPath].map {
+            let savedSidecarSignature = savedSourceSignatures[sidecarPath]
+            let liveSourceSidecar = sourceFiles[sidecarPath]
+            // A source-modification listing is authoritative about a removed
+            // companion. Falling back to an older saved companion here would
+            // conceal that source change from the processing fingerprint.
+            let sourceSidecarEvidence = automation?.timestampPolicy == .sourceModification
+                ? liveSourceSidecar
+                : savedSidecarSignature.map {
                     SyncFile(relativePath: sidecarPath, size: $0.size, modifiedAt: $0.modifiedAt)
                 }
             let existingOutputSidecarURL = FileManager.default.fileExists(atPath: temporarySidecarURL.path)
                 ? temporarySidecarURL : nil
 
+            // A no-write receipt bootstrap needs evidence that this job
+            // previously observed the source. A live listing describes the
+            // source now, but does not prove that an existing destination came
+            // from it. Source signatures are written only after a successful
+            // publication, so they provide the required legacy ownership link.
+            let hasDurableLegacySourceEvidence: Bool = {
+                guard let savedPrimarySignature else { return false }
+                if let liveSourceEvidence,
+                   !savedPrimarySignature.matches(liveSourceEvidence, timestampTolerance: 0) {
+                    return false
+                }
+                if let liveSourceSidecar {
+                    guard let savedSidecarSignature,
+                          savedSidecarSignature.matches(liveSourceSidecar, timestampTolerance: 0)
+                    else { return false }
+                }
+                return true
+            }()
+
             // A receipt's output hash is ownership evidence. When the source is
             // unchanged but the destination no longer matches, treat that as a
             // user/external edit even if settings also changed. Never silently
             // classify it as ordinary staleness and overwrite it.
-            let previousFingerprint = latestOutcomes[file.relativePath]?.processingFingerprint
+            let previousOutcome = latestOutcomes[file.relativePath]
+            // Failed/partial outcomes are not complete receipts, even if an
+            // earlier development build happened to serialize a fingerprint.
+            let previousFingerprint = previousOutcome?.status == .failed
+                ? nil
+                : previousOutcome?.processingFingerprint
             if let previousFingerprint,
                previousFingerprint.sourceRevision == MetadataProcessingFingerprint.sourceRevision(
                     primary: sourceEvidence,
@@ -1038,6 +1070,26 @@ struct SyncEngine: Sendable {
             }
             let activated = processing.context != nil
             if activated && !processing.hasProposedChanges {
+                guard processing.resolutionComplete else {
+                    failed += 1
+                    metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
+                        assignment: assignment,
+                        detail: "Requested metadata could not resolve; the original file was retained unchanged.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                    continue
+                }
+                guard previousFingerprint != nil || hasDurableLegacySourceEvidence else {
+                    failed += 1
+                    metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
+                        assignment: assignment,
+                        detail: "The metadata is already complete, but no durable source receipt proves this destination belongs to the source. It was preserved and remains incomplete for receipt tracking.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                    continue
+                }
                 do {
                     let fingerprint = try makeProcessingFingerprint(
                         sourceFile: sourceEvidence, sourceSidecar: sourceSidecarEvidence,
@@ -1047,11 +1099,13 @@ struct SyncEngine: Sendable {
                         processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
                         processing: processing, primaryURL: temporaryURL,
                         relativePath: file.relativePath, sidecarURL: existingOutputSidecarURL)
-                    if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
+                    skipped += 1
                     metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
-                        relativePath: file.relativePath, status: processing.resolutionComplete ? .skipped : .failed,
+                        relativePath: file.relativePath, status: .skipped,
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt, assignment: assignment,
-                        detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was retained unchanged.",
+                        detail: previousFingerprint == nil
+                            ? "Existing metadata was preserved; a complete processing receipt was bootstrapped from durable source evidence."
+                            : "Existing metadata was preserved; no fields were proposed.",
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
                         processingFingerprint: fingerprint))
                 } catch {
@@ -1070,6 +1124,30 @@ struct SyncEngine: Sendable {
                 at: temporaryURL,
                 relativePath: file.relativePath
             ), assessment != .willApply {
+                guard processing.resolutionComplete else {
+                    failed += 1
+                    metadataReport.append(MetadataAuditEntry(
+                        runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                        scheduledAt: scheduledAt, assignment: assignment,
+                        detail: "Some requested metadata could not resolve; existing affected fields were preserved.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                    ))
+                    continue
+                }
+                guard previousFingerprint != nil || hasDurableLegacySourceEvidence else {
+                    failed += 1
+                    metadataReport.append(MetadataAuditEntry(
+                        runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                        scheduledAt: scheduledAt, assignment: assignment,
+                        detail: "The metadata is already complete, but no durable source receipt proves this destination belongs to the source. It was preserved and remains incomplete for receipt tracking.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                    ))
+                    continue
+                }
                 do {
                     let fingerprint = try makeProcessingFingerprint(
                         sourceFile: sourceEvidence, sourceSidecar: sourceSidecarEvidence,
@@ -1079,17 +1157,19 @@ struct SyncEngine: Sendable {
                         processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
                         processing: processing, primaryURL: temporaryURL,
                         relativePath: file.relativePath, sidecarURL: existingOutputSidecarURL)
-                    if processing.resolutionComplete { skipped += 1 } else { failed += 1 }
+                    skipped += 1
                     let detail = assessment == .alreadyApplied
                         ? "The programmed metadata is already applied."
                         : "Existing non-empty metadata was preserved; no programmed fields needed changing."
                     metadataReport.append(MetadataAuditEntry(
                         runID: runID, jobID: job.id, operation: .reprocess,
                         relativePath: file.relativePath,
-                        status: processing.resolutionComplete ? .skipped : .failed,
+                        status: .skipped,
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                         scheduledAt: scheduledAt, assignment: assignment,
-                        detail: processing.resolutionComplete ? detail : "Some requested metadata could not resolve; existing affected fields were preserved.",
+                        detail: previousFingerprint == nil
+                            ? "\(detail) A complete processing receipt was bootstrapped from durable source evidence."
+                            : detail,
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
                         processingFingerprint: fingerprint
                     ))

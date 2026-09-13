@@ -2002,14 +2002,20 @@ final class LocalSyncIntegrationTests: XCTestCase {
             accuracy: 1
         )
 
-        let secondResult = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+        let latestOutcomes = Dictionary(uniqueKeysWithValues: result.metadataReport.entries.map {
+            ($0.relativePath, $0)
+        })
+        let secondResult = try await SyncEngine().reprocessExistingLocalFiles(
+            job: job,
+            filter: .staleOrIncomplete,
+            latestOutcomes: latestOutcomes
+        )
         XCTAssertEqual(secondResult.scanned, 1)
         XCTAssertEqual(secondResult.applied, 0)
         XCTAssertEqual(secondResult.skipped, 1)
         XCTAssertEqual(secondResult.failed, 0)
-        XCTAssertTrue(
-            secondResult.metadataReport.entries.first?.detail?.contains("already applied") == true
-        )
+        XCTAssertEqual(secondResult.conflicts, [])
+        XCTAssertNotNil(secondResult.metadataReport.entries.first?.processingFingerprint)
     }
 
     func testReprocessExistingRawCreatesSidecarWithoutRewritingRaw() async throws {
