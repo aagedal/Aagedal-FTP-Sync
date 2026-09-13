@@ -174,9 +174,9 @@ final class AppStore: ObservableObject {
     }
 
     /// Construct a paused runtime only AFTER the complete v3 root has passed
-    /// migration/current-store admission under writer exclusion. No normal app
-    /// startup calls this yet. Calendar construction, lifetime ownership and
-    /// explicit start/recovery policy remain the bootstrap coordinator's job.
+    /// migration/current-store admission under writer exclusion. Calendar
+    /// construction, lifetime ownership and explicit start/recovery policy remain
+    /// the bootstrap coordinator and startup controller's job.
     /// The strict load throws before any AppStore or scheduler exists; all eight
     /// repositories, the default engine and reset service use this one layout.
     static func makePausedForValidatedStorage(
@@ -1085,6 +1085,40 @@ final class AppStore: ObservableObject {
         for task in resetTasks.values { task.cancel() }
         for task in sourceSignatureMaintenanceTasks.values { task.cancel() }
         alertMessage = "Another copy of Aagedal FTP Sync was detected. New work is blocked and active operations are being cancelled. Quit the other copy, then quit and reopen this app before continuing."
+    }
+
+    struct LaunchRestoration: Equatable {
+        let startedJobNames: [String]
+        let blockedJobNames: [String]
+    }
+
+    /// Restore the normal per-job launch policy only after the caller has admitted
+    /// the complete v3 runtime and revalidated writer exclusion. The paused v3
+    /// constructor deliberately leaves every job disabled, so first migration and
+    /// prepared-copy recovery can remain review-only while later committed opens
+    /// regain unattended operation. This is a runtime decision and does not rewrite
+    /// the saved jobs merely because the app launched.
+    @discardableResult
+    func restoreConfiguredLaunchJobs() -> LaunchRestoration {
+        guard !isSuspendedForExternalWriter else {
+            return LaunchRestoration(startedJobNames: [], blockedJobNames: [])
+        }
+        var started: [String] = []
+        var blocked: [String] = []
+        for index in jobs.indices {
+            let configuredToStart = jobs[index].startsOnAppLaunch
+            let runtimeBlocked = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) != nil
+            jobs[index].isEnabled = configuredToStart && !runtimeBlocked
+            if configuredToStart {
+                if runtimeBlocked { blocked.append(jobs[index].name) }
+                else { started.append(jobs[index].name) }
+            }
+        }
+        scheduler.restart(with: jobs)
+        if !blocked.isEmpty {
+            alertMessage = "Face recognition is not ready, so these launch jobs remain stopped: \(blocked.joined(separator: ", ")). Disable face recognition to run them without it."
+        }
+        return LaunchRestoration(startedJobNames: started, blockedJobNames: blocked)
     }
 
     func startAll() {

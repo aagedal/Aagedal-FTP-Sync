@@ -284,7 +284,21 @@ final class Version3StartupController: ObservableObject {
             attempt = nil
             session = Session(store: runtime.appStore, calendar: runtime.calendar, owner: runtime)
             phase = .ready
-            userFacingMessage = "Your saved data is open. Jobs and calendar sync remain paused until you explicitly start them."
+            switch operation {
+            case .openCommitted:
+                let restoration = runtime.appStore.restoreConfiguredLaunchJobs()
+                if restoration.startedJobNames.isEmpty {
+                    userFacingMessage = restoration.blockedJobNames.isEmpty
+                        ? "Your saved data is open. No jobs are configured to start on launch. Calendar sync remains paused until you explicitly start it."
+                        : "Your saved data is open. Jobs configured for launch remain stopped because face recognition is not ready. Calendar sync also remains paused."
+                } else if restoration.blockedJobNames.isEmpty {
+                    userFacingMessage = "Your saved data is open. Jobs configured to start on launch are active. Calendar sync remains paused until you explicitly start it."
+                } else {
+                    userFacingMessage = "Your saved data is open. Available launch jobs are active; face-recognition launch jobs remain stopped. Calendar sync remains paused."
+                }
+            case .migrateSelectedSources, .recoverPrepared:
+                userFacingMessage = "Your saved data is open. Jobs and calendar sync remain paused until you explicitly start them."
+            }
         } catch {
             attempt = nil
             phase = .recovery

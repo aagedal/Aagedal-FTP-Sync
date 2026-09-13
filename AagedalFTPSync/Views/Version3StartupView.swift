@@ -39,7 +39,7 @@ private struct StartupPauseNotice: View {
         if calendar.isPaused {
             HStack {
                 Image(systemName: "pause.circle")
-                Text("Calendar sync is paused. Review the migrated jobs before starting work.")
+                Text("Calendar sync is paused. Start it from Startup and Recovery when ready.")
                     .font(.callout)
                 Spacer()
                 StartupWindowButton()

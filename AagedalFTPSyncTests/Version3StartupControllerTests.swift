@@ -105,6 +105,53 @@ final class Version3StartupControllerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: backup), bytes)
     }
 
+    func testCommittedRelaunchRestoresOnlyConfiguredJobsAfterAdmission() async throws {
+        let base = try base()
+        let root = base.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        var automatic = SyncJob(name: "Automatic after admission")
+        automatic.isEnabled = true
+        automatic.startsOnAppLaunch = true
+        var manual = SyncJob(name: "Manual after admission")
+        manual.isEnabled = true
+        manual.startsOnAppLaunch = false
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([automatic, manual]).write(to: root.appendingPathComponent("jobs-v2.json"))
+
+        var migrationController: Controller? = Controller(dependencies: dependencies(base))
+        await migrationController?.load()
+        migrationController?.userConfirmedOtherCopiesClosed = true
+        await migrationController?.migrate()
+        let migratedJobs = try XCTUnwrap(migrationController?.session).store.jobs
+        XCTAssertTrue(migratedJobs.allSatisfy { !$0.isEnabled })
+        XCTAssertTrue(try XCTUnwrap(migratedJobs.first(where: { $0.id == automatic.id })).startsOnAppLaunch)
+        XCTAssertTrue(migrationController?.userFacingMessage.contains("remain paused") == true)
+        migrationController = nil
+
+        let relaunchController = Controller(dependencies: dependencies(base))
+        await relaunchController.load()
+        XCTAssertEqual(relaunchController.phase, .existing)
+        relaunchController.userConfirmedOtherCopiesClosed = true
+        await relaunchController.openExisting()
+
+        let session = try XCTUnwrap(relaunchController.session)
+        XCTAssertTrue(try XCTUnwrap(session.store.jobs.first(where: { $0.id == automatic.id })).isEnabled)
+        XCTAssertFalse(try XCTUnwrap(session.store.jobs.first(where: { $0.id == manual.id })).isEnabled)
+        XCTAssertTrue(session.calendar.isPaused)
+        XCTAssertTrue(relaunchController.userFacingMessage.contains("configured to start on launch are active"))
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let saved = try VersionedStoreCodec(format: .version3, store: .jobs).decode(
+            [SyncJob].self,
+            from: Data(contentsOf: root.appendingPathComponent("v3/jobs-v2.json")),
+            decoder: decoder
+        )
+        XCTAssertTrue(try XCTUnwrap(saved.first(where: { $0.id == automatic.id })).isEnabled)
+        XCTAssertTrue(try XCTUnwrap(saved.first(where: { $0.id == manual.id })).isEnabled)
+    }
+
     func testBoundaryOrUnexplainedV3DirectoryNeverOffersFreshMigration() async throws {
         for boundary in [true, false] {
             let base = try base()

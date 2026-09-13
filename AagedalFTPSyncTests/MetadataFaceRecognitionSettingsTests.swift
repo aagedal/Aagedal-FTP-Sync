@@ -1,4 +1,5 @@
 import Foundation
+import ServiceManagement
 import XCTest
 @testable import AagedalFTPSync
 
@@ -137,6 +138,36 @@ final class MetadataFaceRecognitionSettingsTests: XCTestCase {
         XCTAssertNil(job.metadataFaceRecognitionSchedulingBlocker)
     }
 
+    @MainActor
+    func testLaunchRestorationKeepsUnavailableFaceJobStopped() {
+        var job = SyncJob(name: "Face launch job")
+        job.isEnabled = true
+        job.startsOnAppLaunch = true
+        job.metadataFaceRecognition = .init()
+        let state = AppPersistentState(
+            jobs: [job], metadataPresets: [], photographerLibrary: [],
+            metadataAuditEntries: [:], syncFailureEntries: [:]
+        )
+        let store = AppStore(
+            launchAtLoginCoordinator: FaceLaunchStub(),
+            preloadedPersistence: AppPersistenceLoadResult(
+                state: state,
+                jobsRecoveredFromBackup: false,
+                serverProfilesRecoveredFromBackup: false,
+                warnings: []
+            ),
+            startsJobsOnInitialization: false
+        )
+
+        let restoration = store.restoreConfiguredLaunchJobs()
+
+        XCTAssertEqual(restoration.startedJobNames, [])
+        XCTAssertEqual(restoration.blockedJobNames, [job.name])
+        XCTAssertFalse(store.jobs[0].isEnabled)
+        XCTAssertTrue(store.jobs[0].startsOnAppLaunch)
+        XCTAssertTrue(store.alertMessage?.contains(job.name) == true)
+    }
+
     func testReprocessingRejectsSavedRecognitionBeforeOpeningAnyFiles() async {
         var job = SyncJob(name: "Faces")
         job.metadataFaceRecognition = .init()
@@ -230,4 +261,11 @@ final class MetadataFaceRecognitionSettingsTests: XCTestCase {
         XCTAssertTrue(metadataOnly.jobs.isEmpty)
         XCTAssertTrue(metadataOnly.metadataProgramming.isEmpty)
     }
+}
+
+@MainActor
+private final class FaceLaunchStub: LaunchAtLoginCoordinating {
+    var status: SMAppService.Status { .notRegistered }
+    func setEnabled(_ enabled: Bool) throws { XCTFail("Launch restoration must not change login registration") }
+    func openSettings() { XCTFail("Launch restoration must not open system settings") }
 }

@@ -93,8 +93,8 @@ enum ProductionFaceRecognitionAdmission {
     }
 }
 
-/// Explicit opt-in bootstrap; the normal App entry point is unchanged. The caller
-/// must independently exclude older app processes and every existing repository
+/// Production version 3 bootstrap. The caller must independently exclude older app
+/// processes and every existing repository
 /// writer, then retain this coordinator/runtime until all its writers are closed.
 /// The cooperative v3 lease alone cannot establish that older-process exclusion.
 /// The supplied validator asserts independently maintained continuous exclusion,
