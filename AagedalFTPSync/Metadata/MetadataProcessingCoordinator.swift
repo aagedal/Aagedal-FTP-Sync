@@ -248,17 +248,33 @@ enum MetadataProcessingCoordinator {
         processingDate: Date, processingTimeZone: TimeZone
     ) async throws -> MetadataProcessingResult {
         try Task.checkCancellation()
-        var persons = try MetadataWriter.existingPersonNames(at: fileURL, relativePath: relativePath)
-        var recognizedNames: ResolvedFaceNameChanges?
-        var recognitionEvidence: FaceRecognitionAuditEvidence?
-        var recognitionDependencies: [String: String] = [:]
+        // Refuse invalid provider/privacy and runtime configuration before opening
+        // the staged image. Disabled literal processing must retain its original
+        // no-read fast path.
+        if let geocoding { try geocoding.validate() }
         if let faceRecognition {
             try faceRecognition.validate()
-            guard let faceRecognitionContext else {
+            guard faceRecognitionContext != nil else {
                 throw AppError.invalidConfiguration(
                     "Face recognition cannot run until its model, people library, and calibrated policy are admitted."
                 )
             }
+        }
+        let templateNeedsPersons: Bool
+        if let assignment {
+            templateNeedsPersons = try MetadataProcessingRequest(assignment: assignment)
+                .requiredVariables(for: Set(MetadataWritableField.allCases))
+                .contains(.persons)
+        } else {
+            templateNeedsPersons = false
+        }
+        var persons = (faceRecognition != nil || templateNeedsPersons)
+            ? try MetadataWriter.existingPersonNames(at: fileURL, relativePath: relativePath)
+            : []
+        var recognizedNames: ResolvedFaceNameChanges?
+        var recognitionEvidence: FaceRecognitionAuditEvidence?
+        var recognitionDependencies: [String: String] = [:]
+        if let faceRecognition, let faceRecognitionContext {
             let byteCount = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size]
                 .flatMap { ($0 as? NSNumber)?.intValue }
             guard let byteCount, byteCount > 0 else {

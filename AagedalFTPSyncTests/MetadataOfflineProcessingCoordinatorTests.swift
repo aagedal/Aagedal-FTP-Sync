@@ -192,6 +192,28 @@ final class MetadataOfflineProcessingCoordinatorTests: XCTestCase {
         XCTAssertTrue(queries.isEmpty)
     }
 
+    func testPersonsTemplateReadsExistingNamesWithoutRecognition() async throws {
+        let file = try image()
+        var metadata = try ImageMetadata.read(from: file)
+        var xmp = metadata.xmp ?? XMPData()
+        xmp.personInImage = ["Existing Person"]
+        metadata.xmp = xmp
+        try metadata.write(to: file)
+        let calls = Calls()
+
+        let result = try await prepare(
+            file,
+            assignment: assignment(source: "People: {persons}"),
+            settings: nil,
+            service: service(calls)
+        )
+
+        XCTAssertEqual(result.changes.headline, "People: Existing Person")
+        XCTAssertTrue(result.resolutionComplete)
+        let queries = await calls.all()
+        XCTAssertTrue(queries.isEmpty)
+    }
+
     func testCorruptRAWPreservedPlacesAndVariablesOnlyRejectBeforeLookupOrWrite() async throws {
         let file = try image(), calls = Calls()
         let sidecar = file.deletingPathExtension().appendingPathExtension("xmp")
