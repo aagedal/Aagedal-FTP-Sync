@@ -33,6 +33,30 @@ final class ActivatedMetadataPreviewTests: XCTestCase {
                                                       processingTimeZone: TimeZone(identifier: "Europe/Oslo")!)
     }
 
+    private func faceContext(name: String) throws -> MetadataFaceRecognitionContext {
+        var values = [Float](repeating: 0, count: FaceRecognitionEmbedding.dimension)
+        values[0] = 1
+        let embedding = try FaceRecognitionEmbedding(validatingNormalized: values)
+        let gallery = try FaceRecognitionGallery(people: [
+            try FaceRecognitionPerson(id: UUID(), name: name, examples: [embedding]),
+        ])
+        let service = FaceRecognitionAnalysisService { _, _ in
+            [.init(ordinal: 0, embedding: embedding, captureQuality: 1)]
+        }
+        return try MetadataFaceRecognitionContext(
+            service: service,
+            gallery: gallery,
+            libraryRevision: String(repeating: "a", count: 64),
+            runtimeRevision: String(repeating: "b", count: 64),
+            acceptancePolicy: .init(
+                maximumCosineDistance: 0.5,
+                minimumRunnerUpGap: 0.1,
+                minimumCaptureQuality: 0.5,
+                unavailableQualityPolicy: .reject
+            )
+        )
+    }
+
     func testBadImageDoesNotAbortOtherFilesAndAllBytesRemainUnchanged() throws {
         let root = try folder()
         let good = root.appendingPathComponent("T_good.jpg")
@@ -74,5 +98,43 @@ final class ActivatedMetadataPreviewTests: XCTestCase {
         XCTAssertEqual(result.items.first?.status, .noChanges)
         XCTAssertEqual(result.willApply, 0)
         XCTAssertEqual(try Data(contentsOf: file), before)
+    }
+
+    func testAdmittedFaceOnlyPreviewUsesSharedResolverWithoutChangingImage() async throws {
+        let root = try folder()
+        let file = root.appendingPathComponent("face.jpg")
+        try image(at: file)
+        let before = try Data(contentsOf: file)
+
+        let result = try await MetadataPreviewService.previewLocalFolder(
+            at: root,
+            automation: nil,
+            geocoding: nil,
+            faceRecognition: .init(appendToKeywords: true),
+            faceRecognitionContext: try faceContext(name: "Preview Person"),
+            arrivalDate: date
+        )
+
+        let item = try XCTUnwrap(result.items.first)
+        XCTAssertEqual(item.status, .willApply)
+        XCTAssertEqual(item.processing?.changes.faceNames?.names, ["Preview Person"])
+        XCTAssertTrue(item.processing?.changes.faceNames?.appendToKeywords == true)
+        XCTAssertEqual(item.processing?.recognitionEvidence?.status, .completed)
+        XCTAssertEqual(try Data(contentsOf: file), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["face.jpg"])
+    }
+
+    func testFacePreviewWithoutAdmittedContextFailsBeforeFolderAccess() async {
+        do {
+            _ = try await MetadataPreviewService.previewLocalFolder(
+                at: URL(fileURLWithPath: "/path/that/must/not/be/read"),
+                automation: nil,
+                geocoding: nil,
+                faceRecognition: .init()
+            )
+            XCTFail("Recognition preview must require one admitted context")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("cannot run"))
+        }
     }
 }

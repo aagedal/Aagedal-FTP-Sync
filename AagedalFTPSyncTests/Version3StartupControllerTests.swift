@@ -20,10 +20,11 @@ final class Version3StartupControllerTests: XCTestCase {
             passwordRemover: { _ in XCTFail("Startup must not delete credentials") })
     }
     private var factories: Version3BootstrapCoordinator.Factories {
-        .init(appStore: { admission in
+        .init(appStore: { admission, faceRecognitionContext in
             try AppStore.makePausedForValidatedStorage(admission.storage, retainedCredentialIDs: admission.currentCredentialIDs,
                 allowsCredentialGarbageCollection: false, keychain: self.keychain,
-                launchAtLoginCoordinator: ControllerLaunchStub())
+                launchAtLoginCoordinator: ControllerLaunchStub(),
+                faceRecognitionContext: faceRecognitionContext)
         }, calendar: { admission in
             try MetadataCalendarCoordinator.makePausedForValidatedStorage(admission.storage, keychain: self.keychain,
                 transport: { _, _, _, _, _ in XCTFail("Startup must not use network"); throw URLError(.cancelled) })
@@ -43,7 +44,7 @@ final class Version3StartupControllerTests: XCTestCase {
         var deps = dependencies(base)
         let prepare = deps.preparePaths
         deps.preparePaths = { calls += 1; return try prepare() }
-        deps.factories = .init(appStore: { _ in XCTFail("Inspection must not construct AppStore"); throw Injected.failed },
+        deps.factories = .init(appStore: { _, _ in XCTFail("Inspection must not construct AppStore"); throw Injected.failed },
             calendar: { _ in XCTFail("Inspection must not construct calendar"); throw Injected.failed })
         let controller = Controller(dependencies: deps)
         XCTAssertEqual(controller.phase, .idle)
@@ -133,7 +134,7 @@ final class Version3StartupControllerTests: XCTestCase {
         let base = try base()
         var calls = 0
         var deps = dependencies(base)
-        deps.factories = .init(appStore: { _ in calls += 1; throw Injected.failed },
+        deps.factories = .init(appStore: { _, _ in calls += 1; throw Injected.failed },
             calendar: { _ in XCTFail("Must not construct after AppStore failure"); throw Injected.failed })
         let controller = Controller(dependencies: deps)
         await controller.load()
@@ -275,8 +276,8 @@ final class Version3StartupControllerTests: XCTestCase {
         var peers: [Controller.RunningCopy] = []
         var deps = dependencies(base, peers: { peers })
         let makeApp = deps.factories.appStore
-        deps.factories.appStore = { admission in
-            let store = try makeApp(admission)
+        deps.factories.appStore = { admission, faceRecognitionContext in
+            let store = try makeApp(admission, faceRecognitionContext)
             peers = [.init(id: 101, name: "Newly launched copy")]
             return store
         }

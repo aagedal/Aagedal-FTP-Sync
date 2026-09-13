@@ -258,18 +258,24 @@ enum MetadataPreviewService {
         at folderURL: URL, automation: MetadataAutomation?, geocoding: MetadataGeocodingSettings?,
         service: MetadataGeocodingService? = nil,
         services: MetadataProcessingServices = .shared,
+        faceRecognition: MetadataFaceRecognitionSettings? = nil,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
         filter: FileFilter = FileFilter(), arrivalDate: Date = Date(), processingTimeZone: TimeZone? = nil
     ) async throws -> MetadataPreviewResult {
         try Task.checkCancellation()
-        guard geocoding?.isEnabled == true else {
+        if faceRecognition != nil, faceRecognitionContext == nil {
+            throw AppError.invalidConfiguration(SyncJob.unavailableFaceRecognitionRuntimeMessage)
+        }
+        guard geocoding?.isEnabled == true || faceRecognition != nil else {
             guard let automation, automation.isEnabled else { return .init(items: []) }
             return try previewLocalFolder(at: folderURL, automation: automation, filter: filter,
                 arrivalDate: arrivalDate, processingTimeZone: processingTimeZone)
         }
         try geocoding?.validate()
-        guard let processingTimeZone else {
+        if geocoding?.isEnabled == true, processingTimeZone == nil {
             throw AppError.invalidConfiguration("Save a processing time zone before previewing metadata enrichment.")
         }
+        let effectiveProcessingTimeZone = processingTimeZone ?? TimeZone(secondsFromGMT: 0)!
         let enabled = automation?.isEnabled == true ? automation : nil
         if let message = enabled?.validationMessage { throw AppError.invalidConfiguration(message) }
         let access = folderURL.startAccessingSecurityScopedResource()
@@ -303,6 +309,10 @@ enum MetadataPreviewService {
             let modified = attributes.contentModificationDate ?? .distantPast
             guard filter.includes(path: path, modifiedAt: modified, now: arrivalDate) else { continue }
             let perFileGeocoding = MetadataProcessingServices.geocodingApplies(to: path, settings: geocoding) ? geocoding : nil
+            let perFileFaceRecognition = MetadataProcessingServices.faceRecognitionApplies(
+                to: path,
+                settings: faceRecognition
+            ) ? faceRecognition : nil
             let photographer = enabled.flatMap { matchingPhotographer(for: path, in: $0.photographers) }
             let scheduled = enabled.flatMap { MetadataWriter.schedulingDate(for: $0.timestampPolicy,
                 sourceModifiedAt: modified, localArrivalAt: arrivalDate, fileURL: canonical) }
@@ -310,7 +320,7 @@ enum MetadataPreviewService {
             var item = MetadataPreviewItem(relativePath: path, sourceModifiedAt: modified, scheduledAt: scheduled,
                 status: .noChanges, photographerID: photographer?.id, photographerName: photographer?.photographerName,
                 clipID: assignment?.clip.id, clipName: assignment?.clip.name)
-            if assignment == nil && perFileGeocoding == nil {
+            if assignment == nil && perFileGeocoding == nil && perFileFaceRecognition == nil {
                 let status: MetadataPreviewStatus = enabled == nil ? .noChanges :
                     (photographer == nil ? .noMatchingPhotographer : (scheduled == nil ? .captureTimeUnavailable : .noScheduledClip))
                 items.append(.init(relativePath: path, sourceModifiedAt: modified, scheduledAt: scheduled,
@@ -326,8 +336,11 @@ enum MetadataPreviewService {
             var detail: String?
             do {
                 let resolved = try await MetadataProcessingCoordinator.prepare(assignment: assignment,
-                    geocoding: perFileGeocoding, service: service, services: services, fileURL: canonical, relativePath: path,
-                    processingDate: arrivalDate, processingTimeZone: processingTimeZone)
+                    geocoding: perFileGeocoding, service: service, services: services,
+                    faceRecognition: perFileFaceRecognition,
+                    faceRecognitionContext: faceRecognitionContext,
+                    fileURL: canonical, relativePath: path,
+                    processingDate: arrivalDate, processingTimeZone: effectiveProcessingTimeZone)
                 processing = resolved
                 if !resolved.resolutionComplete { status = .resolutionIncomplete }
                 else if !resolved.hasProposedChanges { status = .noChanges }

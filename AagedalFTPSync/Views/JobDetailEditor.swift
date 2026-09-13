@@ -190,13 +190,19 @@ struct JobDetailEditor: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    if let blocker = draft.metadataFaceRecognitionRuntimeBlocker {
+                    if let blocker = store.metadataFaceRecognitionRuntimeBlocker(for: draft) {
                         Label(blocker, systemImage: "exclamationmark.triangle.fill")
                             .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("face-recognition-status")
                             .accessibilityLabel("Face recognition status")
                             .accessibilityValue(blocker)
+                    } else if draft.metadataFaceRecognition != nil {
+                        Label("Face recognition is ready.", systemImage: "checkmark.circle.fill")
+                            .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
+                            .accessibilityIdentifier("face-recognition-status")
+                            .accessibilityLabel("Face recognition status")
+                            .accessibilityValue("Ready")
                     } else {
                         Label("Face recognition is off.", systemImage: "pause.circle")
                             .labelStyle(AccessibleStatusLabelStyle(symbolColor: .secondary))
@@ -205,7 +211,7 @@ struct JobDetailEditor: View {
                             .accessibilityValue("Off")
                     }
 
-                    if let schedulingBlocker = draft.metadataFaceRecognitionSchedulingBlocker {
+                    if let schedulingBlocker = store.metadataFaceRecognitionSchedulingBlocker(for: draft) {
                         Text(schedulingBlocker)
                             .font(.caption)
                             .foregroundStyle(.orange)

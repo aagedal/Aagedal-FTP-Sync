@@ -1019,9 +1019,10 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
     func testPreviewPublishesInjectedResultAndClearsLoadingState() async {
         let expected = MetadataPreviewResult(items: [])
-        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
             MetadataProgrammingPreview(folderName: "Synced Files", result: expected)
         }
+        coordinator.draft = previewAutomation()
         let job = previewJob()
         coordinator.loadedJobID = job.id
 
@@ -1035,9 +1036,10 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
     }
 
     func testPreviewFailurePublishesErrorAndClearsLoadingState() async {
-        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
             throw PreviewFailure.expected
         }
+        coordinator.draft = previewAutomation()
         let job = previewJob()
         coordinator.loadedJobID = job.id
 
@@ -1051,7 +1053,7 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
     func testPreviewRejectsUnavailableSavedRecognitionWithoutInvokingOperation() async {
         let calls = PreviewCallCounter()
-        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
             await calls.increment()
             return MetadataProgrammingPreview(folderName: "Unexpected", result: .init(items: []))
         }
@@ -1070,11 +1072,39 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.metadataPreview)
     }
 
+    func testPreviewPassesAdmittedRecognitionContextToOperation() async throws {
+        let expectedContext = try previewFaceContext()
+        let received = PreviewContextCapture()
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, context in
+            await received.set(context)
+            return MetadataProgrammingPreview(folderName: "Recognized", result: .init(items: []))
+        }
+        coordinator.draft = previewAutomation()
+        var job = previewJob()
+        job.metadataFaceRecognition = .init()
+        coordinator.loadedJobID = job.id
+
+        XCTAssertTrue(coordinator.canPreviewMetadata(
+            for: job,
+            faceRecognitionRuntimeAvailable: true
+        ))
+        coordinator.previewConfiguredLocalFolder(
+            for: job,
+            faceRecognitionContext: expectedContext
+        )
+        await waitForPreview(coordinator)
+
+        let capturedContext = await received.value
+        XCTAssertNotNil(capturedContext)
+        XCTAssertEqual(coordinator.metadataPreviewFolderName, "Recognized")
+    }
+
     func testReplacementPreviewIgnoresCancelledRequest() async {
         let previews = PreviewSequence()
-        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
             try await previews.next()
         }
+        coordinator.draft = previewAutomation()
         let job = previewJob()
         coordinator.loadedJobID = job.id
 
@@ -1137,6 +1167,46 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         return job
     }
 
+    private func previewAutomation() -> MetadataAutomation {
+        let photographer = PhotographerProfile(
+            name: "Preview",
+            filenamePrefix: "PRE",
+            creator: "Preview",
+            copyrightNotice: ""
+        )
+        return MetadataAutomation(
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Preview",
+                startsAt: Date(timeIntervalSince1970: 1_700_000_000),
+                endsAt: Date(timeIntervalSince1970: 1_700_003_600)
+            )]
+        )
+    }
+
+    private func previewFaceContext() throws -> MetadataFaceRecognitionContext {
+        var values = [Float](repeating: 0, count: FaceRecognitionEmbedding.dimension)
+        values[0] = 1
+        let embedding = try FaceRecognitionEmbedding(validatingNormalized: values)
+        let gallery = try FaceRecognitionGallery(people: [
+            try FaceRecognitionPerson(id: UUID(), name: "Preview", examples: [embedding]),
+        ])
+        let service = FaceRecognitionAnalysisService { _, _ in [] }
+        return try MetadataFaceRecognitionContext(
+            service: service,
+            gallery: gallery,
+            libraryRevision: String(repeating: "a", count: 64),
+            runtimeRevision: String(repeating: "b", count: 64),
+            acceptancePolicy: .init(
+                maximumCosineDistance: 0.5,
+                minimumRunnerUpGap: 0.1,
+                minimumCaptureQuality: 0.5,
+                unavailableQualityPolicy: .reject
+            )
+        )
+    }
+
     private var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -1168,6 +1238,11 @@ private enum PreviewFailure: Error {
 private actor PreviewCallCounter {
     private(set) var value = 0
     func increment() { value += 1 }
+}
+
+private actor PreviewContextCapture {
+    private(set) var value: MetadataFaceRecognitionContext?
+    func set(_ value: MetadataFaceRecognitionContext?) { self.value = value }
 }
 
 private actor PreviewSequence {

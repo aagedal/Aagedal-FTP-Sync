@@ -9,7 +9,8 @@ struct MetadataProgrammingPreview: Equatable, Sendable {
 typealias MetadataPreviewOperation = @Sendable (
     _ job: SyncJob,
     _ endpoint: Endpoint,
-    _ automation: MetadataAutomation
+    _ automation: MetadataAutomation,
+    _ faceRecognitionContext: MetadataFaceRecognitionContext?
 ) async throws -> MetadataProgrammingPreview
 
 struct PendingClipChange: Identifiable {
@@ -138,22 +139,39 @@ final class MetadataProgrammingCoordinator: ObservableObject {
             && !store.isJobBusy(loadedJobID)
     }
 
-    func previewValidationMessage(for job: SyncJob?) -> String? {
-        if let blocker = job?.metadataFaceRecognitionRuntimeBlocker { return blocker }
+    func previewValidationMessage(
+        for job: SyncJob?,
+        faceRecognitionRuntimeAvailable: Bool = false
+    ) -> String? {
+        if let blocker = job?.metadataFaceRecognitionRuntimeBlocker(
+            runtimeAvailable: faceRecognitionRuntimeAvailable
+        ) { return blocker }
         var enabledDraft = draft
         enabledDraft.isEnabled = true
         return enabledDraft.validationMessage
     }
 
-    func canPreviewMetadata(for job: SyncJob?) -> Bool {
+    func canPreviewMetadata(
+        for job: SyncJob?,
+        faceRecognitionRuntimeAvailable: Bool = false
+    ) -> Bool {
         loadedJobID != nil
             && metadataLocalEndpoint(for: job)?.bookmark != nil
-            && previewValidationMessage(for: job) == nil
+            && previewValidationMessage(
+                for: job,
+                faceRecognitionRuntimeAvailable: faceRecognitionRuntimeAvailable
+            ) == nil
             && !isPreviewingMetadata
     }
 
-    func previewHelp(for job: SyncJob?) -> String {
-        if let previewValidationMessage = previewValidationMessage(for: job) {
+    func previewHelp(
+        for job: SyncJob?,
+        faceRecognitionRuntimeAvailable: Bool = false
+    ) -> String {
+        if let previewValidationMessage = previewValidationMessage(
+            for: job,
+            faceRecognitionRuntimeAvailable: faceRecognitionRuntimeAvailable
+        ) {
             return previewValidationMessage
         }
         guard let metadataLocalEndpoint = metadataLocalEndpoint(for: job) else {
@@ -300,9 +318,15 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         return true
     }
 
-    func previewConfiguredLocalFolder(for job: SyncJob?) {
+    func previewConfiguredLocalFolder(
+        for job: SyncJob?,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
+    ) {
         guard let job,
-              previewValidationMessage(for: job) == nil,
+              previewValidationMessage(
+                for: job,
+                faceRecognitionRuntimeAvailable: faceRecognitionContext != nil
+              ) == nil,
               let metadataLocalEndpoint = metadataLocalEndpoint(for: job) else { return }
         let previewDraft = draft
         let previewOperation = self.previewOperation
@@ -313,7 +337,12 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         metadataPreviewError = nil
         previewTask = Task { [weak self] in
             do {
-                let preview = try await previewOperation(job, metadataLocalEndpoint, previewDraft)
+                let preview = try await previewOperation(
+                    job,
+                    metadataLocalEndpoint,
+                    previewDraft,
+                    faceRecognitionContext
+                )
                 guard let self,
                       previewRequestID == requestID,
                       loadedJobID == job.id else { return }
@@ -1278,9 +1307,12 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 private func performMetadataPreview(
     job: SyncJob,
     endpoint: Endpoint,
-    automation: MetadataAutomation
+    automation: MetadataAutomation,
+    faceRecognitionContext: MetadataFaceRecognitionContext?
 ) async throws -> MetadataProgrammingPreview {
-    if let message = job.metadataFaceRecognitionRuntimeBlocker {
+    if let message = job.metadataFaceRecognitionRuntimeBlocker(
+        runtimeAvailable: faceRecognitionContext != nil
+    ) {
         throw AppError.invalidConfiguration(message)
     }
     let folderAccess = try BookmarkAccess(endpoint: endpoint)
@@ -1297,6 +1329,8 @@ private func performMetadataPreview(
             at: folderURL,
             automation: enabledDraft,
             geocoding: job.metadataGeocoding,
+            faceRecognition: job.metadataFaceRecognition,
+            faceRecognitionContext: faceRecognitionContext,
             filter: filter,
             processingTimeZone: try job.validatedMetadataProcessingTimeZone
         )

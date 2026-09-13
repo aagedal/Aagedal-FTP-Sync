@@ -966,11 +966,17 @@ struct MetadataProgrammingView: View {
     }
 
     private var canPreviewMetadata: Bool {
-        coordinator.canPreviewMetadata(for: selectedJob)
+        coordinator.canPreviewMetadata(
+            for: selectedJob,
+            faceRecognitionRuntimeAvailable: store.isFaceRecognitionRuntimeReady
+        )
     }
 
     private var previewHelp: String {
-        coordinator.previewHelp(for: selectedJob)
+        coordinator.previewHelp(
+            for: selectedJob,
+            faceRecognitionRuntimeAvailable: store.isFaceRecognitionRuntimeReady
+        )
     }
 
     private var isReprocessing: Bool {
@@ -998,7 +1004,10 @@ struct MetadataProgrammingView: View {
     }
 
     private func previewConfiguredLocalFolder() {
-        coordinator.previewConfiguredLocalFolder(for: selectedJob)
+        coordinator.previewConfiguredLocalFolder(
+            for: selectedJob,
+            faceRecognitionContext: store.faceRecognitionContext
+        )
     }
 
     private var selectedPhotographer: PhotographerProfile? {

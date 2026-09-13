@@ -261,6 +261,37 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
                        applicationSupport.appendingPathComponent("Components/AuraFace", isDirectory: true))
     }
 
+    func testProductionAdmissionConfigurationIsExplicitAndStrict() throws {
+        typealias Configuration = ProductionFaceRecognitionAdmission.Configuration
+        XCTAssertNil(try Configuration.load(from: [:]))
+        XCTAssertNil(try Configuration.load(from: [Configuration.enabledKey: false]))
+
+        let complete: [String: Any] = [
+            Configuration.enabledKey: true,
+            Configuration.descriptorURLKey: "https://models.example.test/auraface/distribution.json",
+            Configuration.signatureURLKey: "https://models.example.test/auraface/distribution.json.sig",
+            Configuration.allowedOriginsKey: ["https://models.example.test"],
+            Configuration.publicKeyKey: Data(repeating: 7, count: 32).base64EncodedString(),
+            Configuration.maximumDistanceKey: 0.4,
+            Configuration.minimumGapKey: 0.08,
+            Configuration.minimumQualityKey: 0.2,
+        ]
+        let configuration = try XCTUnwrap(Configuration.load(from: complete))
+        XCTAssertEqual(configuration.policy.maximumCosineDistance, 0.4)
+        XCTAssertEqual(configuration.policy.minimumRunnerUpGap, 0.08)
+        XCTAssertEqual(configuration.policy.minimumCaptureQuality, 0.2)
+        XCTAssertEqual(configuration.policy.unavailableQualityPolicy, .reject)
+
+        for key in complete.keys where key != Configuration.enabledKey {
+            var missing = complete
+            missing.removeValue(forKey: key)
+            XCTAssertThrowsError(try Configuration.load(from: missing))
+        }
+        var unsafeOrigin = complete
+        unsafeOrigin[Configuration.allowedOriginsKey] = ["https://models.example.test/path"]
+        XCTAssertThrowsError(try Configuration.load(from: unsafeOrigin))
+    }
+
     private func makeFixture(archiveOverride: Data? = nil) throws -> Fixture {
         let key = Curve25519.Signing.PrivateKey()
         let descriptorURL = URL(string: "https://models.test.invalid/AuraFace.distribution.json")!

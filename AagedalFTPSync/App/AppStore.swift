@@ -66,6 +66,7 @@ final class AppStore: ObservableObject {
     private let downloadManifestRepository: DownloadManifestRepository
     private let jobResetService: JobResetService
     private let engine: SyncEngine
+    let faceRecognitionContext: MetadataFaceRecognitionContext?
     private let syncConcurrencyController: SyncConcurrencyController
     private let failureNotificationCoordinator: SyncFailureNotificationCoordinator
     @Published private(set) var isSuspendedForExternalWriter = false
@@ -99,7 +100,8 @@ final class AppStore: ObservableObject {
         startsJobsOnInitialization: Bool = true,
         metadataCalendarRepository: MetadataCalendarRepository? = nil,
         peopleLibraryRepository: PeopleLibraryRepository? = nil,
-        peopleLibraryPackageService: PeopleLibraryPackageService = PeopleLibraryPackageService()
+        peopleLibraryPackageService: PeopleLibraryPackageService = PeopleLibraryPackageService(),
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -127,10 +129,12 @@ final class AppStore: ObservableObject {
         )
         self.sourceSignatureRepository = sourceSignatureRepository
         self.downloadManifestRepository = downloadManifestRepository
+        self.faceRecognitionContext = faceRecognitionContext
         self.jobResetService = jobResetService ?? JobResetService(
             downloadManifestRepository: downloadManifestRepository
         )
         self.engine = engine ?? SyncEngine(
+            faceRecognitionContext: faceRecognitionContext,
             sourceSignatureRepository: sourceSignatureRepository,
             downloadManifestRepository: downloadManifestRepository
         )
@@ -158,7 +162,7 @@ final class AppStore: ObservableObject {
                 || jobs[index].right.serverProfileID != nil
             let requiresRecoveredConfigurationReview = persistenceLoad.jobsRecoveredFromBackup
                 || (persistenceLoad.serverProfilesRecoveredFromBackup && usesServerProfile)
-            let runtimeBlocked = jobs[index].metadataFaceRecognitionRuntimeBlocker != nil
+            let runtimeBlocked = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) != nil
             let shouldStart = startsJobsOnInitialization && !requiresRecoveredConfigurationReview
                 && !runtimeBlocked && configuredToStart
             jobs[index].startOnAppLaunch = configuredToStart
@@ -180,7 +184,8 @@ final class AppStore: ObservableObject {
         retainedCredentialIDs: Set<String>,
         allowsCredentialGarbageCollection: Bool,
         keychain: KeychainStore = KeychainStore(),
-        launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator()
+        launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator(),
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
     ) throws -> AppStore {
         guard storage.storageFormat == .version3 else { throw AppPersistenceStartupError.unsupportedStorage }
         let jobs = JobRepository(storage: storage)
@@ -206,7 +211,8 @@ final class AppStore: ObservableObject {
             allowsCredentialGarbageCollection: allowsCredentialGarbageCollection,
             preloadedPersistence: loaded, startsJobsOnInitialization: false,
             metadataCalendarRepository: MetadataCalendarRepository(storage: storage),
-            peopleLibraryRepository: PeopleLibraryRepository(root: storage.peopleLibraryDirectory))
+            peopleLibraryRepository: PeopleLibraryRepository(root: storage.peopleLibraryDirectory),
+            faceRecognitionContext: faceRecognitionContext)
     }
 
     deinit {
@@ -256,7 +262,7 @@ final class AppStore: ObservableObject {
             alertMessage = message
             return false
         }
-        if let message = resolvedJob.metadataFaceRecognitionSchedulingBlocker {
+        if let message = metadataFaceRecognitionSchedulingBlocker(for: resolvedJob) {
             alertMessage = message
             return false
         }
@@ -773,7 +779,7 @@ final class AppStore: ObservableObject {
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
         guard !isSuspendedForExternalWriter else { return }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
-        if enabled, let message = jobs[index].metadataFaceRecognitionRuntimeBlocker {
+        if enabled, let message = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) {
             alertMessage = message
             return
         }
@@ -1084,12 +1090,12 @@ final class AppStore: ObservableObject {
     func startAll() {
         guard !isSuspendedForExternalWriter else { return }
         var updatedJobs = jobs
-        let blockedJobs = updatedJobs.filter { $0.metadataFaceRecognitionRuntimeBlocker != nil }
+        let blockedJobs = updatedJobs.filter { metadataFaceRecognitionRuntimeBlocker(for: $0) != nil }
         let newlyEnabledJobIDs = updatedJobs.compactMap {
-            $0.isEnabled || $0.metadataFaceRecognitionRuntimeBlocker != nil ? nil : $0.id
+            $0.isEnabled || metadataFaceRecognitionRuntimeBlocker(for: $0) != nil ? nil : $0.id
         }
         for index in updatedJobs.indices {
-            if updatedJobs[index].metadataFaceRecognitionRuntimeBlocker == nil {
+            if metadataFaceRecognitionRuntimeBlocker(for: updatedJobs[index]) == nil {
                 updatedJobs[index].isEnabled = true
             }
         }
@@ -1119,6 +1125,16 @@ final class AppStore: ObservableObject {
 
     var activeCount: Int { jobs.filter(\.isEnabled).count }
     var isSyncing: Bool { phases.values.contains(.syncing) }
+
+    var isFaceRecognitionRuntimeReady: Bool { faceRecognitionContext != nil }
+
+    func metadataFaceRecognitionRuntimeBlocker(for job: SyncJob) -> String? {
+        job.metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: isFaceRecognitionRuntimeReady)
+    }
+
+    func metadataFaceRecognitionSchedulingBlocker(for job: SyncJob) -> String? {
+        job.metadataFaceRecognitionSchedulingBlocker(runtimeAvailable: isFaceRecognitionRuntimeReady)
+    }
 
     func transferredFileCount(for jobID: UUID? = nil) -> Int {
         if let jobID {

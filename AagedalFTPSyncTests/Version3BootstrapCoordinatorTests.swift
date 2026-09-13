@@ -39,8 +39,28 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         try MetadataCalendarCoordinator.makePausedForValidatedStorage(admission.storage, keychain: forbiddenKeychain,
             transport: { _, _, _, _, _ in XCTFail("Bootstrap must not use network"); throw URLError(.cancelled) })
     }
+    private func faceContext() throws -> MetadataFaceRecognitionContext {
+        var values = [Float](repeating: 0, count: FaceRecognitionEmbedding.dimension)
+        values[0] = 1
+        let embedding = try FaceRecognitionEmbedding(validatingNormalized: values)
+        return try MetadataFaceRecognitionContext(
+            service: FaceRecognitionAnalysisService { _, _ in [] },
+            gallery: FaceRecognitionGallery(people: [
+                try FaceRecognitionPerson(id: UUID(), name: "Bootstrap", examples: [embedding]),
+            ]),
+            libraryRevision: String(repeating: "a", count: 64),
+            runtimeRevision: String(repeating: "b", count: 64),
+            acceptancePolicy: .init(
+                maximumCosineDistance: 0.5,
+                minimumRunnerUpGap: 0.1,
+                minimumCaptureQuality: 0.5,
+                unavailableQualityPolicy: .reject
+            )
+        )
+    }
     private var factories: Bootstrap.Factories {
-        .init(appStore: { try self.appStore($0) }, calendar: { try self.calendar($0) })
+        .init(appStore: { admission, _ in try self.appStore(admission) },
+              calendar: { try self.calendar($0) })
     }
     private func failureStage(_ coordinator: Bootstrap) -> Bootstrap.Stage? {
         if case .recoveryRequired(let failure) = coordinator.state { return failure.stage }
@@ -62,7 +82,7 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         var order: [String] = []
         var coordinator: Bootstrap!
         defer { coordinator = nil }
-        let factories = Bootstrap.Factories(appStore: { admission in
+        let factories = Bootstrap.Factories(faceRecognition: { _ in nil }, appStore: { admission, _ in
             XCTAssertNil(coordinator.runtime)
             guard case .loading = coordinator.state else { throw Injected.factory }
             order.append("app")
@@ -76,7 +96,7 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         coordinator = Bootstrap(root: root, temporaryDirectory: temporary, validateWriterExclusion: { order.append("exclusion") }, factories: factories)
         let runtime = try await coordinator.start(.migrateSelectedSources(plan(jobs: true)))
         XCTAssertTrue(coordinator.runtime === runtime)
-        XCTAssertEqual(order, ["exclusion", "exclusion", "exclusion", "app", "exclusion", "calendar", "exclusion"])
+        XCTAssertEqual(order, ["exclusion", "exclusion", "exclusion", "exclusion", "app", "exclusion", "calendar", "exclusion"])
         XCTAssertEqual(runtime.appStore.jobs.count, 1)
         XCTAssertFalse(try XCTUnwrap(runtime.appStore.jobs.first).isEnabled)
         XCTAssertTrue(try XCTUnwrap(runtime.appStore.jobs.first).startsOnAppLaunch)
@@ -105,7 +125,7 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         let (root, temporary) = try fixture()
         var constructionCalls = 0
         var coordinator: Bootstrap? = Bootstrap(root: root, temporaryDirectory: temporary, validateWriterExclusion: {},
-            factories: .init(appStore: { _ in constructionCalls += 1; throw Injected.factory },
+            factories: .init(appStore: { _, _ in constructionCalls += 1; throw Injected.factory },
                              calendar: { _ in constructionCalls += 1; throw Injected.factory }))
         do { _ = try await coordinator!.start(.openCommitted); XCTFail("Missing committed storage must fail") }
         catch { XCTAssertEqual(error as? Driver.Failure, .migrationRequired) }
@@ -121,6 +141,65 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         withExtendedLifetime(lease) {}
     }
 
+    func testAdmittedRecognitionContextIsBoundIntoPublishedAppStore() async throws {
+        let (root, temporary) = try fixture()
+        let context = try faceContext()
+        var coordinator: Bootstrap? = Bootstrap(
+            root: root,
+            temporaryDirectory: temporary,
+            validateWriterExclusion: {},
+            factories: .init(
+                faceRecognition: { _ in context },
+                appStore: { admission, admittedContext in
+                    try AppStore.makePausedForValidatedStorage(
+                        admission.storage,
+                        retainedCredentialIDs: admission.currentCredentialIDs,
+                        allowsCredentialGarbageCollection: false,
+                        keychain: self.forbiddenKeychain,
+                        launchAtLoginCoordinator: BootstrapLaunchStub(),
+                        faceRecognitionContext: admittedContext
+                    )
+                },
+                calendar: { try self.calendar($0) }
+            )
+        )
+
+        let runtime = try await coordinator!.start(.migrateSelectedSources(plan()))
+        XCTAssertTrue(runtime.appStore.isFaceRecognitionRuntimeReady)
+        var job = SyncJob(name: "Faces")
+        job.metadataFaceRecognition = .init()
+        XCTAssertNil(runtime.appStore.metadataFaceRecognitionRuntimeBlocker(for: job))
+        coordinator = nil
+        withExtendedLifetime(runtime) {}
+    }
+
+    func testRecognitionAdmissionFailurePreventsStoreConstruction() async throws {
+        let (root, temporary) = try fixture()
+        var appStoreCalls = 0
+        let coordinator = Bootstrap(
+            root: root,
+            temporaryDirectory: temporary,
+            validateWriterExclusion: {},
+            factories: .init(
+                faceRecognition: { _ in throw Injected.factory },
+                appStore: { _, _ in appStoreCalls += 1; throw Injected.factory },
+                calendar: { _ in XCTFail("Recognition failure must not reach calendar"); throw Injected.factory }
+            )
+        )
+
+        do {
+            _ = try await coordinator.start(.migrateSelectedSources(plan()))
+            XCTFail("Recognition admission failure must keep the runtime private")
+        } catch {
+            XCTAssertTrue(error is Injected)
+        }
+        XCTAssertEqual(failureStage(coordinator), .faceRecognition)
+        XCTAssertEqual(appStoreCalls, 0)
+        XCTAssertNil(coordinator.runtime)
+        assertLeaseHeld(root)
+        withExtendedLifetime(coordinator) {}
+    }
+
     func testWriterExclusionFailureBeforeOrAfterLeaseNeverConstructsFallbacks() async throws {
         for failingCall in [1, 2] {
             let (root, temporary) = try fixture()
@@ -128,7 +207,7 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
             let coordinator = Bootstrap(root: root, temporaryDirectory: temporary, validateWriterExclusion: {
                 calls += 1
                 if calls == failingCall { throw Injected.exclusion }
-            }, factories: .init(appStore: { _ in XCTFail(); throw Injected.factory }, calendar: { _ in XCTFail(); throw Injected.factory }))
+            }, factories: .init(appStore: { _, _ in XCTFail(); throw Injected.factory }, calendar: { _ in XCTFail(); throw Injected.factory }))
             do { _ = try await coordinator.start(.migrateSelectedSources(plan())); XCTFail() }
             catch { XCTAssertTrue(error is Injected) }
             XCTAssertEqual(failureStage(coordinator), .writerExclusion)
@@ -145,7 +224,7 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         let (root, temporary) = try fixture()
         weak var created: AppStore?
         var coordinator: Bootstrap? = Bootstrap(root: root, temporaryDirectory: temporary, validateWriterExclusion: {},
-            factories: .init(appStore: { admission in
+            factories: .init(appStore: { admission, _ in
                 let store = try self.appStore(admission); created = store; return store
             }, calendar: { _ in throw Injected.factory }))
         do { _ = try await coordinator!.start(.migrateSelectedSources(plan())); XCTFail() }
@@ -166,15 +245,15 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
         weak var createdCalendar: MetadataCalendarCoordinator?
         let coordinator = Bootstrap(root: root, temporaryDirectory: temporary, validateWriterExclusion: {
             checks += 1
-            if checks == 5 { throw Injected.exclusion }
-        }, factories: .init(appStore: { admission in
+            if checks == 6 { throw Injected.exclusion }
+        }, factories: .init(appStore: { admission, _ in
             let store = try self.appStore(admission); createdApp = store; return store
         }, calendar: { admission in
             let calendar = try self.calendar(admission); createdCalendar = calendar; return calendar
         }))
         do { _ = try await coordinator.start(.migrateSelectedSources(plan())); XCTFail("Final exclusion check must fail") }
         catch { XCTAssertTrue(error is Injected) }
-        XCTAssertEqual(checks, 5)
+        XCTAssertEqual(checks, 6)
         XCTAssertEqual(failureStage(coordinator), .writerExclusion)
         XCTAssertNil(coordinator.runtime)
         XCTAssertNotNil(createdApp)
@@ -222,7 +301,7 @@ final class Version3BootstrapCoordinatorTests: XCTestCase {
             let (root, temporary) = try fixture()
             weak var created: AppStore?
             let coordinator = Bootstrap(root: root, temporaryDirectory: temporary, validateWriterExclusion: {},
-                factories: .init(appStore: { admission in
+                factories: .init(appStore: { admission, _ in
                     let store = try self.appStore(admission); created = store
                     withUnsafeCurrentTask { $0?.cancel() }
                     return store

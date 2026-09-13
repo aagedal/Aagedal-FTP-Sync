@@ -1,6 +1,98 @@
 import Combine
 import Foundation
 
+/// Codesigned bundle configuration is the production trust boundary for the
+/// optional AuraFace component and its calibrated publication policy. Startup
+/// performs local admission only; downloads remain an explicit settings action.
+enum ProductionFaceRecognitionAdmission {
+    struct Configuration: Sendable {
+        static let enabledKey = "AFTAuraFaceEnabled"
+        static let descriptorURLKey = "AFTAuraFaceDescriptorURL"
+        static let signatureURLKey = "AFTAuraFaceSignatureURL"
+        static let allowedOriginsKey = "AFTAuraFaceAllowedOrigins"
+        static let publicKeyKey = "AFTAuraFacePublicKey"
+        static let maximumDistanceKey = "AFTAuraFaceMaximumCosineDistance"
+        static let minimumGapKey = "AFTAuraFaceMinimumRunnerUpGap"
+        static let minimumQualityKey = "AFTAuraFaceMinimumCaptureQuality"
+
+        let trust: AuraFaceDistributionTrust
+        let policy: FaceRecognitionAcceptancePolicy
+
+        static func load(from info: [String: Any]) throws -> Self? {
+            guard info[enabledKey] as? Bool == true else { return nil }
+            guard let descriptorText = info[descriptorURLKey] as? String,
+                  let descriptorURL = URL(string: descriptorText),
+                  let signatureText = info[signatureURLKey] as? String,
+                  let signatureURL = URL(string: signatureText),
+                  let originTexts = info[allowedOriginsKey] as? [String],
+                  !originTexts.isEmpty,
+                  let keyText = info[publicKeyKey] as? String,
+                  let publicKey = Data(base64Encoded: keyText),
+                  let maximumDistance = (info[maximumDistanceKey] as? NSNumber)?.doubleValue,
+                  let minimumGap = (info[minimumGapKey] as? NSNumber)?.doubleValue,
+                  let minimumQuality = (info[minimumQualityKey] as? NSNumber)?.doubleValue else {
+                throw AuraFaceComponentError.invalidTrustConfiguration
+            }
+            let origins = try Set(originTexts.map { text -> AuraFaceDistributionOrigin in
+                guard let url = URL(string: text), url.scheme == "https",
+                      let host = url.host, url.user == nil, url.password == nil,
+                      url.query == nil, url.fragment == nil,
+                      url.path.isEmpty || url.path == "/" else {
+                    throw AuraFaceComponentError.invalidTrustConfiguration
+                }
+                return try AuraFaceDistributionOrigin(host: host.lowercased(), port: url.port)
+            })
+            return try Self(
+                trust: AuraFaceDistributionTrust(
+                    descriptorURL: descriptorURL,
+                    signatureURL: signatureURL,
+                    allowedOrigins: origins,
+                    publicKeyData: publicKey,
+                    supportedEmbeddingVersion: PeopleLibraryManifest.EmbeddingContract.auraFaceV1.embeddingSpaceVersion
+                ),
+                policy: FaceRecognitionAcceptancePolicy(
+                    maximumCosineDistance: maximumDistance,
+                    minimumRunnerUpGap: minimumGap,
+                    minimumCaptureQuality: minimumQuality,
+                    unavailableQualityPolicy: .reject
+                )
+            )
+        }
+    }
+
+    /// Optional-feature failures never fall through to an unverified context and
+    /// never prevent opening the app. Face-enabled jobs remain paused with their
+    /// actionable runtime blocker until all three dependencies are admitted.
+    static func admitIfReady(
+        _ admission: Version3MigrationDriver.Admission,
+        bundle: Bundle = .main
+    ) async -> MetadataFaceRecognitionContext? {
+        do {
+            guard let configuration = try Configuration.load(
+                from: bundle.infoDictionary ?? [:]
+            ) else { return nil }
+            let installer = try AuraFaceComponentInstaller(
+                trust: configuration.trust,
+                root: try AuraFaceComponentInstaller.componentRoot(
+                    forValidatedStorage: admission.storage
+                )
+            )
+            guard let runtime = try await installer.admitInstalledRuntime(),
+                  let library = try PeopleLibraryRepository(
+                    root: admission.storage.peopleLibraryDirectory
+                  ).currentSnapshot() else { return nil }
+            return try MetadataFaceRecognitionContext(
+                service: FaceRecognitionAnalysisService(admittedRuntime: runtime),
+                snapshot: library,
+                runtimeRevision: runtime.runtimeRevision,
+                acceptancePolicy: configuration.policy
+            )
+        } catch {
+            return nil
+        }
+    }
+}
+
 /// Explicit opt-in bootstrap; the normal App entry point is unchanged. The caller
 /// must independently exclude older app processes and every existing repository
 /// writer, then retain this coordinator/runtime until all its writers are closed.
@@ -17,7 +109,7 @@ final class Version3BootstrapCoordinator: ObservableObject {
         case recoverPrepared
     }
     enum Stage: Equatable, Sendable {
-        case writerExclusion, lease, admission, appStore, calendar, publication
+        case writerExclusion, lease, admission, faceRecognition, appStore, calendar, publication
     }
     struct Recovery {
         let stage: Stage
@@ -56,18 +148,32 @@ final class Version3BootstrapCoordinator: ObservableObject {
     /// ordering tests. Factories must return paused stores using the admitted root
     /// and must not start work, write settings, or return legacy/default stores.
     struct Factories {
-        var appStore: @MainActor (Version3MigrationDriver.Admission) throws -> AppStore
+        var faceRecognition: @Sendable (Version3MigrationDriver.Admission) async throws
+            -> MetadataFaceRecognitionContext?
+        var appStore: @MainActor (
+            Version3MigrationDriver.Admission,
+            MetadataFaceRecognitionContext?
+        ) throws -> AppStore
         var calendar: @MainActor (Version3MigrationDriver.Admission) throws -> MetadataCalendarCoordinator
         init(
-            appStore: @escaping @MainActor (Version3MigrationDriver.Admission) throws -> AppStore = { admission in
+            faceRecognition: @escaping @Sendable (Version3MigrationDriver.Admission) async throws
+                -> MetadataFaceRecognitionContext? = {
+                    await ProductionFaceRecognitionAdmission.admitIfReady($0)
+                },
+            appStore: @escaping @MainActor (
+                Version3MigrationDriver.Admission,
+                MetadataFaceRecognitionContext?
+            ) throws -> AppStore = { admission, faceRecognitionContext in
                 try AppStore.makePausedForValidatedStorage(admission.storage,
                     retainedCredentialIDs: admission.currentCredentialIDs,
-                    allowsCredentialGarbageCollection: admission.allowsCredentialGarbageCollection)
+                    allowsCredentialGarbageCollection: admission.allowsCredentialGarbageCollection,
+                    faceRecognitionContext: faceRecognitionContext)
             },
             calendar: @escaping @MainActor (Version3MigrationDriver.Admission) throws -> MetadataCalendarCoordinator = { admission in
                 try MetadataCalendarCoordinator.makePausedForValidatedStorage(admission.storage)
             }
         ) {
+            self.faceRecognition = faceRecognition
             self.appStore = appStore
             self.calendar = calendar
         }
@@ -135,8 +241,14 @@ final class Version3BootstrapCoordinator: ObservableObject {
             try lease.validate()
             stage = .writerExclusion
             try validateWriterExclusion()
+            stage = .faceRecognition
+            let faceRecognitionContext = try await factories.faceRecognition(admission)
+            try Task.checkCancellation()
+            try lease.validate()
+            stage = .writerExclusion
+            try validateWriterExclusion()
             stage = .appStore
-            let appStore = try factories.appStore(admission)
+            let appStore = try factories.appStore(admission, faceRecognitionContext)
             retainedAppStore = appStore
             try Task.checkCancellation()
             try lease.validate()

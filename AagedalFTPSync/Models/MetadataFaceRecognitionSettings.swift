@@ -69,17 +69,28 @@ struct MetadataFaceRecognitionSettings: Codable, Hashable, Sendable {
 }
 
 extension SyncJob {
+    static let unavailableFaceRecognitionRuntimeMessage =
+        "Face recognition cannot run until the AuraFace model, people library, and calibrated acceptance policy are admitted. Disable face recognition to run this job without it."
+
     /// Recognition settings may be stored and transferred ahead of the runtime,
     /// but a run must never silently ignore a requested stage.
     var metadataFaceRecognitionRuntimeBlocker: String? {
-        guard metadataFaceRecognition != nil else { return nil }
-        return "Face recognition cannot run until the AuraFace preprocessing contract and calibrated acceptance policy are verified. Disable face recognition to run this job without it."
+        metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: false)
+    }
+
+    func metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: Bool) -> String? {
+        guard metadataFaceRecognition != nil, !runtimeAvailable else { return nil }
+        return Self.unavailableFaceRecognitionRuntimeMessage
     }
 
     /// Until the requested runtime can be admitted, a saved future policy must
     /// not turn a healthy automatic job into an immediate retry loop.
     var metadataFaceRecognitionSchedulingBlocker: String? {
-        guard metadataFaceRecognitionRuntimeBlocker != nil,
+        metadataFaceRecognitionSchedulingBlocker(runtimeAvailable: false)
+    }
+
+    func metadataFaceRecognitionSchedulingBlocker(runtimeAvailable: Bool) -> String? {
+        guard metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: runtimeAvailable) != nil,
               isEnabled || startsOnAppLaunch else { return nil }
         return "Turn off Automatic syncing enabled and Enable automatically on app launch before saving face recognition. The job can remain configured while stopped."
     }

@@ -76,10 +76,11 @@ final class Version3StartupController: ObservableObject {
                 }, observeWorkspace: true)
             if testStartupMode {
                 let keychain = KeychainStore(passwordReader: { _ in nil }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
-                result.factories = .init(appStore: { admission in
+                result.factories = .init(appStore: { admission, faceRecognitionContext in
                     try AppStore.makePausedForValidatedStorage(admission.storage, retainedCredentialIDs: admission.currentCredentialIDs,
                         allowsCredentialGarbageCollection: false, keychain: keychain,
-                        launchAtLoginCoordinator: StartupTestLaunchCoordinator())
+                        launchAtLoginCoordinator: StartupTestLaunchCoordinator(),
+                        faceRecognitionContext: faceRecognitionContext)
                 }, calendar: { admission in
                     try MetadataCalendarCoordinator.makePausedForValidatedStorage(admission.storage, keychain: keychain,
                         transport: { _, _, _, _, _ in throw URLError(.notConnectedToInternet) })

@@ -125,9 +125,11 @@ final class MetadataFaceRecognitionSettingsTests: XCTestCase {
         XCTAssertTrue(message?.contains("cannot run") == true)
         XCTAssertTrue(message?.contains("Disable face recognition") == true)
         XCTAssertNil(job.metadataFaceRecognitionSchedulingBlocker)
+        XCTAssertNil(job.metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: true))
 
         job.isEnabled = true
         XCTAssertTrue(job.metadataFaceRecognitionSchedulingBlocker?.contains("Turn off Automatic syncing") == true)
+        XCTAssertNil(job.metadataFaceRecognitionSchedulingBlocker(runtimeAvailable: true))
         job.isEnabled = false
         job.startsOnAppLaunch = true
         XCTAssertTrue(job.metadataFaceRecognitionSchedulingBlocker?.contains("Enable automatically on app launch") == true)
