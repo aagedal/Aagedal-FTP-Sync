@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show per-file face-recognition outcomes and the final merged Person Shown proposal
+  in read-only metadata preview, including preservation and optional Keywords behavior.
 - Validate geocoding consent/settings and face-runtime prerequisites before reading a
   staged image, retaining the disabled literal no-read path while still resolving
   `{persons}` from existing Person Shown metadata when requested.
