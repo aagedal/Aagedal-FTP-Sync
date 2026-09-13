@@ -86,3 +86,12 @@ SFTP cold/warm p95 completion was 1.667/1.843 seconds against 1.500 seconds, and
 median throughput was 45.80 MiB/s against 50 MiB/s. First publication still passed.
 Do not weaken the established gate from this single slower sample; repeat under a
 controlled candidate run and investigate if the result reproduces.
+
+One immediate five-sample repeat at clean source `05358a7` reproduced the resource
+passes (151.3 MiB maximum resident footprint; 0.00065-second maximum cancellation;
+zero cancelled publications). SFTP warm completion recovered to 0.804 seconds p95
+and 156.1 MiB/s median, while cold completion was 1.581 seconds p95 and 56.4 MiB/s
+median. Thus the broad SFTP slowdown did not reproduce, but cold p95 still missed the
+1.500-second gate by 0.081 seconds. Treat completion variance as a candidate-run
+investigation, not as a resolved pass. The repeat command matched the fixture above
+and wrote its generated report only to `/tmp/aftpsync-resource-repeat.md`.
