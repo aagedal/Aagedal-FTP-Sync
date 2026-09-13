@@ -896,6 +896,97 @@
     "Accepted new names will also be appended to Keywords without removing existing keywords." : {
 
     },
+    "AuraFace runs locally after a one-time signed model download. Installing the model does not upload photos or people-library data." : {
+
+    },
+    "Cancel Download" : {
+
+    },
+    "Check the connection and retry. Existing transfers continue without recognition." : {
+
+    },
+    "Checking the installed model…" : {
+
+    },
+    "Downloading recognition model…" : {
+
+    },
+    "Download Again" : {
+
+    },
+    "Download and Install Model" : {
+
+    },
+    "Face recognition will remain unavailable until the model is installed again and the app is relaunched." : {
+
+    },
+    "File transfer and people-library management remain available. Face recognition stays off." : {
+
+    },
+    "Keep this window open while the signed model is downloaded and verified." : {
+
+    },
+    "Model downloads are not configured in this build." : {
+
+    },
+    "No unverified model was activated. The previous verified model, if any, was retained." : {
+
+    },
+    "Quit and reopen Aagedal FTP Sync to admit the installed model for recognition." : {
+
+    },
+    "Recognition Model" : {
+
+    },
+    "Recognition model download was cancelled." : {
+
+    },
+    "Recognition model installed" : {
+
+    },
+    "Recognition model is not installed." : {
+
+    },
+    "Retry Download" : {
+
+    },
+    "Remove Recognition Model" : {
+
+    },
+    "Remove Recognition Model…" : {
+
+    },
+    "Remove the installed recognition model?" : {
+
+    },
+    "The previous verified model remains available if installation fails." : {
+
+    },
+    "The recognition model could not be downloaded while offline." : {
+
+    },
+    "The recognition model could not be verified or installed." : {
+
+    },
+    "This model was admitted at startup and is ready for configured jobs." : {
+
+    },
+    "This running app keeps its already admitted model until it quits. Relaunch to finish disabling face recognition." : {
+
+    },
+    "Verifying and installing recognition model…" : {
+
+    },
+    "Version: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Version: %1$@"
+          }
+        }
+      }
+    },
     "Existing names preserved; recognition did not complete" : {
 
     },

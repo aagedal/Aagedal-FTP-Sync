@@ -88,7 +88,10 @@ enum UITestSupport {
                 delivery: UITestNotificationDelivery()
             ),
             launchAtLoginCoordinator: UITestLaunchAtLoginCoordinator(),
-            jobDraftTemplate: fixture
+            jobDraftTemplate: fixture,
+            peopleLibraryRepository: PeopleLibraryRepository(
+                root: rootURL.appendingPathComponent("people-library", isDirectory: true)
+            )
         )
     }
 

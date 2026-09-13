@@ -140,6 +140,20 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before)
     }
 
+    func testPeopleLibrarySettingsShowsUnavailableModelConfiguration() {
+        launch(seedJob: true)
+
+        let openSettings = element("open-people-library-settings")
+        XCTAssertTrue(openSettings.waitForExistence(timeout: 3))
+        XCTAssertTrue(openSettings.isEnabled)
+        openSettings.click()
+
+        XCTAssertTrue(element("peopleLibrary.summary").waitForExistence(timeout: 5))
+        let modelStatus = element("faceModel.status")
+        XCTAssertTrue(modelStatus.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Model downloads are not configured in this build."].exists)
+    }
+
     private func openSeededClipEditor() {
         launch(seedJob: true, seedMap: true)
         element("open-metadata-programming").click()

@@ -91,6 +91,31 @@ enum ProductionFaceRecognitionAdmission {
             return nil
         }
     }
+
+    /// Creates settings ownership for the explicitly user-triggered component
+    /// lifecycle. Merely constructing this controller performs no file or network
+    /// operation; its first local status check is initiated by the settings view.
+    @MainActor
+    static func componentControllerIfConfigured(
+        _ admission: Version3MigrationDriver.Admission,
+        bundle: Bundle = .main
+    ) -> AuraFaceComponentController? {
+        do {
+            guard let configuration = try Configuration.load(
+                from: bundle.infoDictionary ?? [:]
+            ) else { return nil }
+            return AuraFaceComponentController(installer: try AuraFaceComponentInstaller(
+                trust: configuration.trust,
+                root: try AuraFaceComponentInstaller.componentRoot(
+                    forValidatedStorage: admission.storage
+                )
+            ))
+        } catch {
+            // Optional recognition must fail closed without preventing the rest
+            // of the application from opening.
+            return nil
+        }
+    }
 }
 
 /// Production version 3 bootstrap. The caller must independently exclude older app
@@ -167,7 +192,9 @@ final class Version3BootstrapCoordinator: ObservableObject {
                 try AppStore.makePausedForValidatedStorage(admission.storage,
                     retainedCredentialIDs: admission.currentCredentialIDs,
                     allowsCredentialGarbageCollection: admission.allowsCredentialGarbageCollection,
-                    faceRecognitionContext: faceRecognitionContext)
+                    faceRecognitionContext: faceRecognitionContext,
+                    faceComponentController: ProductionFaceRecognitionAdmission
+                        .componentControllerIfConfigured(admission))
             },
             calendar: @escaping @MainActor (Version3MigrationDriver.Admission) throws -> MetadataCalendarCoordinator = { admission in
                 try MetadataCalendarCoordinator.makePausedForValidatedStorage(admission.storage)

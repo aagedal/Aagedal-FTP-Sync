@@ -33,6 +33,13 @@ final class AuraFaceComponentController: ObservableObject {
 
     deinit { operation?.cancel() }
 
+    var isBusy: Bool {
+        switch state {
+        case .checking, .downloading, .installing: true
+        default: false
+        }
+    }
+
     /// Local-only startup/status probe. The caller chooses when an admitted runtime may begin it.
     func refresh() {
         replaceOperation(initial: .checking) { [installer] in
@@ -61,15 +68,19 @@ final class AuraFaceComponentController: ObservableObject {
                 let resolution = try await installer.resolveInstalled()
                 guard self.requestID == id, !Task.isCancelled else { return }
                 self.publish(resolution)
+                self.finish(id)
             } catch is CancellationError {
                 guard let self, self.requestID == id else { return }
                 self.state = .cancelled
+                self.finish(id)
             } catch let error as URLError {
                 guard let self, self.requestID == id, !Task.isCancelled else { return }
                 self.state = Self.isOffline(error) ? .offline : .verificationFailed(error.localizedDescription)
+                self.finish(id)
             } catch {
                 guard let self, self.requestID == id, !Task.isCancelled else { return }
                 self.state = .verificationFailed(error.localizedDescription)
+                self.finish(id)
             }
         }
     }
@@ -89,12 +100,15 @@ final class AuraFaceComponentController: ObservableObject {
                 let resolution = try await installer.resolveInstalled()
                 guard let self, self.requestID == id, !Task.isCancelled else { return }
                 self.publish(resolution)
+                self.finish(id)
             } catch is CancellationError {
                 guard let self, self.requestID == id else { return }
                 self.state = .cancelled
+                self.finish(id)
             } catch {
                 guard let self, self.requestID == id, !Task.isCancelled else { return }
                 self.state = .verificationFailed(error.localizedDescription)
+                self.finish(id)
             }
         }
     }
@@ -109,11 +123,14 @@ final class AuraFaceComponentController: ObservableObject {
                 let resolution = try await action()
                 guard let self, self.requestID == id, !Task.isCancelled else { return }
                 self.publish(resolution)
+                self.finish(id)
             } catch is CancellationError {
-                return
+                guard let self, self.requestID == id else { return }
+                self.finish(id)
             } catch {
                 guard let self, self.requestID == id, !Task.isCancelled else { return }
                 self.state = .verificationFailed(error.localizedDescription)
+                self.finish(id)
             }
         }
     }
@@ -124,6 +141,14 @@ final class AuraFaceComponentController: ObservableObject {
         requestID = id
         state = initial
         return id
+    }
+
+    private func finish(_ id: UUID) {
+        guard requestID == id else { return }
+        // Invalidate queued progress callbacks before releasing the completed
+        // operation so a late callback cannot replace a terminal state.
+        requestID = UUID()
+        operation = nil
     }
 
     private func publish(_ resolution: AuraFaceComponentResolution) {

@@ -96,6 +96,59 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
         XCTAssertEqual(removed.availability, .notInstalled)
     }
 
+    @MainActor
+    func testComponentControllerChecksLocallyAndDrivesInstallRemovalAndOfflineRetryStates() async throws {
+        let fixture = try makeFixture()
+        let root = try temporaryRoot()
+        let probe = DownloadProbe()
+        probe.install([
+            fixture.trust.descriptorURL: fixture.descriptorData,
+            fixture.trust.signatureURL: fixture.signatureData,
+            fixture.descriptor.downloadURL: fixture.archiveData,
+        ])
+        let controller = AuraFaceComponentController(
+            installer: try makeInstaller(fixture: fixture, root: root, client: probe.client())
+        )
+
+        controller.refresh()
+        await waitForState(controller, description: "local not-installed status") { $0 == .notInstalled }
+        XCTAssertTrue(probe.requested.isEmpty, "A status refresh must not contact the distribution host")
+        XCTAssertFalse(controller.isBusy)
+
+        controller.downloadAndInstall()
+        await waitForState(controller, description: "installed status") {
+            $0 == .installed(version: fixture.descriptor.modelVersion)
+        }
+        XCTAssertEqual(probe.requested, [
+            fixture.trust.descriptorURL,
+            fixture.trust.signatureURL,
+            fixture.descriptor.downloadURL,
+        ])
+        XCTAssertFalse(controller.isBusy)
+
+        controller.removeInstalled()
+        await waitForState(controller, description: "removed status") { $0 == .notInstalled }
+        XCTAssertFalse(controller.isBusy)
+
+        let offlineRoot = try temporaryRoot()
+        let offline = AuraFaceDownloadClient { _, _, _, _ in
+            throw URLError(.notConnectedToInternet)
+        }
+        let offlineController = AuraFaceComponentController(
+            installer: try makeInstaller(fixture: fixture, root: offlineRoot, client: offline)
+        )
+        offlineController.downloadAndInstall()
+        await waitForState(offlineController, description: "offline status") { $0 == .offline }
+        XCTAssertFalse(offlineController.isBusy)
+
+        offlineController.refresh()
+        offlineController.cancel()
+        XCTAssertEqual(offlineController.state, .cancelled)
+        XCTAssertFalse(offlineController.isBusy)
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(offlineController.state, .cancelled)
+    }
+
     func testRuntimeAdmissionRejectsCompilerOutputThatIsNotTheDeclaredCoreMLInterface() async throws {
         let fixture = try makeFixture()
         let root = try temporaryRoot()
@@ -317,6 +370,19 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
         let signatureData = try key.signature(for: descriptorData).base64EncodedData()
         return .init(key: key, trust: trust, descriptor: descriptor, descriptorData: descriptorData,
                      signatureData: signatureData, archiveData: archive)
+    }
+
+    @MainActor
+    private func waitForState(
+        _ controller: AuraFaceComponentController,
+        description: String,
+        matches: (AuraFaceComponentController.State) -> Bool
+    ) async {
+        for _ in 0..<400 {
+            if matches(controller.state) { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTFail("Timed out waiting for \(description); current state is \(controller.state)")
     }
 
     private func makeInstaller(fixture: Fixture, root: URL, client: AuraFaceDownloadClient) throws

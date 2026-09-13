@@ -115,7 +115,11 @@ struct RuntimeSettingsView: View {
                 .tabItem { Label("Metadata Sync", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(AppSettingsTab.metadataSync)
             if let controller = store.peopleLibraryController {
-                PeopleLibrarySettingsView(controller: controller)
+                PeopleLibrarySettingsView(
+                    controller: controller,
+                    componentController: store.faceComponentController,
+                    recognitionWasAdmitted: store.faceRecognitionContext != nil
+                )
                     .tabItem { Label("People Library", systemImage: "person.crop.rectangle.stack") }
                     .tag(AppSettingsTab.peopleLibrary)
             }
