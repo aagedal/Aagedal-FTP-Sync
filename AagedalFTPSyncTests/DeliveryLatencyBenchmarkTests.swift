@@ -24,7 +24,22 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
         let expectedFiles = try requiredInteger("AFTPSYNC_BENCHMARK_FILE_COUNT", in: environment)
         let username = try required("AFTPSYNC_BENCHMARK_USERNAME", in: environment)
         let password = try required("AFTPSYNC_BENCHMARK_PASSWORD", in: environment)
-        let newestPath = try required("AFTPSYNC_BENCHMARK_NEWEST_PATH", in: environment)
+        let recentPaths: [String]
+        if let recentPathsJSON = environment["AFTPSYNC_BENCHMARK_RECENT_PATHS"],
+           !recentPathsJSON.isEmpty {
+            recentPaths = try JSONDecoder().decode(
+                [String].self,
+                from: Data(recentPathsJSON.utf8)
+            )
+        } else {
+            // Retain direct compatibility with configuration files created by
+            // the original single-publication benchmark runner.
+            recentPaths = [try required("AFTPSYNC_BENCHMARK_NEWEST_PATH", in: environment)]
+        }
+        guard !recentPaths.isEmpty else {
+            throw BenchmarkConfigurationError.emptyRecentPaths
+        }
+        let expectedPublishedPaths = Set(recentPaths)
         let host = environment["AFTPSYNC_BENCHMARK_HOST"] ?? "127.0.0.1"
         let remotePath = environment["AFTPSYNC_BENCHMARK_REMOTE_PATH"] ?? "/"
 
@@ -53,13 +68,14 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
                 password: password,
                 iterations: iterations,
                 expectedFiles: expectedFiles,
-                newestPath: newestPath
+                expectedPublishedPaths: expectedPublishedPaths
             ))
         }
 
         let payload = BenchmarkPayload(
             iterations: iterations,
             expectedFiles: expectedFiles,
+            expectedPublishedFiles: expectedPublishedPaths.count,
             results: results
         )
         let data = try JSONEncoder().encode(payload)
@@ -71,13 +87,17 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
         password: String,
         iterations: Int,
         expectedFiles: Int,
-        newestPath: String
+        expectedPublishedPaths: Set<String>
     ) async throws -> ProtocolBenchmarkResult {
         let coldScan = try await measure(iterations: iterations) {
             let session = try EndpointSessionFactory.make(endpoint: endpoint, password: password)
             do {
                 let files = try await session.listFiles()
-                try Self.validate(files, expectedCount: expectedFiles, newestPath: newestPath)
+                try Self.validate(
+                    files,
+                    expectedCount: expectedFiles,
+                    expectedPublishedPaths: expectedPublishedPaths
+                )
                 await session.close()
             } catch {
                 await session.close()
@@ -89,35 +109,39 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
         _ = try await warmScanSession.listFiles()
         let warmScan = try await measure(iterations: iterations, includesWarmUp: false) {
             let files = try await warmScanSession.listFiles()
-            try Self.validate(files, expectedCount: expectedFiles, newestPath: newestPath)
+            try Self.validate(
+                files,
+                expectedCount: expectedFiles,
+                expectedPublishedPaths: expectedPublishedPaths
+            )
         }
         await warmScanSession.close()
 
-        let coldPublication = try await measureRecorded(iterations: iterations) {
+        let coldPublication = try await measurePublication(iterations: iterations) {
             let source = try EndpointSessionFactory.make(endpoint: endpoint, password: password)
-            return try await self.runFirstPublication(
+            return try await self.runPublication(
                 endpoint: endpoint,
                 password: password,
                 source: source,
-                newestPath: newestPath,
+                expectedPublishedPaths: expectedPublishedPaths,
                 keepSourceOpen: false
             )
         }
 
         let warmPublicationSource = try EndpointSessionFactory.make(endpoint: endpoint, password: password)
-        _ = try await runFirstPublication(
+        _ = try await runPublication(
             endpoint: endpoint,
             password: password,
             source: warmPublicationSource,
-            newestPath: newestPath,
+            expectedPublishedPaths: expectedPublishedPaths,
             keepSourceOpen: true
         )
-        let warmPublication = try await measureRecorded(iterations: iterations, includesWarmUp: false) {
-            try await self.runFirstPublication(
+        let warmPublication = try await measurePublication(iterations: iterations, includesWarmUp: false) {
+            try await self.runPublication(
                 endpoint: endpoint,
                 password: password,
                 source: warmPublicationSource,
-                newestPath: newestPath,
+                expectedPublishedPaths: expectedPublishedPaths,
                 keepSourceOpen: true
             )
         }
@@ -127,18 +151,20 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
             protocolName: endpoint.kind.rawValue,
             coldFullScan: Summary(samples: coldScan),
             warmFullScan: Summary(samples: warmScan),
-            coldFirstPublication: Summary(samples: coldPublication),
-            warmFirstPublication: Summary(samples: warmPublication)
+            coldFirstPublication: Summary(samples: coldPublication.map(\.firstPublication)),
+            warmFirstPublication: Summary(samples: warmPublication.map(\.firstPublication)),
+            coldBurstCompletion: Summary(samples: coldPublication.map(\.completion)),
+            warmBurstCompletion: Summary(samples: warmPublication.map(\.completion))
         )
     }
 
-    private func runFirstPublication(
+    private func runPublication(
         endpoint: Endpoint,
         password: String,
         source: any EndpointSession,
-        newestPath: String,
+        expectedPublishedPaths: Set<String>,
         keepSourceOpen: Bool
-    ) async throws -> Double {
+    ) async throws -> PublicationTiming {
         let destination = BenchmarkDestination()
         let sourceForRun: any EndpointSession = keepSourceOpen
             ? NonClosingEndpointSession(base: source)
@@ -174,12 +200,16 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
 
         let start = DispatchTime.now().uptimeNanoseconds
         let result = try await engine.run(job: job, leftPassword: password, rightPassword: nil)
+        let completion = DispatchTime.now().uptimeNanoseconds
         let recordedFirstImport = await destination.firstImportUptimeNanoseconds
         let firstImport = try XCTUnwrap(recordedFirstImport)
         let importedPaths = await destination.importedPaths
-        XCTAssertEqual(result.transferred, 1)
-        XCTAssertEqual(importedPaths, [newestPath])
-        return Double(firstImport - start) / 1_000_000_000
+        XCTAssertEqual(result.transferred, expectedPublishedPaths.count)
+        XCTAssertEqual(importedPaths, expectedPublishedPaths)
+        return PublicationTiming(
+            firstPublication: Double(firstImport - start) / 1_000_000_000,
+            completion: Double(completion - start) / 1_000_000_000
+        )
     }
 
     private func measure(
@@ -203,14 +233,14 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
         return samples
     }
 
-    private func measureRecorded(
+    private func measurePublication(
         iterations: Int,
         includesWarmUp: Bool = true,
-        operation: () async throws -> Double
-    ) async throws -> [Double] {
+        operation: () async throws -> PublicationTiming
+    ) async throws -> [PublicationTiming] {
         precondition(iterations > 0)
         if includesWarmUp { _ = try await operation() }
-        var samples: [Double] = []
+        var samples: [PublicationTiming] = []
         samples.reserveCapacity(iterations)
         for _ in 0..<iterations {
             samples.append(try await operation())
@@ -221,11 +251,10 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
     private static func validate(
         _ files: [String: SyncFile],
         expectedCount: Int,
-        newestPath: String
+        expectedPublishedPaths: Set<String>
     ) throws {
         XCTAssertEqual(files.count, expectedCount)
-        let newest = files.values.max { $0.modifiedAt < $1.modifiedAt }
-        XCTAssertEqual(newest?.relativePath, newestPath)
+        XCTAssertTrue(expectedPublishedPaths.isSubset(of: files.keys))
     }
 
     private func required(_ name: String, in environment: [String: String]) throws -> String {
@@ -270,11 +299,13 @@ final class DeliveryLatencyBenchmarkTests: XCTestCase {
 private enum BenchmarkConfigurationError: LocalizedError {
     case missing(String)
     case invalidInteger(String, String)
+    case emptyRecentPaths
 
     var errorDescription: String? {
         switch self {
         case .missing(let name): "Missing benchmark environment variable \(name)."
         case .invalidInteger(let name, let value): "Benchmark variable \(name) is not a positive integer: \(value)."
+        case .emptyRecentPaths: "Benchmark recent paths must contain at least one path."
         }
     }
 }
@@ -282,6 +313,7 @@ private enum BenchmarkConfigurationError: LocalizedError {
 private struct BenchmarkPayload: Encodable {
     let iterations: Int
     let expectedFiles: Int
+    let expectedPublishedFiles: Int
     let results: [ProtocolBenchmarkResult]
 }
 
@@ -291,6 +323,13 @@ private struct ProtocolBenchmarkResult: Encodable {
     let warmFullScan: Summary
     let coldFirstPublication: Summary
     let warmFirstPublication: Summary
+    let coldBurstCompletion: Summary
+    let warmBurstCompletion: Summary
+}
+
+private struct PublicationTiming {
+    let firstPublication: Double
+    let completion: Double
 }
 
 private struct Summary: Encodable {

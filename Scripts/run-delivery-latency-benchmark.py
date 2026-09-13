@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -39,6 +40,18 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--subdirectories", type=int, default=10)
     parser.add_argument("--files", type=int, default=100)
     parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument(
+        "--recent-files",
+        type=int,
+        default=1,
+        help="number of newest JPEGs eligible for publication",
+    )
+    parser.add_argument(
+        "--recent-file-bytes",
+        type=int,
+        default=0,
+        help="payload size for each eligible JPEG (the remaining tree stays empty)",
+    )
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     return parser.parse_args()
 
@@ -47,14 +60,30 @@ def require_positive(arguments: argparse.Namespace) -> None:
     for name in ("directories", "subdirectories", "files", "iterations"):
         if getattr(arguments, name) <= 0:
             raise SystemExit(f"--{name} must be positive")
+    if arguments.recent_files <= 0:
+        raise SystemExit("--recent-files must be positive")
+    if arguments.recent_file_bytes < 0:
+        raise SystemExit("--recent-file-bytes must not be negative")
+    available_jpegs = arguments.directories * arguments.subdirectories * arguments.files - 2
+    if arguments.files < 2:
+        available_jpegs = arguments.directories * arguments.subdirectories * arguments.files
+    if arguments.recent_files > available_jpegs:
+        raise SystemExit(
+            f"--recent-files exceeds the {available_jpegs} JPEG paths in this fixture"
+        )
 
 
 def seed_tree(
-    root: Path, directories: int, subdirectories: int, files: int
-) -> tuple[int, str]:
+    root: Path,
+    directories: int,
+    subdirectories: int,
+    files: int,
+    recent_files: int,
+    recent_file_bytes: int,
+) -> tuple[int, list[str]]:
     old_timestamp = 946_684_800
-    newest_path = "DIR_000/SUB_000/IMG_000.JPG"
     total = 0
+    jpeg_paths: list[Path] = []
     for directory_index in range(directories):
         for subdirectory_index in range(subdirectories):
             folder = root / f"DIR_{directory_index:03d}" / f"SUB_{subdirectory_index:03d}"
@@ -78,15 +107,21 @@ def seed_tree(
                 path = folder / name
                 path.touch()
                 os.utime(path, (old_timestamp, old_timestamp))
+                if path.suffix == ".JPG":
+                    jpeg_paths.append(path)
                 total += 1
 
-    newest = root / newest_path
-    if not newest.exists():
-        newest = next(root.rglob("*.JPG"))
-        newest_path = newest.relative_to(root).as_posix()
     now = time.time()
-    os.utime(newest, (now, now))
-    return total, newest_path
+    selected = jpeg_paths[:recent_files]
+    for index, path in enumerate(selected):
+        if recent_file_bytes:
+            with path.open("r+b") as handle:
+                handle.truncate(recent_file_bytes)
+        # Keep every burst member inside the recent window while retaining a
+        # deterministic order in the generated fixture.
+        timestamp = now - (recent_files - index - 1) * 0.001
+        os.utime(path, (timestamp, timestamp))
+    return total, [path.relative_to(root).as_posix() for path in selected]
 
 
 def wait_for_services(
@@ -178,6 +213,19 @@ def xcode_version() -> str:
         return "unknown"
 
 
+def source_identity() -> str:
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=REPOSITORY_ROOT, text=True
+        ).strip()
+        return f"{revision}; {'dirty' if status else 'clean'}"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 def service_versions() -> str:
     versions = []
     for package in ("pyftpdlib", "paramiko"):
@@ -196,34 +244,53 @@ def write_report(
 ) -> None:
     rows = []
     comparison_rows = []
+    throughput_rows = []
+    burst_mebibytes = (
+        arguments.recent_files * arguments.recent_file_bytes / (1024 * 1024)
+    )
     for result in payload["results"]:
         assert isinstance(result, dict)
-        for state, key in (
-            ("Cold", "coldFullScan"),
-            ("Warm", "warmFullScan"),
-            ("Cold", "coldFirstPublication"),
-            ("Warm", "warmFirstPublication"),
+        for state, key, metric in (
+            ("Cold", "coldFullScan", "Full scan"),
+            ("Warm", "warmFullScan", "Full scan"),
+            ("Cold", "coldFirstPublication", "First publication"),
+            ("Warm", "warmFirstPublication", "First publication"),
+            ("Cold", "coldBurstCompletion", "Burst completion"),
+            ("Warm", "warmBurstCompletion", "Burst completion"),
         ):
-            metric = "Full scan" if "FullScan" in key else "First publication"
             summary = result[key]
             rows.append(
                 f"| {str(result['protocolName']).upper()} | {state} | {metric} | "
                 f"{summary['median']:.3f} | {summary['p95']:.3f} |"
             )
-            baseline_median, baseline_p95 = BASELINE[(
-                str(result["protocolName"]), state, metric
-            )]
-            comparison_rows.append(
-                f"| {str(result['protocolName']).upper()} | {state} | {metric} | "
-                f"{format_change(summary['median'], baseline_median)} | "
-                f"{format_change(summary['p95'], baseline_p95)} |"
+            baseline = BASELINE.get((str(result["protocolName"]), state, metric))
+            if baseline is not None:
+                baseline_median, baseline_p95 = baseline
+                comparison_rows.append(
+                    f"| {str(result['protocolName']).upper()} | {state} | {metric} | "
+                    f"{format_change(summary['median'], baseline_median)} | "
+                    f"{format_change(summary['p95'], baseline_p95)} |"
+                )
+        for state, key in (
+            ("Cold", "coldBurstCompletion"),
+            ("Warm", "warmBurstCompletion"),
+        ):
+            seconds = result[key]["median"]
+            throughput = burst_mebibytes / seconds if seconds > 0 else 0
+            throughput_rows.append(
+                f"| {str(result['protocolName']).upper()} | {state} | "
+                f"{throughput:.2f} |"
             )
 
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S %Z")
     matches_baseline = (
-        arguments.directories, arguments.subdirectories, arguments.files,
-        arguments.iterations
-    ) == (100, 10, 100, 5)
+        arguments.directories,
+        arguments.subdirectories,
+        arguments.files,
+        arguments.iterations,
+        arguments.recent_files,
+        arguments.recent_file_bytes,
+    ) == (100, 10, 100, 5, 1, 0)
     comparison = (
         "Negative values are improvements.\n\n"
         "| Protocol | Connection | Metric | Median change | p95 change |\n"
@@ -235,13 +302,16 @@ def write_report(
 
 Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using the Debug configuration.
 
+- Source: `{source_identity()}`.
+- Command: `{shlex.join(sys.argv)}`.
+
 ## Fixture and method
 
-- Loopback FTP and SFTP services exposed the same fixed tree: {arguments.directories} top-level directories × {arguments.subdirectories} subdirectories × {arguments.files} zero-byte files ({payload['expectedFiles']:,} files; {traversal_directories:,} directories including the root).
+- Loopback FTP and SFTP services exposed the same fixed tree: {arguments.directories} top-level directories × {arguments.subdirectories} subdirectories × {arguments.files} files ({payload['expectedFiles']:,} files; {traversal_directories:,} directories including the root). Only the eligible burst carried payload bytes.
 - Service fixture versions: {service_versions()}.
-- One JPEG had a current modification date and all other files used 2000-01-01. The sync job's one-hour recent-file filter therefore published exactly one file.
+- {arguments.recent_files:,} JPEG(s), each {arguments.recent_file_bytes:,} bytes, had current modification dates and all other files used 2000-01-01. The sync job's one-hour recent-file filter therefore published exactly that burst. Payload files are deterministic transport fixtures, not decoded photographs.
 - Each cell used one unrecorded warm-up and {payload['iterations']} measured iterations. Cold means a new protocol connection for each iteration; warm means a reused authenticated connection. Both states benefit from the host filesystem cache after warm-up.
-- Full scan measures `EndpointSession.listFiles()`. First publication is timestamped when the destination accepts the newest file; the benchmark still lets the authoritative full scan and reconciliation finish before starting another sample.
+- Full scan measures `EndpointSession.listFiles()`. First publication is timestamped when the destination accepts the first eligible file; burst completion includes authoritative listing, publication of every eligible file, and reconciliation before another sample starts.
 - The historical comparison baseline was recorded on September 1, 2026 before completed-directory publication was implemented, using 100,000 files and five measured samples. Comparisons are shown only for matching fixture parameters.
 
 ## Results (seconds)
@@ -249,6 +319,14 @@ Recorded {timestamp} on `{hardware_summary()}` with `{xcode_version()}` using th
 | Protocol | Connection | Metric | Median | p95 |
 |---|---|---|---:|---:|
 {os.linesep.join(rows)}
+
+## Effective burst throughput
+
+End-to-end payload throughput divides the {burst_mebibytes:.2f} MiB eligible burst by median burst-completion time. It includes listing and reconciliation overhead and is therefore intentionally lower than raw transport throughput.
+
+| Protocol | Connection | Median MiB/s |
+|---|---|---:|
+{os.linesep.join(throughput_rows)}
 
 ## Change from pre-implementation baseline
 
@@ -277,8 +355,13 @@ def main() -> int:
         root = temporary_path / "tree"
         root.mkdir()
         print("Seeding benchmark tree…", flush=True)
-        expected_files, newest_path = seed_tree(
-            root, arguments.directories, arguments.subdirectories, arguments.files
+        expected_files, recent_paths = seed_tree(
+            root,
+            arguments.directories,
+            arguments.subdirectories,
+            arguments.files,
+            arguments.recent_files,
+            arguments.recent_file_bytes,
         )
         ready_file = temporary_path / "services.json"
         # FTP directory/session logs can fill an unread PIPE during a large-tree run.
@@ -307,7 +390,7 @@ def main() -> int:
                     "AFTPSYNC_RUN_DELIVERY_BENCHMARK": "1",
                     "AFTPSYNC_BENCHMARK_ITERATIONS": str(arguments.iterations),
                     "AFTPSYNC_BENCHMARK_FILE_COUNT": str(expected_files),
-                    "AFTPSYNC_BENCHMARK_NEWEST_PATH": newest_path,
+                    "AFTPSYNC_BENCHMARK_RECENT_PATHS": json.dumps(recent_paths),
                     "AFTPSYNC_BENCHMARK_HOST": str(ready["host"]),
                     "AFTPSYNC_BENCHMARK_FTP_PORT": str(ready["ftp_port"]),
                     "AFTPSYNC_BENCHMARK_SFTP_PORT": str(ready["sftp_port"]),
