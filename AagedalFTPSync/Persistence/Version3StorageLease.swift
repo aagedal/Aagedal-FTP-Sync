@@ -116,18 +116,28 @@ final class Version3StorageLease: Sendable {
               !root.path.utf8.contains(0), !root.pathComponents.contains(".."), !root.pathComponents.contains(".") else {
             throw Failure.unsafeRoot
         }
-        var descriptor = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard descriptor >= 0 else { throw Failure.systemCall("open filesystem root", errno) }
-        var transferred = false
-        defer { if !transferred { Darwin.close(descriptor) } }
-        for component in root.pathComponents where component != "/" {
-            let next = openat(descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard next >= 0 else { throw Failure.unsafeRoot }
+
+        // A sandbox can open its complete container path while still being denied
+        // directory descriptors for ancestors such as /Users. Validate that the
+        // trusted startup path is already physical, then open only its final
+        // component without following a final symlink. Comparing the named and
+        // opened identities closes the replacement window around that open.
+        var named = stat()
+        guard lstat(root.path, &named) == 0,
+              named.st_mode & S_IFMT == S_IFDIR,
+              let physicalPath = realpath(root.path, nil) else { throw Failure.unsafeRoot }
+        defer { free(physicalPath) }
+        guard String(cString: physicalPath) == root.path else { throw Failure.unsafeRoot }
+
+        let descriptor = Darwin.open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw Failure.unsafeRoot }
+        do {
+            let opened = try directoryInfo(descriptor)
+            guard Identity(opened) == Identity(named) else { throw Failure.identityChanged }
+            return descriptor
+        } catch {
             Darwin.close(descriptor)
-            descriptor = next
+            throw error
         }
-        _ = try directoryInfo(descriptor)
-        transferred = true
-        return descriptor
     }
 }
