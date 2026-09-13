@@ -45,7 +45,9 @@ The exercised Debug executable SHA-256 was
 The focused startup-path, bootstrap-coordinator and startup-controller selection ran
 26 tests with zero failures in a non-sandboxed test host (`CODE_SIGNING_ALLOWED=NO`).
 The application security dependency baseline and the intentionally unchanged 2.9.2
-(37) release-identity guard also passed.
+(37) release-identity guard also passed. An unsigned arm64 Release build completed at
+`build/v3-populated-release/Build/Products/Release/AagedalFTPSync.app`; its executable
+SHA-256 is `b6ae047817f170d39d0a7607649b6b19b2171e4a59e3e9f4f2b39a5987dd6921`.
 
 ## Remaining boundary
 
