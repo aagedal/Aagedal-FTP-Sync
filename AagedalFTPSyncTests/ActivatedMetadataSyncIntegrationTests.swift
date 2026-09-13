@@ -42,10 +42,42 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         try data.write(to: file)
         try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: file.path)
     }
-    private func engine(_ f: Fixture) -> SyncEngine {
-        SyncEngine(sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+    private func engine(
+        _ f: Fixture,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
+    ) -> SyncEngine {
+        SyncEngine(faceRecognitionContext: faceRecognitionContext,
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
             downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")),
             now: { Date(timeIntervalSince1970: 1_704_153_600) })
+    }
+
+    private func faceContext(
+        name: String,
+        libraryRevision: Character = "a"
+    ) throws -> MetadataFaceRecognitionContext {
+        var values = [Float](repeating: 0, count: FaceRecognitionEmbedding.dimension)
+        values[0] = 1
+        let embedding = try FaceRecognitionEmbedding(validatingNormalized: values)
+        let gallery = try FaceRecognitionGallery(people: [
+            try FaceRecognitionPerson(id: UUID(), name: name, examples: [embedding]),
+        ])
+        let service = FaceRecognitionAnalysisService { _, _ in
+            [.init(ordinal: 0, embedding: embedding, captureQuality: 1)]
+        }
+        let policy = try FaceRecognitionAcceptancePolicy(
+            maximumCosineDistance: 0.5,
+            minimumRunnerUpGap: 0.1,
+            minimumCaptureQuality: 0.5,
+            unavailableQualityPolicy: .reject
+        )
+        return try MetadataFaceRecognitionContext(
+            service: service,
+            gallery: gallery,
+            libraryRevision: String(repeating: libraryRevision, count: 64),
+            runtimeRevision: String(repeating: "b", count: 64),
+            acceptancePolicy: policy
+        )
     }
 
     func testActiveMissingProcessingZoneFailsBeforeOpeningAnyEndpoint() async throws {
@@ -184,6 +216,64 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         ).iptc.headline, "Updated")
         XCTAssertNotEqual(result.metadataReport.entries[0].processingFingerprint?.settingsRevision,
                           transfer.metadataReport.entries[0].processingFingerprint?.settingsRevision)
+    }
+
+    func testAdmittedRecognitionWritesNamesAndDurableEvidenceDuringTransfer() async throws {
+        let f = try fixture(headline: "People: {persons}")
+        try write(jpeg(), name: "FX_FACE.jpg", root: f.source)
+        var job = f.job
+        job.metadataFaceRecognition = .init(appendToKeywords: true)
+        let result = try await engine(
+            f,
+            faceRecognitionContext: faceContext(name: "Alice Example")
+        ).run(job: job, leftPassword: nil, rightPassword: nil)
+
+        XCTAssertEqual(result.transferred, 1)
+        let target = f.destination.appendingPathComponent("FX_FACE.jpg")
+        let metadata = try ImageMetadata.read(from: target)
+        XCTAssertEqual(metadata.iptc.headline, "People: Alice Example")
+        XCTAssertEqual(metadata.xmp?.personInImage, ["Alice Example"])
+        XCTAssertTrue(metadata.iptc.keywords.contains("Alice Example"))
+        let entry = try XCTUnwrap(result.metadataReport.entries.first)
+        XCTAssertEqual(entry.recognitionEvidence?.status, .completed)
+        XCTAssertEqual(entry.recognitionEvidence?.outcomes?.accepted, 1)
+        XCTAssertNotNil(entry.processingFingerprint)
+    }
+
+    func testChangedPeopleLibraryMakesReceiptStaleAndAddsNewAcceptedName() async throws {
+        let f = try fixture(headline: "People: {persons}")
+        try write(jpeg(), name: "FX_LIBRARY.jpg", root: f.source)
+        var job = f.job
+        job.metadataFaceRecognition = .init()
+        let firstEngine = engine(
+            f,
+            faceRecognitionContext: try faceContext(name: "Alice Example", libraryRevision: "a")
+        )
+        let transfer = try await firstEngine.run(job: job, leftPassword: nil, rightPassword: nil)
+        let firstEntry = try XCTUnwrap(transfer.metadataReport.entries.first)
+
+        let secondEngine = engine(
+            f,
+            faceRecognitionContext: try faceContext(name: "Bob Example", libraryRevision: "c")
+        )
+        let result = try await secondEngine.reprocessExistingLocalFiles(
+            job: job,
+            filter: .staleOrIncomplete,
+            latestOutcomes: ["FX_LIBRARY.jpg": firstEntry]
+        )
+
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.conflicts, [])
+        let metadata = try ImageMetadata.read(
+            from: f.destination.appendingPathComponent("FX_LIBRARY.jpg")
+        )
+        XCTAssertEqual(metadata.xmp?.personInImage, ["Alice Example", "Bob Example"])
+        let secondEntry = try XCTUnwrap(result.metadataReport.entries.first)
+        XCTAssertNotEqual(
+            secondEntry.processingFingerprint?.dependencyRevision,
+            firstEntry.processingFingerprint?.dependencyRevision
+        )
+        XCTAssertEqual(secondEntry.recognitionEvidence?.outcomes?.accepted, 1)
     }
 
     func testReceiptProtectedOutputEditIsReportedAndPreserved() async throws {

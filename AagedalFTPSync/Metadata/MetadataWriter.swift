@@ -112,6 +112,16 @@ enum MetadataWriter {
         return ExistingFieldsSnapshot(carriers: carriers, readable: true)
     }
 
+    /// Existing Person Shown values participate in `{persons}` expansion even
+    /// when recognition adds no new name. Carrier order is stable and duplicate
+    /// names use the same locale-independent normalization as recognition writes.
+    static func existingPersonNames(at fileURL: URL, relativePath: String) throws -> [String] {
+        let snapshot = try existingFields(at: fileURL, relativePath: relativePath)
+        return ResolvedFaceNameChanges(
+            names: snapshot.carriers.flatMap(\.personInImage)
+        ).names
+    }
+
     private static func rawPolicyMetadata(at fileURL: URL) throws -> (xmp: XMPData, origin: String, readable: Bool) {
         let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
         if FileManager.default.fileExists(atPath: sidecar.path) {

@@ -96,6 +96,8 @@ struct MetadataProcessingResult: Equatable, Sendable {
     let geocodingLocaleIdentifier: String?
     let geocodingProviderIdentity: MetadataGeocodingService.Identity?
     let places: [MetadataPlaceField: MetadataProcessingPlaceOutcome]
+    let recognitionEvidence: FaceRecognitionAuditEvidence?
+    let recognitionDependencyRevisions: [String: String]
 
     init(changes: ResolvedMetadataChanges, context: MetadataTemplateContext?,
          fields: [MetadataWritableField: MetadataProcessingFieldOutcome],
@@ -103,7 +105,9 @@ struct MetadataProcessingResult: Equatable, Sendable {
          geocoding: MetadataProcessingGeocodingOutcome = .notRequested,
          geocodingLocaleIdentifier: String? = nil,
          geocodingProviderIdentity: MetadataGeocodingService.Identity? = nil,
-         places: [MetadataPlaceField: MetadataProcessingPlaceOutcome] = [:]) {
+         places: [MetadataPlaceField: MetadataProcessingPlaceOutcome] = [:],
+         recognitionEvidence: FaceRecognitionAuditEvidence? = nil,
+         recognitionDependencyRevisions: [String: String] = [:]) {
         self.changes = changes
         self.context = context
         self.fields = fields
@@ -112,10 +116,13 @@ struct MetadataProcessingResult: Equatable, Sendable {
         self.geocodingLocaleIdentifier = geocodingLocaleIdentifier
         self.geocodingProviderIdentity = geocodingProviderIdentity
         self.places = places
+        self.recognitionEvidence = recognitionEvidence
+        self.recognitionDependencyRevisions = recognitionDependencyRevisions
     }
 
     var hasProposedChanges: Bool {
         fields.values.contains(.proposed) || places.values.contains(.proposed)
+            || !(changes.faceNames?.names.isEmpty ?? true)
     }
 
     /// This means resolution is complete, not that a write/publication succeeded.
@@ -127,9 +134,39 @@ struct MetadataProcessingResult: Equatable, Sendable {
             switch $0 { case .unavailable, .invalidValue: return true; default: return false }
         }) { return false }
         switch geocoding {
-        case .notRequested, .lookup(.found): return true
+        case .notRequested, .lookup(.found): break
         default: return false
         }
+        return recognitionEvidence?.status == nil || recognitionEvidence?.status == .completed
+    }
+
+    func addingRecognition(
+        faceNames: ResolvedFaceNameChanges?,
+        evidence: FaceRecognitionAuditEvidence,
+        dependencyRevisions: [String: String]
+    ) -> Self {
+        Self(
+            changes: .init(
+                headline: changes.headline,
+                description: changes.description,
+                keywords: changes.keywords,
+                creator: changes.creator,
+                copyright: changes.copyright,
+                gpsPosition: changes.gpsPosition,
+                existingFieldPolicy: changes.existingFieldPolicy,
+                places: changes.places,
+                faceNames: faceNames
+            ),
+            context: context,
+            fields: fields,
+            coordinateResolution: coordinateResolution,
+            geocoding: geocoding,
+            geocodingLocaleIdentifier: geocodingLocaleIdentifier,
+            geocodingProviderIdentity: geocodingProviderIdentity,
+            places: places,
+            recognitionEvidence: evidence,
+            recognitionDependencyRevisions: dependencyRevisions
+        )
     }
 }
 
@@ -153,7 +190,8 @@ enum MetadataProcessingCoordinator {
     /// Missing enrichment stays a field omission; no provider or writer is invoked.
     static func preparePerImage(assignment: MetadataAssignment, fileURL: URL,
                                 relativePath: String, processingDate: Date,
-                                processingTimeZone: TimeZone) throws -> MetadataProcessingResult {
+                                processingTimeZone: TimeZone,
+                                persons: [String] = []) throws -> MetadataProcessingResult {
         guard assignment.clip.fields.hasActivatedTemplates || assignment.photographer.hasActivatedTemplates else {
             return try prepareLiteral(assignment)
         }
@@ -194,7 +232,7 @@ enum MetadataProcessingCoordinator {
         }
         let context = MetadataTemplateContext(processingDate: processingDate,
             processingTimeZone: processingTimeZone, captureDate: capture,
-            photographer: request.photographer)
+            photographer: request.photographer, persons: persons)
         return resolve(request, context: context, writableFields: writable,
                        coordinateResolution: coordinateResolution)
     }
@@ -204,15 +242,81 @@ enum MetadataProcessingCoordinator {
     static func prepare(
         assignment: MetadataAssignment?, geocoding: MetadataGeocodingSettings?,
         service: MetadataGeocodingService? = nil, services: MetadataProcessingServices = .shared,
+        faceRecognition: MetadataFaceRecognitionSettings? = nil,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
         fileURL: URL, relativePath: String,
         processingDate: Date, processingTimeZone: TimeZone
     ) async throws -> MetadataProcessingResult {
         try Task.checkCancellation()
+        var persons = try MetadataWriter.existingPersonNames(at: fileURL, relativePath: relativePath)
+        var recognizedNames: ResolvedFaceNameChanges?
+        var recognitionEvidence: FaceRecognitionAuditEvidence?
+        var recognitionDependencies: [String: String] = [:]
+        if let faceRecognition {
+            try faceRecognition.validate()
+            guard let faceRecognitionContext else {
+                throw AppError.invalidConfiguration(
+                    "Face recognition cannot run until its model, people library, and calibrated policy are admitted."
+                )
+            }
+            let byteCount = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.size]
+                .flatMap { ($0 as? NSNumber)?.intValue }
+            guard let byteCount, byteCount > 0 else {
+                throw AppError.invalidConfiguration("The staged image size could not be verified for face recognition.")
+            }
+            let recognition = await faceRecognitionContext.service.analyze(
+                stagedInput: FaceRecognitionStagedInputLease(
+                    imageURL: fileURL,
+                    exactByteCount: byteCount
+                ),
+                gallery: faceRecognitionContext.gallery,
+                policy: faceRecognitionContext.acceptancePolicy,
+                appendAcceptedNamesToKeywords: faceRecognition.appendToKeywords
+            )
+            if case .cancelled = recognition { throw CancellationError() }
+            recognitionEvidence = FaceRecognitionAuditEvidence(
+                result: recognition,
+                provenance: faceRecognitionContext.provenance
+            )
+            recognitionDependencies = faceRecognitionContext.dependencyRevisions
+            if case .completed(_, let names) = recognition {
+                recognizedNames = names
+                persons = ResolvedFaceNameChanges(
+                    names: persons + (names?.names ?? [])
+                ).names
+            }
+        }
+        let base = try await prepareWithoutRecognition(
+            assignment: assignment,
+            geocoding: geocoding,
+            service: service,
+            services: services,
+            fileURL: fileURL,
+            relativePath: relativePath,
+            processingDate: processingDate,
+            processingTimeZone: processingTimeZone,
+            persons: persons
+        )
+        guard let recognitionEvidence else { return base }
+        return base.addingRecognition(
+            faceNames: recognizedNames,
+            evidence: recognitionEvidence,
+            dependencyRevisions: recognitionDependencies
+        )
+    }
+
+    private static func prepareWithoutRecognition(
+        assignment: MetadataAssignment?, geocoding: MetadataGeocodingSettings?,
+        service: MetadataGeocodingService?, services: MetadataProcessingServices,
+        fileURL: URL, relativePath: String,
+        processingDate: Date, processingTimeZone: TimeZone,
+        persons: [String]
+    ) async throws -> MetadataProcessingResult {
         guard let settings = geocoding, settings.isEnabled else {
             if let assignment {
                 return try preparePerImage(assignment: assignment, fileURL: fileURL,
                     relativePath: relativePath, processingDate: processingDate,
-                    processingTimeZone: processingTimeZone)
+                    processingTimeZone: processingTimeZone, persons: persons)
             }
             return MetadataProcessingResult(changes: .init(), context: nil, fields: [:])
         }
@@ -277,7 +381,7 @@ enum MetadataProcessingCoordinator {
         let context = MetadataTemplateContext(processingDate: processingDate,
             processingTimeZone: processingTimeZone, captureDate: capture,
             photographer: request.photographer, city: settings.resolveVariables ? place?.city : nil,
-            country: settings.resolveVariables ? place?.country : nil)
+            country: settings.resolveVariables ? place?.country : nil, persons: persons)
         let base = resolve(request, context: context, writableFields: writable,
                            coordinateResolution: coordinates)
         var outcomes: [MetadataPlaceField: MetadataProcessingPlaceOutcome] = [:]

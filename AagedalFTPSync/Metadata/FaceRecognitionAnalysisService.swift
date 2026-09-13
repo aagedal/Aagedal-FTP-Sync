@@ -592,3 +592,79 @@ struct FaceRecognitionAnalysisService: Sendable {
         return .rejected(.invalidCaptureQuality(ordinal: invalidQuality.ordinal))
     }
 }
+
+/// One immutable, fully admitted recognition dependency set for a processing run.
+///
+/// The application may construct this only after separately admitting the signed
+/// model runtime, an immutable people-library snapshot, and a calibrated policy.
+/// Keeping these values together prevents a library or policy change during one
+/// file from mixing identities in its output or durable processing receipt.
+struct MetadataFaceRecognitionContext: Sendable {
+    enum ValidationError: Error, Equatable {
+        case serviceUnavailable
+        case invalidLibraryRevision
+    }
+
+    let service: FaceRecognitionAnalysisService
+    let gallery: FaceRecognitionGallery
+    let acceptancePolicy: FaceRecognitionAcceptancePolicy
+    let provenance: FaceRecognitionAuditEvidence.Provenance
+    /// The recognition core excludes optional editor-only package bytes.
+    let libraryRevision: String
+
+    init(
+        service: FaceRecognitionAnalysisService,
+        snapshot: PeopleLibrarySnapshot,
+        runtimeRevision: String,
+        acceptancePolicy: FaceRecognitionAcceptancePolicy
+    ) throws {
+        guard service.readiness == .ready else { throw ValidationError.serviceUnavailable }
+        let revision = snapshot.manifest.coreRevision
+        guard revision.utf8.count == 64,
+              revision.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { throw ValidationError.invalidLibraryRevision }
+        self.service = service
+        gallery = snapshot.gallery
+        self.acceptancePolicy = acceptancePolicy
+        provenance = try FaceRecognitionAuditEvidence.Provenance(
+            contract: snapshot.manifest.contract,
+            runtimeRevision: runtimeRevision,
+            acceptancePolicy: acceptancePolicy
+        )
+        libraryRevision = revision
+    }
+
+    #if DEBUG
+    /// Test-only admission without constructing an on-disk package snapshot.
+    init(
+        service: FaceRecognitionAnalysisService,
+        gallery: FaceRecognitionGallery,
+        contract: PeopleLibraryManifest.EmbeddingContract = .auraFaceV1,
+        libraryRevision: String,
+        runtimeRevision: String,
+        acceptancePolicy: FaceRecognitionAcceptancePolicy
+    ) throws {
+        guard service.readiness == .ready else { throw ValidationError.serviceUnavailable }
+        guard libraryRevision.utf8.count == 64,
+              libraryRevision.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { throw ValidationError.invalidLibraryRevision }
+        self.service = service
+        self.gallery = gallery
+        self.acceptancePolicy = acceptancePolicy
+        provenance = try FaceRecognitionAuditEvidence.Provenance(
+            contract: contract,
+            runtimeRevision: runtimeRevision,
+            acceptancePolicy: acceptancePolicy
+        )
+        self.libraryRevision = libraryRevision
+    }
+    #endif
+
+    var dependencyRevisions: [String: String] {
+        [
+            "face-library-core": libraryRevision,
+            "face-runtime": provenance.runtimeRevision,
+            "face-acceptance-policy": provenance.acceptancePolicyRevision,
+        ]
+    }
+}

@@ -32,6 +32,16 @@ struct MetadataProcessingServices: Sendable {
         settings?.isEnabled == true
             && FilterPreset.photos.extensions?.contains(URL(fileURLWithPath: relativePath).pathExtension.lowercased()) == true
     }
+
+    static func faceRecognitionApplies(
+        to relativePath: String,
+        settings: MetadataFaceRecognitionSettings?
+    ) -> Bool {
+        settings != nil
+            && FilterPreset.photos.extensions?.contains(
+                URL(fileURLWithPath: relativePath).pathExtension.lowercased()
+            ) == true
+    }
 }
 
 extension SyncJob {

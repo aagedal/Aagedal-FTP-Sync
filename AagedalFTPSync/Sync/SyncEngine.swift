@@ -223,6 +223,7 @@ struct SyncEngine: Sendable {
     private let tolerance: TimeInterval = 1.5
     private let geocodingService: MetadataGeocodingService?
     private let metadataServices: MetadataProcessingServices
+    private let faceRecognitionContext: MetadataFaceRecognitionContext?
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
     private let now: @Sendable () -> Date
@@ -237,6 +238,7 @@ struct SyncEngine: Sendable {
     init(
         geocodingService: MetadataGeocodingService? = nil,
         metadataServices: MetadataProcessingServices = .shared,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
         sourceSignatureRepository: SourceSignatureRepository = SourceSignatureRepository(),
         downloadManifestRepository: DownloadManifestRepository = DownloadManifestRepository(),
         eventLogger: any SyncEventLogging = SystemSyncEventLogger(),
@@ -258,6 +260,7 @@ struct SyncEngine: Sendable {
     ) {
         self.geocodingService = geocodingService
         self.metadataServices = metadataServices
+        self.faceRecognitionContext = faceRecognitionContext
         self.sourceSignatureRepository = sourceSignatureRepository
         self.downloadManifestRepository = downloadManifestRepository
         self.eventLogger = eventLogger
@@ -361,7 +364,7 @@ struct SyncEngine: Sendable {
         try job.validateMetadataTemplateActivationContext()
         _ = try job.metadataOperationTimeZone
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
-        if let message = job.metadataFaceRecognitionRuntimeBlocker {
+        if faceRecognitionContext == nil, let message = job.metadataFaceRecognitionRuntimeBlocker {
             throw AppError.invalidConfiguration(message)
         }
         let leftManagedFolder: ManagedOutputFolder? = job.usesManagedFolderStructure && job.direction == .rightToLeft
@@ -805,7 +808,7 @@ struct SyncEngine: Sendable {
     ) async throws -> MetadataReprocessResult {
         try job.validateMetadataTemplateActivationContext()
         _ = try job.metadataOperationTimeZone
-        if let message = job.metadataFaceRecognitionRuntimeBlocker {
+        if faceRecognitionContext == nil, let message = job.metadataFaceRecognitionRuntimeBlocker {
             throw AppError.invalidConfiguration(message)
         }
         let automation = job.metadataAutomation?.isEnabled == true ? job.metadataAutomation : nil
@@ -874,16 +877,24 @@ struct SyncEngine: Sendable {
         }
         let files = destinationFiles.values
             .filter { job.filter.includesFileType(path: $0.relativePath) }
-            .filter { automation != nil || MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding) }
+            .filter {
+                automation != nil
+                    || MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding)
+                    || MetadataProcessingServices.faceRecognitionApplies(to: $0.relativePath, settings: job.metadataFaceRecognition)
+            }
             .filter { file in
                 guard let scopedPhotographerID else { return true }
                 return automation?.matchingPhotographer(for: file.relativePath)?.id == scopedPhotographerID
             }
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
-        if geocodingEnabled {
+        if geocodingEnabled || job.metadataFaceRecognition != nil {
             try validateGeneratedSidecarOutputPaths(
-                candidates: files.filter { MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding) },
+                candidates: files.filter {
+                    MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding)
+                        || MetadataProcessingServices.faceRecognitionApplies(to: $0.relativePath, settings: job.metadataFaceRecognition)
+                },
                 sourceFiles: destinationFiles, automation: automation, geocoding: job.metadataGeocoding,
+                faceRecognition: job.metadataFaceRecognition,
                 enforceLocalPathRules: true, occupiedDestinationPaths: Set(destinationFiles.keys))
         }
         if automation?.timestampPolicy == .sourceModification, !job.preserveModificationDates {
@@ -1016,6 +1027,7 @@ struct SyncEngine: Sendable {
                 }
             }
             let independentProcessing = MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: job.metadataGeocoding)
+                || MetadataProcessingServices.faceRecognitionApplies(to: file.relativePath, settings: job.metadataFaceRecognition)
             if assignment == nil && !independentProcessing {
                 if scope.isClip { continue }
                 skipped += 1
@@ -1033,7 +1045,11 @@ struct SyncEngine: Sendable {
             let processing: MetadataProcessingResult
             do {
                 processing = try await MetadataProcessingCoordinator.prepare(
-                    assignment: assignment, geocoding: job.metadataGeocoding, service: geocodingService, services: metadataServices, fileURL: temporaryURL, relativePath: file.relativePath,
+                    assignment: assignment, geocoding: job.metadataGeocoding,
+                    service: geocodingService, services: metadataServices,
+                    faceRecognition: job.metadataFaceRecognition,
+                    faceRecognitionContext: faceRecognitionContext,
+                    fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate,
                     processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!)
             } catch is CancellationError { throw CancellationError() }
@@ -1064,11 +1080,14 @@ struct SyncEngine: Sendable {
                     scheduledAt: scheduledAt, assignment: assignment,
                     detail: "The latest complete processing receipt is current; the destination was not rewritten.",
                     processingEvidence: MetadataProcessingAuditEvidence(result: processing),
-                    processingFingerprint: currentFingerprint
+                    processingFingerprint: currentFingerprint,
+                    recognitionEvidence: processing.recognitionEvidence
                 ))
                 continue
             }
             let activated = processing.context != nil
+                || job.metadataGeocoding?.isEnabled == true
+                || job.metadataFaceRecognition != nil
             if activated && !processing.hasProposedChanges {
                 guard processing.resolutionComplete else {
                     failed += 1
@@ -1077,7 +1096,8 @@ struct SyncEngine: Sendable {
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
                         assignment: assignment,
                         detail: "Requested metadata could not resolve; the original file was retained unchanged.",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        recognitionEvidence: processing.recognitionEvidence))
                     continue
                 }
                 guard previousFingerprint != nil || hasDurableLegacySourceEvidence else {
@@ -1087,7 +1107,8 @@ struct SyncEngine: Sendable {
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
                         assignment: assignment,
                         detail: "The metadata is already complete, but no durable source receipt proves this destination belongs to the source. It was preserved and remains incomplete for receipt tracking.",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        recognitionEvidence: processing.recognitionEvidence))
                     continue
                 }
                 do {
@@ -1107,7 +1128,8 @@ struct SyncEngine: Sendable {
                             ? "Existing metadata was preserved; a complete processing receipt was bootstrapped from durable source evidence."
                             : "Existing metadata was preserved; no fields were proposed.",
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
-                        processingFingerprint: fingerprint))
+                        processingFingerprint: fingerprint,
+                        recognitionEvidence: processing.recognitionEvidence))
                 } catch {
                     failed += 1
                     metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
@@ -1115,7 +1137,8 @@ struct SyncEngine: Sendable {
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
                         assignment: assignment,
                         detail: "Processing provenance could not be recorded; the original file was retained unchanged. \(error.localizedDescription)",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        recognitionEvidence: processing.recognitionEvidence))
                 }
                 continue
             }
@@ -1132,7 +1155,8 @@ struct SyncEngine: Sendable {
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                         scheduledAt: scheduledAt, assignment: assignment,
                         detail: "Some requested metadata could not resolve; existing affected fields were preserved.",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        recognitionEvidence: processing.recognitionEvidence
                     ))
                     continue
                 }
@@ -1144,7 +1168,8 @@ struct SyncEngine: Sendable {
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                         scheduledAt: scheduledAt, assignment: assignment,
                         detail: "The metadata is already complete, but no durable source receipt proves this destination belongs to the source. It was preserved and remains incomplete for receipt tracking.",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        recognitionEvidence: processing.recognitionEvidence
                     ))
                     continue
                 }
@@ -1171,7 +1196,8 @@ struct SyncEngine: Sendable {
                             ? "\(detail) A complete processing receipt was bootstrapped from durable source evidence."
                             : detail,
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
-                        processingFingerprint: fingerprint
+                        processingFingerprint: fingerprint,
+                        recognitionEvidence: processing.recognitionEvidence
                     ))
                 } catch {
                     failed += 1
@@ -1180,7 +1206,8 @@ struct SyncEngine: Sendable {
                         timestampPolicy: automation?.timestampPolicy ?? .sourceModification, scheduledAt: scheduledAt,
                         assignment: assignment,
                         detail: "Processing provenance could not be recorded; the original file was retained unchanged. \(error.localizedDescription)",
-                        processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        recognitionEvidence: processing.recognitionEvidence))
                 }
                 continue
             }
@@ -1218,7 +1245,8 @@ struct SyncEngine: Sendable {
                     scheduledAt: scheduledAt,
                     assignment: assignment,
                     detail: error.localizedDescription,
-                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                    recognitionEvidence: processing.recognitionEvidence
                 ))
                 continue
             }
@@ -1254,7 +1282,8 @@ struct SyncEngine: Sendable {
                     scheduledAt: scheduledAt,
                     assignment: assignment,
                     detail: "Processing provenance could not be recorded; the original file was retained unchanged. \(error.localizedDescription)",
-                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                    recognitionEvidence: processing.recognitionEvidence
                 ))
                 continue
             }
@@ -1277,7 +1306,8 @@ struct SyncEngine: Sendable {
                             ? "Preflight found metadata changes ready to apply."
                             : "Preflight found partial changes with unresolved metadata.",
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
-                        processingFingerprint: processingFingerprint
+                        processingFingerprint: processingFingerprint,
+                        recognitionEvidence: processing.recognitionEvidence
                     ))
                     continue
                 }
@@ -1319,7 +1349,8 @@ struct SyncEngine: Sendable {
                 metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
                     relativePath: file.relativePath, status: .failed, timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                     scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription,
-                    processingEvidence: MetadataProcessingAuditEvidence(result: processing)))
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                    recognitionEvidence: processing.recognitionEvidence))
                 continue
             }
             if processing.resolutionComplete { applied += 1 } else { failed += 1 }
@@ -1335,7 +1366,8 @@ struct SyncEngine: Sendable {
                 swiftExifWarnings: writeResult.warnings,
                 detail: processing.resolutionComplete ? nil : "Partial metadata was applied; unresolved fields were preserved.",
                 processingEvidence: MetadataProcessingAuditEvidence(result: processing),
-                processingFingerprint: processingFingerprint
+                processingFingerprint: processingFingerprint,
+                recognitionEvidence: processing.recognitionEvidence
             ))
         }
 
@@ -1469,6 +1501,7 @@ struct SyncEngine: Sendable {
             sourceFiles: sourceFiles,
             automation: job.metadataAutomation,
             geocoding: job.metadataGeocoding,
+            faceRecognition: job.metadataFaceRecognition,
             enforceLocalPathRules: job.destinationEndpoint?.kind == .local,
             occupiedDestinationPaths: Set(destinationFiles.keys)
         )
@@ -1624,6 +1657,7 @@ struct SyncEngine: Sendable {
             sourceFiles: directoryFiles,
             automation: job.metadataAutomation,
             geocoding: job.metadataGeocoding,
+            faceRecognition: job.metadataFaceRecognition,
             enforceLocalPathRules: true,
             occupiedDestinationPaths: Set(destinationFiles.keys)
         )
@@ -1632,7 +1666,8 @@ struct SyncEngine: Sendable {
             potentialOutputPaths(
                 for: file,
                 sourceFiles: directoryFiles,
-                automation: job.metadataAutomation, geocoding: job.metadataGeocoding
+                automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+                faceRecognition: job.metadataFaceRecognition
             ).allSatisfy { destinationFiles[$0] == nil }
         }
         let claimed = await state.claim(absentCandidates)
@@ -1694,12 +1729,16 @@ struct SyncEngine: Sendable {
         for file: SyncFile,
         sourceFiles: [String: SyncFile],
         automation: MetadataAutomation?,
-        geocoding: MetadataGeocodingSettings? = nil
+        geocoding: MetadataGeocodingSettings? = nil,
+        faceRecognition: MetadataFaceRecognitionSettings? = nil
     ) -> [String] {
         var paths = [file.relativePath]
         guard MetadataWriter.usesXMPSidecar(for: file.relativePath) else { return paths }
         let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-        if sourceFiles[sidecarPath] != nil || mayGenerateSidecar(file, automation: automation, geocoding: geocoding) {
+        if sourceFiles[sidecarPath] != nil || mayGenerateSidecar(
+            file, automation: automation, geocoding: geocoding,
+            faceRecognition: faceRecognition
+        ) {
             paths.append(sidecarPath)
         }
         return paths
@@ -1730,7 +1769,11 @@ struct SyncEngine: Sendable {
         var deferredFiles = earlySnapshot.deferredFiles
         var changingFiles = earlySnapshot.changingFiles
         let earlyChangingPaths = Set(changingFiles.keys.flatMap { path in
-            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation, geocoding: job.metadataGeocoding) } ?? [path]
+            sourceFiles[path].map { potentialOutputPaths(
+                for: $0, sourceFiles: sourceFiles,
+                automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+                faceRecognition: job.metadataFaceRecognition
+            ) } ?? [path]
         })
         var deferredComparisons: Set<String> = []
         for path in deferredFiles.keys where sourceFiles[path] == nil {
@@ -1751,7 +1794,10 @@ struct SyncEngine: Sendable {
             let sourceSidecar = MetadataWriter.usesXMPSidecar(for: file.relativePath)
                 ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] : nil
             let destinationSidecar = sourceSidecar.flatMap { effectiveDestinationFiles[$0.relativePath] }
-            let mayRewriteSidecar = mayGenerateSidecar(file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding)
+            let mayRewriteSidecar = mayGenerateSidecar(
+                file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+                faceRecognition: job.metadataFaceRecognition
+            )
             var destinationNeedsTransfer = needsTransfer(
                 file,
                 destinationFile,
@@ -1817,7 +1863,11 @@ struct SyncEngine: Sendable {
                 }
             }
             if destinationNeedsTransfer
-                || (processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding, savedSignature: savedSignatures[file.relativePath])) {
+                || (processedDestination != nil && shouldAttemptProcessedMove(
+                    file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+                    faceRecognition: job.metadataFaceRecognition,
+                    savedSignature: savedSignatures[file.relativePath]
+                )) {
                 preliminaryCandidates.append(file)
             }
         }
@@ -1827,7 +1877,11 @@ struct SyncEngine: Sendable {
             return sourceFiles[sidecarPath] == nil ? nil : sidecarPath
         })
         let changingPaths = Set(changingFiles.keys.flatMap { path in
-            sourceFiles[path].map { potentialOutputPaths(for: $0, sourceFiles: sourceFiles, automation: job.metadataAutomation, geocoding: job.metadataGeocoding) } ?? [path]
+            sourceFiles[path].map { potentialOutputPaths(
+                for: $0, sourceFiles: sourceFiles,
+                automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+                faceRecognition: job.metadataFaceRecognition
+            ) } ?? [path]
         })
         let candidates = preliminaryCandidates
             .filter { !handledSourceSidecars.contains($0.relativePath) && !changingPaths.contains($0.relativePath) }
@@ -1837,6 +1891,7 @@ struct SyncEngine: Sendable {
             sourceFiles: sourceFiles,
             automation: job.metadataAutomation,
             geocoding: job.metadataGeocoding,
+            faceRecognition: job.metadataFaceRecognition,
             enforceLocalPathRules: job.destinationEndpoint?.kind == .local,
             occupiedDestinationPaths: Set(effectiveDestinationFiles.keys)
         )
@@ -1884,7 +1939,11 @@ struct SyncEngine: Sendable {
                 if deferredComparisons.contains(file.relativePath),
                    let destinationFile = effectiveDestinationFiles[file.relativePath],
                    try await contentsMatch(file, in: source, destinationFile, in: destination),
-                   !(processedDestination != nil && shouldAttemptProcessedMove(file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding, savedSignature: savedSignatures[file.relativePath])) {
+                   !(processedDestination != nil && shouldAttemptProcessedMove(
+                       file, automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+                       faceRecognition: job.metadataFaceRecognition,
+                       savedSignature: savedSignatures[file.relativePath]
+                   )) {
                     continue
                 }
                 outcome = try await transfer(
@@ -2295,6 +2354,7 @@ struct SyncEngine: Sendable {
             dependencies["geocoder-version"] = identity.version
             dependencies["geocoder-dataset"] = identity.dataset
         }
+        dependencies.merge(processing.recognitionDependencyRevisions) { _, newest in newest }
         var outputs = [MetadataProcessingFingerprint.OutputArtifact(
             role: "primary",
             relativePath: relativePath,
@@ -2437,15 +2497,21 @@ struct SyncEngine: Sendable {
         var sidecarImport: (url: URL, file: SyncFile)?
         var auditEntry: MetadataAuditEntry?
         var embeddedMetadataApplied = false
-        if metadataAssignment != nil || MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: metadataGeocoding) {
+        if metadataAssignment != nil
+            || MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: metadataGeocoding)
+            || MetadataProcessingServices.faceRecognitionApplies(to: file.relativePath, settings: metadataFaceRecognition) {
             var processingResult: MetadataProcessingResult?
             do {
                 let effectiveProcessingTimeZone = processingTimeZone ?? TimeZone(secondsFromGMT: 0)!
                 let processing = try await MetadataProcessingCoordinator.prepare(
-                    assignment: metadataAssignment, geocoding: metadataGeocoding, service: geocodingService, services: metadataServices, fileURL: temporaryURL, relativePath: file.relativePath,
+                    assignment: metadataAssignment, geocoding: metadataGeocoding,
+                    service: geocodingService, services: metadataServices,
+                    faceRecognition: metadataFaceRecognition,
+                    faceRecognitionContext: faceRecognitionContext,
+                    fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate, processingTimeZone: effectiveProcessingTimeZone)
                 processingResult = processing
-                if processing.context != nil && !processing.hasProposedChanges {
+                if !processing.hasProposedChanges {
                     importedFile = file
                     if let sourceSidecar { sidecarImport = (temporarySidecarURL, sourceSidecar) }
                     let fingerprint = try makeProcessingFingerprint(
@@ -2463,7 +2529,8 @@ struct SyncEngine: Sendable {
                         scheduledAt: scheduledAt, assignment: metadataAssignment,
                         detail: processing.resolutionComplete ? "Existing metadata was preserved; no fields were proposed." : "Requested metadata could not resolve; the original file was transferred unchanged.",
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
-                        processingFingerprint: fingerprint)
+                        processingFingerprint: fingerprint,
+                        recognitionEvidence: processing.recognitionEvidence)
                 } else {
                     let workURL = try makeTemporaryURL(for: file)
                     let workSidecarURL = workURL.deletingPathExtension().appendingPathExtension("xmp")
@@ -2519,7 +2586,8 @@ struct SyncEngine: Sendable {
                         swiftExifWarnings: writeResult.warnings,
                         detail: processing.resolutionComplete ? nil : "Partial metadata was applied; unresolved fields were preserved and the source was retained.",
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
-                        processingFingerprint: fingerprint
+                        processingFingerprint: fingerprint,
+                        recognitionEvidence: processing.recognitionEvidence
                     )
                 }
             } catch is CancellationError {
@@ -2538,7 +2606,8 @@ struct SyncEngine: Sendable {
                     scheduledAt: scheduledAt,
                     assignment: metadataAssignment,
                     detail: error.localizedDescription,
-                    processingEvidence: processingResult.flatMap(MetadataProcessingAuditEvidence.init(result:))
+                    processingEvidence: processingResult.flatMap(MetadataProcessingAuditEvidence.init(result:)),
+                    recognitionEvidence: processingResult?.recognitionEvidence
                 )
             }
         } else {
@@ -2816,6 +2885,7 @@ struct SyncEngine: Sendable {
         sourceFiles: [String: SyncFile],
         automation: MetadataAutomation?,
         geocoding: MetadataGeocodingSettings? = nil,
+        faceRecognition: MetadataFaceRecognitionSettings? = nil,
         enforceLocalPathRules: Bool,
         occupiedDestinationPaths: Set<String> = []
     ) throws {
@@ -2837,7 +2907,10 @@ struct SyncEngine: Sendable {
             guard MetadataWriter.usesXMPSidecar(for: candidate.relativePath) else { continue }
             let sidecarPath = MetadataWriter.sidecarRelativePath(for: candidate.relativePath)
             let willPublishSidecar = sourceFiles[sidecarPath] != nil
-                || mayGenerateSidecar(candidate, automation: automation, geocoding: geocoding)
+                || mayGenerateSidecar(
+                    candidate, automation: automation, geocoding: geocoding,
+                    faceRecognition: faceRecognition
+                )
             if willPublishSidecar {
                 try register(sidecarPath, owner: candidate.relativePath)
             }
@@ -2857,9 +2930,11 @@ struct SyncEngine: Sendable {
         _ file: SyncFile,
         automation: MetadataAutomation?,
         geocoding: MetadataGeocodingSettings? = nil,
+        faceRecognition: MetadataFaceRecognitionSettings? = nil,
         savedSignature: SourceFileSignature? = nil
     ) -> Bool {
-        if MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: geocoding) {
+        if MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: geocoding)
+            || MetadataProcessingServices.faceRecognitionApplies(to: file.relativePath, settings: faceRecognition) {
             return savedSignature?.matches(file, timestampTolerance: tolerance) != true
         }
         guard let automation, automation.isEnabled,
@@ -2879,9 +2954,11 @@ struct SyncEngine: Sendable {
     private func mayGenerateSidecar(
         _ file: SyncFile,
         automation: MetadataAutomation?,
-        geocoding: MetadataGeocodingSettings? = nil
+        geocoding: MetadataGeocodingSettings? = nil,
+        faceRecognition: MetadataFaceRecognitionSettings? = nil
     ) -> Bool {
         if MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: geocoding) { return true }
+        if MetadataProcessingServices.faceRecognitionApplies(to: file.relativePath, settings: faceRecognition) { return true }
         guard let automation, automation.isEnabled else { return false }
         return automation.matchesPhotographer(relativePath: file.relativePath)
     }
