@@ -7,6 +7,8 @@ import SwiftUI
 /// may start the user's normal jobs or load their Keychain credentials.
 enum UITestSupport {
     static let enabled = ProcessInfo.processInfo.environment["AAGEDAL_UI_TESTING"] == "1"
+    static let usesVersion3Startup = enabled
+        && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_V3_STARTUP"] == "1"
     private static let hostedUnitTests = NSClassFromString("XCTestCase") != nil
         || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
@@ -33,6 +35,26 @@ enum UITestSupport {
             return nil
         }
         return .accessibility3
+    }
+
+    /// Seeds only the explicitly isolated version-3 startup root. This keeps the
+    /// destructive migration UI testable without copying a developer's real 2.9
+    /// Application Support data or making the production bootstrap test-aware.
+    static func seedVersion3StartupFixtureIfRequested(at rootURL: URL) throws {
+        guard enabled,
+              usesVersion3Startup,
+              ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_V3_FIXTURE"] == "populated" else {
+            return
+        }
+        try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        let repository = JobRepository(fileURL: fileURL("jobs-v2.json", rootURL: rootURL))
+        guard try repository.load().isEmpty else { return }
+
+        var job = fixtureJob(rootURL: rootURL)
+        job.name = "Migrated 2.9 UI Fixture"
+        job.isEnabled = true
+        job.startsOnAppLaunch = true
+        try repository.save([job])
     }
 
     @MainActor

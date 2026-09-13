@@ -51,6 +51,7 @@ final class Version3StartupController: ObservableObject {
                 if testStartupMode {
                     guard let root = UITestSupport.rootURL else { throw Failure.testRuntimeUnavailable }
                     try FileManager.default.createDirectory(at: root.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try UITestSupport.seedVersion3StartupFixtureIfRequested(at: root)
                     return try Version3StartupPaths.prepare(root: root, temporaryParent: FileManager.default.temporaryDirectory)
                 }
                 // Foundation owns creation of this trusted system location on a

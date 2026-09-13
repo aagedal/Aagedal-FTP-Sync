@@ -93,7 +93,8 @@ struct StartupMenuLabel: View {
             openWindow(id: "startup")
             return
         }
-        guard !openedAttention, !startup.isTestSession, !startup.busy,
+        let mayOpenForTest = startup.isTestSession && UITestSupport.usesVersion3Startup
+        guard !openedAttention, (!startup.isTestSession || mayOpenForTest), !startup.busy,
               startup.session == nil, startup.phase != .idle else { return }
         openedAttention = true
         RegularWindowController.shared.prepareForOpening(windowID: "startup")

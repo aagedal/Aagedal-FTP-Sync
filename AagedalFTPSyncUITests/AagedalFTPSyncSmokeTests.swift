@@ -265,6 +265,42 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(mapWindow.frame.intersects(clip.frame))
     }
 
+    func testVersion3StartupMigratesPopulatedStorePausedAndReopensIt() {
+        let session = UUID().uuidString
+        launchVersion3(session: session, fixture: "populated")
+
+        XCTAssertTrue(app.staticTexts["Prepare your saved data for 3.0"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].exists == false)
+        element("startup.closedOtherCopies").click()
+        let migrate = element("startup.migrate")
+        XCTAssertTrue(migrate.isEnabled)
+        migrate.click()
+
+        XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
+        XCTAssertTrue(app.staticTexts["Your saved data is open. Jobs and calendar sync remain paused until you explicitly start them."].exists)
+        app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
+        app.statusItems.firstMatch.click()
+        XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Start"].exists)
+
+        app.terminate()
+        launchVersion3(session: session)
+        XCTAssertTrue(app.staticTexts["Startup and Recovery"].waitForExistence(timeout: 8))
+        element("startup.closedOtherCopies").click()
+        element("startup.openExisting").click()
+        XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
+        let restoredMessage = element("startup.message")
+        XCTAssertTrue(restoredMessage.waitForExistence(timeout: 3))
+        XCTAssertTrue(
+            String(describing: restoredMessage.value ?? "")
+                .contains("configured to start on launch are active")
+        )
+        app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
+        app.statusItems.firstMatch.click()
+        XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Stop"].exists)
+    }
+
     private func launch(
         seedJob: Bool = false,
         seedMap: Bool = false,
@@ -294,6 +330,19 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         }
         let expectedContent = seedJob ? element("job-name") : element("add-sync-job-empty-state")
         XCTAssertTrue(expectedContent.waitForExistence(timeout: 8))
+    }
+
+    private func launchVersion3(session: String, fixture: String? = nil) {
+        let cleanApp = XCUIApplication()
+        cleanApp.terminate()
+        app = cleanApp
+        app.launchEnvironment["AAGEDAL_UI_TESTING"] = "1"
+        app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"] = session
+        app.launchEnvironment["AAGEDAL_UI_TEST_V3_STARTUP"] = "1"
+        if let fixture { app.launchEnvironment["AAGEDAL_UI_TEST_V3_FIXTURE"] = fixture }
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
+        app.launch()
+        XCTAssertTrue(app.windows["Startup and Recovery"].waitForExistence(timeout: 8))
     }
 
     private func openConfigurationMenu() {
