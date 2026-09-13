@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Validate geocoding consent/settings and face-runtime prerequisites before reading a
+  staged image, retaining the disabled literal no-read path while still resolving
+  `{persons}` from existing Person Shown metadata when requested.
 - Restore jobs configured to start on launch after a committed version 3 store passes
   startup admission, while keeping first migration, recovery, unavailable face jobs
   and calendar sync paused for explicit review.

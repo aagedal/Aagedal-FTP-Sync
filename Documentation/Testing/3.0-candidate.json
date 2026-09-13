@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-ba9a0b5-launch-restoration",
+  "id": "development-c23eb6d-enrichment-preflight",
   "status": "IMPLEMENTING",
-  "commit": "ba9a0b50bd99cb7021fe73e87bce5f1d64660f02",
+  "commit": "c23eb6d360e695f2a9c26f3352c30bca3492efa8",
   "version": "2.9.2",
   "build": "37",
   "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-launch-restoration-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-13-M3-Launch-Restoration.md",
-  "note": "Development build only, not ready for human acceptance. At ba9a0b5, later committed-store opens restore only jobs configured to start on launch after writer and lease admission. First migration and prepared recovery stay paused, calendar activation remains explicit, and unavailable face-recognition jobs remain stopped. The affected 38-test selection, security baseline and unsigned Release build passed. At 6d40f20, startup locally admits and binds one immutable face-recognition context into transfer, reprocessing and read-only preview. The prior clean full suite at da3579e had 1035 passed, 15 opt-in skips and zero failures (1050 discovered). Production face trust/artifacts and calibration, installer UI, authorized actual-face fixtures, native/supported-OS evidence, measured resource tuning, full M5 verification and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
+  "evidence": "Documentation/Testing/2026-09-13-M4-Enrichment-Preflight.md",
+  "note": "Development build only, not ready for human acceptance. At c23eb6d, enrichment validates geocoding privacy/settings and face-runtime prerequisites before file access, retains the disabled literal no-read path and resolves requested {persons} from existing Person Shown metadata. The current full suite completed with 1125 passed, 16 opt-in skips and zero failures (1141 discovered); the affected 44-test selection, security baseline and unsigned Release build also passed. At ba9a0b5, later committed-store opens restore only jobs configured to start on launch after writer and lease admission; first migration, prepared recovery, calendar sync and unavailable face jobs remain paused. Production face trust/artifacts and calibration, installer UI, authorized actual-face fixtures, native/supported-OS evidence, measured resource tuning, full M5 verification and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
 }
