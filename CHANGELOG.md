@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Restore jobs configured to start on launch after a committed version 3 store passes
+  startup admission, while keeping first migration, recovery, unavailable face jobs
+  and calendar sync paused for explicit review.
 - Admit an optional signed AuraFace runtime, immutable people library and calibrated
   policy before version 3 app writers are published. Use the same admitted context for
   transfer, reprocessing and read-only preview while keeping face-enabled jobs paused

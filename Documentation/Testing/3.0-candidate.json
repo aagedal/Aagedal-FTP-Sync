@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-6d40f20-face-startup-preview",
+  "id": "development-ba9a0b5-launch-restoration",
   "status": "IMPLEMENTING",
-  "commit": "6d40f20354fe704a5ea857b6547e0f6b1a7ab98d",
+  "commit": "ba9a0b50bd99cb7021fe73e87bce5f1d64660f02",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-face-preview-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-13-M4-Startup-and-Preview-Admission.md",
-  "note": "Development build only, not ready for human acceptance. At 6d40f20, version 3 bootstrap locally admits and binds one immutable face-recognition context into transfer, reprocessing and read-only preview before publishing app writers. Admission is disabled unless codesigned configuration supplies strict HTTPS trust, a 32-byte public key and every calibrated policy value; missing or invalid dependencies retain the existing fail-closed job blocker. Startup performs no component download. Eight affected classes containing 127 declared tests passed, including replacement-preview cancellation, as did the security baseline and unsigned Release build. The prior clean full suite at da3579e had 1035 passed, 15 opt-in skips and zero failures (1050 discovered). Production trust/artifacts and calibration, installer UI, authorized actual-face fixtures, native/supported-OS evidence, measured resource tuning, full M5 verification, shared App Group sync and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-launch-restoration-release/Build/Products/Release/AagedalFTPSync.app",
+  "evidence": "Documentation/Testing/2026-09-13-M3-Launch-Restoration.md",
+  "note": "Development build only, not ready for human acceptance. At ba9a0b5, later committed-store opens restore only jobs configured to start on launch after writer and lease admission. First migration and prepared recovery stay paused, calendar activation remains explicit, and unavailable face-recognition jobs remain stopped. The affected 38-test selection, security baseline and unsigned Release build passed. At 6d40f20, startup locally admits and binds one immutable face-recognition context into transfer, reprocessing and read-only preview. The prior clean full suite at da3579e had 1035 passed, 15 opt-in skips and zero failures (1050 discovered). Production face trust/artifacts and calibration, installer UI, authorized actual-face fixtures, native/supported-OS evidence, measured resource tuning, full M5 verification and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
 }
