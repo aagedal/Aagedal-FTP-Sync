@@ -164,7 +164,17 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     func isReprocessing(in store: AppStore) -> Bool {
         guard let loadedJobID else { return false }
-        return store.metadataReprocessPhases[loadedJobID] == .running
+        switch store.metadataReprocessPhases[loadedJobID] {
+        case .preflighting, .running:
+            return true
+        default:
+            return false
+        }
+    }
+
+    func isPreflighting(in store: AppStore) -> Bool {
+        guard let loadedJobID else { return false }
+        return store.metadataReprocessPhases[loadedJobID] == .preflighting
     }
 
     func reprocessStatusText(in store: AppStore) -> String? {
@@ -173,8 +183,17 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         switch phase {
         case .idle:
             return nil
+        case .preflighting:
+            return "Checking which files need reprocessing…"
+        case .ready(_, _, _, let result):
+            let conflicts = result.conflicts.isEmpty
+                ? ""
+                : ", including " + String(result.conflicts.count) + " edit conflicts"
+            return "Preflight: " + String(result.ready) + " ready, "
+                + String(result.skipped) + " skipped, " + String(result.failed)
+                + " with errors or incomplete data" + conflicts + "."
         case .running:
-            return "Scanning the local destination…"
+            return "Reprocessing the local destination…"
         case .succeeded(_, let result):
             let conflicts = result.conflicts.isEmpty ? "" : ", \(result.conflicts.count) edit conflicts preserved"
             return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed\(conflicts)."
@@ -193,7 +212,10 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         return "Apply the saved schedule to matching files already in the local destination."
     }
 
-    func reprocessConfirmationMessage(for job: SyncJob?) -> String {
+    func reprocessConfirmationMessage(
+        for job: SyncJob?,
+        preflight: MetadataReprocessPreflight? = nil
+    ) -> String {
         let target = job?.localDestinationDisplayPath ?? "the local destination"
         let policyNote = draft.existingFieldPolicy.explanation
         let scopeDescription: String
@@ -209,7 +231,16 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         case .all, nil:
             scopeDescription = "Matching files"
         }
-        return "\(scopeDescription) in \(target) will be checked using \(reprocessFilter.title.lowercased()). Outputs changed since their latest complete receipt are preserved for manual review. The source is untouched and modification dates are retained. \(policyNote)"
+        let preflightSummary: String
+        if let result = preflight {
+            let conflictSummary = result.conflicts.isEmpty
+                ? "No edited-output conflicts were found."
+                : "\(result.conflicts.count) edited output\(result.conflicts.count == 1 ? " was" : "s were") found and will be preserved unless you explicitly include \(result.conflicts.count == 1 ? "it" : "them")."
+            preflightSummary = "Preflight checked \(result.scanned) files: \(result.ready) ready to update, \(result.skipped) skipped, and \(result.failed) with errors or incomplete data. \(conflictSummary)"
+        } else {
+            preflightSummary = "The preflight is checking the destination without changing files."
+        }
+        return "\(scopeDescription) in \(target) are using \(reprocessFilter.title.lowercased()). \(preflightSummary) The source is untouched and modification dates are retained. \(policyNote)"
     }
 
     var reprocessActionTitle: String {
@@ -223,12 +254,49 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         }
     }
 
+    func reprocessPreflight(in store: AppStore) -> MetadataReprocessPreflight? {
+        guard let loadedJobID, let pendingReprocessScope else { return nil }
+        guard case .ready(_, let scope, let filter, let result) = store.metadataReprocessPhases[loadedJobID],
+              scope == pendingReprocessScope, filter == reprocessFilter else { return nil }
+        return result
+    }
+
     @discardableResult
-    func confirmReprocessing(in store: AppStore) -> Bool {
+    func beginReprocessing(
+        _ scope: MetadataReprocessScope,
+        in store: AppStore
+    ) -> Bool {
+        guard save(in: store), let loadedJobID else { return false }
+        guard store.preflightMetadataReprocess(
+            loadedJobID,
+            scope: scope,
+            filter: reprocessFilter
+        ) else { return false }
+        pendingReprocessScope = scope
+        return true
+    }
+
+    func cancelPendingReprocessing(in store: AppStore) {
+        if let loadedJobID { store.cancelMetadataReprocessPreflight(loadedJobID) }
+        pendingReprocessScope = nil
+    }
+
+    @discardableResult
+    func confirmReprocessing(
+        in store: AppStore,
+        conflictPolicy: MetadataReprocessConflictPolicy = .preserveEditedOutputs
+    ) -> Bool {
         guard let scope = pendingReprocessScope,
-              save(in: store),
-              let loadedJobID else { return false }
-        store.reprocessExistingLocalFiles(loadedJobID, scope: scope, filter: reprocessFilter)
+              let loadedJobID,
+              case .ready(_, let preparedScope, let preparedFilter, _) = store.metadataReprocessPhases[loadedJobID],
+              preparedScope == scope, preparedFilter == reprocessFilter else { return false }
+        pendingReprocessScope = nil
+        store.reprocessExistingLocalFiles(
+            loadedJobID,
+            scope: scope,
+            filter: reprocessFilter,
+            conflictPolicy: conflictPolicy
+        )
         return true
     }
 

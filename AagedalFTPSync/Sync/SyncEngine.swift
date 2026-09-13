@@ -46,6 +46,28 @@ enum MetadataReprocessFilter: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum MetadataReprocessConflictPolicy: Equatable, Sendable {
+    case preserveEditedOutputs
+    case processEditedOutputs(Set<String>)
+
+    func protectsEditedOutput(at relativePath: String) -> Bool {
+        switch self {
+        case .preserveEditedOutputs:
+            true
+        case .processEditedOutputs(let approvedPaths):
+            !approvedPaths.contains(relativePath)
+        }
+    }
+}
+
+struct MetadataReprocessPreflight: Equatable, Sendable {
+    let scanned: Int
+    let ready: Int
+    let skipped: Int
+    let failed: Int
+    let conflicts: [String]
+}
+
 struct MetadataReprocessResult: Equatable, Sendable {
     let scanned: Int
     let applied: Int
@@ -775,9 +797,11 @@ struct SyncEngine: Sendable {
         job: SyncJob,
         scope: MetadataReprocessScope = .all,
         filter: MetadataReprocessFilter = .all,
+        conflictPolicy: MetadataReprocessConflictPolicy = .preserveEditedOutputs,
         latestOutcomes: [String: MetadataAuditEntry] = [:],
         leftPassword: String? = nil,
-        rightPassword: String? = nil
+        rightPassword: String? = nil,
+        isPreflight: Bool = false
     ) async throws -> MetadataReprocessResult {
         try job.validateMetadataTemplateActivationContext()
         _ = try job.metadataOperationTimeZone
@@ -944,7 +968,8 @@ struct SyncEngine: Sendable {
                     ))
                 }
                 let currentOutputRevision = try MetadataProcessingFingerprint.outputRevision(currentArtifacts)
-                if previousFingerprint.outputRevision != currentOutputRevision {
+                if previousFingerprint.outputRevision != currentOutputRevision,
+                   conflictPolicy.protectsEditedOutput(at: file.relativePath) {
                     conflicts.append(file.relativePath)
                     skipped += 1
                     metadataReport.append(MetadataAuditEntry(
@@ -1155,6 +1180,27 @@ struct SyncEngine: Sendable {
             }
 
             do {
+                if isPreflight {
+                    applied += 1
+                    if !processing.resolutionComplete { failed += 1 }
+                    metadataReport.append(MetadataAuditEntry(
+                        runID: runID,
+                        jobID: job.id,
+                        operation: .reprocess,
+                        relativePath: file.relativePath,
+                        status: processing.resolutionComplete ? .applied : .failed,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                        scheduledAt: scheduledAt,
+                        assignment: assignment,
+                        swiftExifWarnings: writeResult.warnings,
+                        detail: processing.resolutionComplete
+                            ? "Preflight found metadata changes ready to apply."
+                            : "Preflight found partial changes with unresolved metadata.",
+                        processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                        processingFingerprint: processingFingerprint
+                    ))
+                    continue
+                }
                 switch writeResult {
                 case .embedded(let rewrittenSize, _):
                     let output = EndpointFileImport(localURL: temporaryURL, file: SyncFile(relativePath: file.relativePath,
@@ -1220,6 +1266,33 @@ struct SyncEngine: Sendable {
             failed: failed,
             conflicts: conflicts,
             metadataReport: metadataReport
+        )
+    }
+
+    func preflightExistingLocalFiles(
+        job: SyncJob,
+        scope: MetadataReprocessScope = .all,
+        filter: MetadataReprocessFilter = .staleOrIncomplete,
+        latestOutcomes: [String: MetadataAuditEntry] = [:],
+        leftPassword: String? = nil,
+        rightPassword: String? = nil
+    ) async throws -> MetadataReprocessPreflight {
+        let result = try await reprocessExistingLocalFiles(
+            job: job,
+            scope: scope,
+            filter: filter,
+            conflictPolicy: .preserveEditedOutputs,
+            latestOutcomes: latestOutcomes,
+            leftPassword: leftPassword,
+            rightPassword: rightPassword,
+            isPreflight: true
+        )
+        return MetadataReprocessPreflight(
+            scanned: result.scanned,
+            ready: result.applied,
+            skipped: result.skipped,
+            failed: result.failed,
+            conflicts: result.conflicts
         )
     }
 

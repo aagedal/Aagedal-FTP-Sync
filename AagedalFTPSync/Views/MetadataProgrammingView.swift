@@ -253,14 +253,33 @@ struct MetadataProgrammingView: View {
             "Reprocess existing local files?",
             isPresented: Binding(
                 get: { pendingReprocessScope != nil },
-                set: { if !$0 { pendingReprocessScope = nil } }
+                set: { if !$0 { coordinator.cancelPendingReprocessing(in: store) } }
             ),
             titleVisibility: .visible
         ) {
-            Button(reprocessActionTitle) {
-                coordinator.confirmReprocessing(in: store)
+            if let preflight = reprocessPreflight {
+                Button(reprocessActionTitle) {
+                    coordinator.confirmReprocessing(in: store)
+                }
+                .disabled(preflight.ready == 0)
+                if !preflight.conflicts.isEmpty {
+                    Button(
+                        "Reprocess \(preflight.conflicts.count) Edited Output\(preflight.conflicts.count == 1 ? "" : "s")",
+                        role: .destructive
+                    ) {
+                        coordinator.confirmReprocessing(
+                            in: store,
+                            conflictPolicy: .processEditedOutputs(Set(preflight.conflicts))
+                        )
+                    }
+                }
+            } else if coordinator.isPreflighting(in: store) {
+                Button("Checking Files…") {}
+                    .disabled(true)
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel) {
+                coordinator.cancelPendingReprocessing(in: store)
+            }
         } message: {
             Text(reprocessConfirmationMessage)
         }
@@ -711,7 +730,7 @@ struct MetadataProgrammingView: View {
                                         photographerPendingDeletion = photographer
                                     },
                                     onReprocessPhotographer: {
-                                        pendingReprocessScope = .photographer(photographer.id)
+                                        coordinator.beginReprocessing(.photographer(photographer.id), in: store)
                                     },
                                     onBeginReordering: {
                                         draggedPhotographerID = photographer.id
@@ -725,7 +744,7 @@ struct MetadataProgrammingView: View {
                                     onResize: resizeClip,
                                     onResizeBoundary: resizeBoundary,
                                     onReprocessClip: { clip in
-                                        pendingReprocessScope = .clip(clip.id)
+                                        coordinator.beginReprocessing(.clip(clip.id), in: store)
                                     },
                                     onPlacePlayhead: placePlayhead,
                                     onPasteAtPlayhead: pasteClips
@@ -899,7 +918,7 @@ struct MetadataProgrammingView: View {
             .disabled(!canPreviewMetadata)
             .help(previewHelp)
             Button {
-                pendingReprocessScope = .all
+                coordinator.beginReprocessing(.all, in: store)
             } label: {
                 if isReprocessing {
                     ProgressView()
@@ -967,7 +986,11 @@ struct MetadataProgrammingView: View {
     }
 
     private var reprocessConfirmationMessage: String {
-        coordinator.reprocessConfirmationMessage(for: selectedJob)
+        coordinator.reprocessConfirmationMessage(for: selectedJob, preflight: reprocessPreflight)
+    }
+
+    private var reprocessPreflight: MetadataReprocessPreflight? {
+        coordinator.reprocessPreflight(in: store)
     }
 
     private var reprocessActionTitle: String {

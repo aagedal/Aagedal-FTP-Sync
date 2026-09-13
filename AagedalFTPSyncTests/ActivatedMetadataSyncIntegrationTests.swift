@@ -181,6 +181,99 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                        transfer.metadataReport.entries[0].processingFingerprint)
     }
 
+    func testReprocessPreflightCountsChangesWithoutPublishingThem() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_PREFLIGHT.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+        let target = f.destination.appendingPathComponent("FX_PREFLIGHT.jpg")
+        let before = try Data(contentsOf: target)
+        var changedJob = f.job
+        var automation = try XCTUnwrap(changedJob.metadataAutomation)
+        automation.existingFieldPolicy = .init(overwriteFields: [.headline])
+        automation.clips[0].fields.setHeadline(try .activated("Ready after confirmation"))
+        changedJob.metadataAutomation = automation
+
+        let result = try await engine.preflightExistingLocalFiles(
+            job: changedJob, filter: .staleOrIncomplete, latestOutcomes: latest
+        )
+
+        XCTAssertEqual(result, MetadataReprocessPreflight(
+            scanned: 1, ready: 1, skipped: 0, failed: 0, conflicts: []
+        ))
+        XCTAssertEqual(try Data(contentsOf: target), before)
+        XCTAssertEqual(try ImageMetadata.read(from: target).iptc.headline, "2024-01-02")
+    }
+
+    func testReprocessPreflightReportsEditedOutputAndExplicitReplacementApplies() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_REPLACE.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+        let target = f.destination.appendingPathComponent("FX_REPLACE.jpg")
+        try jpeg().write(to: target)
+        var changedJob = f.job
+        var automation = try XCTUnwrap(changedJob.metadataAutomation)
+        automation.existingFieldPolicy = .init(overwriteFields: [.headline])
+        automation.clips[0].fields.setHeadline(try .activated("Explicit replacement"))
+        changedJob.metadataAutomation = automation
+
+        let preflight = try await engine.preflightExistingLocalFiles(
+            job: changedJob, filter: .staleOrIncomplete, latestOutcomes: latest
+        )
+        XCTAssertEqual(preflight.conflicts, ["FX_REPLACE.jpg"])
+        XCTAssertEqual(preflight.ready, 0)
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: changedJob,
+            filter: .staleOrIncomplete,
+            conflictPolicy: .processEditedOutputs(Set(preflight.conflicts)),
+            latestOutcomes: latest
+        )
+
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.conflicts, [])
+        XCTAssertEqual(try ImageMetadata.read(from: target).iptc.headline, "Explicit replacement")
+    }
+
+    func testConflictApprovalDoesNotIncludeOutputsEditedAfterPreflight() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_APPROVED.jpg", root: f.source)
+        try write(jpeg(), name: "FX_LATE.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+        let approvedTarget = f.destination.appendingPathComponent("FX_APPROVED.jpg")
+        let lateTarget = f.destination.appendingPathComponent("FX_LATE.jpg")
+        try jpeg().write(to: approvedTarget)
+        var changedJob = f.job
+        var automation = try XCTUnwrap(changedJob.metadataAutomation)
+        automation.existingFieldPolicy = .init(overwriteFields: [.headline])
+        automation.clips[0].fields.setHeadline(try .activated("Approved settings"))
+        changedJob.metadataAutomation = automation
+
+        let preflight = try await engine.preflightExistingLocalFiles(
+            job: changedJob, filter: .staleOrIncomplete, latestOutcomes: latest
+        )
+        XCTAssertEqual(preflight.conflicts, ["FX_APPROVED.jpg"])
+        let lateEdit = try jpeg()
+        try lateEdit.write(to: lateTarget)
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: changedJob,
+            filter: .staleOrIncomplete,
+            conflictPolicy: .processEditedOutputs(Set(preflight.conflicts)),
+            latestOutcomes: latest
+        )
+
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.conflicts, ["FX_LATE.jpg"])
+        XCTAssertEqual(try ImageMetadata.read(from: approvedTarget).iptc.headline, "Approved settings")
+        XCTAssertEqual(try Data(contentsOf: lateTarget), lateEdit)
+    }
+
     func testChangedSourceIsReprocessedInsteadOfMisclassifiedAsOutputEdit() async throws {
         let f = try fixture()
         try write(jpeg(), name: "FX_RESEND.jpg", root: f.source)

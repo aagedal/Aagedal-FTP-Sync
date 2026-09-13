@@ -1106,6 +1106,18 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
         coordinator.reprocessFilter = .all
         XCTAssertTrue(coordinator.reprocessConfirmationMessage(for: nil).contains("all matching files"))
+
+        let preflight = MetadataReprocessPreflight(
+            scanned: 8,
+            ready: 3,
+            skipped: 4,
+            failed: 1,
+            conflicts: ["edited.jpg"]
+        )
+        let message = coordinator.reprocessConfirmationMessage(for: nil, preflight: preflight)
+        XCTAssertTrue(message.contains("Preflight checked 8 files"))
+        XCTAssertTrue(message.contains("3 ready to update"))
+        XCTAssertTrue(message.contains("1 edited output was found"))
     }
 
     private func waitForPreview(_ coordinator: MetadataProgrammingCoordinator) async {
