@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Admit an optional signed AuraFace runtime, immutable people library and calibrated
+  policy before version 3 app writers are published. Use the same admitted context for
+  transfer, reprocessing and read-only preview while keeping face-enabled jobs paused
+  when any required dependency is unavailable.
 - Back off automatic calendar-sync retries after connection failures, skip redundant requests to the same unavailable account, and retain immediate manual Retry Now. Refresh the calendar picker less often without slowing healthy linked-calendar updates.
 - Avoid duplicate network-failure diagnostic entries and explain connection error codes without exposing addresses or credentials.
 - Avoid rewriting the growing download-name map after every directory. Checkpoint it before source reads/removals and after the final listing, retaining the existing mapping format and restart guarantees.
