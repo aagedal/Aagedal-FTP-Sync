@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add explicit AuraFace model status, download/install, cancellation, retry and
+  removal controls to People Library settings. Model changes take effect after
+  relaunch, and unconfigured builds keep recognition visibly disabled.
 - Show per-file face-recognition outcomes and the final merged Person Shown proposal
   in read-only metadata preview, including preservation and optional Keywords behavior.
 - Validate geocoding consent/settings and face-runtime prerequisites before reading a

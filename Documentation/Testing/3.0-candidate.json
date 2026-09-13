@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-7cb0844-recognition-preview",
+  "id": "development-419d031-model-installer-controls",
   "status": "IMPLEMENTING",
-  "commit": "7cb0844c195da36d47161d54664907952514795f",
+  "commit": "419d03149d2ee8042c3e346baafe237021087c01",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-recognition-preview-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-13-M4-Recognition-Preview-Outcomes.md",
-  "note": "Development build only, not ready for human acceptance. At 7cb0844, read-only preview shows typed per-file recognition outcomes and the final stable Person Shown merge, including preservation and optional Keywords behavior. The focused 21-test selection and complete suite passed with 1125 passed, 16 opt-in skips and zero failures (1141 discovered); the security baseline and unsigned Release build also passed. Production face trust/artifacts and calibration, installer UI, authorized actual-face fixtures, native/supported-OS evidence, measured resource tuning, full M5 verification and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/DerivedData-face-installer-ui-release/Build/Products/Release/AagedalFTPSync.app",
+  "evidence": "Documentation/Testing/2026-09-13-M4-Model-Installer-Controls.md",
+  "note": "Development build only, not ready for human acceptance. At 419d031, People Library settings expose explicit AuraFace model status, download/install, cancellation, retry and confirmed removal while keeping startup and status checks network-free. Unconfigured builds remain visibly disabled, and changes require relaunch for immutable admission. The focused 55-test selection and complete suite passed with 1126 passed, 16 opt-in skips and zero failures (1142 discovered); the security baseline, UI smoke build-for-testing and unsigned arm64 Release build also passed. Production face trust/artifacts and calibration, authorized actual-face fixtures, native/supported-OS evidence, measured resource tuning, full M5 verification and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
 }
