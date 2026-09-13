@@ -71,6 +71,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     @Published var snapMinutes = 15
     @Published var pendingClipChange: PendingClipChange?
     @Published var pendingReprocessScope: MetadataReprocessScope?
+    @Published var reprocessFilter: MetadataReprocessFilter = .staleOrIncomplete
     @Published var metadataPreview: MetadataPreviewResult?
     @Published var metadataPreviewFolderName = ""
     @Published var metadataPreviewError: String?
@@ -175,7 +176,8 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         case .running:
             return "Scanning the local destination…"
         case .succeeded(_, let result):
-            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed."
+            let conflicts = result.conflicts.isEmpty ? "" : ", \(result.conflicts.count) edit conflicts preserved"
+            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed\(conflicts)."
         case .failed(let message):
             return "Reprocessing failed: \(message)"
         }
@@ -207,7 +209,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         case .all, nil:
             scopeDescription = "Matching files"
         }
-        return "\(scopeDescription) in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
+        return "\(scopeDescription) in \(target) will be checked using \(reprocessFilter.title.lowercased()). Outputs changed since their latest complete receipt are preserved for manual review. The source is untouched and modification dates are retained. \(policyNote)"
     }
 
     var reprocessActionTitle: String {
@@ -226,7 +228,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         guard let scope = pendingReprocessScope,
               save(in: store),
               let loadedJobID else { return false }
-        store.reprocessExistingLocalFiles(loadedJobID, scope: scope)
+        store.reprocessExistingLocalFiles(loadedJobID, scope: scope, filter: reprocessFilter)
         return true
     }
 

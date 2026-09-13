@@ -23,11 +23,35 @@ enum MetadataReprocessScope: Equatable, Sendable {
     }
 }
 
+enum MetadataReprocessFilter: String, CaseIterable, Identifiable, Sendable {
+    case staleOrIncomplete
+    case all
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .staleOrIncomplete: "Stale or incomplete files"
+        case .all: "All matching files"
+        }
+    }
+
+    var explanation: String {
+        switch self {
+        case .staleOrIncomplete:
+            "Skip files whose latest complete processing receipt still matches the source, settings, dependencies, and output."
+        case .all:
+            "Re-evaluate every matching file, while still protecting outputs edited since their latest complete receipt."
+        }
+    }
+}
+
 struct MetadataReprocessResult: Equatable, Sendable {
     let scanned: Int
     let applied: Int
     let skipped: Int
     let failed: Int
+    let conflicts: [String]
     let metadataReport: MetadataRunReport
 
     init(
@@ -35,12 +59,14 @@ struct MetadataReprocessResult: Equatable, Sendable {
         applied: Int,
         skipped: Int,
         failed: Int = 0,
+        conflicts: [String] = [],
         metadataReport: MetadataRunReport = .empty
     ) {
         self.scanned = scanned
         self.applied = applied
         self.skipped = skipped
         self.failed = failed
+        self.conflicts = conflicts
         self.metadataReport = metadataReport
     }
 }
@@ -748,6 +774,8 @@ struct SyncEngine: Sendable {
     func reprocessExistingLocalFiles(
         job: SyncJob,
         scope: MetadataReprocessScope = .all,
+        filter: MetadataReprocessFilter = .all,
+        latestOutcomes: [String: MetadataAuditEntry] = [:],
         leftPassword: String? = nil,
         rightPassword: String? = nil
     ) async throws -> MetadataReprocessResult {
@@ -851,6 +879,7 @@ struct SyncEngine: Sendable {
         var applied = 0
         var skipped = 0
         var failed = 0
+        var conflicts: [String] = []
         var metadataReport = MetadataRunReport.empty
         let runID = UUID()
 
@@ -895,6 +924,40 @@ struct SyncEngine: Sendable {
                 }
             let existingOutputSidecarURL = FileManager.default.fileExists(atPath: temporarySidecarURL.path)
                 ? temporarySidecarURL : nil
+
+            // A receipt's output hash is ownership evidence. When the source is
+            // unchanged but the destination no longer matches, treat that as a
+            // user/external edit even if settings also changed. Never silently
+            // classify it as ordinary staleness and overwrite it.
+            let previousFingerprint = latestOutcomes[file.relativePath]?.processingFingerprint
+            if let previousFingerprint,
+               previousFingerprint.sourceRevision == MetadataProcessingFingerprint.sourceRevision(
+                    primary: sourceEvidence,
+                    companion: sourceSidecarEvidence
+               ) {
+                var currentArtifacts = [MetadataProcessingFingerprint.OutputArtifact(
+                    role: "primary", relativePath: file.relativePath, fileURL: temporaryURL
+                )]
+                if let existingOutputSidecarURL {
+                    currentArtifacts.append(.init(
+                        role: "sidecar", relativePath: sidecarPath, fileURL: existingOutputSidecarURL
+                    ))
+                }
+                let currentOutputRevision = try MetadataProcessingFingerprint.outputRevision(currentArtifacts)
+                if previousFingerprint.outputRevision != currentOutputRevision {
+                    conflicts.append(file.relativePath)
+                    skipped += 1
+                    metadataReport.append(MetadataAuditEntry(
+                        runID: runID, jobID: job.id, operation: .reprocess,
+                        relativePath: file.relativePath, status: .skipped,
+                        timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                        scheduledAt: scheduledAt, assignment: assignment,
+                        detail: "The destination changed after its latest complete processing receipt. It was preserved for manual review.",
+                        processingFingerprint: previousFingerprint
+                    ))
+                    continue
+                }
+            }
             let independentProcessing = MetadataProcessingServices.geocodingApplies(to: file.relativePath, settings: job.metadataGeocoding)
             if assignment == nil && !independentProcessing {
                 if scope.isClip { continue }
@@ -922,6 +985,30 @@ struct SyncEngine: Sendable {
                 metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
                     relativePath: file.relativePath, status: .failed, timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
                     scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription))
+                continue
+            }
+            if filter == .staleOrIncomplete,
+               let previousFingerprint,
+               let currentFingerprint = try makeProcessingFingerprint(
+                    sourceFile: sourceEvidence, sourceSidecar: sourceSidecarEvidence,
+                    assignment: assignment, geocoding: job.metadataGeocoding,
+                    faceRecognition: job.metadataFaceRecognition,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                    processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
+                    processing: processing, primaryURL: temporaryURL,
+                    relativePath: file.relativePath, sidecarURL: existingOutputSidecarURL
+               ),
+               currentFingerprint == previousFingerprint {
+                skipped += 1
+                metadataReport.append(MetadataAuditEntry(
+                    runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: .skipped,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                    scheduledAt: scheduledAt, assignment: assignment,
+                    detail: "The latest complete processing receipt is current; the destination was not rewritten.",
+                    processingEvidence: MetadataProcessingAuditEvidence(result: processing),
+                    processingFingerprint: currentFingerprint
+                ))
                 continue
             }
             let activated = processing.context != nil
@@ -1131,6 +1218,7 @@ struct SyncEngine: Sendable {
             applied: applied,
             skipped: skipped,
             failed: failed,
+            conflicts: conflicts,
             metadataReport: metadataReport
         )
     }

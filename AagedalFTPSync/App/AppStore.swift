@@ -834,12 +834,13 @@ final class AppStore: ObservableObject {
 
     func reprocessExistingLocalFiles(
         _ jobID: UUID,
-        scope: MetadataReprocessScope = .all
+        scope: MetadataReprocessScope = .all,
+        filter: MetadataReprocessFilter = .staleOrIncomplete
     ) {
         guard !isSuspendedForExternalWriter, !isJobBusy(jobID) else { return }
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.performMetadataReprocess(jobID, scope: scope)
+            await self.performMetadataReprocess(jobID, scope: scope, filter: filter)
             self.metadataReprocessTasks[jobID] = nil
         }
         metadataReprocessTasks[jobID] = task
@@ -1225,7 +1226,8 @@ final class AppStore: ObservableObject {
 
     private func performMetadataReprocess(
         _ jobID: UUID,
-        scope: MetadataReprocessScope
+        scope: MetadataReprocessScope,
+        filter: MetadataReprocessFilter
     ) async {
         guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
               let savedJob = jobs.first(where: { $0.id == jobID }) else { return }
@@ -1272,6 +1274,8 @@ final class AppStore: ObservableObject {
             let result = try await engine.reprocessExistingLocalFiles(
                 job: job,
                 scope: scope,
+                filter: filter,
+                latestOutcomes: latestMetadataAuditOutcomes(for: jobID),
                 leftPassword: leftPassword,
                 rightPassword: rightPassword
             )
@@ -1286,6 +1290,19 @@ final class AppStore: ObservableObject {
         }
         scheduler.endRunning(jobID)
         await syncConcurrencyController.release(leaseID)
+    }
+
+    private func latestMetadataAuditOutcomes(for jobID: UUID) -> [String: MetadataAuditEntry] {
+        metadataAuditEntries[jobID, default: []].reduce(into: [:]) { latest, entry in
+            guard let current = latest[entry.relativePath] else {
+                latest[entry.relativePath] = entry
+                return
+            }
+            if current.occurredAt < entry.occurredAt
+                || (current.occurredAt == entry.occurredAt && current.id.uuidString < entry.id.uuidString) {
+                latest[entry.relativePath] = entry
+            }
+        }
     }
 
     private var currentPersistentState: AppPersistentState {

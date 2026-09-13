@@ -1102,6 +1102,10 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(coordinator.reprocessActionTitle, "Reprocess Clip’s Files")
         XCTAssertTrue(coordinator.reprocessConfirmationMessage(for: nil).contains("“Morning desk” clip"))
+        XCTAssertTrue(coordinator.reprocessConfirmationMessage(for: nil).contains("stale or incomplete files"))
+
+        coordinator.reprocessFilter = .all
+        XCTAssertTrue(coordinator.reprocessConfirmationMessage(for: nil).contains("all matching files"))
     }
 
     private func waitForPreview(_ coordinator: MetadataProgrammingCoordinator) async {

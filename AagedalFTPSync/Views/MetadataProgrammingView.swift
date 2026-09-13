@@ -879,6 +879,14 @@ struct MetadataProgrammingView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Picker("Reprocess", selection: $coordinator.reprocessFilter) {
+                ForEach(MetadataReprocessFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .help(coordinator.reprocessFilter.explanation)
             Button(action: previewConfiguredLocalFolder) {
                 if isPreviewingMetadata {
                     ProgressView()

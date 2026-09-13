@@ -103,6 +103,105 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
     }
 
+    func testReceiptFilteredReprocessSkipsCurrentOutputWithoutRewriting() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_CURRENT.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let target = f.destination.appendingPathComponent("FX_CURRENT.jpg")
+        let before = try FileManager.default.attributesOfItem(atPath: target.path)
+        let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: f.job, filter: .staleOrIncomplete, latestOutcomes: latest
+        )
+
+        XCTAssertEqual(result, MetadataReprocessResult(
+            scanned: 1, applied: 0, skipped: 1,
+            metadataReport: result.metadataReport
+        ))
+        XCTAssertTrue(result.metadataReport.entries[0].detail?.contains("receipt is current") == true)
+        XCTAssertEqual(result.metadataReport.entries[0].processingFingerprint,
+                       transfer.metadataReport.entries[0].processingFingerprint)
+        let after = try FileManager.default.attributesOfItem(atPath: target.path)
+        XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
+        XCTAssertEqual(before[.modificationDate] as? Date, after[.modificationDate] as? Date)
+    }
+
+    func testReceiptFilteredReprocessAppliesSettingsChange() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_STALE.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+        var changedJob = f.job
+        var automation = try XCTUnwrap(changedJob.metadataAutomation)
+        automation.existingFieldPolicy = .init(overwriteFields: [.headline])
+        automation.clips[0].fields.setHeadline(try .activated("Updated"))
+        changedJob.metadataAutomation = automation
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: changedJob, filter: .staleOrIncomplete, latestOutcomes: latest
+        )
+
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.conflicts, [])
+        XCTAssertEqual(try ImageMetadata.read(
+            from: f.destination.appendingPathComponent("FX_STALE.jpg")
+        ).iptc.headline, "Updated")
+        XCTAssertNotEqual(result.metadataReport.entries[0].processingFingerprint?.settingsRevision,
+                          transfer.metadataReport.entries[0].processingFingerprint?.settingsRevision)
+    }
+
+    func testReceiptProtectedOutputEditIsReportedAndPreserved() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_EDITED.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+        let target = f.destination.appendingPathComponent("FX_EDITED.jpg")
+        let edit = Data("external destination edit".utf8)
+        try edit.write(to: target)
+        var changedJob = f.job
+        var automation = try XCTUnwrap(changedJob.metadataAutomation)
+        automation.existingFieldPolicy = .init(overwriteFields: [.headline])
+        automation.clips[0].fields.setHeadline(try .activated("New settings must not win"))
+        changedJob.metadataAutomation = automation
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: changedJob, filter: .all, latestOutcomes: latest
+        )
+
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertEqual(result.conflicts, ["FX_EDITED.jpg"])
+        XCTAssertEqual(try Data(contentsOf: target), edit)
+        XCTAssertTrue(result.metadataReport.entries[0].detail?.contains("manual review") == true)
+        XCTAssertEqual(result.metadataReport.entries[0].processingFingerprint,
+                       transfer.metadataReport.entries[0].processingFingerprint)
+    }
+
+    func testChangedSourceIsReprocessedInsteadOfMisclassifiedAsOutputEdit() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_RESEND.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_001)],
+            ofItemAtPath: f.source.appendingPathComponent("FX_RESEND.jpg").path
+        )
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: f.job, filter: .staleOrIncomplete, latestOutcomes: latest
+        )
+
+        XCTAssertEqual(result.conflicts, [])
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertNotEqual(result.metadataReport.entries[0].processingFingerprint?.sourceRevision,
+                          transfer.metadataReport.entries[0].processingFingerprint?.sourceRevision)
+    }
+
     func testReprocessResolutionFailureIsPerFileAndOtherFilePublishes() async throws {
         let f = try fixture()
         for root in [f.source, f.destination] {
