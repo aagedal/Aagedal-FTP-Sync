@@ -63,8 +63,10 @@ final class Version3StartupControllerTests: XCTestCase {
 
     func testMigrationRequiresAcknowledgementAndExcludesOwnProcessFromPeerDetection() async throws {
         let base = try base()
-        var peers: [Controller.RunningCopy] = [.init(id: 100, name: "This copy"), .init(id: 101, name: "Another copy")]
-        let controller = Controller(dependencies: dependencies(base, peers: { peers }))
+        let peers = MutableBox<[Controller.RunningCopy]>(
+            [.init(id: 100, name: "This copy"), .init(id: 101, name: "Another copy")]
+        )
+        let controller = Controller(dependencies: dependencies(base, peers: { peers.value }))
         await controller.load()
         XCTAssertEqual(controller.otherRunningCopies.map(\.id), [101])
         await controller.migrate()
@@ -73,7 +75,7 @@ final class Version3StartupControllerTests: XCTestCase {
         await controller.migrate()
         XCTAssertNil(controller.session)
         XCTAssertFalse(FileManager.default.fileExists(atPath: base.appendingPathComponent("profile").appendingPathComponent(Version3StorageLease.lockName).path))
-        peers = [.init(id: 100, name: "This copy")]
+        peers.value = [.init(id: 100, name: "This copy")]
         controller.refreshRunningCopies()
         await controller.migrate()
         XCTAssertEqual(controller.phase, .ready)
@@ -200,16 +202,16 @@ final class Version3StartupControllerTests: XCTestCase {
 
     func testInspectionFailureCanRetryBeforeAnyAdmissionOwnerExists() async throws {
         let base = try base()
-        var fail = true
+        let fail = MutableBox(true)
         var deps = dependencies(base)
         let prepare = deps.preparePaths
-        deps.preparePaths = { if fail { throw Injected.failed }; return try prepare() }
+        deps.preparePaths = { if fail.value { throw Injected.failed }; return try prepare() }
         let controller = Controller(dependencies: deps)
         await controller.load()
         XCTAssertEqual(controller.phase, .recovery)
         XCTAssertTrue(controller.canRetryInspection)
         XCTAssertNil(controller.rootURL)
-        fail = false
+        fail.value = false
         await controller.retryInspection()
         XCTAssertEqual(controller.phase, .selection)
         XCTAssertFalse(controller.userConfirmedOtherCopiesClosed)
@@ -262,8 +264,8 @@ final class Version3StartupControllerTests: XCTestCase {
         job.startsOnAppLaunch = true
         let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
         try encoder.encode([job]).write(to: root.appendingPathComponent("jobs-v2.json"))
-        var peers: [Controller.RunningCopy] = []
-        let controller = Controller(dependencies: dependencies(base, peers: { peers }))
+        let peers = MutableBox<[Controller.RunningCopy]>([])
+        let controller = Controller(dependencies: dependencies(base, peers: { peers.value }))
         await controller.load()
         controller.userConfirmedOtherCopiesClosed = true
         await controller.migrate()
@@ -271,7 +273,7 @@ final class Version3StartupControllerTests: XCTestCase {
         let savedJobsURL = root.appendingPathComponent("v3/jobs-v2.json")
         let savedJobs = try Data(contentsOf: savedJobsURL)
         let pausedJobs = session.store.jobs
-        peers = [.init(id: 101, name: "Another version of this app")]
+        peers.value = [.init(id: 101, name: "Another version of this app")]
         controller.refreshRunningCopies()
         XCTAssertTrue(controller.requiresRelaunchAfterConflict)
         XCTAssertTrue(session.store.isSuspendedForExternalWriter)
@@ -282,7 +284,7 @@ final class Version3StartupControllerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: savedJobsURL), savedJobs)
         XCTAssertTrue(session.calendar.isPaused)
         XCTAssertTrue(controller.userFacingMessage.contains("Quit every copy"))
-        peers = []
+        peers.value = []
         controller.refreshRunningCopies()
         XCTAssertTrue(controller.requiresRelaunchAfterConflict)
         XCTAssertThrowsError(try controller.activateCalendarSync())
@@ -345,4 +347,13 @@ private final class ControllerLaunchStub: LaunchAtLoginCoordinating {
     var status: SMAppService.Status { .notRegistered }
     func setEnabled(_ enabled: Bool) throws { XCTFail("Startup must not alter login registration") }
     func openSettings() { XCTFail("Startup must not open system settings") }
+}
+
+@MainActor
+private final class MutableBox<Value> {
+    var value: Value
+
+    init(_ value: Value) {
+        self.value = value
+    }
 }

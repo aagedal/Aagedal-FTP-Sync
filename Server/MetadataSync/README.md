@@ -41,7 +41,11 @@ HTTPS protects transport. Calendar contents are stored as ordinary JSON in the d
 7. In **Calendar Sync**, enter the same URL and a device name. Expand **Server administrator: connect the first Mac**, paste the setup key, and choose **Connect First Mac**.
 8. Set both `bootstrap_enabled` and `hosting_checks_enabled` to `false` in the private configuration and re-upload it. The setup key is no longer used during normal sync. Do not send it to other participants.
 
-Public GET discovery remains protocol 1 (`stage: hosting-check`) for compatibility. Calendar requests select protocol 2 with an HTTP header. A successful hosting check alone does not establish that the new tables and API were installed.
+Public GET discovery remains protocol 1 (`stage: hosting-check`) for compatibility.
+Classic calendar requests select protocol 2 and template-enabled 3.0 requests select
+protocol 3 with an HTTP header. A successful hosting check alone does not establish
+that the calendar tables and APIs were installed; a 3.0 client also verifies the
+authenticated protocol-3 capability response before sending template content.
 
 ## Use in the app
 
@@ -123,12 +127,15 @@ docker compose -p aftpsync-native -f Server/MetadataSync/tests/compose.yaml \
 This exercises invitation registration, receiving into a differently named job, offline edits from two independent coordinators, and a third editor with date-limited access. The test uses the production JSON encoder/decoder with a test-only loopback HTTP transport; normal app connections still require HTTPS. Run the cleanup command even if a test fails, and start fresh before rerunning because first-device registration is single-use.
 
 
-## Protocol 3 template namespace (foundation)
+## Protocol 3 template namespace
 
-The server also implements the protocol-three contract in
-`Documentation/Testing/3.0-M0-Template-Compatibility.md`. The app's legacy calendar
-coordinator remains guarded until its explicit create-and-rebind migration is
-implemented and verified; installing this server does not activate sharing.
+The server implements the protocol-three contract in
+`Documentation/Testing/3.0-M0-Template-Compatibility.md`. The 3.0 app can create and
+join template-enabled calendars and can explicitly migrate a linked classic calendar
+by reviewing its current snapshot, creating a new calendar UUID, and rebinding the
+local job only after creation is confirmed. Installing this server never migrates or
+activates a calendar automatically. Classic-calendar migration still requires native
+and live acceptance before the 3.0 release.
 
 Import the additive `schema-template-sync.sql` **after** the existing live schema
 and before uploading the upgraded PHP files. It creates separate
@@ -155,6 +162,27 @@ copyright (`copyrightTemplateVersion`) or headline/description/keywords
 (`templateVersions`). The server validates the same bounded brace/token syntax,
 keeps exact source strings and keyword arrays, and never resolves variables.
 Existing server field-byte and array-count limits still apply.
+
+### Upgrading a server for 3.0
+
+1. Back up the database and retain the deployed private `config.php` and its device
+   identities.
+2. Import `schema-template-sync.sql` after the existing `schema-live-sync.sql`. Do not
+   copy rows between the classic and template tables.
+3. Upload the matching `index.php`, `live.php`, and `templates.php`, preserving the
+   deployment's private `$configPath` assignment.
+4. Run Hosting Checks, then verify a 3.0 client can list **Template-enabled — requires
+   3.0** calendars. Keep existing jobs on **Classic — compatible with 2.x** until each
+   migration is deliberately reviewed.
+5. For a migration, use the app's calendar-migration review. The classic calendar,
+   memberships and invitations remain unchanged; invite each participant separately
+   to the newly created template calendar.
+
+Rolling the PHP files back leaves classic protocol-2 calendars available but makes the
+separate template namespace unavailable. Do not recreate a template calendar's UUID in
+the classic namespace during rollback. After re-upgrade, any cross-namespace UUID
+collision is quarantined as `namespace_collision` and needs reviewed recovery rather
+than table merging.
 
 For retained records, removing a marker requires a matching
 `templateDeactivations` entry with `recordKind` (`clip` or `photographer`),

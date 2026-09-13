@@ -1,10 +1,51 @@
-# Aagedal FTP Sync 2.9
+# Aagedal FTP Sync
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports now retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
+Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
-The [version 3.0 implementation plan](Documentation/3.0-Implementation-Plan.md) covers metadata variables, automatic reverse geocoding, and local face recognition. These features are planned and are not part of the current release.
+This branch contains the in-development 3.0 implementation. It is not a beta or a
+shipping release: the bundle still identifies itself as 2.9.2 (build 37), production
+face-model distribution and calibration are intentionally absent, and the remaining
+native, supported-macOS, performance and release gates are tracked in the
+[3.0 readiness report](Documentation/3.0-Readiness.md). Use the latest tagged 2.9.x
+release for production work until a 3.0 candidate is published.
+
+## Version 3.0 preview
+
+The 3.0 source currently adds these guarded workflows:
+
+- Explicit variables in Headline, Description, Keywords and Copyright. Supported
+  variables include the processing date, capture date, photographer, GPS city/country
+  and people already present or accepted by recognition. Braces remain literal until
+  variables are enabled for that field; a missing value preserves the complete existing
+  field rather than publishing a partial result.
+- Per-job reverse geocoding through either an offline GeoNames database or Apple online.
+  City and Country have independent disabled, fill-empty and overwrite policies. Apple
+  lookup requires explicit consent because image coordinates are sent to Apple; it does
+  not request the Mac's current location.
+- Template-enabled protocol-3 calendars in a server namespace separate from classic
+  2.x calendars. Migration creates and reviews a new calendar instead of rewriting the
+  classic one, and every participant in the new calendar needs version 3.
+- Import and exact export of immutable `.aagedalpeople` packages produced by Photo Agent.
+  Face recognition is local and appends only accepted names to Person Shown, with an
+  optional Keywords append and `{persons}` expansion. Uncertain or unavailable results
+  are omitted and remain visible in preview/audit evidence.
+- An explicit signed AuraFace model download, verification, installation, retry,
+  cancellation and removal lifecycle. Model changes take effect after relaunch so a
+  running operation keeps one immutable admitted runtime. Production builds stay
+  fail-closed until fixed HTTPS origins, a distribution key, signed artifacts and a
+  calibrated acceptance policy are configured.
+- Receipt-driven local reprocessing. The default scans stale or incomplete files,
+  previews counts without writing, skips current receipts and preserves destination
+  files edited since their last complete receipt. Replacing those edits requires a
+  separate confirmation tied to the exact paths found by that preflight.
+
+Preview, transfer and reprocessing use the same frozen per-image decisions. Processing
+receipts cover source evidence, settings, runtime dependencies and exact output content;
+incomplete enrichment cannot authorize source removal. See the
+[implementation plan](Documentation/3.0-Implementation-Plan.md) for the acceptance
+contract and open validation matrix.
 
 ## What is new
 
