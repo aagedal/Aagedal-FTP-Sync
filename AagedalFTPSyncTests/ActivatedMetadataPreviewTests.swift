@@ -104,6 +104,12 @@ final class ActivatedMetadataPreviewTests: XCTestCase {
         let root = try folder()
         let file = root.appendingPathComponent("face.jpg")
         try image(at: file)
+        _ = try MetadataWriter.apply(
+            ResolvedMetadataChanges(
+                faceNames: ResolvedFaceNameChanges(names: ["Existing Person"])
+            ),
+            to: file
+        )
         let before = try Data(contentsOf: file)
 
         let result = try await MetadataPreviewService.previewLocalFolder(
@@ -120,6 +126,8 @@ final class ActivatedMetadataPreviewTests: XCTestCase {
         XCTAssertEqual(item.processing?.changes.faceNames?.names, ["Preview Person"])
         XCTAssertTrue(item.processing?.changes.faceNames?.appendToKeywords == true)
         XCTAssertEqual(item.processing?.recognitionEvidence?.status, .completed)
+        XCTAssertEqual(item.existingPersonNames, ["Existing Person"])
+        XCTAssertEqual(item.proposedPersonNames, ["Existing Person", "Preview Person"])
         XCTAssertEqual(try Data(contentsOf: file), before)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["face.jpg"])
     }

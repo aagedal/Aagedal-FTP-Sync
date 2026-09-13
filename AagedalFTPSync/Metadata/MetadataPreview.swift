@@ -42,6 +42,22 @@ struct MetadataPreviewItem: Identifiable, Equatable, Sendable {
     var existingFields: MetadataWriter.ExistingFieldsSnapshot? = nil
     var existingFieldsUnavailable = false
     var existingPlaces: MetadataWriter.ExistingPlaceFieldsSnapshot? = nil
+
+    /// Person Shown is an XMP-only carrier and is intentionally kept separate
+    /// from the ordinary scheduled-field table. Preview still needs the same
+    /// stable, case-insensitive merge that the writer will apply.
+    var existingPersonNames: [String] {
+        guard !existingFieldsUnavailable, let existingFields, existingFields.readable else { return [] }
+        return ResolvedFaceNameChanges(
+            names: existingFields.carriers.flatMap(\.personInImage)
+        ).names
+    }
+
+    var proposedPersonNames: [String] {
+        ResolvedFaceNameChanges(
+            names: existingPersonNames + (processing?.changes.faceNames?.names ?? [])
+        ).names
+    }
 }
 
 struct MetadataPreviewResult: Equatable, Sendable {

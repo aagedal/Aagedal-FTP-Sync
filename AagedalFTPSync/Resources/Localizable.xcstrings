@@ -893,6 +893,27 @@
     "Transfers are written to a temporary file first. Two-way sync keeps the newest copy and never deletes files." : {
 
     },
+    "Accepted new names will also be appended to Keywords without removing existing keywords." : {
+
+    },
+    "Existing names preserved; recognition did not complete" : {
+
+    },
+    "No accepted new names; existing names preserved" : {
+
+    },
+    "No existing names" : {
+
+    },
+    "No names proposed" : {
+
+    },
+    "Person Shown" : {
+
+    },
+    "Recognition preview for %@" : {
+
+    },
     "Use the row below to add a new or known photographer." : {
 
     },

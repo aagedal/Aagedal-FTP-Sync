@@ -118,6 +118,30 @@ struct MetadataFolderPreviewView: View {
                         Text(MetadataAuditEvidencePresentation.coordinateDecision(.init(resolution)))
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    if let recognition = processing.recognitionEvidence {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(MetadataAuditEvidencePresentation.recognitionDecision(recognition))
+                                .foregroundStyle(recognition.status == .completed ? Color.secondary : Color.orange)
+                            HStack(alignment: .top) {
+                                Text("Person Shown").fontWeight(.medium).frame(width: 100, alignment: .leading)
+                                Text(personNamesDetail(
+                                    item.existingPersonNames,
+                                    empty: String(localized: "No existing names")
+                                ))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(personNamesProposalDetail(item: item, processing: processing))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            if processing.changes.faceNames?.appendToKeywords == true,
+                               !(processing.changes.faceNames?.names.isEmpty ?? true) {
+                                Text("Accepted new names will also be appended to Keywords without removing existing keywords.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .font(.caption)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel("Recognition preview for \(item.relativePath)")
+                    }
                     HStack {
                         Text("Field").frame(width: 100, alignment: .leading)
                         Text("Existing value").frame(maxWidth: .infinity, alignment: .leading)
@@ -157,6 +181,26 @@ struct MetadataFolderPreviewView: View {
             return carrier.name + ": " + value
         }
         return values.isEmpty ? "No existing value" : values.joined(separator: "\n")
+    }
+
+    private func personNamesDetail(_ names: [String], empty: String) -> String {
+        names.isEmpty ? empty : names.map { "• " + $0 }.joined(separator: "\n")
+    }
+
+    private func personNamesProposalDetail(
+        item: MetadataPreviewItem,
+        processing: MetadataProcessingResult
+    ) -> String {
+        guard processing.recognitionEvidence?.status == .completed else {
+            return String(localized: "Existing names preserved; recognition did not complete")
+        }
+        guard !(processing.changes.faceNames?.names.isEmpty ?? true) else {
+            return String(localized: "No accepted new names; existing names preserved")
+        }
+        return personNamesDetail(
+            item.proposedPersonNames,
+            empty: String(localized: "No names proposed")
+        )
     }
 
     private func placeDetail(_ field: MetadataPlaceField, outcome: MetadataProcessingPlaceOutcome,
