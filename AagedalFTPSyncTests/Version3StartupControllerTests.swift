@@ -38,8 +38,26 @@ final class Version3StartupControllerTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_800_000_000) })
     }
 
+    func testFreshInstallCreatesEmptyVersion3StorageWithoutPresentingStartupChoice() async throws {
+        let base = try base()
+        let controller = Controller(dependencies: dependencies(base))
+
+        await controller.load()
+
+        XCTAssertEqual(controller.phase, .ready)
+        XCTAssertNotNil(controller.session)
+        XCTAssertTrue(try XCTUnwrap(controller.session).store.jobs.isEmpty)
+        XCTAssertFalse(try XCTUnwrap(controller.catalog).hasLegacyData)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: base.appendingPathComponent("profile/v3/jobs-v2.json").path
+        ))
+    }
+
     func testInspectionIsIdempotentAndDoesNotConstructRuntimeOrMigrate() async throws {
         let base = try base()
+        let root = base.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try Data("[]".utf8).write(to: root.appendingPathComponent("jobs-v2.json.backup"))
         var calls = 0
         var deps = dependencies(base)
         let prepare = deps.preparePaths
@@ -54,14 +72,15 @@ final class Version3StartupControllerTests: XCTestCase {
         await controller.load()
         XCTAssertEqual(calls, 1)
         XCTAssertEqual(controller.phase, .selection)
-        XCTAssertEqual(controller.primarySelections.count, 9)
+        XCTAssertEqual(controller.primarySelections.count, 8)
+        XCTAssertNil(controller.primarySelections["jobs-v2.json"])
         XCTAssertEqual(controller.signatureSelection, .absent)
         XCTAssertNil(controller.session)
         XCTAssertFalse(FileManager.default.fileExists(atPath: base.appendingPathComponent("profile/v3").path))
-        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: base.appendingPathComponent("profile").path).isEmpty)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["jobs-v2.json.backup"])
     }
 
-    func testMigrationRequiresAcknowledgementAndExcludesOwnProcessFromPeerDetection() async throws {
+    func testStreamlinedUpgradeExcludesOwnProcessAndWaitsForOtherCopies() async throws {
         let base = try base()
         let peers = MutableBox<[Controller.RunningCopy]>(
             [.init(id: 100, name: "This copy"), .init(id: 101, name: "Another copy")]
@@ -69,15 +88,14 @@ final class Version3StartupControllerTests: XCTestCase {
         let controller = Controller(dependencies: dependencies(base, peers: { peers.value }))
         await controller.load()
         XCTAssertEqual(controller.otherRunningCopies.map(\.id), [101])
-        await controller.migrate()
-        XCTAssertEqual(controller.phase, .selection)
-        controller.userConfirmedOtherCopiesClosed = true
-        await controller.migrate()
+        XCTAssertEqual(controller.phase, .upgrade)
+        await controller.upgrade()
+        XCTAssertEqual(controller.phase, .upgrade)
         XCTAssertNil(controller.session)
         XCTAssertFalse(FileManager.default.fileExists(atPath: base.appendingPathComponent("profile").appendingPathComponent(Version3StorageLease.lockName).path))
         peers.value = [.init(id: 100, name: "This copy")]
         controller.refreshRunningCopies()
-        await controller.migrate()
+        await controller.upgrade()
         XCTAssertEqual(controller.phase, .ready)
         let session = try XCTUnwrap(controller.session)
         XCTAssertTrue(session.calendar.isPaused)
@@ -96,6 +114,7 @@ final class Version3StartupControllerTests: XCTestCase {
         try bytes.write(to: backup)
         let controller = Controller(dependencies: dependencies(base))
         await controller.load()
+        XCTAssertEqual(controller.phase, .selection)
         XCTAssertNil(controller.primarySelections["jobs-v2.json"])
         controller.userConfirmedOtherCopiesClosed = true
         await controller.migrate()
@@ -105,6 +124,26 @@ final class Version3StartupControllerTests: XCTestCase {
         await controller.migrate()
         XCTAssertEqual(controller.phase, .ready)
         XCTAssertEqual(try Data(contentsOf: backup), bytes)
+    }
+
+    func testOrdinaryUpgradeCanEnterDetailedRecoveryReviewWithoutSelectingBackup() async throws {
+        let base = try base()
+        let root = base.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try Data("[]".utf8).write(to: root.appendingPathComponent("jobs-v2.json"))
+        try Data("[]".utf8).write(to: root.appendingPathComponent("jobs-v2.json.backup"))
+        let controller = Controller(dependencies: dependencies(base))
+
+        await controller.load()
+        XCTAssertEqual(controller.phase, .upgrade)
+        XCTAssertEqual(controller.primarySelections["jobs-v2.json"], .file("jobs-v2.json"))
+
+        controller.reviewMigrationSources()
+
+        XCTAssertEqual(controller.phase, .selection)
+        XCTAssertEqual(controller.primarySelections["jobs-v2.json"], .file("jobs-v2.json"))
+        XCTAssertFalse(controller.userConfirmedOtherCopiesClosed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("v3").path))
     }
 
     func testCommittedRelaunchRestoresOnlyConfiguredJobsAfterAdmission() async throws {
@@ -123,8 +162,8 @@ final class Version3StartupControllerTests: XCTestCase {
 
         var migrationController: Controller? = Controller(dependencies: dependencies(base))
         await migrationController?.load()
-        migrationController?.userConfirmedOtherCopiesClosed = true
-        await migrationController?.migrate()
+        XCTAssertEqual(migrationController?.phase, .upgrade)
+        await migrationController?.upgrade()
         let migratedJobs = try XCTUnwrap(migrationController?.session).store.jobs
         XCTAssertTrue(migratedJobs.allSatisfy { !$0.isEnabled })
         XCTAssertTrue(try XCTUnwrap(migratedJobs.first(where: { $0.id == automatic.id })).startsOnAppLaunch)
@@ -133,9 +172,7 @@ final class Version3StartupControllerTests: XCTestCase {
 
         let relaunchController = Controller(dependencies: dependencies(base))
         await relaunchController.load()
-        XCTAssertEqual(relaunchController.phase, .existing)
-        relaunchController.userConfirmedOtherCopiesClosed = true
-        await relaunchController.openExisting()
+        XCTAssertEqual(relaunchController.phase, .ready)
 
         let session = try XCTUnwrap(relaunchController.session)
         XCTAssertTrue(try XCTUnwrap(session.store.jobs.first(where: { $0.id == automatic.id })).isEnabled)
@@ -187,8 +224,6 @@ final class Version3StartupControllerTests: XCTestCase {
             calendar: { _ in XCTFail("Must not construct after AppStore failure"); throw Injected.failed })
         let controller = Controller(dependencies: deps)
         await controller.load()
-        controller.userConfirmedOtherCopiesClosed = true
-        await controller.migrate()
         XCTAssertEqual(controller.phase, .recovery)
         XCTAssertNil(controller.session)
         XCTAssertEqual(calls, 1)
@@ -212,6 +247,9 @@ final class Version3StartupControllerTests: XCTestCase {
         XCTAssertTrue(controller.canRetryInspection)
         XCTAssertNil(controller.rootURL)
         fail.value = false
+        let root = base.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try Data("[]".utf8).write(to: root.appendingPathComponent("jobs-v2.json.backup"))
         await controller.retryInspection()
         XCTAssertEqual(controller.phase, .selection)
         XCTAssertFalse(controller.userConfirmedOtherCopiesClosed)
@@ -245,9 +283,6 @@ final class Version3StartupControllerTests: XCTestCase {
         let controller = Controller(dependencies: deps)
         await controller.load()
         XCTAssertTrue(controller.isTestSession)
-        XCTAssertEqual(controller.phase, .selection)
-        controller.userConfirmedOtherCopiesClosed = true
-        await controller.migrate()
         XCTAssertEqual(controller.phase, .ready)
         XCTAssertTrue(try XCTUnwrap(controller.session).calendar.isPaused)
         XCTAssertThrowsError(try controller.activateCalendarSync())
@@ -267,8 +302,7 @@ final class Version3StartupControllerTests: XCTestCase {
         let peers = MutableBox<[Controller.RunningCopy]>([])
         let controller = Controller(dependencies: dependencies(base, peers: { peers.value }))
         await controller.load()
-        controller.userConfirmedOtherCopiesClosed = true
-        await controller.migrate()
+        await controller.upgrade()
         let session = try XCTUnwrap(controller.session)
         let savedJobsURL = root.appendingPathComponent("v3/jobs-v2.json")
         let savedJobs = try Data(contentsOf: savedJobsURL)
@@ -310,8 +344,7 @@ final class Version3StartupControllerTests: XCTestCase {
         }
         let controller = Controller(dependencies: deps)
         await controller.load()
-        controller.userConfirmedOtherCopiesClosed = true
-        await controller.migrate()
+        await controller.upgrade()
         XCTAssertEqual(checksAfterCalendar, 2)
         XCTAssertEqual(controller.phase, .recovery)
         XCTAssertNil(controller.session)
@@ -332,8 +365,7 @@ final class Version3StartupControllerTests: XCTestCase {
         }
         let controller = Controller(dependencies: deps)
         await controller.load()
-        controller.userConfirmedOtherCopiesClosed = true
-        await controller.migrate()
+        await controller.upgrade()
         XCTAssertEqual(controller.phase, .recovery)
         XCTAssertNil(controller.session)
         XCTAssertTrue(controller.requiresRelaunchAfterConflict)

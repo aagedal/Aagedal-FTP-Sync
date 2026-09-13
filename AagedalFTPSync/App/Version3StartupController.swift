@@ -4,14 +4,15 @@ import Darwin
 import Foundation
 import ServiceManagement
 
-/// User-mediated production startup. Process observation can detect another copy,
-/// but cannot prove that older/noncooperating writers are excluded. The user's
-/// explicit undertaking to keep every other copy closed remains a prerequisite
-/// throughout admission and this runtime's lifetime. No process is forcibly quit.
+/// Production startup keeps routine launches out of recovery UI. A fresh install is
+/// created silently, a healthy committed v3 store opens automatically, and a normal
+/// legacy install gets one explicit upgrade action. Detailed source selection remains
+/// reserved for ambiguous or recovery cases. Process observation and the cooperative
+/// lease still gate every write; no process is forcibly quit.
 @MainActor
 final class Version3StartupController: ObservableObject {
     typealias Driver = Version3MigrationDriver
-    enum Phase: Equatable { case idle, loading, selection, existing, recovery, ready }
+    enum Phase: Equatable { case idle, loading, upgrade, selection, existing, recovery, ready }
     struct RunningCopy: Identifiable, Equatable, Sendable {
         let id: Int32
         let name: String
@@ -141,7 +142,8 @@ final class Version3StartupController: ObservableObject {
         }
     }
 
-    /// Idempotent inspection only: never starts admission or constructs AppStore.
+    /// Idempotent startup orchestration. Routine cases admit storage immediately;
+    /// only upgrades and recovery conditions remain visible for user action.
     func load() async {
         guard !loaded, !isTestSession || dependencies.testStartupMode else { return }
         loaded = true
@@ -153,26 +155,49 @@ final class Version3StartupController: ObservableObject {
             paths = prepared
             rootURL = prepared.root
             let root = prepared.root
-            let inspection = try await Task.detached(priority: .userInitiated) {
-                if try Self.exists(root.appendingPathComponent(".v3-storage-boundary.json"))
-                    || Self.exists(root.appendingPathComponent("v3")) {
-                    return Optional<Version3MigrationSourceCatalog>.none
-                }
-                return try Version3MigrationSourceCatalog.inspect(root: root)
+            let storagePresence = try await Task.detached(priority: .userInitiated) {
+                (
+                    boundary: try Self.exists(root.appendingPathComponent(".v3-storage-boundary.json")),
+                    current: try Self.exists(root.appendingPathComponent("v3"))
+                )
             }.value
             refreshRunningCopies()
-            catalog = inspection
-            if let inspection {
-                primarySelections = [:]
-                for primary in inspection.primaries {
-                    if primary.choices.contains(.file(primary.filename)) { primarySelections[primary.filename] = .file(primary.filename) }
-                    else if primary.choices == [.absent] { primarySelections[primary.filename] = .absent }
-                    // Selecting a backup always requires a deliberate UI choice.
-                }
-                signatureSelection = inspection.signatureChoices == [.absent] ? .absent : nil
-                phase = .selection
-            } else {
+            if storagePresence.boundary || storagePresence.current {
                 phase = .existing
+                if storagePresence.boundary, storagePresence.current, otherRunningCopies.isEmpty {
+                    // Legacy versions do not write the v3 directory. With no live peer,
+                    // the v3 lease is the authority needed for an ordinary reopen.
+                    userConfirmedOtherCopiesClosed = true
+                    await admit(.openCommitted)
+                } else {
+                    userFacingMessage = otherRunningCopies.isEmpty
+                        ? "Saved 3.0 data needs recovery review before it can be opened."
+                        : "Close the other running copy before opening saved 3.0 data."
+                }
+                return
+            }
+
+            let inspection = try await Task.detached(priority: .userInitiated) {
+                try Version3MigrationSourceCatalog.inspect(root: root)
+            }.value
+            catalog = inspection
+            primarySelections = inspection.recommendedPrimarySources
+            signatureSelection = inspection.recommendedSignatureSource
+
+            if !inspection.hasLegacyData, otherRunningCopies.isEmpty {
+                // No legacy bytes exist to choose or protect. Create an empty v3 store
+                // without presenting migration internals on a brand-new installation.
+                phase = .upgrade
+                userConfirmedOtherCopiesClosed = true
+                await migrateSelectedSources()
+            } else if inspection.supportsStreamlinedUpgrade {
+                phase = .upgrade
+                userFacingMessage = inspection.hasLegacyData
+                    ? "Your existing settings are ready for a one-time upgrade. Your original 2.9 data will be kept as a recovery copy."
+                    : "A new 3.0 library is ready after every other copy of the app is closed."
+            } else {
+                phase = .selection
+                userFacingMessage = "Some saved data needs recovery review before upgrading. Choose which retained source to use."
             }
         } catch {
             phase = .recovery
@@ -209,7 +234,27 @@ final class Version3StartupController: ObservableObject {
     }
 
     func migrate() async {
-        guard phase == .selection, let catalog, let signatures = signatureSelection else {
+        guard phase == .selection else { return }
+        await migrateSelectedSources()
+    }
+
+    /// The button is the user's explicit request to use the recommended current
+    /// sources. It never authorizes backup fallback or source repair.
+    func upgrade() async {
+        guard phase == .upgrade else { return }
+        userConfirmedOtherCopiesClosed = true
+        await migrateSelectedSources()
+    }
+
+    func reviewMigrationSources() {
+        guard phase == .upgrade, catalog?.hasLegacyData == true else { return }
+        userConfirmedOtherCopiesClosed = false
+        phase = .selection
+        userFacingMessage = "Review the retained sources. Backups are never selected automatically."
+    }
+
+    private func migrateSelectedSources() async {
+        guard let catalog, let signatures = signatureSelection else {
             userFacingMessage = "Choose a source for each saved store and for source signatures before migrating."
             return
         }
@@ -225,11 +270,13 @@ final class Version3StartupController: ObservableObject {
 
     func openExisting() async {
         guard phase == .existing else { return }
+        userConfirmedOtherCopiesClosed = true
         await admit(.openCommitted)
     }
 
     func recoverPrepared() async {
         guard phase == .existing else { return }
+        userConfirmedOtherCopiesClosed = true
         await admit(.recoverPrepared)
     }
 

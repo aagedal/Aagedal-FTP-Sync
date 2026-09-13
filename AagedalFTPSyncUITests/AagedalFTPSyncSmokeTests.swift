@@ -269,36 +269,42 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let session = UUID().uuidString
         launchVersion3(session: session, fixture: "populated")
 
-        XCTAssertTrue(app.staticTexts["Prepare your saved data for 3.0"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["Upgrade to 3.0"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].exists == false)
-        element("startup.closedOtherCopies").click()
-        let migrate = element("startup.migrate")
-        XCTAssertTrue(migrate.isEnabled)
-        migrate.click()
+        XCTAssertFalse(element("startup.source.jobs-v2.json").exists)
+        let upgrade = element("startup.upgrade")
+        XCTAssertTrue(upgrade.isEnabled)
+        upgrade.click()
 
         XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
         XCTAssertTrue(app.staticTexts["Your saved data is open. Jobs and calendar sync remain paused until you explicitly start them."].exists)
         app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
-        app.statusItems.firstMatch.click()
+        XCTAssertFalse(app.windows["Startup and Recovery"].waitForExistence(timeout: 2))
+        openStatusMenu()
         XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Start"].exists)
 
         app.terminate()
-        launchVersion3(session: session)
-        XCTAssertTrue(app.staticTexts["Startup and Recovery"].waitForExistence(timeout: 8))
-        element("startup.closedOtherCopies").click()
-        element("startup.openExisting").click()
-        XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
-        let restoredMessage = element("startup.message")
-        XCTAssertTrue(restoredMessage.waitForExistence(timeout: 3))
-        XCTAssertTrue(
-            String(describing: restoredMessage.value ?? "")
-                .contains("configured to start on launch are active")
-        )
-        app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
-        app.statusItems.firstMatch.click()
+        launchVersion3(session: session, expectsStartupWindow: false)
+        XCTAssertFalse(app.windows["Startup and Recovery"].waitForExistence(timeout: 2))
+        openStatusMenu()
         XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Stop"].exists)
+    }
+
+    func testVersion3FreshInstallSkipsStartupAndRecoveryWindow() {
+        launchVersion3(session: UUID().uuidString, expectsStartupWindow: false)
+
+        XCTAssertFalse(app.windows["Startup and Recovery"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.statusItems.firstMatch.exists)
+    }
+
+    func testVersion3BackupOnlySourceUsesDetailedRecoveryMigration() {
+        launchVersion3(session: UUID().uuidString, fixture: "backup-only")
+
+        XCTAssertTrue(app.staticTexts["Recovery Migration"].waitForExistence(timeout: 8))
+        XCTAssertTrue(element("startup.source.jobs-v2.json").exists)
+        XCTAssertTrue(element("startup.closedOtherCopies").exists)
+        XCTAssertFalse(element("startup.upgrade").exists)
     }
 
     private func launch(
@@ -332,7 +338,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(expectedContent.waitForExistence(timeout: 8))
     }
 
-    private func launchVersion3(session: String, fixture: String? = nil) {
+    private func launchVersion3(session: String, fixture: String? = nil, expectsStartupWindow: Bool = true) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
         app = cleanApp
@@ -342,7 +348,22 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if let fixture { app.launchEnvironment["AAGEDAL_UI_TEST_V3_FIXTURE"] = fixture }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
-        XCTAssertTrue(app.windows["Startup and Recovery"].waitForExistence(timeout: 8))
+        if expectsStartupWindow {
+            XCTAssertTrue(app.windows["Startup and Recovery"].waitForExistence(timeout: 8))
+        } else {
+            XCTAssertTrue(app.statusItems.firstMatch.waitForExistence(timeout: 8))
+        }
+    }
+
+    private func openStatusMenu() {
+        let statusItem = app.statusItems.firstMatch
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        statusItem.click()
+        let jobsButton = element("open-jobs-window")
+        if !jobsButton.waitForExistence(timeout: 3) {
+            statusItem.click()
+            XCTAssertTrue(jobsButton.waitForExistence(timeout: 3))
+        }
     }
 
     private func openConfigurationMenu() {

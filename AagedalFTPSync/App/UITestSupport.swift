@@ -43,15 +43,17 @@ enum UITestSupport {
     static func seedVersion3StartupFixtureIfRequested(at rootURL: URL) throws {
         guard enabled,
               usesVersion3Startup,
-              ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_V3_FIXTURE"] == "populated" else {
+              let fixture = ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_V3_FIXTURE"] else {
             return
         }
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
-        let repository = JobRepository(fileURL: fileURL("jobs-v2.json", rootURL: rootURL))
+        let filename = fixture == "backup-only" ? "jobs-v2.json.backup" : "jobs-v2.json"
+        guard fixture == "populated" || fixture == "backup-only" else { return }
+        let repository = JobRepository(fileURL: fileURL(filename, rootURL: rootURL))
         guard try repository.load().isEmpty else { return }
 
         var job = fixtureJob(rootURL: rootURL)
-        job.name = "Migrated 2.9 UI Fixture"
+        job.name = fixture == "backup-only" ? "Recovery Backup UI Fixture" : "Migrated 2.9 UI Fixture"
         job.isEnabled = true
         job.startsOnAppLaunch = true
         try repository.save([job])

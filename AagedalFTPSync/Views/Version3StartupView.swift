@@ -159,8 +159,26 @@ struct Version3StartupView: View {
                         ForEach(startup.otherRunningCopies) { copy in Text(copy.name) }
                         Button("Check Again") { startup.refreshRunningCopies() }
                     }
-                    if startup.phase == .selection, let catalog = startup.catalog {
-                        Text("Choose the saved source for each library. The originals are retained, and old text keeps its literal meaning. Choosing a backup replaces that library's primary data in the new copy.")
+                    if startup.phase == .upgrade, startup.catalog != nil {
+                        if startup.catalog?.hasLegacyData == true {
+                            Text("Aagedal FTP Sync will make a separate 3.0 copy of your current settings. Your existing data is retained so it remains available for recovery.")
+                        } else {
+                            Text("Aagedal FTP Sync will create a new, empty 3.0 library when it is safe to continue.")
+                        }
+                        Text("Quit any other copies of Aagedal FTP Sync before continuing.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Button("Upgrade to 3.0") { Task { await startup.upgrade() } }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!startup.otherRunningCopies.isEmpty || startup.busy)
+                            .accessibilityIdentifier("startup.upgrade")
+                        if startup.catalog?.hasLegacyData == true {
+                            Button("Review Migration Details…") { startup.reviewMigrationSources() }
+                                .buttonStyle(.link)
+                                .accessibilityIdentifier("startup.reviewSources")
+                        }
+                    } else if startup.phase == .selection, let catalog = startup.catalog {
+                        Text("Choose the saved source for each library. The originals are retained, and old text keeps its literal meaning. Choosing a backup replaces that library's primary data in the new copy. No backup is used automatically.")
                         ForEach(catalog.primaries, id: \.filename) { primary in
                             Picker(primary.filename, selection: sourceBinding(primary.filename)) {
                                 Text("Choose a source").tag(Optional<Version3MigrationDriver.Source>.none)
@@ -183,13 +201,12 @@ struct Version3StartupView: View {
                             .accessibilityIdentifier("startup.migrate")
                     } else if startup.phase == .existing {
                         Text("An existing 3.0 installation or recovery record was found. Opening validates its complete saved state. Recovery uses the already prepared copy; it does not import newer changes from 2.9.")
-                        acknowledgment
                         HStack {
                             Button("Open Saved 3.0 Data") { Task { await startup.openExisting() } }
-                                .disabled(!canContinue)
+                                .disabled(!canProceed)
                                 .accessibilityIdentifier("startup.openExisting")
                             Button("Recover Prepared Copy") { Task { await startup.recoverPrepared() } }
-                                .disabled(!canContinue)
+                                .disabled(!canProceed)
                                 .accessibilityIdentifier("startup.recover")
                         }
                     } else if startup.phase == .recovery {
@@ -209,7 +226,7 @@ struct Version3StartupView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                if let root = startup.rootURL {
+                if let root = startup.rootURL, startup.phase != .upgrade {
                     Divider()
                     Text(root.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     Button("Show Saved Data in Finder") { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: root.path) }
@@ -225,10 +242,12 @@ struct Version3StartupView: View {
 
     private var title: String {
         if startup.session != nil { return "Review before starting" }
-        return startup.phase == .selection ? "Prepare your saved data for 3.0" : "Startup and Recovery"
+        if startup.phase == .upgrade { return "Upgrade to 3.0" }
+        return startup.phase == .selection ? "Recovery Migration" : "Startup and Recovery"
     }
+    private var canProceed: Bool { startup.otherRunningCopies.isEmpty && !startup.busy }
     private var canContinue: Bool {
-        startup.userConfirmedOtherCopiesClosed && startup.otherRunningCopies.isEmpty && !startup.busy
+        startup.userConfirmedOtherCopiesClosed && canProceed
     }
     private var acknowledgment: some View {
         Toggle("I have quit all other copies of Aagedal FTP Sync and will keep them closed while using this copy.",
