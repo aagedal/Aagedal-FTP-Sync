@@ -614,6 +614,14 @@ private struct TimelineClipView: View {
             .disabled(!canReprocess)
         }
         .help(interactionHelp)
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier("metadata-programming-clip-\(clip.id.uuidString)")
+        .accessibilityLabel(timelineTitle)
+        .accessibilityValue(timeLabel)
+        .accessibilityHint(interactionHelp)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelect() }
+        .accessibilityAction(named: "Edit Clip") { onEdit() }
     }
 
     private var isPreviewingDuplicate: Bool {

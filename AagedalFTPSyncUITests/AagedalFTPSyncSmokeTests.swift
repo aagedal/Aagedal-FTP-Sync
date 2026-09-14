@@ -86,7 +86,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         element("open-metadata-programming").click()
         let metadataWindow = app.windows["Metadata Programming"]
         XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
-        let clip = metadataWindow.staticTexts["Map Assignment"].firstMatch
+        let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
         XCTAssertTrue(clip.waitForExistence(timeout: 3))
         clip.click()
 
@@ -111,6 +111,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         replaceText(in: source, with: "{photographer}")
         XCTAssertTrue(app.buttons["Apply"].firstMatch.isEnabled)
         app.typeKey(.escape, modifierFlags: [])
+        waitForSheetTransition()
         XCTAssertTrue(headline.waitForExistence(timeout: 3))
         XCTAssertEqual(headline.value as? String, original)
     }
@@ -123,7 +124,11 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         replaceText(in: source, with: "Photo: {photographer}")
         app.checkBoxes["Resolve Variables"].click()
         app.buttons["Apply"].firstMatch.click()
-        app.buttons["Edit Headline variables"].click()
+        waitForSheetTransition()
+        let editHeadline = app.buttons["Edit Headline variables"].firstMatch
+        XCTAssertTrue(editHeadline.waitForExistence(timeout: 3))
+        XCTAssertTrue(editHeadline.isHittable)
+        editHeadline.click()
         XCTAssertTrue(source.waitForExistence(timeout: 3))
         XCTAssertEqual(source.value as? String, "Photo: {photographer}")
         XCTAssertEqual(String(describing: app.checkBoxes["Resolve Variables"].value ?? ""), "1")
@@ -156,15 +161,22 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     private func openSeededClipEditor() {
         launch(seedJob: true, seedMap: true)
-        element("open-metadata-programming").click()
+        // Open through the compact status panel so this editor-focused setup does
+        // not depend on the job form's current scroll position.
+        openStatusMenu()
+        let openMetadata = app.buttons["Metadata Programming for UI Smoke Fixture"]
+        XCTAssertTrue(openMetadata.waitForExistence(timeout: 3))
+        openMetadata.click()
         let window = app.windows["Metadata Programming"]
         XCTAssertTrue(window.waitForExistence(timeout: 5))
-        let clip = window.staticTexts["Map Assignment"].firstMatch
+        dismissStatusPanelIfNeeded()
+        let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
         XCTAssertTrue(clip.waitForExistence(timeout: 3))
-        clip.click()
-        let timeline = element("metadata-programming-timeline")
-        timeline.typeKey(.rightArrow, modifierFlags: [])
-        timeline.typeKey("i", modifierFlags: .command)
+        // The clip exposes its full interactive frame as one accessible control.
+        clip.rightClick()
+        let editClip = app.menuItems["Edit Clip…"]
+        XCTAssertTrue(editClip.waitForExistence(timeout: 3))
+        editClip.click()
         XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
     }
 
@@ -307,6 +319,36 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(element("startup.upgrade").exists)
     }
 
+    func testVersion3DamagedPrimaryNeverFallsBackToBackup() {
+        launchVersion3(session: UUID().uuidString, fixture: "damaged-primary")
+
+        XCTAssertTrue(app.staticTexts["Upgrade to 3.0"].waitForExistence(timeout: 8))
+        XCTAssertFalse(element("startup.source.jobs-v2.json").exists)
+        element("startup.upgrade").click()
+
+        let failClosed = "Startup could not complete safely. Saved data remains available for recovery. Quit and reopen the app before trying Open or Recover; no default configuration was loaded."
+        let failure = app.staticTexts.matching(NSPredicate(format: "value == %@", failClosed)).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 12))
+        XCTAssertFalse(app.staticTexts["Review before starting"].exists)
+        XCTAssertFalse(app.staticTexts["Recovery Backup UI Fixture"].exists)
+    }
+
+    func testVersion3RecoversPreparedCopyWithoutReimportingLegacyChanges() {
+        launchVersion3(session: UUID().uuidString, fixture: "prepared-recovery")
+
+        let recover = element("startup.recover")
+        XCTAssertTrue(recover.waitForExistence(timeout: 8))
+        XCTAssertTrue(recover.isEnabled)
+        recover.click()
+
+        XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
+        app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
+        openStatusMenu()
+        XCTAssertTrue(app.staticTexts["Prepared Recovery UI Fixture"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Legacy Changed After Preparation"].exists)
+        XCTAssertTrue(app.buttons["Start"].exists)
+    }
+
     private func launch(
         seedJob: Bool = false,
         seedMap: Bool = false,
@@ -325,14 +367,14 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 
-        if !app.windows["Aagedal FTP Sync"].waitForExistence(timeout: 1) {
-            app.statusItems["Aagedal FTP Sync"].click()
+        let jobsWindow = app.windows["jobs"]
+        if !jobsWindow.waitForExistence(timeout: 5) {
+            openStatusMenu()
             let openJobs = element("open-jobs-window")
             XCTAssertTrue(openJobs.waitForExistence(timeout: 3))
             openJobs.click()
-            if openJobs.exists {
-                app.statusItems["Aagedal FTP Sync"].click()
-            }
+            XCTAssertTrue(jobsWindow.waitForExistence(timeout: 5))
+            dismissStatusPanelIfNeeded()
         }
         let expectedContent = seedJob ? element("job-name") : element("add-sync-job-empty-state")
         XCTAssertTrue(expectedContent.waitForExistence(timeout: 8))
@@ -370,6 +412,21 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let menu = element("configuration-transfer-menu")
         XCTAssertTrue(menu.waitForExistence(timeout: 3))
         menu.click()
+    }
+
+    private func dismissStatusPanelIfNeeded() {
+        let panelContent = element("open-jobs-window")
+        if panelContent.exists {
+            app.statusItems.firstMatch.click()
+            XCTAssertFalse(panelContent.waitForExistence(timeout: 2))
+        }
+    }
+
+    /// Querying a SwiftUI hierarchy during an AppKit sheet dismissal can recurse
+    /// inside accessibility on the macOS 27 beta. Let the transition settle before
+    /// asking XCTest for another full snapshot.
+    private func waitForSheetTransition() {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.75))
     }
 
     private func element(_ identifier: String) -> XCUIElement {

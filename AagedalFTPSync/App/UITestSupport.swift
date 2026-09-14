@@ -46,17 +46,33 @@ enum UITestSupport {
               let fixture = ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_V3_FIXTURE"] else {
             return
         }
+        let supportedFixtures = Set(["populated", "backup-only", "damaged-primary", "prepared-recovery"])
+        guard supportedFixtures.contains(fixture) else { return }
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         let filename = fixture == "backup-only" ? "jobs-v2.json.backup" : "jobs-v2.json"
-        guard fixture == "populated" || fixture == "backup-only" else { return }
         let repository = JobRepository(fileURL: fileURL(filename, rootURL: rootURL))
         guard try repository.load().isEmpty else { return }
 
         var job = fixtureJob(rootURL: rootURL)
-        job.name = fixture == "backup-only" ? "Recovery Backup UI Fixture" : "Migrated 2.9 UI Fixture"
+        switch fixture {
+        case "backup-only": job.name = "Recovery Backup UI Fixture"
+        case "prepared-recovery": job.name = "Prepared Recovery UI Fixture"
+        default: job.name = "Migrated 2.9 UI Fixture"
+        }
         job.isEnabled = true
         job.startsOnAppLaunch = true
         try repository.save([job])
+
+        if fixture == "damaged-primary" {
+            try Data(contentsOf: fileURL("jobs-v2.json", rootURL: rootURL))
+                .write(to: fileURL("jobs-v2.json.backup", rootURL: rootURL))
+            try Data("{\"damaged\":".utf8).write(to: fileURL("jobs-v2.json", rootURL: rootURL))
+        } else if fixture == "prepared-recovery" {
+            try prepareInterruptedVersion3Migration(at: rootURL)
+            var changed = job
+            changed.name = "Legacy Changed After Preparation"
+            try repository.save([changed])
+        }
     }
 
     @MainActor
@@ -138,6 +154,39 @@ enum UITestSupport {
 
     private static func fileURL(_ name: String, rootURL: URL) -> URL {
         rootURL.appendingPathComponent(name, isDirectory: false)
+    }
+
+    private enum FixtureInterruption: Error { case preparedBoundary, unexpectedCompletion }
+
+    /// Leaves a valid PREPARED boundary with no installed v3 directory. The later
+    /// legacy edit proves that the recovery action uses the frozen snapshot rather
+    /// than importing whatever an older app wrote after the interruption.
+    private static func prepareInterruptedVersion3Migration(at rootURL: URL) throws {
+        let catalog = try Version3MigrationSourceCatalog.inspect(root: rootURL)
+        guard let signatures = catalog.recommendedSignatureSource else {
+            throw FixtureInterruption.unexpectedCompletion
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .gmt
+        let plan = try catalog.makePlan(
+            primarySources: catalog.recommendedPrimarySources,
+            signatures: signatures,
+            calendar: calendar,
+            migrationDate: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        do {
+            _ = try Version3MigrationDriver(
+                root: rootURL,
+                temporaryDirectory: rootURL.deletingLastPathComponent()
+            ).migrateSelectedSources(plan) { checkpoint in
+                if case .boundaryPrepared = checkpoint {
+                    throw FixtureInterruption.preparedBoundary
+                }
+            }
+            throw FixtureInterruption.unexpectedCompletion
+        } catch FixtureInterruption.preparedBoundary {
+            return
+        }
     }
 
     private static func fixtureJob(rootURL: URL) -> SyncJob {
