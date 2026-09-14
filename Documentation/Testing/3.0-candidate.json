@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-f1d0ce5-launch-experience",
+  "id": "development-ade3c2d-recovery-fixtures",
   "status": "IMPLEMENTING",
-  "commit": "f1d0ce53b8cf98e159f2f0db96f3fe3499a635e9",
+  "commit": "ade3c2d8a4898c6388711c50564177f61c4e680b",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/v3-launch-ux-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-13-M3-Launch-Experience.md",
-  "note": "Development build only, not ready for human acceptance. Routine launch now silently creates a fresh v3 store, offers one-click current-source migration for ordinary 2.9 data, silently reopens healthy committed v3 storage, and reserves technical source selection for ambiguous or recovery cases. Backups are never selected or used as fallback automatically. The complete application suite passed 1128 tests with 16 opt-in skips and zero failures from 1144 discovered; three combined signed native launch UI tests, security/current-identity guards and an unsigned arm64 Release build also pass. A full signed UI-suite attempt before final launch-test timing stabilization was not a pass, so the full UI suite remains open. Damaged-primary/prepared recovery, simultaneous-copy and downgrade checks, production face trust/artifacts and calibration, authorized actual-face fixtures, supported-OS evidence, enriched performance, the full candidate matrix and all M6 release gates remain open. The app version remains 2.9.2 (37), and prior candidate result sets are preserved."
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/v3-nonui-release/Build/Products/Release/AagedalFTPSync.app",
+  "evidence": "Documentation/Testing/2026-09-14-M3-Recovery-Non-UI.md",
+  "note": "Development build only, not ready for beta or human acceptance. Damaged-primary and interrupted-PREPARED UI fixtures now cover the remaining recovery branches, and metadata clips expose one stable accessible interaction surface. A focused 49-test non-UI startup/migration/recovery selection, security/current-identity guards, five checklist persistence tests, two patched SSH signature tests and an unsigned arm64 Release build pass. The prior complete application suite and three focused signed launch UI tests passed at f1d0ce5. The latest signed UI-suite attempt was stopped without a result and was not retried; PHP is unavailable on this host. Production face trust/artifacts and calibration, authorized actual-face fixtures, supported-OS evidence, enriched performance, full UI/server suites, 3.0 identity, signed archive, the full candidate matrix and all final manual acceptance gates remain open. The app version remains 2.9.2 (37), and prior evidence is preserved."
 }

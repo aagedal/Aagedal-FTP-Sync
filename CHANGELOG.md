@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Expose each metadata timeline clip as one keyboard- and VoiceOver-accessible
+  control with its assignment, time range, interaction guidance and edit action.
 - Allow the version 3 startup lease to open its already-validated Application
   Support directory inside App Sandbox while retaining final-symlink and
   replacement checks. This fixes first-run preparation failing before migration.
