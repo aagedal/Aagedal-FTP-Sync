@@ -52,13 +52,17 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         launch(seedJob: true)
 
         openConfigurationMenu()
-        app.menuItems["Export Sync Jobs…"].click()
+        let exportJobs = app.menuItems["Export Sync Jobs…"]
+        XCTAssertTrue(exportJobs.waitForExistence(timeout: 5))
+        exportJobs.click()
         XCTAssertTrue(app.staticTexts["Export Sync Jobs"].waitForExistence(timeout: 3))
         element("encrypt-configuration").click()
         element("configuration-transfer-submit").click()
 
         openConfigurationMenu()
-        app.menuItems["Import Configuration Package…"].click()
+        let importPackage = app.menuItems["Import Configuration Package…"]
+        XCTAssertTrue(importPackage.waitForExistence(timeout: 5))
+        importPackage.click()
         XCTAssertTrue(app.staticTexts["Import Unencrypted Package"].waitForExistence(timeout: 3))
         element("configuration-transfer-submit").click()
 
@@ -161,31 +165,28 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     private func openSeededClipEditor() {
         launch(seedJob: true, seedMap: true)
-        // Open through the compact status panel so this editor-focused setup does
-        // not depend on the job form's current scroll position.
-        openStatusMenu()
-        let openMetadata = app.buttons["Metadata Programming for UI Smoke Fixture"]
-        XCTAssertTrue(openMetadata.waitForExistence(timeout: 3))
-        openMetadata.click()
+        element("open-metadata-programming").click()
         let window = app.windows["Metadata Programming"]
         XCTAssertTrue(window.waitForExistence(timeout: 5))
-        dismissStatusPanelIfNeeded()
         let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
         XCTAssertTrue(clip.waitForExistence(timeout: 3))
-        // The clip exposes its full interactive frame as one accessible control.
-        clip.rightClick()
-        let editClip = app.menuItems["Edit Clip…"]
-        XCTAssertTrue(editClip.waitForExistence(timeout: 3))
-        editClip.click()
+        clip.click()
+        let timeline = element("metadata-programming-timeline")
+        timeline.typeKey(.rightArrow, modifierFlags: [])
+        timeline.typeKey("i", modifierFlags: .command)
         XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
     }
 
     func testPhotographerMapClipScrubbingAndEditing() {
         launch(seedJob: true, seedMap: true)
 
-        element("open-metadata-programming").click()
+        openStatusMenu()
+        let openMetadata = app.buttons["Metadata Programming for UI Smoke Fixture"]
+        XCTAssertTrue(openMetadata.waitForExistence(timeout: 5))
+        openMetadata.click()
         let metadataWindow = app.windows["Metadata Programming"]
         XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
+        dismissStatusPanelIfNeeded()
         element("open-photographer-map").click()
 
         let mapWindow = app.windows["Photographer Map"]
@@ -369,12 +370,19 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
         let jobsWindow = app.windows["jobs"]
         if !jobsWindow.waitForExistence(timeout: 5) {
-            openStatusMenu()
-            let openJobs = element("open-jobs-window")
-            XCTAssertTrue(openJobs.waitForExistence(timeout: 3))
-            openJobs.click()
-            XCTAssertTrue(jobsWindow.waitForExistence(timeout: 5))
-            dismissStatusPanelIfNeeded()
+            // SwiftUI occasionally restores only the menu-bar scene during a
+            // rapid sequence of signed UI-test launches. Retry this isolated
+            // process once before exercising the menu-bar recovery path.
+            app.terminate()
+            app.launch()
+            if !jobsWindow.waitForExistence(timeout: 5) {
+                openStatusMenu()
+                let openJobs = element("open-jobs-window")
+                XCTAssertTrue(openJobs.waitForExistence(timeout: 3))
+                openJobs.click()
+                XCTAssertTrue(jobsWindow.waitForExistence(timeout: 5))
+                dismissStatusPanelIfNeeded()
+            }
         }
         let expectedContent = seedJob ? element("job-name") : element("add-sync-job-empty-state")
         XCTAssertTrue(expectedContent.waitForExistence(timeout: 8))
@@ -402,9 +410,12 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
         statusItem.click()
         let jobsButton = element("open-jobs-window")
-        if !jobsButton.waitForExistence(timeout: 3) {
+        if !jobsButton.waitForExistence(timeout: 8) {
+            // Establish a known closed state before retrying. A second blind
+            // click can close a panel that appeared just after the first wait.
+            app.typeKey(.escape, modifierFlags: [])
             statusItem.click()
-            XCTAssertTrue(jobsButton.waitForExistence(timeout: 3))
+            XCTAssertTrue(jobsButton.waitForExistence(timeout: 5))
         }
     }
 

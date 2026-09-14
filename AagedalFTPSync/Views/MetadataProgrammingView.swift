@@ -154,6 +154,11 @@ struct MetadataProgrammingView: View {
 
     private var sheetContent: some View {
         mainContent
+        // A clip editor is modal. Explicitly remove its timeline background from
+        // the accessibility hierarchy while the sheet is open: on macOS 27 an
+        // XCTest snapshot of a nested variable sheet otherwise asks AppKit to
+        // resolve labels for the hidden compound clip controls and can recurse.
+        .accessibilityHidden(editingClipID != nil)
         .sheet(isPresented: Binding(
             get: { editingClipID != nil },
             set: { if !$0 { editingClipID = nil } }

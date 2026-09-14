@@ -39,6 +39,11 @@ struct MetadataTemplateFieldEditor: View {
                     .accessibilityLabel(title)
             }
         }
+        // This editor is the modal background while its variable sheet is open.
+        // Keeping the newly activated source in the macOS 27 accessibility tree
+        // can make AppKit resolve the background label through the presented
+        // sheet and recurse during a full XCTest/VoiceOver snapshot.
+        .accessibilityHidden(showingVariables)
         .sheet(isPresented: $showingVariables) {
             MetadataTemplateTextDraft(title: title, initial: value, samplePhotographer: samplePhotographer) {
                 value = $0
