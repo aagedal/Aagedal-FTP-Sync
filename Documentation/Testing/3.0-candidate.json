@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-9057456-offline-edges",
+  "id": "development-57188ae-accessibility-mitigation",
   "status": "IMPLEMENTING",
-  "commit": "9057456e00d4f3337c91ecec4f2cd38d2ec96137",
+  "commit": "57188ae1e0b23ac5175e6326d6997094ef66b2c4",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/v3-geocoding-edge-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-14-M2-Offline-Edges-and-Non-UI.md",
-  "note": "Development build only, not ready for beta or human acceptance. Public offline rural, coastal and nearby cross-border fixtures now exercise the fixed 50 km policy. The complete application target passes 1,130 tests with 16 opt-in skips and zero failures at this commit; the security/current-identity guards, checklist persistence suite and unsigned arm64 Release build also pass. No SwiftUI test was started in this cycle. Prior focused signed launch UI evidence remains at f1d0ce5. PHP is unavailable on this host. Production face trust/artifacts and calibration, authorized actual-face fixtures, supported-OS evidence, actual image/location workflows, enriched performance, full UI/server suites, 3.0 identity, signed archive, the full candidate matrix and all final manual acceptance gates remain open. The app version remains 2.9.2 (37), and prior evidence is preserved."
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/v3-ax-fix-release/Build/Products/Release/AagedalFTPSync.app",
+  "evidence": "Documentation/Testing/2026-09-14-Signed-Recovery-and-Accessibility.md",
+  "note": "Development build only, not ready for beta or human acceptance. Focused signed damaged-primary and interrupted-prepared recovery UI tests pass. A broad signed UI run passed 16 of 18 tests before an accessibility snapshot crashed the app; the resulting crash dialog obstructed the final test. The narrow timeline accessibility mitigation at this commit passes the complete non-UI target (1,130 passed, 16 opt-in skips, zero failed), UI build-for-testing, the security/current-identity guards, five checklist persistence tests and an unsigned arm64 Release build, but its native UI rerun is pending because the Mac locked. Public offline rural, coastal and nearby cross-border fixtures remain covered. PHP is unavailable on this host. Production face trust/artifacts and calibration, authorized actual-face fixtures, supported-OS evidence, actual image/location workflows, enriched performance, clean full UI/server suites, 3.0 identity, signed archive, the full candidate matrix and all final manual acceptance gates remain open. The app version remains 2.9.2 (37), and prior evidence is preserved."
 }
