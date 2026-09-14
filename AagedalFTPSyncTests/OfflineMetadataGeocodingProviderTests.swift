@@ -41,4 +41,56 @@ final class OfflineMetadataGeocodingProviderTests: XCTestCase {
         let strictResult = await strictService.resolve(oslo)
         XCTAssertEqual(strictResult, .tooDistant)
     }
+
+    func testPublicRuralAndCoastalFixturesExerciseNearestSettlementPolicy() async throws {
+        let service = OfflineMetadataGeocodingProvider.makeService()
+        let rural = try XCTUnwrap(MetadataGeocodingService.Query(
+            latitude: 60.1000,
+            longitude: 7.5000,
+            locale: "en_US"
+        ))
+        let ruralResult = await service.resolve(rural)
+        XCTAssertEqual(ruralResult, .tooDistant)
+
+        let coastal = try XCTUnwrap(MetadataGeocodingService.Query(
+            latitude: 58.8887,
+            longitude: 5.6009,
+            locale: "en_US"
+        ))
+        guard case .found(let place, let identity) = await service.resolve(coastal) else {
+            return XCTFail("Sola coast should resolve to a nearby settlement")
+        }
+        XCTAssertEqual(place.country, "Norway")
+        XCTAssertFalse(try XCTUnwrap(place.city).isEmpty)
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(place.distanceMeters),
+            OfflineMetadataGeocodingProvider.offlineLimits.maximumDistanceMeters
+        )
+        XCTAssertEqual(identity, OfflineMetadataGeocodingProvider.identity)
+    }
+
+    func testNearbyCrossBorderFixturesRemainDistinctWithoutCoordinateRounding() async throws {
+        let service = OfflineMetadataGeocodingProvider.makeService()
+        let denmark = try XCTUnwrap(MetadataGeocodingService.Query(
+            latitude: 56.0361,
+            longitude: 12.6136,
+            locale: "en_US"
+        ))
+        let sweden = try XCTUnwrap(MetadataGeocodingService.Query(
+            latitude: 56.0465,
+            longitude: 12.6945,
+            locale: "en_US"
+        ))
+
+        guard case .found(let danishPlace, _) = await service.resolve(denmark),
+              case .found(let swedishPlace, _) = await service.resolve(sweden) else {
+            return XCTFail("Both sides of the Øresund border should resolve")
+        }
+
+        XCTAssertEqual(danishPlace.country, "Denmark")
+        XCTAssertEqual(swedishPlace.country, "Sweden")
+        XCTAssertNotEqual(danishPlace.city, swedishPlace.city)
+        XCTAssertLessThan(try XCTUnwrap(danishPlace.distanceMeters), 5_000)
+        XCTAssertLessThan(try XCTUnwrap(swedishPlace.distanceMeters), 5_000)
+    }
 }

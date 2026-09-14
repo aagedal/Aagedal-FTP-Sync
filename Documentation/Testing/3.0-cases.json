@@ -273,7 +273,7 @@
       "id": "m2-004",
       "section": "M2 — Reverse geocoding",
       "title": "Handle invalid GPS and distant, rural, coastal and border locations",
-      "prerequisites": "Named fixtures covering zero coordinates, negative coordinates, out-of-range/non-finite values, missing GPS, distant offshore points, rural/coastal areas and two nearby points on opposite sides of a border; documented maximum-distance policy.",
+      "prerequisites": "Named fixtures covering zero coordinates, negative coordinates, out-of-range/non-finite values and missing GPS. Use the public offline-provider set: Point Nemo (-48.876, -123.393), rural Hardangervidda (60.1000, 7.5000; expected beyond the settlement cutoff), coastal Sola (58.8887, 5.6009; expected nearby settlement), Helsingør, Denmark (56.0361, 12.6136), and Helsingborg, Sweden (56.0465, 12.6945). The last two are the nearby cross-border pair. Retain the documented 50 km maximum-distance policy.",
       "steps": [
         "Record each fixture's coordinates and expected validity before import; use fixture tooling for values ordinary cameras cannot create.",
         "Preview and transfer all fixtures through the offline provider.",
