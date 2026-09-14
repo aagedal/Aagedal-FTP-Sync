@@ -614,7 +614,10 @@ private struct TimelineClipView: View {
             .disabled(!canReprocess)
         }
         .help(interactionHelp)
-        .accessibilityElement(children: .ignore)
+        // Keep the clip as one control without explicitly re-parenting ignored
+        // descendants. The latter can recurse while AppKit resolves the label
+        // during an accessibility snapshot on macOS 27.
+        .accessibilityElement()
         .accessibilityIdentifier("metadata-programming-clip-\(clip.id.uuidString)")
         .accessibilityLabel(timelineTitle)
         .accessibilityValue(timeLabel)
