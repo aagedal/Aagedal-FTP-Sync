@@ -22,7 +22,7 @@ struct Probe {
         guard arguments.isSubset(of: ["--online-mapkit", "--online-corelocation"]) else {
             throw ProbeFailure(description: "Options: --online-mapkit or --online-corelocation. Default stays offline.")
         }
-        print("OS: \(ProcessInfo.processInfo.operatingSystemVersionString); deployment target macOS 14; SwiftMediaMetadata 2.0.0")
+        print("OS: \(ProcessInfo.processInfo.operatingSystemVersionString); deployment target macOS 14; SwiftMediaMetadata 3.0.1")
         try offline()
         try metadataRoundTrip()
         if arguments.contains("--online-mapkit") { try await mapKit() }

@@ -27,7 +27,7 @@ packages:
     path: Vendor/Citadel
   SwiftMediaMetadata:
     url: https://github.com/aagedal/SwiftMediaMetadata.git
-    exactVersion: 2.0.0
+    exactVersion: 3.0.1
 targets:
   AagedalFTPSync:
     type: application
