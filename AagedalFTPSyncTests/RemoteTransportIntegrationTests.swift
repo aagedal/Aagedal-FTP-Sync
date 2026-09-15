@@ -106,6 +106,26 @@ final class RemoteTransportIntegrationTests: XCTestCase {
                     [jpegName, rawName], kind.rawValue)
                 let repeated = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
                 XCTAssertEqual(repeated.transferred, 0, kind.rawValue)
+                let unchangedJPEG = try Data(contentsOf: deliveredJPEG)
+                var changedSourceXMP = xmp
+                changedSourceXMP.subject.append("New source keyword")
+                try XMPSidecar.write(changedSourceXMP, to: sidecarURL)
+                let changedSidecarBytes = try Data(contentsOf: sidecarURL)
+                let changedSidecar = SyncFile(relativePath: sidecarName,
+                    size: Int64(changedSidecarBytes.count), modifiedAt: observedAt.addingTimeInterval(60))
+                try await session.importFile(from: sidecarURL, as: changedSidecar,
+                    preserveDate: true, verifySize: true)
+                let companionResend = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertGreaterThan(companionResend.transferred, 0, kind.rawValue)
+                XCTAssertEqual(Set(companionResend.metadataReport.entries.filter { $0.status == .applied }
+                    .map(\.relativePath)), [rawName], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredJPEG), unchangedJPEG, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                let resentXMP = try XMPSidecar.read(from: deliveredSidecar)
+                XCTAssertEqual(resentXMP.subject, ["Existing keyword", "New source keyword"], kind.rawValue)
+                XCTAssertEqual(resentXMP.headline, "Fixture author in Oslo", kind.rawValue)
+                let afterResend = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(afterResend.transferred, 0, kind.rawValue)
                 var changedAutomation = try XCTUnwrap(job.metadataAutomation)
                 changedAutomation.existingFieldPolicy = .init(overwriteFields: [.headline])
                 changedAutomation.clips[0].fields.setHeadline(try .activated("Updated: {photographer} in {gps:city}"))
