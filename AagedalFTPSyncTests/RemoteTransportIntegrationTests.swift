@@ -6,6 +6,90 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class RemoteTransportIntegrationTests: XCTestCase {
+    func testLateRAWSidecarEnrichesUnchangedRemotePrimaryAcrossLiveTransports() async throws {
+        let configuration = try Self.configuration()
+        let rawBytes = Data("opaque late-sidecar RAW fixture".utf8)
+        var xmp = XMPData()
+        xmp.exifGPSLatitude = "59,30N"
+        xmp.exifGPSLongitude = "10,15E"
+        xmp.headline = "Source headline"
+        let sidecarURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xmp")
+        defer { try? FileManager.default.removeItem(at: sidecarURL) }
+        try XMPSidecar.write(xmp, to: sidecarURL)
+        let sidecarBytes = try Data(contentsOf: sidecarURL)
+        let observedAt = Date().addingTimeInterval(-300)
+
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("late-raw-sidecar-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let rawName = "LATE_" + token + ".CR3"
+            let sidecarName = "LATE_" + token + ".xmp"
+            let folder = root.appendingPathComponent("downloads")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            let local = Endpoint(kind: .local, localPath: folder.path,
+                bookmark: try folder.bookmarkData(options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil, relativeTo: nil))
+            var job = SyncJob(name: "Late RAW sidecar download")
+            job.left = remote
+            job.right = local
+            job.filter.photographerInitials = "LATE_" + token
+            job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+            job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty,
+                countryPolicy: .fillEmpty, localeIdentifier: "en_US")
+            let geocoding = MetadataGeocodingService(identity: .init(provider: "fixture", version: "1", dataset: "late-sidecar")) { query in
+                XCTAssertEqual(query.latitude, 59.5, accuracy: 0.0001)
+                XCTAssertEqual(query.longitude, 10.25, accuracy: 0.0001)
+                return .found(.init(city: "Oslo", country: "Norway", source: "injected fixture", distanceMeters: 25))
+            }
+            let engine = SyncEngine(geocodingService: geocoding,
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            let rawFile = SyncFile(relativePath: rawName, size: Int64(rawBytes.count), modifiedAt: observedAt)
+            let sidecarFile = SyncFile(relativePath: sidecarName, size: Int64(sidecarBytes.count),
+                modifiedAt: observedAt.addingTimeInterval(60))
+            do {
+                let rawURL = try temporaryFile(containing: rawBytes)
+                defer { try? FileManager.default.removeItem(at: rawURL) }
+                try await session.importFile(from: rawURL, as: rawFile, preserveDate: true, verifySize: true)
+                let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(first.transferred, 1, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(rawName)), rawBytes, kind.rawValue)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(sidecarName).path), kind.rawValue)
+                let idleBeforeSidecar = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(idleBeforeSidecar.transferred, 0, kind.rawValue)
+
+                try await session.importFile(from: sidecarURL, as: sidecarFile, preserveDate: true, verifySize: true)
+                let late = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertGreaterThan(late.transferred, 0, kind.rawValue)
+                XCTAssertEqual(Set(late.metadataReport.entries.filter { $0.status == .applied }
+                    .map(\.relativePath)), [rawName], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(rawName)), rawBytes, kind.rawValue)
+                let delivered = try XMPSidecar.read(from: folder.appendingPathComponent(sidecarName))
+                XCTAssertEqual(delivered.city, "Oslo", kind.rawValue)
+                XCTAssertEqual(delivered.country, "Norway", kind.rawValue)
+                XCTAssertEqual(delivered.headline, "Source headline", kind.rawValue)
+                let idleAfterSidecar = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(idleAfterSidecar.transferred, 0, kind.rawValue)
+                _ = try await session.listFiles()
+                try await session.removeFile(rawFile)
+                try await session.removeFile(sidecarFile)
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
     func testProgrammedDownloadProcessesDecodableJPEGAndValidRAWSidecarAcrossLiveTransports() async throws {
         let configuration = try Self.configuration()
         let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
