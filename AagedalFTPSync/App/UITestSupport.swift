@@ -93,6 +93,20 @@ enum UITestSupport {
         let sourceSignatures = SourceSignatureRepository(
             fileURL: fileURL("original-source-signatures-v1.json", rootURL: rootURL)
         )
+        let serverProfileRepository = ServerProfileRepository(
+            fileURL: fileURL("server-profiles-v1.json", rootURL: rootURL)
+        )
+        if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_SEED_SERVER"] == "1",
+           (try? serverProfileRepository.load().isEmpty) == true {
+            try? serverProfileRepository.save([
+                ServerProfile(
+                    name: "Disposable UI Server",
+                    kind: .ftp,
+                    host: "server.test.invalid",
+                    username: "fixture"
+                )
+            ])
+        }
         let downloadManifest = DownloadManifestRepository(
             fileURL: fileURL("download-manifest-v1.json", rootURL: rootURL)
         )
@@ -104,9 +118,7 @@ enum UITestSupport {
             photographerProfileRepository: PhotographerProfileRepository(
                 fileURL: fileURL("photographers-v1.json", rootURL: rootURL)
             ),
-            serverProfileRepository: ServerProfileRepository(
-                fileURL: fileURL("server-profiles-v1.json", rootURL: rootURL)
-            ),
+            serverProfileRepository: serverProfileRepository,
             metadataAuditRepository: MetadataAuditRepository(
                 fileURL: fileURL("metadata-audit-v1.json", rootURL: rootURL)
             ),

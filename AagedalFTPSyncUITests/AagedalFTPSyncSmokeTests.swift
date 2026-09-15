@@ -336,6 +336,30 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(start.isEnabled) // Isolated UI sessions never activate the network.
     }
 
+    func testServerSettingsDeleteControlHasLargeTargetAndDeletesSelectedFixture() {
+        launch(seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+
+        let delete = element("server.delete")
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Disposable UI Server"].waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(delete.frame.width, 36)
+        XCTAssertGreaterThanOrEqual(delete.frame.height, 36)
+
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Servers settings before deletion"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+
+        delete.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.8)).click()
+        let confirm = app.windows["Servers"].sheets.firstMatch.buttons["Delete Disposable UI Server"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.click()
+        XCTAssertFalse(app.staticTexts["Disposable UI Server"].waitForExistence(timeout: 2))
+        XCTAssertFalse(delete.isEnabled)
+    }
+
     func testVersion3BackupOnlySourceUsesDetailedRecoveryMigration() {
         launchVersion3(session: UUID().uuidString, fixture: "backup-only")
 
@@ -377,6 +401,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     private func launch(
         seedJob: Bool = false,
         seedMap: Bool = false,
+        seedServer: Bool = false,
         failFirstJobSave: Bool = false,
         accessibilityText: Bool = false
     ) {
@@ -387,6 +412,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"] = UUID().uuidString
         if seedJob { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_JOB"] = "1" }
         if seedMap { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_MAP"] = "1" }
+        if seedServer { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_SERVER"] = "1" }
         if failFirstJobSave { app.launchEnvironment["AAGEDAL_UI_TEST_FAIL_FIRST_JOB_SAVE"] = "1" }
         if accessibilityText { app.launchEnvironment["AAGEDAL_UI_TEST_ACCESSIBILITY_TEXT"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]

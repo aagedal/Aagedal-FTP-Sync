@@ -10,32 +10,33 @@ struct ServerSettingsView: View {
     @State private var profilePendingDeletion: ServerProfile?
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             VStack(spacing: 0) {
-                HStack {
+                HStack(spacing: 2) {
                     Text("Known Servers")
                         .font(.headline)
                     Spacer()
                     Button(action: addProfile) {
-                        Image(systemName: "plus")
+                        toolbarIcon("plus")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Add Server")
                     .accessibilityHint("Creates a new shared server profile")
                     .help("Add Server")
                     Button(action: duplicateProfile) {
-                        Image(systemName: "plus.square.on.square")
+                        toolbarIcon("plus.square.on.square")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .disabled(selectedProfile == nil || hasUnsavedChanges || credentialLoadError != nil)
                     .accessibilityLabel("Duplicate Server")
                     .accessibilityHint("Creates a copy of the selected server profile")
                     .help("Duplicate Server")
                     Button(action: requestDeletion) {
-                        Image(systemName: "minus")
+                        toolbarIcon("minus")
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .disabled(selectedProfile == nil)
+                    .accessibilityIdentifier("server.delete")
                     .accessibilityLabel("Delete Server")
                     .accessibilityHint("Deletes the selected server profile")
                     .help("Delete Server")
@@ -64,7 +65,9 @@ struct ServerSettingsView: View {
                     }
                 }
             }
-            .frame(minWidth: 235, idealWidth: 260, maxWidth: 310)
+            .frame(width: 280)
+
+            Divider()
 
             Group {
                 if let draftBinding {
@@ -194,6 +197,13 @@ struct ServerSettingsView: View {
         } message: {
             Text(store.alertMessage ?? "")
         }
+    }
+
+    private func toolbarIcon(_ symbol: String) -> some View {
+        Image(systemName: symbol)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 7))
     }
 
     private var selectedProfile: ServerProfile? {
