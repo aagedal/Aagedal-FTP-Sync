@@ -24,7 +24,7 @@ enum PeopleLibraryZIPDataDescriptor {
 /// access or implicit destination replacement is performed.
 struct PeopleLibraryPackageService: Sendable {
     enum Failure: Error, Equatable {
-        case invalidPackage, destinationExists, snapshotChanged, unsafeFile, io
+        case invalidPackage, destinationExists, snapshotChanged, unsafeFile, busy, io
     }
     static let pathExtension = "aagedalpeople"
     static let zipPathExtension = "aagedalpeople.zip"
@@ -121,6 +121,8 @@ struct PeopleLibraryPackageService: Sendable {
         try Self.validatePackageURL(destination)
         try limits.validate(); try Task.checkCancellation()
         guard snapshot.directoryURL.isFileURL, !snapshot.directoryURL.path.contains("\0") else { throw Failure.unsafeFile }
+        let lease = try Self.holdSnapshotLease(snapshot.directoryURL)
+        defer { if let lease { _ = flock(lease, LOCK_UN); close(lease) } }
         let validator = PeopleLibraryRepository(root: snapshot.directoryURL.deletingLastPathComponent(), limits: limits)
         try Self.requireSame(validator.validateSnapshot(at: snapshot.directoryURL), snapshot)
         let sourceFD = try Self.openDirectory(snapshot.directoryURL.path)
@@ -135,7 +137,10 @@ struct PeopleLibraryPackageService: Sendable {
 
         let manifestBytes = try Self.readFile(sourceFD, path: PeopleLibraryManifest.fileName, maximum: limits.maximumManifestBytes)
         guard try PeopleLibraryManifest.decode(manifestBytes, limits: limits) == snapshot.manifest else { throw Failure.snapshotChanged }
-        let paths = Set(snapshot.manifest.files.map(\.path)).union([PeopleLibraryManifest.fileName])
+        let (emittedManifest, emittedManifestBytes, emittedEditorBytes) = try exportManifest(snapshot.manifest,
+            originalBytes: manifestBytes, sourceFD: sourceFD)
+        let emittedSnapshot = PeopleLibrarySnapshot(manifest: emittedManifest, gallery: snapshot.gallery, directoryURL: destination)
+        let paths = Set(emittedManifest.files.map(\.path)).union([PeopleLibraryManifest.fileName])
         let stageName = ".aagedalpeople-export-" + UUID().uuidString.lowercased()
         guard mkdirat(parentFD, stageName, S_IRWXU) == 0 else { throw Failure.io }
         let stageFD: Int32
@@ -147,10 +152,15 @@ struct PeopleLibraryPackageService: Sendable {
             if !published && cleanupAllowed { Self.cleanStage(parent: parentFD, name: stageName, stage: stageFD, paths: paths) }
             close(stageFD)
         }
-        try Self.writeFile(stageFD, path: PeopleLibraryManifest.fileName, bytes: manifestBytes)
-        for declaration in snapshot.manifest.files {
+        try Self.writeFile(stageFD, path: PeopleLibraryManifest.fileName, bytes: emittedManifestBytes)
+        for declaration in emittedManifest.files {
             try Task.checkCancellation()
-            let bytes = try Self.readFile(sourceFD, path: declaration.path, maximum: declaration.byteCount)
+            let bytes: Data
+            if declaration.path == PeopleLibraryManifest.EditorPayloadDescriptor.filePath, let emittedEditorBytes {
+                bytes = emittedEditorBytes
+            } else {
+                bytes = try Self.readFile(sourceFD, path: declaration.path, maximum: declaration.byteCount)
+            }
             guard bytes.count == declaration.byteCount,
                   SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == declaration.sha256 else {
                 throw Failure.snapshotChanged
@@ -158,14 +168,14 @@ struct PeopleLibraryPackageService: Sendable {
             try Self.writeFile(stageFD, path: declaration.path, bytes: bytes)
         }
         let stageURL = parent.appendingPathComponent(stageName, isDirectory: true)
-        try Self.requireSame(validator.validateSnapshot(at: stageURL), snapshot)
+        try Self.requireSame(validator.validateSnapshot(at: stageURL), emittedSnapshot)
         cleanupAllowed = false
         try beforePublish()
         try Task.checkCancellation()
         // Recheck both original manifest/content and the owned stage before the
         // exclusive publication. The output always contains the captured bytes.
         try Self.requireSame(validator.validateSnapshot(at: snapshot.directoryURL), snapshot)
-        try Self.requireSame(validator.validateSnapshot(at: stageURL), snapshot)
+        try Self.requireSame(validator.validateSnapshot(at: stageURL), emittedSnapshot)
         var named = stat(), held = stat()
         guard fstatat(parentFD, stageName, &named, AT_SYMLINK_NOFOLLOW) == 0,
               fstat(stageFD, &held) == 0, named.st_dev == held.st_dev, named.st_ino == held.st_ino,
@@ -180,6 +190,42 @@ struct PeopleLibraryPackageService: Sendable {
         // place; cleanup never removes a published destination.
         guard fsync(parentFD) == 0 else { throw Failure.io }
         return destination
+    }
+
+    private func exportManifest(_ original: PeopleLibraryManifest, originalBytes: Data,
+                                sourceFD: Int32) throws -> (PeopleLibraryManifest, Data, Data?) {
+        guard original.schemaVersion == 3,
+              !original.files.contains(where: { $0.path.hasPrefix("upgrade_sources/") }) else {
+            return (original, originalBytes, nil)
+        }
+        let payloadBytes = try Self.readFile(sourceFD, path: PeopleLibraryManifest.payloadFileName,
+            maximum: limits.maximumPayloadBytes)
+        let payload = try PeopleLibraryPayload.decode(payloadBytes, limits: limits)
+        let coreFiles = original.files.filter { $0.path != PeopleLibraryManifest.EditorPayloadDescriptor.filePath }
+        let core = try PeopleLibraryManifest(libraryID: original.libraryID, exportedAt: original.exportedAt,
+            exporter: original.exporter, peopleCount: original.peopleCount,
+            embeddingCount: original.embeddingCount, files: coreFiles, contract: original.contract)
+        var editorBytes: Data?
+        var editorDescriptor: PeopleLibraryManifest.EditorPayloadDescriptor?
+        var files = coreFiles
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if let editor = original.editorPayload {
+            let oldBytes = try Self.readFile(sourceFD, path: editor.path, maximum: editor.byteCount)
+            let decoded = try PeopleLibraryEditorPayload.decode(oldBytes, manifest: original,
+                payload: payload, limits: limits)
+            let rebound = try PeopleLibraryEditorPayload(libraryID: original.libraryID,
+                coreRevision: core.coreRevision, people: decoded.people, examples: decoded.examples)
+            let bytes = try encoder.encode(rebound)
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let descriptor = try PeopleLibraryManifest.EditorPayloadDescriptor(byteCount: bytes.count, sha256: digest)
+            files.append(try .init(path: descriptor.path, byteCount: descriptor.byteCount, sha256: descriptor.sha256))
+            editorBytes = bytes; editorDescriptor = descriptor
+        }
+        let result = try PeopleLibraryManifest(libraryID: original.libraryID, exportedAt: original.exportedAt,
+            exporter: original.exporter, peopleCount: original.peopleCount,
+            embeddingCount: original.embeddingCount, files: files, contract: original.contract,
+            editorPayload: editorDescriptor)
+        return (result, try encoder.encode(result), editorBytes)
     }
 
     private enum PackageKind { case directory, zip }
@@ -201,6 +247,20 @@ struct PeopleLibraryPackageService: Sendable {
     private static func openDirectory(_ path: String) throws -> Int32 {
         let fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
         guard fd >= 0 else { throw Failure.unsafeFile }; return fd
+    }
+    private static func holdSnapshotLease(_ snapshotDirectory: URL) throws -> Int32? {
+        let root = try openDirectory(snapshotDirectory.deletingLastPathComponent().path)
+        defer { close(root) }
+        let fd = openat(root, ".selection-lock", O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        if fd < 0, errno == ENOENT { return nil }
+        guard fd >= 0 else { throw Failure.unsafeFile }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_nlink == 1, info.st_uid == geteuid() else {
+            close(fd); throw Failure.unsafeFile
+        }
+        guard flock(fd, LOCK_SH | LOCK_NB) == 0 else { close(fd); throw Failure.busy }
+        return fd
     }
     private static func openTrustedDirectory(_ path: String) throws -> Int32 {
         let fd = try openDirectory(path)
@@ -397,6 +457,7 @@ struct PeopleLibraryPackageService: Sendable {
             let compressedSize: Int
             let uncompressedSize: Int
             let localOffset: Int
+            let timestamp: UInt32
             var dataOffset = 0
         }
 
@@ -404,9 +465,7 @@ struct PeopleLibraryPackageService: Sendable {
         let files: [File]
 
         init(fd: Int32, size: Int, limits: PeopleLibraryManifest.Limits) throws {
-            let maximumArchiveBytes = limits.maximumTotalBytes + limits.maximumManifestBytes
-                + (limits.maximumFiles + 6) * 1_024 + 1_048_576
-            guard size >= 22, size <= maximumArchiveBytes else { throw Failure.invalidPackage }
+            guard size >= 22, size <= 536_870_912 else { throw Failure.invalidPackage }
             let tailSize = min(size, 65_535 + 22)
             let tail = try Self.read(fd, offset: size - tailSize, count: tailSize)
             guard let eocd = stride(from: tail.count - 22, through: 0, by: -1).first(where: {
@@ -414,7 +473,7 @@ struct PeopleLibraryPackageService: Sendable {
             }) else { throw Failure.invalidPackage }
             guard tail.u16(eocd + 4) == 0, tail.u16(eocd + 6) == 0 else { throw Failure.invalidPackage }
             let diskCount = Int(tail.u16(eocd + 8)), count = Int(tail.u16(eocd + 10))
-            let maximumArchiveEntries = limits.maximumFiles + 6
+            let maximumArchiveEntries = min(limits.maximumFiles + 6, 65_534)
             guard diskCount == count, count > 0, count <= maximumArchiveEntries else { throw Failure.invalidPackage }
             let centralSize32 = tail.u32(eocd + 12), centralOffset32 = tail.u32(eocd + 16)
             guard centralSize32 != UInt32.max, centralOffset32 != UInt32.max,
@@ -427,11 +486,13 @@ struct PeopleLibraryPackageService: Sendable {
                   centralOffset <= eocdOffset, centralSize == eocdOffset - centralOffset else { throw Failure.invalidPackage }
             let central = try Self.read(fd, offset: centralOffset, count: centralSize)
             var entries: [Entry] = [], cursor = 0, collisionKeys: Set<String> = []
+            var storedZIP32Profile = tail.u16(eocd + 20) == 0
             entries.reserveCapacity(count)
             for _ in 0..<count {
                 try Task.checkCancellation()
                 guard cursor <= central.count - 46, central.u32(cursor) == 0x0201_4b50 else { throw Failure.invalidPackage }
                 let versionMadeBy = central.u16(cursor + 4)
+                let versionNeeded = central.u16(cursor + 6)
                 let flags = central.u16(cursor + 8), method = central.u16(cursor + 10)
                 let crc = central.u32(cursor + 16)
                 let compressed32 = central.u32(cursor + 20), uncompressed32 = central.u32(cursor + 24)
@@ -450,6 +511,11 @@ struct PeopleLibraryPackageService: Sendable {
                 try Self.validateExtraFields(extra)
                 let kind = try Self.kind(path: path, versionMadeBy: versionMadeBy, external: external)
                 try Self.validatePath(path, kind: kind)
+                if versionNeeded != 20 || flags != 0x0800 || method != 0 ||
+                   nameBytes.count > 96 || extraLength != 0 || commentLength != 0 ||
+                   kind != .file || external & 0x10 != 0 {
+                    storedZIP32Profile = false
+                }
                 let collisionKey = Self.collisionKey(path, kind: kind)
                 guard collisionKeys.insert(collisionKey).inserted else { throw Failure.unsafeFile }
                 let compressedSize = Int(compressed32), uncompressedSize = Int(uncompressed32)
@@ -463,7 +529,8 @@ struct PeopleLibraryPackageService: Sendable {
                 }
                 entries.append(.init(path: path, nameBytes: nameBytes, kind: kind, method: method,
                     flags: flags, crc32: crc, compressedSize: compressedSize,
-                    uncompressedSize: uncompressedSize, localOffset: Int(localOffset32)))
+                    uncompressedSize: uncompressedSize, localOffset: Int(localOffset32),
+                    timestamp: central.u32(cursor + 12)))
                 cursor += recordLength
             }
             guard cursor == central.count else { throw Failure.invalidPackage }
@@ -480,6 +547,8 @@ struct PeopleLibraryPackageService: Sendable {
                           local.u32(22) == UInt32(entry.uncompressedSize) else { throw Failure.invalidPackage }
                 }
                 let localNameLength = Int(local.u16(26)), localExtraLength = Int(local.u16(28))
+                if local.u16(4) != 20 || localExtraLength != 0 ||
+                   local.u32(10) != entry.timestamp { storedZIP32Profile = false }
                 guard localNameLength == entry.nameBytes.count else { throw Failure.invalidPackage }
                 let localVariable = try Self.read(fd, offset: entry.localOffset + 30,
                     count: localNameLength + localExtraLength)
@@ -531,6 +600,10 @@ struct PeopleLibraryPackageService: Sendable {
             let root = rootComponents.first
             let manifestData = try Self.contents(fd: fd, entry: manifestEntry)
             let manifest = try PeopleLibraryManifest.decode(manifestData, limits: limits)
+            if manifest.schemaVersion == 3 {
+                guard storedZIP32Profile, root == nil, count >= 2,
+                      centralSize <= count * (46 + 96) else { throw Failure.invalidPackage }
+            }
             let expected = Set(manifest.files.map(\.path)).union([PeopleLibraryManifest.fileName])
             let expectedDirectories = Set(expected.compactMap { $0.contains("/") ? $0.components(separatedBy: "/")[0] : nil })
             var result: [File] = [], actual: Set<String> = [], total = 0

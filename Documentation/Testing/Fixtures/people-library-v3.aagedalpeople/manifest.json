@@ -1,0 +1,52 @@
+{
+  "contract": {
+    "componentID": "auraface-r100-coreml",
+    "dimension": 512,
+    "embeddingSpaceVersion": 3,
+    "l2Normalized": true,
+    "modelID": "AuraFace-v1/glintr100",
+    "preprocessingRevision": "photo-agent-eyes112-rgb-v3",
+    "vectorEncoding": "fem2-float32-le"
+  },
+  "coreRevision": "3747303528858361c874f656461ec6dfbcb005851e43b468baecec213294565f",
+  "editorPayload": {
+    "byteCount": 655,
+    "mediaType": "application/vnd.aagedal.photo-agent-known-people+json;version=1",
+    "path": "editor/photo-agent.json",
+    "sha256": "08ddc5b970b1b1c41b807018b77a67391cd03bae17cb52d43efb26535236344c"
+  },
+  "embeddingCount": 1,
+  "exportedAt": "2026-09-12T13:30:00.000Z",
+  "exporter": {
+    "app": "Cross-app fixture",
+    "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "version": "1"
+  },
+  "files": [
+    {
+      "byteCount": 655,
+      "path": "editor/photo-agent.json",
+      "sha256": "08ddc5b970b1b1c41b807018b77a67391cd03bae17cb52d43efb26535236344c"
+    },
+    {
+      "byteCount": 2056,
+      "path": "embeddings/cccccccc-cccc-cccc-cccc-cccccccccccc.fem2",
+      "sha256": "11515e45513a5f28a7e15321d1caa573c3dc1e70a112ac813dd8019f2900f1be"
+    },
+    {
+      "byteCount": 395,
+      "path": "people.json",
+      "sha256": "5093c59f82ad7c73beb6a2b37dc7c1523ee762c2d6608fc66645fe70d9bb78ea"
+    },
+    {
+      "byteCount": 13018,
+      "path": "upgrade_sources/cccccccc-cccc-cccc-cccc-cccccccccccc.jpg",
+      "sha256": "b7cdeb56ff66d353e2f1eec53d593231b4cad72acdfdf07b3810273b22d0ad23"
+    }
+  ],
+  "format": "aagedal-known-people",
+  "libraryID": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "peopleCount": 1,
+  "revision": "5e409e1e8d083d51b446eda5ba53c0e21104a157bbbec345f2851631007c1300",
+  "schemaVersion": 3
+}

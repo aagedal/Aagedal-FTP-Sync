@@ -3,8 +3,8 @@ import Darwin
 import Foundation
 import ImageIO
 
-/// Retained by an operation: replacing/removing the current selection never
-/// invalidates its decoded vectors or deletes its immutable reference files.
+/// Decoded vectors remain valid for a held operation. Schema 3 snapshots with
+/// sensitive crops are removed when they are no longer selected.
 struct PeopleLibrarySnapshot: Sendable {
     let manifest: PeopleLibraryManifest
     let gallery: FaceRecognitionGallery
@@ -14,7 +14,7 @@ struct PeopleLibrarySnapshot: Sendable {
 struct PeopleLibraryRepository: Sendable {
     enum Failure: Error, Equatable {
         case unsafeFile, invalidDirectory, unexpectedFiles, sizeLimit, hashMismatch
-        case invalidThumbnail, invalidPointer, revisionCollision, selectionChanged, busy, io
+        case invalidThumbnail, invalidUpgradeSource, invalidPointer, revisionCollision, selectionChanged, cleanupFailed, busy, io
     }
 
     let root: URL
@@ -56,7 +56,8 @@ struct PeopleLibraryRepository: Sendable {
             let bytes = try Self.readFile(sourceFD, path: file.path, maximum: file.byteCount)
             guard bytes.count == file.byteCount else { throw Failure.sizeLimit }
             guard Self.digest(bytes) == file.sha256 else { throw Failure.hashMismatch }
-            if file.path.hasSuffix(".jpg") { try Self.validateThumbnail(bytes) }
+            if file.path.hasPrefix("upgrade_sources/") { try Self.validateUpgradeSource(bytes) }
+            else if file.path.hasSuffix(".jpg") { try Self.validateThumbnail(bytes) }
             try Self.writeFile(stageFD, path: file.path, data: bytes)
         }
         // Read only the captured copy from here onward: subsequent source changes
@@ -64,6 +65,17 @@ struct PeopleLibraryRepository: Sendable {
         let captured = try loadSnapshot(stageFD, directory: root.appendingPathComponent(stageName))
         let lock = try Self.lock(rootFD)
         defer { _ = flock(lock, LOCK_UN); close(lock) }
+        let previouslySelected = expected.flatMap { pointer -> String? in
+            guard let libraryID = pointer.libraryID, let revision = pointer.revision else { return nil }
+            return Self.snapshotName(libraryID, revision)
+        }
+        var activated = false
+        defer {
+            if !activated && manifest.schemaVersion == 3,
+               (try? readPointer(rootFD)) == expected {
+                try? pruneInactiveUpgradeSnapshots(rootFD, selected: previouslySelected)
+            }
+        }
         guard try readPointer(rootFD) == expected else { throw Failure.selectionChanged }
         let destinationName = Self.snapshotName(manifest.libraryID, manifest.revision)
         let destinationURL = root.appendingPathComponent(destinationName, isDirectory: true)
@@ -94,6 +106,9 @@ struct PeopleLibraryRepository: Sendable {
         try beforeActivate()
         let pointer = Pointer(selectionID: UUID(), libraryID: manifest.libraryID, revision: manifest.revision)
         try Self.writePointer(pointer, rootFD: rootFD)
+        activated = true
+        do { try pruneInactiveUpgradeSnapshots(rootFD, selected: destinationName) }
+        catch { throw Failure.cleanupFailed }
         return snapshot
     }
 
@@ -130,6 +145,88 @@ struct PeopleLibraryRepository: Sendable {
         // Retain a new generation even when deselected. Unlinking would allow a
         // nil -> selected -> nil ABA and let an older staged import activate.
         try Self.writePointer(.deselected(), rootFD: rootFD)
+        do { try pruneInactiveUpgradeSnapshots(rootFD, selected: nil) }
+        catch { throw Failure.cleanupFailed }
+    }
+
+    private func pruneInactiveUpgradeSnapshots(_ rootFD: Int32, selected: String?) throws {
+        let copy = dup(rootFD)
+        guard copy >= 0 else { throw Failure.io }
+        guard let stream = fdopendir(copy) else { close(copy); throw Failure.io }
+        defer { closedir(stream) }
+        var names: [String] = []
+        while let entry = readdir(stream) {
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(validatingCString: $0) }
+            }
+            guard let name else { throw Failure.unsafeFile }
+            if name.hasPrefix("snapshot-"), name != selected { names.append(name) }
+        }
+        for name in names {
+            let snapshotFD = try Self.openChildDirectory(rootFD, name)
+            defer { close(snapshotFD) }
+            if !Self.entryExists(snapshotFD, PeopleLibraryManifest.fileName) {
+                // A crash after removing the manifest can leave an empty directory.
+                guard try Self.isEmptyDirectory(snapshotFD),
+                      fchmod(snapshotFD, S_IRWXU) == 0,
+                      unlinkat(rootFD, name, AT_REMOVEDIR) == 0,
+                      fsync(rootFD) == 0 else { throw Failure.unsafeFile }
+                continue
+            }
+            let manifestData = try Self.readFile(snapshotFD, path: PeopleLibraryManifest.fileName,
+                maximum: limits.maximumManifestBytes)
+            let manifest = try PeopleLibraryManifest.decode(manifestData, limits: limits)
+            guard manifest.schemaVersion == 3 else { continue }
+            guard name == Self.snapshotName(manifest.libraryID, manifest.revision) else { throw Failure.unsafeFile }
+            let directories = Set(manifest.files.compactMap({ $0.path.contains("/")
+                ? $0.path.components(separatedBy: "/")[0] : nil }))
+            guard fchmod(snapshotFD, S_IRWXU) == 0 else { throw Failure.io }
+            for directoryName in directories {
+                let child = openat(snapshotFD, directoryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+                if child < 0, errno == ENOENT { continue }
+                guard child >= 0 else { throw Failure.unsafeFile }
+                guard fchmod(child, S_IRWXU) == 0 else { close(child); throw Failure.io }
+                close(child)
+            }
+            for file in manifest.files {
+                let parts = try Self.components(file.path)
+                let directory = parts.count == 2
+                    ? openat(snapshotFD, parts[0], O_RDONLY | O_DIRECTORY | O_NOFOLLOW) : dup(snapshotFD)
+                if directory < 0, errno == ENOENT { continue }
+                guard directory >= 0 else { throw Failure.unsafeFile }
+                let result = unlinkat(directory, parts.last!, 0)
+                let missing = result != 0 && errno == ENOENT
+                close(directory)
+                guard result == 0 || missing else { throw Failure.io }
+            }
+            for directoryName in directories {
+                let child = openat(snapshotFD, directoryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+                if child < 0, errno == ENOENT { continue }
+                guard child >= 0 else { throw Failure.unsafeFile }
+                let synced = fsync(child) == 0
+                close(child)
+                guard synced, unlinkat(snapshotFD, directoryName, AT_REMOVEDIR) == 0 else { throw Failure.io }
+            }
+            guard fsync(snapshotFD) == 0,
+                  unlinkat(snapshotFD, PeopleLibraryManifest.fileName, 0) == 0,
+                  fsync(snapshotFD) == 0 else { throw Failure.io }
+            guard unlinkat(rootFD, name, AT_REMOVEDIR) == 0, fsync(rootFD) == 0 else { throw Failure.io }
+        }
+    }
+
+    private static func isEmptyDirectory(_ fd: Int32) throws -> Bool {
+        let copy = dup(fd)
+        guard copy >= 0 else { throw Failure.io }
+        guard let stream = fdopendir(copy) else { close(copy); throw Failure.io }
+        defer { closedir(stream) }
+        while let entry = readdir(stream) {
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(validatingCString: $0) }
+            }
+            guard let name else { throw Failure.unsafeFile }
+            if name != "." && name != ".." { return false }
+        }
+        return true
     }
 
     private func loadSnapshot(_ fd: Int32, directory: URL) throws -> PeopleLibrarySnapshot {
@@ -230,7 +327,8 @@ struct PeopleLibraryRepository: Sendable {
         let data = try readFile(parent, path: declaration.path, maximum: declaration.byteCount)
         guard data.count == declaration.byteCount else { throw Failure.sizeLimit }
         guard digest(data) == declaration.sha256 else { throw Failure.hashMismatch }
-        if declaration.path.hasSuffix(".jpg") { try validateThumbnail(data) }
+        if declaration.path.hasPrefix("upgrade_sources/") { try validateUpgradeSource(data) }
+        else if declaration.path.hasSuffix(".jpg") { try validateThumbnail(data) }
         return data
     }
 
@@ -325,7 +423,7 @@ struct PeopleLibraryRepository: Sendable {
             var info = stat()
             guard fstatat(fd, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw Failure.io }
             if info.st_mode & S_IFMT == S_IFDIR {
-                guard prefix.isEmpty, ["embeddings", "thumbnails", "embedding_thumbnails", "editor"].contains(name) else { throw Failure.unexpectedFiles }
+                guard prefix.isEmpty, ["embeddings", "thumbnails", "embedding_thumbnails", "upgrade_sources", "editor"].contains(name) else { throw Failure.unexpectedFiles }
                 let child = try openChildDirectory(fd, name)
                 defer { close(child) }
                 let nested = try enumerate(child, maximum: maximum - result.count, prefix: name + "/")
@@ -353,6 +451,23 @@ struct PeopleLibraryRepository: Sendable {
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceShouldCacheImmediately: true,
               ] as CFDictionary) != nil else { throw Failure.invalidThumbnail }
+    }
+    private static func validateUpgradeSource(_ data: Data) throws {
+        guard data.count >= 4, data.count <= 1_000_000,
+              data[0] == 0xff, data[1] == 0xd8,
+              data[data.count - 2] == 0xff, data[data.count - 1] == 0xd9,
+              let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetType(source) as String? == "public.jpeg",
+              CGImageSourceGetCount(source) == 1,
+              CGImageSourceGetStatus(source) == .statusComplete,
+              CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              properties[kCGImagePropertyPixelWidth] as? Int == 320,
+              properties[kCGImagePropertyPixelHeight] as? Int == 320,
+              CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) != nil,
+              CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else {
+            throw Failure.invalidUpgradeSource
+        }
     }
     private static func lock(_ root: Int32) throws -> Int32 {
         let fd = openat(root, ".selection-lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_NONBLOCK, S_IRUSR | S_IWUSR)

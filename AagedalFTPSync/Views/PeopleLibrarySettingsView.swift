@@ -36,9 +36,14 @@ struct PeopleLibrarySettingsView: View {
                         Text("Exported: \(summary.exportedAt)")
                         Text("Revision: \(summary.revision)").font(.caption).textSelection(.enabled)
                         if summary.includesEditorMetadata { Text("Photo Agent editor metadata included") }
+                        if summary.upgradeSourceCount > 0 {
+                            Text("\(summary.upgradeSourceCount) face crops retained for future model upgrades")
+                        }
                     }
                 }.accessibilityIdentifier("peopleLibrary.summary")
                 Text("Import a .aagedalpeople package or .aagedalpeople.zip archive from Photo Agent. Importing selects a local copy; it does not enable recognition or automatic sync.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("Schema 3 packages can contain 320×320 JPEG face crops. These sensitive images are stored locally with the library and copied byte for byte into exports. Exporting into a synced folder can upload them with the package.")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("Import People Library…") { panelError = nil; importing = true }
                     .accessibilityIdentifier("peopleLibrary.import")
@@ -95,7 +100,7 @@ struct PeopleLibrarySettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This clears the current selection. Retained snapshots and exported packages remain available.")
+            Text("This clears the current selection. Older schema 2 snapshots and exported packages remain available. Local schema 3 snapshots with face crops are removed when no longer selected.")
         }
     }
     private func select(_ result: Result<[URL], Error>, importing: Bool) {

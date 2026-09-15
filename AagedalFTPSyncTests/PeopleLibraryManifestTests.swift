@@ -46,6 +46,60 @@ final class PeopleLibraryManifestTests: XCTestCase {
         XCTAssertEqual(decodedManifest.revision, manifest.revision)
     }
 
+    func testSchemaThreeCropChangesBothRevisionsAndPreservesSchemaTwo() throws {
+        let (schemaTwo, _, payloadBytes, _) = try fixture()
+        let cropPath = "upgrade_sources/\(exampleID.uuidString.lowercased()).jpg"
+        let example = try PeopleLibraryPayload.Example(id: exampleID,
+            embeddingPath: "embeddings/\(exampleID.uuidString.lowercased()).fem2", upgradeSourcePath: cropPath)
+        let payload = try PeopleLibraryPayload(people: [.init(id: personID, name: "  {persons} Å  ", examples: [example])])
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let bytes = try encoder.encode(payload)
+        let crop = try PeopleLibraryManifest.FileDeclaration(path: cropPath, byteCount: 100,
+            sha256: sha(Data(repeating: 7, count: 100)))
+        let files = schemaTwo.files.filter { $0.path != "people.json" } + [
+            try .init(path: "people.json", byteCount: bytes.count, sha256: sha(bytes)), crop]
+        let schemaThree = try PeopleLibraryManifest(libraryID: libraryID, exportedAt: schemaTwo.exportedAt,
+            exporter: schemaTwo.exporter, peopleCount: 1, embeddingCount: 1, files: files)
+        XCTAssertEqual(schemaTwo.schemaVersion, 2)
+        XCTAssertEqual(schemaThree.schemaVersion, 3)
+        XCTAssertNotEqual(schemaThree.coreRevision, schemaTwo.coreRevision)
+        XCTAssertNotEqual(schemaThree.revision, schemaTwo.revision)
+        try schemaThree.validate(payload: payload)
+        try PeopleLibraryManifest.decode(encoder.encode(schemaThree)).validate(payload: PeopleLibraryPayload.decode(bytes))
+        func withEditor(_ core: PeopleLibraryManifest, payload: PeopleLibraryPayload) throws -> (PeopleLibraryManifest, Data) {
+            let editor = try PeopleLibraryEditorPayload(libraryID: core.libraryID, coreRevision: core.coreRevision,
+                people: [personID.uuidString.lowercased(): .init(createdAt: 1, updatedAt: 2)],
+                examples: [exampleID.uuidString.lowercased(): .init(addedAt: 3)])
+            let editorBytes = try encoder.encode(editor)
+            let descriptor = try PeopleLibraryManifest.EditorPayloadDescriptor(byteCount: editorBytes.count, sha256: sha(editorBytes))
+            let manifest = try PeopleLibraryManifest(libraryID: core.libraryID, exportedAt: core.exportedAt,
+                exporter: core.exporter, peopleCount: core.peopleCount, embeddingCount: core.embeddingCount,
+                files: core.files + [try .init(path: descriptor.path, byteCount: descriptor.byteCount, sha256: descriptor.sha256)],
+                editorPayload: descriptor)
+            _ = try PeopleLibraryEditorPayload.decode(editorBytes, manifest: manifest, payload: payload)
+            return (manifest, editorBytes)
+        }
+        let (schemaTwoEditor, schemaTwoEditorBytes) = try withEditor(schemaTwo, payload: PeopleLibraryPayload.decode(payloadBytes))
+        let (schemaThreeEditor, schemaThreeEditorBytes) = try withEditor(schemaThree, payload: payload)
+        XCTAssertNotEqual(schemaThreeEditorBytes, schemaTwoEditorBytes)
+        XCTAssertNotEqual(schemaThreeEditor.editorPayload?.sha256, schemaTwoEditor.editorPayload?.sha256)
+        XCTAssertNotEqual(schemaThreeEditor.revision, schemaTwoEditor.revision)
+        XCTAssertEqual(schemaThreeEditor.coreRevision, schemaThree.coreRevision)
+        XCTAssertThrowsError(try schemaThree.validate(payload: try PeopleLibraryPayload.decode(payloadBytes)))
+        XCTAssertThrowsError(try PeopleLibraryManifest(libraryID: libraryID, exportedAt: schemaTwo.exportedAt,
+            exporter: schemaTwo.exporter, peopleCount: 1, embeddingCount: 1, files: files + [crop]))
+        XCTAssertThrowsError(try PeopleLibraryPayload.Example(id: exampleID,
+            embeddingPath: example.embeddingPath, upgradeSourcePath: "upgrade_sources/\(personID.uuidString.lowercased()).jpg"))
+        XCTAssertThrowsError(try PeopleLibraryManifest.FileDeclaration(path: cropPath, byteCount: 1_000_001,
+            sha256: String(repeating: "0", count: 64)))
+        let schemaTwoBytes = String(decoding: try encoder.encode(schemaTwo), as: UTF8.self)
+        XCTAssertThrowsError(try PeopleLibraryManifest.decode(Data(schemaTwoBytes
+            .replacingOccurrences(of: #""schemaVersion":2"#, with: #""schemaVersion":3"#).utf8)))
+        let schemaThreeBytes = String(decoding: try encoder.encode(schemaThree), as: UTF8.self)
+        XCTAssertThrowsError(try PeopleLibraryManifest.decode(Data(schemaThreeBytes
+            .replacingOccurrences(of: #""schemaVersion":3"#, with: #""schemaVersion":2"#).utf8)))
+    }
+
     func testRawAdmissionRejectsDuplicateEscapedKeysUnknownKeysAndUppercaseIDs() throws {
         XCTAssertThrowsError(try PeopleLibraryPayload.decode(Data(#"{"people":[],"pe\u006fple":[]}"#.utf8)))
         XCTAssertThrowsError(try PeopleLibraryPayload.decode(Data(#"{"people":[],"extra":false}"#.utf8)))

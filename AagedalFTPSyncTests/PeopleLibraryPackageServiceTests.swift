@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Darwin
 import Foundation
@@ -42,6 +43,46 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         let repository = PeopleLibraryRepository(root: parent.appendingPathComponent("installed"))
         return .init(parent: parent, repository: repository, snapshot: try repository.importSnapshot(from: source))
     }
+    private func jpeg(width: Int = 320, height: Int = 320) throws -> Data {
+        let image = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width,
+            pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        return try XCTUnwrap(image.representation(using: .jpeg, properties: [.compressionFactor: 0.9]))
+    }
+    private func cropPackage(_ f: Fixture, crop: Data? = nil) throws -> (URL, String, Data) {
+        let package = f.parent.appendingPathComponent("crops.aagedalpeople")
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("embeddings"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("upgrade_sources"), withIntermediateDirectories: true)
+        let oldPayload = try PeopleLibraryPayload.decode(Data(contentsOf: f.snapshot.directoryURL.appendingPathComponent("people.json")))
+        let person = try XCTUnwrap(oldPayload.people.first)
+        let first = try XCTUnwrap(person.examples.first)
+        let cropPath = "upgrade_sources/\(first.id.uuidString.lowercased()).jpg"
+        let cropBytes = try crop ?? jpeg()
+        let secondID = UUID()
+        let secondPath = "embeddings/\(secondID.uuidString.lowercased()).fem2"
+        let payload = try PeopleLibraryPayload(people: [.init(id: person.id, name: person.name, examples: [
+            .init(id: first.id, embeddingPath: first.embeddingPath, upgradeSourcePath: cropPath),
+            .init(id: secondID, embeddingPath: secondPath),
+        ])])
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let payloadBytes = try encoder.encode(payload)
+        let vector = try Data(contentsOf: f.snapshot.directoryURL.appendingPathComponent(first.embeddingPath))
+        let files: [PeopleLibraryManifest.FileDeclaration] = [
+            try .init(path: "people.json", byteCount: payloadBytes.count, sha256: sha(payloadBytes)),
+            try .init(path: first.embeddingPath, byteCount: vector.count, sha256: sha(vector)),
+            try .init(path: secondPath, byteCount: vector.count, sha256: sha(vector)),
+            try .init(path: cropPath, byteCount: cropBytes.count, sha256: sha(cropBytes)),
+        ]
+        let manifest = try PeopleLibraryManifest(libraryID: f.snapshot.manifest.libraryID,
+            exportedAt: f.snapshot.manifest.exportedAt, exporter: f.snapshot.manifest.exporter,
+            peopleCount: 1, embeddingCount: 2, files: files)
+        try payloadBytes.write(to: package.appendingPathComponent("people.json"))
+        try vector.write(to: package.appendingPathComponent(first.embeddingPath))
+        try vector.write(to: package.appendingPathComponent(secondPath))
+        try cropBytes.write(to: package.appendingPathComponent(cropPath))
+        try encoder.encode(manifest).write(to: package.appendingPathComponent("manifest.json"))
+        return (package, cropPath, cropBytes)
+    }
     private func stages(_ f: Fixture) throws -> [URL] {
         try FileManager.default.contentsOfDirectory(at: f.parent, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasPrefix(".aagedalpeople-export-") }
@@ -70,6 +111,206 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
                      method: path == PeopleLibraryManifest.payloadFileName ? 8 : 0,
                      usesDataDescriptor: path == PeopleLibraryManifest.payloadFileName)
         }
+    }
+    private func packageEntries(at package: URL) throws -> [ZIPEntry] {
+        let manifest = try PeopleLibraryManifest.decode(Data(contentsOf: package.appendingPathComponent("manifest.json")))
+        return try (manifest.files.map(\.path) + [PeopleLibraryManifest.fileName]).map { path in
+            ZIPEntry(name: path, data: try Data(contentsOf: package.appendingPathComponent(path)))
+        }
+    }
+    private func schemaThreeWithoutCrops(at package: URL) throws {
+        let manifestURL = package.appendingPathComponent("manifest.json")
+        let original = try PeopleLibraryManifest.decode(Data(contentsOf: manifestURL))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any])
+        object["schemaVersion"] = 3
+        let files = try XCTUnwrap(object["files"] as? [[String: Any]])
+        let core: [String: Any] = [
+            "format": try XCTUnwrap(object["format"]), "schemaVersion": 3,
+            "libraryID": try XCTUnwrap(object["libraryID"]), "contract": try XCTUnwrap(object["contract"]),
+            "peopleCount": try XCTUnwrap(object["peopleCount"]), "embeddingCount": try XCTUnwrap(object["embeddingCount"]),
+            "files": files.filter { $0["path"] as? String != PeopleLibraryManifest.EditorPayloadDescriptor.filePath }
+                .sorted { ($0["path"] as? String ?? "") < ($1["path"] as? String ?? "") },
+        ]
+        let options: JSONSerialization.WritingOptions = [.sortedKeys, .withoutEscapingSlashes]
+        let coreRevision = sha(try JSONSerialization.data(withJSONObject: core, options: options))
+        var snapshotInput: [String: Any] = [
+            "format": "aagedal-known-people-snapshot", "schemaVersion": 3, "coreRevision": coreRevision,
+        ]
+        if let editor = original.editorPayload {
+            let payload = try PeopleLibraryPayload.decode(Data(contentsOf: package.appendingPathComponent("people.json")))
+            let oldBytes = try Data(contentsOf: package.appendingPathComponent(editor.path))
+            let old = try PeopleLibraryEditorPayload.decode(oldBytes, manifest: original, payload: payload)
+            let rebound = try PeopleLibraryEditorPayload(libraryID: original.libraryID,
+                coreRevision: coreRevision, people: old.people, examples: old.examples)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            let bytes = try encoder.encode(rebound)
+            let descriptor = try PeopleLibraryManifest.EditorPayloadDescriptor(byteCount: bytes.count, sha256: sha(bytes))
+            try bytes.write(to: package.appendingPathComponent(editor.path))
+            var declarations = files
+            let index = try XCTUnwrap(declarations.firstIndex { $0["path"] as? String == editor.path })
+            declarations[index]["byteCount"] = descriptor.byteCount
+            declarations[index]["sha256"] = descriptor.sha256
+            object["files"] = declarations
+            let descriptorObject = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(descriptor)) as? [String: Any])
+            object["editorPayload"] = descriptorObject
+            snapshotInput["editorPayload"] = descriptorObject
+        }
+        let revision = sha(try JSONSerialization.data(withJSONObject: snapshotInput, options: options))
+        object["coreRevision"] = coreRevision; object["revision"] = revision
+        try JSONSerialization.data(withJSONObject: object, options: options).write(to: manifestURL)
+        XCTAssertEqual(try PeopleLibraryManifest.decode(Data(contentsOf: manifestURL)).schemaVersion, 3)
+    }
+
+    func testNoCropSchemaThreeImportExportsAsSchemaTwo() throws {
+        let f = try fixture()
+        let package = f.parent.appendingPathComponent("empty-schema3.aagedalpeople")
+        let service = PeopleLibraryPackageService()
+        try service.export(f.snapshot, to: package)
+        try schemaThreeWithoutCrops(at: package)
+        let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("empty-schema3-receiver"))
+        let imported = try service.importPackage(at: package, into: receiver)
+        XCTAssertEqual(imported.manifest.schemaVersion, 3)
+        let output = f.parent.appendingPathComponent("empty-schema3-export.aagedalpeople")
+        try service.export(imported, to: output)
+        let exported = try PeopleLibraryManifest.decode(Data(contentsOf: output.appendingPathComponent("manifest.json")))
+        XCTAssertEqual(exported.schemaVersion, 2)
+        XCTAssertEqual(exported.coreRevision, f.snapshot.manifest.coreRevision)
+        XCTAssertEqual(exported.revision, f.snapshot.manifest.revision)
+        XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent("people.json")),
+            try Data(contentsOf: package.appendingPathComponent("people.json")))
+    }
+
+    func testNoCropSchemaThreeExportRebindsEditorMetadata() throws {
+        let f = try fixture()
+        let package = f.parent.appendingPathComponent("empty-editor-schema3.aagedalpeople")
+        let service = PeopleLibraryPackageService()
+        try service.export(f.snapshot, to: package)
+        let payload = try PeopleLibraryPayload.decode(Data(contentsOf: package.appendingPathComponent("people.json")))
+        let person = try XCTUnwrap(payload.people.first)
+        let example = try XCTUnwrap(person.examples.first)
+        let editor = try PeopleLibraryEditorPayload(libraryID: f.snapshot.manifest.libraryID,
+            coreRevision: f.snapshot.manifest.coreRevision,
+            people: [person.id.uuidString.lowercased(): .init(createdAt: 1, updatedAt: 2)],
+            examples: [example.id.uuidString.lowercased(): .init(addedAt: 3)])
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let originalEditorBytes = try encoder.encode(editor)
+        let descriptor = try PeopleLibraryManifest.EditorPayloadDescriptor(byteCount: originalEditorBytes.count,
+            sha256: sha(originalEditorBytes))
+        let schemaTwoEditor = try PeopleLibraryManifest(libraryID: f.snapshot.manifest.libraryID,
+            exportedAt: f.snapshot.manifest.exportedAt, exporter: f.snapshot.manifest.exporter,
+            peopleCount: 1, embeddingCount: 1,
+            files: f.snapshot.manifest.files + [try .init(path: descriptor.path, byteCount: descriptor.byteCount,
+                sha256: descriptor.sha256)], editorPayload: descriptor)
+        try FileManager.default.createDirectory(at: package.appendingPathComponent("editor"), withIntermediateDirectories: true)
+        try originalEditorBytes.write(to: package.appendingPathComponent(descriptor.path))
+        try encoder.encode(schemaTwoEditor).write(to: package.appendingPathComponent("manifest.json"))
+        try schemaThreeWithoutCrops(at: package)
+        let imported = try service.importPackage(at: package,
+            into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("empty-editor-receiver")))
+        XCTAssertEqual(imported.manifest.schemaVersion, 3)
+        XCTAssertNotEqual(try Data(contentsOf: package.appendingPathComponent(descriptor.path)), originalEditorBytes)
+        let output = f.parent.appendingPathComponent("empty-editor-export.aagedalpeople")
+        try service.export(imported, to: output)
+        let exported = try PeopleLibraryManifest.decode(Data(contentsOf: output.appendingPathComponent("manifest.json")))
+        XCTAssertEqual(exported.schemaVersion, 2)
+        XCTAssertEqual(exported.coreRevision, schemaTwoEditor.coreRevision)
+        XCTAssertEqual(exported.revision, schemaTwoEditor.revision)
+        XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(descriptor.path)), originalEditorBytes)
+        _ = try PeopleLibraryEditorPayload.decode(originalEditorBytes, manifest: exported, payload: payload)
+    }
+
+    func testSchemaThreeDirectoryAndZIPRoundTripRetainsMixedCropExamples() throws {
+        let f = try fixture()
+        let (package, cropPath, cropBytes) = try cropPackage(f)
+        let service = PeopleLibraryPackageService()
+        let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("crop-receiver"))
+        let imported = try service.importPackage(at: package, into: receiver)
+        XCTAssertEqual(imported.manifest.schemaVersion, 3)
+        XCTAssertEqual(try Data(contentsOf: imported.directoryURL.appendingPathComponent(cropPath)), cropBytes)
+        let output = f.parent.appendingPathComponent("crop-export.aagedalpeople")
+        try service.export(imported, to: output)
+        XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(cropPath)), cropBytes)
+        XCTAssertEqual(try PeopleLibraryManifest.decode(Data(contentsOf: output.appendingPathComponent("manifest.json"))).revision,
+            imported.manifest.revision)
+        let archive = f.parent.appendingPathComponent("crop-archive.aagedalpeople.zip")
+        try zip(packageEntries(at: package), at: archive)
+        let zipImported = try service.importPackage(at: archive,
+            into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("crop-zip-receiver")))
+        XCTAssertEqual(zipImported.manifest.revision, imported.manifest.revision)
+        XCTAssertEqual(try Data(contentsOf: zipImported.directoryURL.appendingPathComponent(cropPath)), cropBytes)
+        var compressed = try packageEntries(at: package)
+        compressed[0].method = 8
+        let compressedArchive = f.parent.appendingPathComponent("compressed-crop.aagedalpeople.zip")
+        try zip(compressed, at: compressedArchive)
+        XCTAssertThrowsError(try service.importPackage(at: compressedArchive,
+            into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("compressed-crop-receiver"))))
+        var extra = try packageEntries(at: package)
+        extra[0].extra = Data([0xfe, 0xca, 0, 0])
+        let extraArchive = f.parent.appendingPathComponent("extra-crop.aagedalpeople.zip")
+        try zip(extra, at: extraArchive)
+        XCTAssertThrowsError(try service.importPackage(at: extraArchive,
+            into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("extra-crop-receiver"))))
+        let wrapped = try packageEntries(at: package).map { item -> ZIPEntry in
+            ZIPEntry(name: "Wrapped.aagedalpeople/" + item.name, data: item.data)
+        }
+        let wrappedArchive = f.parent.appendingPathComponent("wrapped-crop.aagedalpeople.zip")
+        try zip(wrapped, at: wrappedArchive)
+        XCTAssertThrowsError(try service.importPackage(at: wrappedArchive,
+            into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("wrapped-crop-receiver"))))
+    }
+
+    func testSchemaThreeRejectsInvalidCropBytesAndUnsafeReferences() throws {
+        let validJPEG = try jpeg()
+        for invalid in [Data("not a jpeg".utf8), try jpeg(width: 319), Data(validJPEG.dropLast(16))] {
+            let f = try fixture()
+            let (package, _, _) = try cropPackage(f, crop: invalid)
+            XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: package,
+                into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("bad-crop-receiver"))))
+        }
+        let f = try fixture()
+        let (package, cropPath, _) = try cropPackage(f)
+        let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("bad-crop-receiver"))
+        let cropURL = package.appendingPathComponent(cropPath)
+        let original = try Data(contentsOf: cropURL)
+        try FileManager.default.removeItem(at: cropURL)
+        XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: package, into: receiver))
+        try original.write(to: cropURL)
+        var corrupt = original; corrupt[corrupt.count - 1] ^= 1
+        try corrupt.write(to: cropURL)
+        XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: package, into: receiver))
+        try FileManager.default.removeItem(at: cropURL)
+        try FileManager.default.createSymbolicLink(at: cropURL, withDestinationURL: f.snapshot.directoryURL.appendingPathComponent("people.json"))
+        XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: package, into: receiver))
+        XCTAssertNil(try receiver.currentSnapshot())
+    }
+
+    func testReplacingAndRemovingSchemaThreeSelectionPrunesCropSnapshots() throws {
+        let f = try fixture()
+        let (package, cropPath, _) = try cropPackage(f)
+        let service = PeopleLibraryPackageService()
+        let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("prune-receiver"))
+        let first = try service.importPackage(at: package, into: receiver)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.directoryURL.appendingPathComponent(cropPath).path))
+        let schemaTwoPackage = f.parent.appendingPathComponent("replacement.aagedalpeople")
+        try service.export(f.snapshot, to: schemaTwoPackage)
+        let replacement = try service.importPackage(at: schemaTwoPackage, into: receiver)
+        XCTAssertEqual(replacement.manifest.schemaVersion, 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.directoryURL.path))
+        let second = try service.importPackage(at: package, into: receiver)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second.directoryURL.appendingPathComponent(cropPath).path))
+        try receiver.removeCurrentSnapshot()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.directoryURL.path))
+    }
+
+    func testFailedSchemaThreeActivationDoesNotLeaveCropSnapshot() throws {
+        let f = try fixture()
+        let (package, _, _) = try cropPackage(f)
+        let root = f.parent.appendingPathComponent("failed-crop-receiver")
+        let receiver = PeopleLibraryRepository(root: root, beforeActivate: { throw Failure.injected })
+        XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: package, into: receiver))
+        let retained = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("snapshot-") }
+        XCTAssertTrue(retained.isEmpty)
     }
     private func zip(_ entries: [ZIPEntry], at url: URL) throws {
         struct Central { let entry: ZIPEntry; let compressed: Data; let crc: UInt32; let offset: UInt32 }
@@ -160,6 +401,35 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         }
     }
 
+    func testSchemaThreeCrossAppGoldenDirectoryAndZIP() throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent("people-v3-golden-\(UUID())")
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: parent) }
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Documentation/Testing/Fixtures/people-library-v3.aagedalpeople")
+        let service = PeopleLibraryPackageService()
+        let cropPath = "upgrade_sources/cccccccc-cccc-cccc-cccc-cccccccccccc.jpg"
+        let imported = try service.importPackage(at: fixture,
+            into: PeopleLibraryRepository(root: parent.appendingPathComponent("directory-receiver")))
+        XCTAssertEqual(imported.manifest.schemaVersion, 3)
+        XCTAssertEqual(imported.manifest.coreRevision, "3747303528858361c874f656461ec6dfbcb005851e43b468baecec213294565f")
+        XCTAssertEqual(imported.manifest.revision, "5e409e1e8d083d51b446eda5ba53c0e21104a157bbbec345f2851631007c1300")
+        let output = parent.appendingPathComponent("golden-v3-export.aagedalpeople")
+        try service.export(imported, to: output)
+        for path in imported.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName] {
+            XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(path)),
+                try Data(contentsOf: fixture.appendingPathComponent(path)), path)
+        }
+        let archive = parent.appendingPathComponent("golden-v3.aagedalpeople.zip")
+        try zip(packageEntries(at: fixture), at: archive)
+        let zipImported = try service.importPackage(at: archive,
+            into: PeopleLibraryRepository(root: parent.appendingPathComponent("zip-receiver")))
+        XCTAssertEqual(zipImported.manifest.revision, imported.manifest.revision)
+        XCTAssertEqual(try Data(contentsOf: zipImported.directoryURL.appendingPathComponent(cropPath)),
+            try Data(contentsOf: fixture.appendingPathComponent(cropPath)))
+    }
+
     func testExactByteExportAndImportIntoSeparateRepository() throws {
         let f = try fixture(), service = PeopleLibraryPackageService()
         let output = f.parent.appendingPathComponent("shared.aagedalpeople")
@@ -175,6 +445,43 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         XCTAssertEqual(imported.gallery, f.snapshot.gallery)
         XCTAssertEqual(imported.gallery.people[0].name, "  {persons}, Å  ")
         XCTAssertEqual(try f.repository.currentSnapshot()?.manifest, f.snapshot.manifest)
+        try assertNoStages(f)
+    }
+
+    func testExportHoldsSharedSelectionLeaseThroughPublication() throws {
+        let f = try fixture()
+        let lockURL = f.repository.root.appendingPathComponent(".selection-lock")
+        let service = PeopleLibraryPackageService(beforePublish: {
+            let fd = open(lockURL.path, O_RDONLY | O_NOFOLLOW)
+            guard fd >= 0 else { throw Failure.injected }
+            defer { close(fd) }
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                _ = flock(fd, LOCK_UN)
+                throw Failure.injected
+            }
+        })
+        try service.export(f.snapshot, to: f.parent.appendingPathComponent("leased-export.aagedalpeople"))
+    }
+
+    func testCropExportPreventsConcurrentRemovalAndLeavesNoStage() throws {
+        let f = try fixture()
+        let (package, cropPath, cropBytes) = try cropPackage(f)
+        let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("lease-crop-receiver"))
+        let snapshot = try PeopleLibraryPackageService().importPackage(at: package, into: receiver)
+        let service = PeopleLibraryPackageService(beforePublish: {
+            do {
+                try receiver.removeCurrentSnapshot()
+                throw Failure.injected
+            } catch PeopleLibraryRepository.Failure.busy {
+                // The export lease must keep the crop-bearing selection intact.
+            }
+        })
+        let output = f.parent.appendingPathComponent("lease-crop-export.aagedalpeople")
+        try service.export(snapshot, to: output)
+        XCTAssertEqual(try receiver.currentSnapshot()?.manifest.revision, snapshot.manifest.revision)
+        XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(cropPath)), cropBytes)
+        try receiver.removeCurrentSnapshot()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: snapshot.directoryURL.path))
         try assertNoStages(f)
     }
 

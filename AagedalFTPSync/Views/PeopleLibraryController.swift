@@ -10,10 +10,12 @@ final class PeopleLibraryController: ObservableObject {
         let exportedAt: String
         let revision: String
         let includesEditorMetadata: Bool
+        let upgradeSourceCount: Int
         init(_ manifest: PeopleLibraryManifest) {
             libraryID = manifest.libraryID; peopleCount = manifest.peopleCount
             embeddingCount = manifest.embeddingCount; exportedAt = manifest.exportedAt
             revision = manifest.revision; includesEditorMetadata = manifest.editorPayload != nil
+            upgradeSourceCount = manifest.files.filter { $0.path.hasPrefix("upgrade_sources/") }.count
         }
     }
     enum State: Equatable { case unavailable, unselected, selected(Summary), failure }
@@ -81,6 +83,27 @@ final class PeopleLibraryController: ObservableObject {
         } catch {
             guard generation == token, !suspended else { return }
             if error is CancellationError { return }
+            if let repositoryFailure = error as? PeopleLibraryRepository.Failure {
+                if repositoryFailure == .cleanupFailed {
+                    let repository = self.repository
+                    let refreshed = try? await Task.detached(priority: .userInitiated) {
+                        try repository.currentSnapshot()
+                    }.value
+                    snapshot = refreshed
+                    state = refreshed.map { .selected(Summary($0.manifest)) } ?? .unselected
+                    message = "The selection changed, but an older local face-crop snapshot could not be removed. Retry the library operation to finish cleanup."
+                    return
+                }
+                if repositoryFailure == .invalidUpgradeSource {
+                    message = "The package contains an invalid face crop. Each upgrade source must be a complete 320×320 JPEG no larger than 1 MB."
+                    return
+                }
+            }
+            if let packageFailure = error as? PeopleLibraryPackageService.Failure,
+               packageFailure == .busy {
+                message = "The people library is changing. Retry the export after the current library operation finishes."
+                return
+            }
             message = failure
             if !mutation, snapshot == nil { state = .failure }
         }
