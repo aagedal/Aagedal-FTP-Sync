@@ -3,6 +3,93 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class RemoteTransportIntegrationTests: XCTestCase {
+    func testProgrammedDownloadChangesDayAcrossLiveTransportsAndKeepsRawSidecars() async throws {
+        let configuration = try Self.configuration()
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let janePrefix = "TA" + token
+            let samPrefix = "JB" + token
+            let contents: [String: Data] = [
+                "\(janePrefix)_001.CR3": Data("Jane RAW".utf8),
+                "\(janePrefix)_001.xmp": Data("Jane sidecar".utf8),
+                "\(janePrefix)_001_EDITED.JPG": Data("returned copy".utf8),
+                "\(samPrefix)_001.JPG": Data("Sam original".utf8)
+            ]
+            let files = contents.map { name, bytes in
+                SyncFile(relativePath: name, size: Int64(bytes.count), modifiedAt: Date().addingTimeInterval(-300))
+            }
+            let folder = root.appendingPathComponent("downloads")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            let local = Endpoint(kind: .local, localPath: folder.path,
+                bookmark: try folder.bookmarkData(options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil, relativeTo: nil))
+            let jane = PhotographerProfile(name: "Jane", filenamePrefix: janePrefix,
+                creator: "Jane", copyrightNotice: "")
+            let sam = PhotographerProfile(name: "Sam", filenamePrefix: samPrefix,
+                creator: "Sam", copyrightNotice: "")
+            let day = Date()
+            var job = SyncJob(name: "Programmed live download")
+            job.left = remote
+            job.right = local
+            job.filter.photographerInitials = "OLD"
+            job.filter.excludedFilenameSuffixes = "_EDITED"
+            job.filter.usesMetadataProgrammingPhotographers = true
+            job.metadataAutomation = MetadataAutomation(photographers: [jane, sam],
+                photographerTracks: [MetadataPhotographerTrack(photographerID: jane.id,
+                    date: PhotographerWorkDate(day))], clips: [])
+            let engine = SyncEngine(
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            do {
+                for file in files {
+                    let input = try temporaryFile(containing: try XCTUnwrap(contents[file.relativePath]))
+                    defer { try? FileManager.default.removeItem(at: input) }
+                    try await session.importFile(from: input, as: file, preserveDate: true, verifySize: true)
+                }
+                let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                // The early-download path counts a RAW/sidecar group once;
+                // the full-listing path can count its two files separately.
+                XCTAssertGreaterThan(first.transferred, 0, kind.rawValue)
+                XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)),
+                    ["\(janePrefix)_001.CR3", "\(janePrefix)_001.xmp"], kind.rawValue)
+                for name in ["\(janePrefix)_001.CR3", "\(janePrefix)_001.xmp"] {
+                    XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(name)), contents[name], kind.rawValue)
+                }
+
+                job.metadataAutomation?.photographerTracks = [MetadataPhotographerTrack(
+                    photographerID: sam.id, date: PhotographerWorkDate(day))]
+                let second = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(second.transferred, 1, kind.rawValue)
+                XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)),
+                    ["\(janePrefix)_001.CR3", "\(janePrefix)_001.xmp", "\(samPrefix)_001.JPG"], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("\(samPrefix)_001.JPG")),
+                    contents["\(samPrefix)_001.JPG"], kind.rawValue)
+
+                job.metadataAutomation?.photographerTracks = []
+                let empty = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(empty.transferred, 0, kind.rawValue)
+                XCTAssertFalse(FileManager.default.fileExists(atPath:
+                    folder.appendingPathComponent("\(janePrefix)_001_EDITED.JPG").path), kind.rawValue)
+                _ = try await session.listFiles()
+                for file in files { try await session.removeFile(file) }
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
     func testSharedServerDownloadUploadRoundTripExcludesRenamedCopies() async throws {
         let configuration = try Self.configuration()
         for kind in [EndpointKind.ftp, .ftps, .sftp] {
