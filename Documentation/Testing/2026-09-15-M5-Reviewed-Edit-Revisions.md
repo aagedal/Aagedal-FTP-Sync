@@ -1,7 +1,9 @@
 # M5 reviewed-edit revision guard — 2026-09-15
 
 Implementation source: `7fe95b9b41302825d0fa89b82e48804633f192dc` on
-`codex/version-3-0-plan`. The worktree was clean when the focused tests ran.
+`codex/version-3-0-plan`. The focused tests ran against the equivalent three-file
+uncommitted diff on base `6aba497`; the worktree was dirty during the run, then
+the exact tested source was committed as `7fe95b9`.
 Host: macOS 27.0 (`26A428`), Apple silicon. The app remains a 2.9.2 (37)
 development build; the tracked candidate was not changed.
 
@@ -30,6 +32,20 @@ resolution with exit 74 because Xcode's compiler caches were denied; the
 authorized retry passed. Logs remain in ignored `build/` paths.
 
 This verifies the preflight-to-reprocess edit interval in a disposable local
-fixture. The complete M5 delivery/idempotence/rollback matrix, native dialog
-observation, live transport conflict handling, macOS 14 and release-candidate
-checks remain open.
+fixture. A later test-only commit, `5733239b6874a71454663acb83438378cab80dee`,
+extends the disposable programmed-media fixture across FTP, implicit FTPS and
+SFTP. That focused run used the equivalent one-file uncommitted test diff on
+base `34baa38`; the exact tested source was then committed as `5733239`. The
+focused
+`RemoteTransportIntegrationTests/testProgrammedDownloadProcessesDecodableJPEGAndValidRAWSidecarAcrossLiveTransports`
+run passed with exit 0 in 1.088 seconds. For each transport, it reviews a local
+edit to the delivered RAW XMP sidecar, edits the same sidecar again before
+reprocessing, and verifies that the later bytes remain intact and the RAW path
+is reported as a conflict. The decodable JPEG still receives the changed
+Headline; the opaque `.CR3` payload stays byte-identical. The ignored log is
+`build/v3-reviewed-edits-live.log`; the result bundle is
+`build/v3-reviewed-edits/Logs/Test/Test-AagedalFTPSync-2026.09.15_14-49-54-+0200.xcresult`.
+
+The complete M5 delivery/idempotence/rollback matrix, native dialog
+observation, camera RAW/external-reader integrity, macOS 14 and
+release-candidate checks remain open.
