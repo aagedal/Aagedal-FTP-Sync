@@ -108,7 +108,9 @@ struct MetadataFolderPreviewView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                     if processing.geocoding != .notRequested {
-                        Text(geocodingDetail(processing.geocoding)).font(.caption).foregroundStyle(.secondary)
+                        Text(geocodingDetail(processing.geocoding) +
+                             (processing.geofenceMatched ? " Named area supplied City." : ""))
+                            .font(.caption).foregroundStyle(.secondary)
                         if let identity = processing.geocodingProviderIdentity {
                             Text("Provider: \(identity.provider) · \(identity.version) · \(processing.geocodingLocaleIdentifier ?? "")")
                                 .font(.caption).foregroundStyle(.secondary)

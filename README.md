@@ -20,7 +20,7 @@ The 3.0 source currently adds these guarded workflows:
   and people already present or accepted by recognition. Braces remain literal until
   variables are enabled for that field; a missing value preserves the complete existing
   field rather than publishing a partial result.
-- Per-job reverse geocoding through either an offline GeoNames database or Apple online.
+- Per-job reverse geocoding through either an offline GeoNames database or Apple online, with named map polygons that override City and `{gps:city}` for GPS-tagged images inside those areas.
   City and Country have independent disabled, fill-empty and overwrite policies. Apple
   lookup requires explicit consent because image coordinates are sent to Apple; it does
   not request the Mac's current location.

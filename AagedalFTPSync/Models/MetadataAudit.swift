@@ -67,6 +67,8 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
         let version: String?
         let dataset: String?
         let distanceMeters: Double?
+        /// Only records whether a saved polygon matched; no name or coordinate is retained.
+        let geofenceMatched: Bool?
 
         init?(result: MetadataProcessingResult) {
             localeIdentifier = result.geocodingLocaleIdentifier
@@ -92,6 +94,7 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
             version = identity?.version
             dataset = identity?.dataset
             distanceMeters = distance
+            geofenceMatched = result.geofenceMatched ? true : nil
         }
     }
 
@@ -483,6 +486,18 @@ struct MetadataProcessingFingerprint: Codable, Equatable, Sendable {
             digest.append(settings.countryPolicy.rawValue)
             digest.append(settings.localeIdentifier)
             digest.append(settings.allowSendingCoordinatesToApple)
+            if !settings.geofences.isEmpty {
+                digest.append("named-geofences-v1")
+                digest.append(String(settings.geofences.count))
+                for area in settings.geofences {
+                    digest.append(area.name.trimmingCharacters(in: .whitespacesAndNewlines))
+                    digest.append(String(area.vertices.count))
+                    for vertex in area.vertices {
+                        digest.append(vertex.latitude)
+                        digest.append(vertex.longitude)
+                    }
+                }
+            }
         }
         canonical.appendOptional(faceRecognition) { digest, settings in
             digest.append(settings.appendToKeywords)

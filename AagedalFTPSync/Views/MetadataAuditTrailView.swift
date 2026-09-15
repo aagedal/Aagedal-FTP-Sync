@@ -255,6 +255,7 @@ enum MetadataAuditEvidencePresentation {
         case .cancelled: status = "Place lookup was cancelled."
         }
         var details = [status]
+        if decision.geofenceMatched == true { details.append("Saved named area supplied the City value.") }
         if let locale = decision.localeIdentifier { details.append("Language: " + locale + ".") }
         if let provider = decision.provider { details.append("Provider: " + provider + ".") }
         if let distance = decision.distanceMeters { details.append(String(format: "Nearest settlement: %.1f km away.", locale: Locale(identifier: "en_US_POSIX"), distance / 1_000)) }

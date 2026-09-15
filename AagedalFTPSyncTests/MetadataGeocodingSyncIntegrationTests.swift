@@ -58,6 +58,56 @@ final class MetadataGeocodingSyncIntegrationTests: XCTestCase {
             }, now: { Date(timeIntervalSince1970: 1_704_153_600) })
     }
 
+    private func namedArea() -> MetadataGeofence {
+        .init(name: "My venue", vertices: [
+            .init(latitude: 59.4, longitude: 10.2),
+            .init(latitude: 59.4, longitude: 10.3),
+            .init(latitude: 59.6, longitude: 10.3),
+            .init(latitude: 59.6, longitude: 10.2)
+        ])
+    }
+
+    func testJPEGInsideNamedAreaWritesCustomCityWithoutProviderAndOutsideFallsBack() async throws {
+        var f = try fixture()
+        f.job.metadataGeocoding = try .init(cityPolicy: .overwrite,
+            localeIdentifier: "en_US", geofences: [namedArea()])
+        let inside = f.source.appendingPathComponent("inside.jpg")
+        try jpeg(at: inside)
+        let original = try Data(contentsOf: inside)
+        let forbidden = MetadataGeocodingService(identity: .init(provider: "forbidden", version: "1", dataset: "fixture")) { _ in
+            XCTFail("A City-only named area must not call the selected provider")
+            return .failure(retryAfter: nil)
+        }
+        let services = MetadataProcessingServices(offlineGeocoding: forbidden, appleGeocoding: nil)
+        let first = try await engine(f, services: services).run(job: f.job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(first.transferred, 1)
+        XCTAssertEqual(try ImageMetadata.read(from: f.destination.appendingPathComponent("inside.jpg")).iptc.city,
+                       "My venue")
+        XCTAssertEqual(try Data(contentsOf: inside), original)
+
+        let outside = f.source.appendingPathComponent("outside.jpg")
+        try jpeg(at: outside)
+        var metadata = try ImageMetadata.read(from: outside)
+        metadata.setGPS(latitude: 60.0, longitude: 10.25)
+        try metadata.write(to: outside)
+        let second = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(second.transferred, 1)
+        XCTAssertEqual(try ImageMetadata.read(from: f.destination.appendingPathComponent("outside.jpg")).iptc.city,
+                       "Oslo")
+    }
+
+    func testNamedAreaCityAndProviderCountryCanBeWrittenTogether() async throws {
+        var f = try fixture()
+        f.job.metadataGeocoding = try .init(cityPolicy: .overwrite, countryPolicy: .overwrite,
+            localeIdentifier: "en_US", geofences: [namedArea()])
+        try jpeg(at: f.source.appendingPathComponent("photo.jpg"))
+        let result = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(result.transferred, 1)
+        let output = try ImageMetadata.read(from: f.destination.appendingPathComponent("photo.jpg"))
+        XCTAssertEqual(output.iptc.city, "My venue")
+        XCTAssertEqual(output.xmp?.country, "Norway")
+    }
+
     func testSelectedAppleRoutesTransferAndReprocessingWithoutOfflineFallback() async throws {
         for failure in [false, true] {
             var f = try fixture()

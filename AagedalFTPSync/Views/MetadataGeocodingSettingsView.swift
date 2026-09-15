@@ -33,6 +33,7 @@ struct MetadataGeocodingSettingsView: View {
     @State private var confirmsReprocess = false
     @State private var confirmsApple = false
     @State private var appleConsent: MetadataGeocodingAppleConsent?
+    @State private var showsGeofenceEditor = false
 
     private struct PreviewPresentation: Identifiable, Sendable {
         let id = UUID()
@@ -85,6 +86,16 @@ struct MetadataGeocodingSettingsView: View {
                 }
             }
             .accessibilityIdentifier("geocoding-language")
+            HStack {
+                Button("Edit Named Areas…") { showsGeofenceEditor = true }
+                    .accessibilityIdentifier("edit-geofences")
+                if let count = settings?.geofences.count, count > 0 {
+                    Text("\(count) saved in this job draft")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text("A named area replaces City and {gps:city} when the image GPS point is inside its polygon. Country still uses the selected provider when requested. Outside named areas, the selected provider supplies both names.")
+                .font(.caption).foregroundStyle(.secondary)
             if settings?.provider == .apple {
                 Text("Apple online sends coordinates from each applicable image to Apple and requires a network connection. It uses the selected place-name language and does not request this Mac’s device location. Only saved, enabled choices are used for processing.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -126,6 +137,11 @@ struct MetadataGeocodingSettingsView: View {
         .sheet(item: $preview) { presentation in
             MetadataFolderPreviewView(folderName: presentation.folderName,
                 timestampPolicy: presentation.timestampPolicy, result: presentation.result)
+        }
+        .sheet(isPresented: $showsGeofenceEditor) {
+            MetadataGeofenceEditorView(geofences: Binding(
+                get: { settings?.geofences ?? [] },
+                set: { areas in update { $0.geofences = areas } }))
         }
         .confirmationDialog("Allow image coordinates to be sent to Apple?", isPresented: $confirmsApple, titleVisibility: .visible) {
             Button("Use Apple and Allow Coordinates") {

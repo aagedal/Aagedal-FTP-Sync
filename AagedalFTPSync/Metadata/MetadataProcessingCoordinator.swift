@@ -95,6 +95,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
     /// Concrete locale only when lookup was needed (including missing GPS).
     let geocodingLocaleIdentifier: String?
     let geocodingProviderIdentity: MetadataGeocodingService.Identity?
+    let geofenceMatched: Bool
     let places: [MetadataPlaceField: MetadataProcessingPlaceOutcome]
     let recognitionEvidence: FaceRecognitionAuditEvidence?
     let recognitionDependencyRevisions: [String: String]
@@ -105,6 +106,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
          geocoding: MetadataProcessingGeocodingOutcome = .notRequested,
          geocodingLocaleIdentifier: String? = nil,
          geocodingProviderIdentity: MetadataGeocodingService.Identity? = nil,
+         geofenceMatched: Bool = false,
          places: [MetadataPlaceField: MetadataProcessingPlaceOutcome] = [:],
          recognitionEvidence: FaceRecognitionAuditEvidence? = nil,
          recognitionDependencyRevisions: [String: String] = [:]) {
@@ -115,6 +117,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
         self.geocoding = geocoding
         self.geocodingLocaleIdentifier = geocodingLocaleIdentifier
         self.geocodingProviderIdentity = geocodingProviderIdentity
+        self.geofenceMatched = geofenceMatched
         self.places = places
         self.recognitionEvidence = recognitionEvidence
         self.recognitionDependencyRevisions = recognitionDependencyRevisions
@@ -163,6 +166,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
             geocoding: geocoding,
             geocodingLocaleIdentifier: geocodingLocaleIdentifier,
             geocodingProviderIdentity: geocodingProviderIdentity,
+            geofenceMatched: geofenceMatched,
             places: places,
             recognitionEvidence: evidence,
             recognitionDependencyRevisions: dependencyRevisions
@@ -366,19 +370,37 @@ enum MetadataProcessingCoordinator {
         var stage: MetadataProcessingGeocodingOutcome = .notRequested
         var providerIdentity: MetadataGeocodingService.Identity?
         var place: MetadataGeocodingService.Place?
+        var geofenceMatched = false
         if needsLookup {
             if let pair = coordinates?.selected?.pair {
                 guard let query = MetadataGeocodingService.Query(latitude: pair.latitude,
                     longitude: pair.longitude, locale: settings.localeIdentifier) else {
                     throw AppError.invalidConfiguration("Geocoding requires a concrete supported locale.")
                 }
-                let selectedService = try service ?? services.geocoding(for: settings)
-                providerIdentity = selectedService.identity
-                let outcome = await selectedService.resolve(query)
-                try Task.checkCancellation()
-                if case .cancelled = outcome { throw CancellationError() }
-                stage = .lookup(outcome)
-                if case .found(let found, _) = outcome { place = found }
+                let area = settings.geofence(latitude: pair.latitude, longitude: pair.longitude)
+                geofenceMatched = area != nil
+                let needsCountry = placeWritable.contains(.country) ||
+                    (settings.resolveVariables && required.contains(.country))
+                if area == nil || needsCountry {
+                    let selectedService = try service ?? services.geocoding(for: settings)
+                    providerIdentity = selectedService.identity
+                    let outcome = await selectedService.resolve(query)
+                    try Task.checkCancellation()
+                    if case .cancelled = outcome { throw CancellationError() }
+                    stage = .lookup(outcome)
+                    if case .found(let found, _) = outcome { place = found }
+                }
+                if let area {
+                    let name = area.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    place = .init(city: name, country: place?.country,
+                                  source: "Named geofence", distanceMeters: nil)
+                    if !needsCountry {
+                        let identity = MetadataGeocodingService.Identity(provider: "job-geofence",
+                            version: "named-polygon-1", dataset: "job-local")
+                        providerIdentity = identity
+                        stage = .lookup(.found(place!, identity))
+                    }
+                }
             } else { stage = .missingCoordinates }
         }
         var capture: MetadataCaptureDate?
@@ -427,6 +449,7 @@ enum MetadataProcessingCoordinator {
             context: context, fields: base.fields, coordinateResolution: coordinates,
             geocoding: stage, geocodingLocaleIdentifier: needsLookup ? settings.localeIdentifier : nil,
             geocodingProviderIdentity: providerIdentity,
+            geofenceMatched: geofenceMatched,
             places: outcomes)
     }
 

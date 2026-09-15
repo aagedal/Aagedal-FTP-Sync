@@ -48,6 +48,36 @@ final class MetadataPerImageProcessingTests: XCTestCase {
         try metadata.write(to: file)
     }
 
+    func testNamedAreaResolvesGPSCityTemplateFromEmbeddedJPEGWithoutLookup() async throws {
+        let file = try image()
+        var metadata = try ImageMetadata.read(from: file)
+        metadata.setGPS(latitude: 59.5, longitude: 10.25)
+        try metadata.write(to: file)
+        let area = MetadataGeofence(name: "My venue", vertices: [
+            .init(latitude: 59.4, longitude: 10.2),
+            .init(latitude: 59.4, longitude: 10.3),
+            .init(latitude: 59.6, longitude: 10.3),
+            .init(latitude: 59.6, longitude: 10.2)
+        ])
+        let geocoding = try MetadataGeocodingSettings(resolveVariables: true,
+            localeIdentifier: "en", geofences: [area])
+        let forbidden = MetadataGeocodingService(identity: .init(provider: "forbidden", version: "1", dataset: "fixture")) { _ in
+            XCTFail("A matching named area should resolve {gps:city} locally")
+            return .failure(retryAfter: nil)
+        }
+        let result = try await MetadataProcessingCoordinator.prepare(
+            assignment: assignment(headline: "Photo at {gps:city}"),
+            geocoding: geocoding, service: forbidden,
+            fileURL: file, relativePath: "fixture.jpg",
+            processingDate: Date(timeIntervalSince1970: 1_704_153_600),
+            processingTimeZone: XCTUnwrap(TimeZone(identifier: "Etc/UTC")))
+        XCTAssertEqual(result.changes.headline, "Photo at My venue")
+        XCTAssertEqual(result.context?.city, "My venue")
+        XCTAssertTrue(result.geofenceMatched)
+        XCTAssertTrue(result.resolutionComplete)
+        XCTAssertEqual(MetadataProcessingAuditEvidence.GeocodingDecision(result: result)?.geofenceMatched, true)
+    }
+
     func testLegacyFastPathDoesNotReadFileOrActivateBraces() throws {
         let active = try assignment()
         var clip = active.clip
