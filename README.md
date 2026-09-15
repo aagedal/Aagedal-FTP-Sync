@@ -6,7 +6,7 @@ Version 2.9 adds optional metadata calendar sharing through a user-configured HT
 
 This branch contains the in-development 3.0 implementation. It is not a beta or a
 shipping release: the bundle still identifies itself as 2.9.2 (build 37), production
-face-model distribution and calibration are intentionally absent, and the remaining
+face-recognition calibration is intentionally absent, and the remaining
 native, supported-macOS, performance and release gates are tracked in the
 [3.0 readiness report](Documentation/3.0-Readiness.md). Use the latest tagged 2.9.x
 release for production work until a 3.0 candidate is published.
@@ -31,11 +31,11 @@ The 3.0 source currently adds these guarded workflows:
   Face recognition is local and appends only accepted names to Person Shown, with an
   optional Keywords append and `{persons}` expansion. Uncertain or unavailable results
   are omitted and remain visible in preview/audit evidence.
-- An explicit signed AuraFace model download, verification, installation, retry,
-  cancellation and removal lifecycle. Model changes take effect after relaunch so a
-  running operation keeps one immutable admitted runtime. Production builds stay
-  fail-closed until fixed HTTPS origins, a distribution key, signed artifacts and a
-  calibrated acceptance policy are configured.
+- A bundled, local AuraFace-v1 Core ML model reconstructed from two hash-pinned
+  source parts, with compiled-weight verification and its separate Apache-2.0
+  notice. Recognition takes one immutable
+  runtime snapshot at startup. Metadata name tagging remains fail-closed until a
+  compatible People Library and calibrated acceptance policy are available.
 - Receipt-driven local reprocessing. The default scans stale or incomplete files,
   previews counts without writing, skips current receipts and preserves destination
   files edited since their last complete receipt. Replacing those edits requires a
@@ -113,6 +113,13 @@ Adobe Bridge maintains its own [thumbnail and metadata cache](https://helpx.adob
 ## Build
 
 Open `Aagedal FTP Sync.xcodeproj` and select the `AagedalFTPSync` scheme. For signed builds, create `Configuration/Signing.local.xcconfig` with your own `DEVELOPMENT_TEAM = YOUR_TEAM_ID`, or pass that setting to `xcodebuild`. This optional file is ignored by Git; account-specific signing settings do not belong in the shared project. Then build and run.
+
+For a 3.0 candidate, the shared Xcode scheme reconstructs the pinned AuraFace
+`.mlpackage` before Core ML inspects it; a target build phase checks its hashes
+before compilation. Verify the exported app
+afterward with `python3 Tools/verify_bundled_auraface.py app
+/path/to/AagedalFTPSync.app`. The app contains the compiled model and separate
+`AuraFace-LICENSE.md` notice.
 
 The committed Xcode project is generated from [`project.yml`](project.yml) with [XcodeGen](https://github.com/yonaskolb/XcodeGen). Regenerate it after changing project structure:
 

@@ -32,6 +32,24 @@ targets:
   AagedalFTPSync:
     type: application
     platform: macOS
+    preBuildScripts:
+      - name: Prepare and Verify Bundled AuraFace
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          python3 "$SRCROOT/Tools/prepare_bundled_auraface.py"
+          python3 "$SRCROOT/Tools/verify_bundled_auraface.py" source "$SRCROOT/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage"
+        inputFiles:
+          - $(SRCROOT)/Tools/prepare_bundled_auraface.py
+          - $(SRCROOT)/Tools/verify_bundled_auraface.py
+          - $(SRCROOT)/Tools/ModelSource/AuraFaceR100.weights.part-aa
+          - $(SRCROOT)/Tools/ModelSource/AuraFaceR100.weights.part-ab
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFace-LICENSE.md
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Manifest.json
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/model.mlmodel
+        outputFiles:
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights/weight.bin
     sources:
       - path: AagedalFTPSync
     dependencies:
@@ -86,6 +104,10 @@ schemes:
       targets:
         AagedalFTPSync: all
         AagedalFTPSyncTests: [test]
+      preActions:
+        - name: Reassemble Pinned AuraFace Weights
+          settingsTarget: AagedalFTPSync
+          script: python3 "$PROJECT_DIR/Tools/prepare_bundled_auraface.py"
     test:
       targets:
         - AagedalFTPSyncTests
@@ -94,6 +116,10 @@ schemes:
       targets:
         AagedalFTPSync: all
         AagedalFTPSyncUITests: [test]
+      preActions:
+        - name: Reassemble Pinned AuraFace Weights
+          settingsTarget: AagedalFTPSync
+          script: python3 "$PROJECT_DIR/Tools/prepare_bundled_auraface.py"
     test:
       targets:
         - AagedalFTPSyncUITests

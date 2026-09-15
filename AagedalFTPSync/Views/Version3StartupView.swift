@@ -118,7 +118,6 @@ struct RuntimeSettingsView: View {
             if let controller = store.peopleLibraryController {
                 PeopleLibrarySettingsView(
                     controller: controller,
-                    componentController: store.faceComponentController,
                     recognitionWasAdmitted: store.faceRecognitionContext != nil
                 )
                     .tabItem { Label("People Library", systemImage: "person.crop.rectangle.stack") }

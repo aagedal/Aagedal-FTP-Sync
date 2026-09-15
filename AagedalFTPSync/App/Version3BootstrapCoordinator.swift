@@ -1,55 +1,25 @@
 import Combine
 import Foundation
 
-/// Codesigned bundle configuration is the production trust boundary for the
-/// optional AuraFace component and its calibrated publication policy. Startup
-/// performs local admission only; downloads remain an explicit settings action.
+/// Codesigned bundle configuration holds the calibrated publication policy.
+/// The reviewed AuraFace payload is shipped in the app and admitted locally.
 enum ProductionFaceRecognitionAdmission {
     struct Configuration: Sendable {
         static let enabledKey = "AFTAuraFaceEnabled"
-        static let descriptorURLKey = "AFTAuraFaceDescriptorURL"
-        static let signatureURLKey = "AFTAuraFaceSignatureURL"
-        static let allowedOriginsKey = "AFTAuraFaceAllowedOrigins"
-        static let publicKeyKey = "AFTAuraFacePublicKey"
         static let maximumDistanceKey = "AFTAuraFaceMaximumCosineDistance"
         static let minimumGapKey = "AFTAuraFaceMinimumRunnerUpGap"
         static let minimumQualityKey = "AFTAuraFaceMinimumCaptureQuality"
 
-        let trust: AuraFaceDistributionTrust
         let policy: FaceRecognitionAcceptancePolicy
 
         static func load(from info: [String: Any]) throws -> Self? {
             guard info[enabledKey] as? Bool == true else { return nil }
-            guard let descriptorText = info[descriptorURLKey] as? String,
-                  let descriptorURL = URL(string: descriptorText),
-                  let signatureText = info[signatureURLKey] as? String,
-                  let signatureURL = URL(string: signatureText),
-                  let originTexts = info[allowedOriginsKey] as? [String],
-                  !originTexts.isEmpty,
-                  let keyText = info[publicKeyKey] as? String,
-                  let publicKey = Data(base64Encoded: keyText),
-                  let maximumDistance = (info[maximumDistanceKey] as? NSNumber)?.doubleValue,
+            guard let maximumDistance = (info[maximumDistanceKey] as? NSNumber)?.doubleValue,
                   let minimumGap = (info[minimumGapKey] as? NSNumber)?.doubleValue,
                   let minimumQuality = (info[minimumQualityKey] as? NSNumber)?.doubleValue else {
                 throw AuraFaceComponentError.invalidTrustConfiguration
             }
-            let origins = try Set(originTexts.map { text -> AuraFaceDistributionOrigin in
-                guard let url = URL(string: text), url.scheme == "https",
-                      let host = url.host, url.user == nil, url.password == nil,
-                      url.query == nil, url.fragment == nil,
-                      url.path.isEmpty || url.path == "/" else {
-                    throw AuraFaceComponentError.invalidTrustConfiguration
-                }
-                return try AuraFaceDistributionOrigin(host: host.lowercased(), port: url.port)
-            })
             return try Self(
-                trust: AuraFaceDistributionTrust(
-                    descriptorURL: descriptorURL,
-                    signatureURL: signatureURL,
-                    allowedOrigins: origins,
-                    publicKeyData: publicKey,
-                    supportedEmbeddingVersion: PeopleLibraryManifest.EmbeddingContract.auraFaceV1.embeddingSpaceVersion
-                ),
                 policy: FaceRecognitionAcceptancePolicy(
                     maximumCosineDistance: maximumDistance,
                     minimumRunnerUpGap: minimumGap,
@@ -71,16 +41,10 @@ enum ProductionFaceRecognitionAdmission {
             guard let configuration = try Configuration.load(
                 from: bundle.infoDictionary ?? [:]
             ) else { return nil }
-            let installer = try AuraFaceComponentInstaller(
-                trust: configuration.trust,
-                root: try AuraFaceComponentInstaller.componentRoot(
-                    forValidatedStorage: admission.storage
-                )
-            )
-            guard let runtime = try await installer.admitInstalledRuntime(),
-                  let library = try PeopleLibraryRepository(
+            guard let library = try PeopleLibraryRepository(
                     root: admission.storage.peopleLibraryDirectory
                   ).currentSnapshot() else { return nil }
+            let runtime = try BundledAuraFaceModel.admit(from: bundle)
             return try MetadataFaceRecognitionContext(
                 service: FaceRecognitionAnalysisService(admittedRuntime: runtime),
                 snapshot: library,
@@ -92,30 +56,6 @@ enum ProductionFaceRecognitionAdmission {
         }
     }
 
-    /// Creates settings ownership for the explicitly user-triggered component
-    /// lifecycle. Merely constructing this controller performs no file or network
-    /// operation; its first local status check is initiated by the settings view.
-    @MainActor
-    static func componentControllerIfConfigured(
-        _ admission: Version3MigrationDriver.Admission,
-        bundle: Bundle = .main
-    ) -> AuraFaceComponentController? {
-        do {
-            guard let configuration = try Configuration.load(
-                from: bundle.infoDictionary ?? [:]
-            ) else { return nil }
-            return AuraFaceComponentController(installer: try AuraFaceComponentInstaller(
-                trust: configuration.trust,
-                root: try AuraFaceComponentInstaller.componentRoot(
-                    forValidatedStorage: admission.storage
-                )
-            ))
-        } catch {
-            // Optional recognition must fail closed without preventing the rest
-            // of the application from opening.
-            return nil
-        }
-    }
 }
 
 /// Production version 3 bootstrap. The caller must independently exclude older app
@@ -192,9 +132,7 @@ final class Version3BootstrapCoordinator: ObservableObject {
                 try AppStore.makePausedForValidatedStorage(admission.storage,
                     retainedCredentialIDs: admission.currentCredentialIDs,
                     allowsCredentialGarbageCollection: admission.allowsCredentialGarbageCollection,
-                    faceRecognitionContext: faceRecognitionContext,
-                    faceComponentController: ProductionFaceRecognitionAdmission
-                        .componentControllerIfConfigured(admission))
+                    faceRecognitionContext: faceRecognitionContext)
             },
             calendar: @escaping @MainActor (Version3MigrationDriver.Admission) throws -> MetadataCalendarCoordinator = { admission in
                 try MetadataCalendarCoordinator.makePausedForValidatedStorage(admission.storage)

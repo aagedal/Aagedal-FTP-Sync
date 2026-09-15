@@ -314,17 +314,13 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
                        applicationSupport.appendingPathComponent("Components/AuraFace", isDirectory: true))
     }
 
-    func testProductionAdmissionConfigurationIsExplicitAndStrict() throws {
+    func testBundledAdmissionRequiresExplicitCalibratedPolicy() throws {
         typealias Configuration = ProductionFaceRecognitionAdmission.Configuration
         XCTAssertNil(try Configuration.load(from: [:]))
         XCTAssertNil(try Configuration.load(from: [Configuration.enabledKey: false]))
 
         let complete: [String: Any] = [
             Configuration.enabledKey: true,
-            Configuration.descriptorURLKey: "https://models.example.test/auraface/distribution.json",
-            Configuration.signatureURLKey: "https://models.example.test/auraface/distribution.json.sig",
-            Configuration.allowedOriginsKey: ["https://models.example.test"],
-            Configuration.publicKeyKey: Data(repeating: 7, count: 32).base64EncodedString(),
             Configuration.maximumDistanceKey: 0.4,
             Configuration.minimumGapKey: 0.08,
             Configuration.minimumQualityKey: 0.2,
@@ -340,9 +336,9 @@ final class AuraFaceComponentInstallerTests: XCTestCase {
             missing.removeValue(forKey: key)
             XCTAssertThrowsError(try Configuration.load(from: missing))
         }
-        var unsafeOrigin = complete
-        unsafeOrigin[Configuration.allowedOriginsKey] = ["https://models.example.test/path"]
-        XCTAssertThrowsError(try Configuration.load(from: unsafeOrigin))
+        var invalidDistance = complete
+        invalidDistance[Configuration.maximumDistanceKey] = -1
+        XCTAssertThrowsError(try Configuration.load(from: invalidDistance))
     }
 
     private func makeFixture(archiveOverride: Data? = nil) throws -> Fixture {

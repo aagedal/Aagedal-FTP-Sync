@@ -6,6 +6,24 @@
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES"
       runPostActionsOnFailure = "NO">
+      <PreActions>
+         <ExecutionAction
+            ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+            <ActionContent
+               title = "Reassemble Pinned AuraFace Weights"
+               scriptText = "python3 &quot;$PROJECT_DIR/Tools/prepare_bundled_auraface.py&quot;">
+               <EnvironmentBuildable>
+                  <BuildableReference
+                     BuildableIdentifier = "primary"
+                     BlueprintIdentifier = "1C493DABAD34DF55272221B5"
+                     BuildableName = "AagedalFTPSync.app"
+                     BlueprintName = "AagedalFTPSync"
+                     ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
+                  </BuildableReference>
+               </EnvironmentBuildable>
+            </ActionContent>
+         </ExecutionAction>
+      </PreActions>
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"

@@ -61,7 +61,6 @@ final class AppStore: ObservableObject {
     private let metadataLibraryCoordinator: MetadataLibraryCoordinator
     private let metadataCalendarRepository: MetadataCalendarRepository?
     let peopleLibraryController: PeopleLibraryController?
-    let faceComponentController: AuraFaceComponentController?
     private let launchAtLoginCoordinator: any LaunchAtLoginCoordinating
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
@@ -102,8 +101,7 @@ final class AppStore: ObservableObject {
         metadataCalendarRepository: MetadataCalendarRepository? = nil,
         peopleLibraryRepository: PeopleLibraryRepository? = nil,
         peopleLibraryPackageService: PeopleLibraryPackageService = PeopleLibraryPackageService(),
-        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
-        faceComponentController: AuraFaceComponentController? = nil
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -121,7 +119,6 @@ final class AppStore: ObservableObject {
         peopleLibraryController = peopleLibraryRepository.map {
             PeopleLibraryController(repository: $0, packageService: peopleLibraryPackageService)
         }
-        self.faceComponentController = faceComponentController
         metadataLibraryCoordinator = MetadataLibraryCoordinator(
             persistenceCoordinator: persistenceCoordinator,
             validateActivation: { jobs, photographers in
@@ -188,8 +185,7 @@ final class AppStore: ObservableObject {
         allowsCredentialGarbageCollection: Bool,
         keychain: KeychainStore = KeychainStore(),
         launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator(),
-        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
-        faceComponentController: AuraFaceComponentController? = nil
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
     ) throws -> AppStore {
         guard storage.storageFormat == .version3 else { throw AppPersistenceStartupError.unsupportedStorage }
         let jobs = JobRepository(storage: storage)
@@ -216,8 +212,7 @@ final class AppStore: ObservableObject {
             preloadedPersistence: loaded, startsJobsOnInitialization: false,
             metadataCalendarRepository: MetadataCalendarRepository(storage: storage),
             peopleLibraryRepository: PeopleLibraryRepository(root: storage.peopleLibraryDirectory),
-            faceRecognitionContext: faceRecognitionContext,
-            faceComponentController: faceComponentController)
+            faceRecognitionContext: faceRecognitionContext)
     }
 
     deinit {

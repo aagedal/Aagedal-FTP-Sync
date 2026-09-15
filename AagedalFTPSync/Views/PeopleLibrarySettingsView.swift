@@ -3,7 +3,6 @@ import UniformTypeIdentifiers
 
 struct PeopleLibrarySettingsView: View {
     @ObservedObject var controller: PeopleLibraryController
-    var componentController: AuraFaceComponentController?
     var recognitionWasAdmitted = false
     @State private var importing = false
     @State private var choosingExportFolder = false
@@ -57,19 +56,24 @@ struct PeopleLibrarySettingsView: View {
                     .disabled(!hasSelection).accessibilityIdentifier("peopleLibrary.remove")
             }.disabled(controller.busy || controller.suspended)
             Section("Recognition Model") {
-                if let componentController {
-                    AuraFaceModelSettingsSectionContent(
-                        controller: componentController,
-                        recognitionWasAdmitted: recognitionWasAdmitted
-                    )
+                if Bundle.main.url(forResource: BundledAuraFaceModel.resourceName,
+                                   withExtension: "mlmodelc") != nil {
+                    Label("AuraFace model included with the app", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .accessibilityIdentifier("faceModel.status")
+                    if recognitionWasAdmitted {
+                        Text("The model and selected People Library were admitted at startup. Recognition is ready for configured jobs.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else {
+                        Text("Recognition needs a compatible selected People Library and calibrated acceptance settings. Relaunch after those are available.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
                 } else {
-                    Label(
-                        "Model downloads are not configured in this build.",
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
+                    Label("AuraFace model is missing from this build.",
+                          systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
                     .accessibilityIdentifier("faceModel.status")
-                    Text("File transfer and people-library management remain available. Face recognition stays off.")
+                    Text("Face recognition stays off. File transfer and people-library management remain available.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -115,105 +119,5 @@ struct PeopleLibrarySettingsView: View {
                 else { await controller.exportPackage(to: url.appendingPathComponent(name, isDirectory: true)) }
             }
         } catch { panelError = "The selected location could not be opened." }
-    }
-}
-
-private struct AuraFaceModelSettingsSectionContent: View {
-    @ObservedObject var controller: AuraFaceComponentController
-    let recognitionWasAdmitted: Bool
-    @State private var confirmingRemoval = false
-
-    var body: some View {
-        Group {
-            switch controller.state {
-        case .checking:
-            ProgressView("Checking the installed model…")
-                .accessibilityIdentifier("faceModel.progress")
-        case .notInstalled:
-            Label("Recognition model is not installed.", systemImage: "square.and.arrow.down")
-                .accessibilityIdentifier("faceModel.status")
-            installExplanation
-            installButton()
-        case .downloading(let progress):
-            if let progress {
-                ProgressView("Downloading recognition model…", value: progress, total: 1)
-            } else {
-                ProgressView("Downloading recognition model…")
-            }
-            Text("Keep this window open while the signed model is downloaded and verified.")
-                .font(.callout).foregroundStyle(.secondary)
-            Button("Cancel Download") { controller.cancel() }
-                .accessibilityIdentifier("faceModel.cancel")
-        case .installing:
-            ProgressView("Verifying and installing recognition model…")
-                .accessibilityIdentifier("faceModel.progress")
-            Text("The previous verified model remains available if installation fails.")
-                .font(.callout).foregroundStyle(.secondary)
-        case .installed(let version):
-            Label("Recognition model installed", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .accessibilityIdentifier("faceModel.status")
-            Text("Version: \(version)").font(.caption).textSelection(.enabled)
-            if recognitionWasAdmitted {
-                Text("This model was admitted at startup and is ready for configured jobs.")
-                    .font(.callout).foregroundStyle(.secondary)
-            } else {
-                Text("Quit and reopen Aagedal FTP Sync to admit the installed model for recognition.")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
-            Button("Remove Recognition Model…", role: .destructive) {
-                confirmingRemoval = true
-            }
-            .accessibilityIdentifier("faceModel.remove")
-        case .offline:
-            Label("The recognition model could not be downloaded while offline.", systemImage: "wifi.slash")
-                .foregroundStyle(.orange)
-                .accessibilityIdentifier("faceModel.status")
-            Text("Check the connection and retry. Existing transfers continue without recognition.")
-                .font(.callout).foregroundStyle(.secondary)
-            installButton(title: "Retry Download")
-        case .verificationFailed(let message):
-            Label("The recognition model could not be verified or installed.", systemImage: "xmark.shield.fill")
-                .foregroundStyle(.red)
-                .accessibilityIdentifier("faceModel.status")
-            Text(message).font(.caption).textSelection(.enabled)
-            Text("No unverified model was activated. The previous verified model, if any, was retained.")
-                .font(.callout).foregroundStyle(.secondary)
-            installButton(title: "Download Again")
-        case .cancelled:
-            Label("Recognition model download was cancelled.", systemImage: "xmark.circle")
-                .accessibilityIdentifier("faceModel.status")
-            installButton(title: "Download Again")
-            }
-        }
-        .task { controller.refresh() }
-        .onDisappear { if controller.isBusy { controller.cancel() } }
-        .confirmationDialog(
-            "Remove the installed recognition model?",
-            isPresented: $confirmingRemoval,
-            titleVisibility: .visible
-        ) {
-            Button("Remove Recognition Model", role: .destructive) {
-                controller.removeInstalled()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            if recognitionWasAdmitted {
-                Text("This running app keeps its already admitted model until it quits. Relaunch to finish disabling face recognition.")
-            } else {
-                Text("Face recognition will remain unavailable until the model is installed again and the app is relaunched.")
-            }
-        }
-    }
-
-    private var installExplanation: some View {
-        Text("AuraFace runs locally after a one-time signed model download. Installing the model does not upload photos or people-library data.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-    }
-
-    private func installButton(title: LocalizedStringKey = "Download and Install Model") -> some View {
-        Button(title) { controller.downloadAndInstall() }
-            .accessibilityIdentifier("faceModel.install")
     }
 }

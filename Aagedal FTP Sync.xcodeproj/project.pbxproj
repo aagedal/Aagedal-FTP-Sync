@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0071F7522CDB745ED256C6BA /* BundledAuraFaceModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 885A5CB89858194103A3AA97 /* BundledAuraFaceModel.swift */; };
 		02ECC949E0CD2F017A4C7D26 /* JobRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E29CC609150B77D9F9FCA70E /* JobRepositoryTests.swift */; };
 		02FF57E6BFBFF76A9457E642 /* SyncFailureRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91F14102B4F8D6DAEF14EC8A /* SyncFailureRepository.swift */; };
 		047B306166AE91A1DA607AEA /* MetadataPerImageProcessingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F03C7D4111D29271F2745A66 /* MetadataPerImageProcessingTests.swift */; };
@@ -96,6 +97,7 @@
 		643C37FA6F70828858D71250 /* FileFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC25AACD3C7F08B23B371518 /* FileFilterTests.swift */; };
 		649027A87547FE310DC4E8E5 /* MetadataPreset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E65EC551E128F2CEA855514 /* MetadataPreset.swift */; };
 		6501DFDCD19487070FAB058E /* MetadataCalendarMigrationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32608BA7D3F42C8E7D5FE9C4 /* MetadataCalendarMigrationCoordinatorTests.swift */; };
+		650A23C4E4EEFFED3ED525F0 /* AuraFace-LICENSE.md in Resources */ = {isa = PBXBuildFile; fileRef = C825D129220D272794E62F74 /* AuraFace-LICENSE.md */; };
 		666D1401F6F716D1AEF810BA /* MetadataWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F668C295458EA4DCCB46EF8 /* MetadataWriter.swift */; };
 		6867526D6410A0FCCA8EB04B /* MetadataProcessingServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62E0498D7957586C0C97F579 /* MetadataProcessingServices.swift */; };
 		68B68175A5690C2817E2E2C2 /* AppPersistenceCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FA2EE5D72C430D4544BFF2A /* AppPersistenceCoordinatorTests.swift */; };
@@ -153,6 +155,7 @@
 		966F0DB9BFCEB5D15CFF84DB /* LegacySignatureSQLiteAcquisition.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2E0134521531D31F0A13CBD /* LegacySignatureSQLiteAcquisition.swift */; };
 		97BFB1AD73FA62E912302530 /* PeopleLibraryPackageServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C03F195479718098020E7D /* PeopleLibraryPackageServiceTests.swift */; };
 		987A0EF1E11FA46A8DE8F4BB /* MetadataCalendarMigrationJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 254DB69814E24065108EE9FE /* MetadataCalendarMigrationJournal.swift */; };
+		9B5ABBFB57C92BC85CEA95B9 /* AuraFaceR100.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = 9C35572797947764BD999107 /* AuraFaceR100.mlpackage */; };
 		9BE974E35F14A02DD16B33DC /* Endpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 937FD9EED413E474E9F6903E /* Endpoint.swift */; };
 		9DB40C0F242BAF5400C1AB08 /* SourceSignatureVersion3Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6814BDEA2C7D9393E32617C /* SourceSignatureVersion3Tests.swift */; };
 		A0534370D1A62D35C61FCBBC /* SyncSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */; };
@@ -389,6 +392,7 @@
 		84967906FCBA9EEDD7BF6FBC /* AppleMetadataGeocodingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMetadataGeocodingProvider.swift; sourceTree = "<group>"; };
 		8710C0C84C0F5CABFAC80B85 /* SharedMetadataCalendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedMetadataCalendar.swift; sourceTree = "<group>"; };
 		881E835940BB4E1CF30EE8A3 /* Version3JSONStoreConversionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3JSONStoreConversionTests.swift; sourceTree = "<group>"; };
+		885A5CB89858194103A3AA97 /* BundledAuraFaceModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BundledAuraFaceModel.swift; sourceTree = "<group>"; };
 		88A40B55D56ECDFBB850E52A /* PeopleLibraryRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleLibraryRepository.swift; sourceTree = "<group>"; };
 		890826A7102C45494742574C /* MetadataLibraryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataLibraryCoordinator.swift; sourceTree = "<group>"; };
 		8D465FCD0BDE8F18F40EAA70 /* MetadataCalendarRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarRepository.swift; sourceTree = "<group>"; };
@@ -403,6 +407,7 @@
 		96BEB9DB3BA25A81D2C50D52 /* MetadataProgrammingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinatorTests.swift; sourceTree = "<group>"; };
 		97C0C816A4FB1006374B4D23 /* PhotographerMapTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerMapTimelineTests.swift; sourceTree = "<group>"; };
 		97F55ED30B4C3721009803C5 /* MetadataSyncServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncServerClient.swift; sourceTree = "<group>"; };
+		9C35572797947764BD999107 /* AuraFaceR100.mlpackage */ = {isa = PBXFileReference; path = AuraFaceR100.mlpackage; sourceTree = "<group>"; };
 		9C550265145C1840CA4CAF18 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9C7B57A47D6AE4FF9FA83D5B /* ConfigurationTransferActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferActivationTests.swift; sourceTree = "<group>"; };
 		9C80FA23E6C80A52EE89914F /* MetadataCalendarActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarActivationTests.swift; sourceTree = "<group>"; };
@@ -447,6 +452,7 @@
 		C44DE2C5B3F4DB3A23BD975C /* PeopleLibraryManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleLibraryManifest.swift; sourceTree = "<group>"; };
 		C502318E99DE80F0847AFF6E /* PathSafetyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathSafetyTests.swift; sourceTree = "<group>"; };
 		C769CD8FE965C38E92B65B2A /* Version3MigrationSourceCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3MigrationSourceCatalogTests.swift; sourceTree = "<group>"; };
+		C825D129220D272794E62F74 /* AuraFace-LICENSE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = "AuraFace-LICENSE.md"; sourceTree = "<group>"; };
 		C8996AE137A4EDDF29A341FD /* PeopleLibraryEditorPayload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleLibraryEditorPayload.swift; sourceTree = "<group>"; };
 		C978231C3238C1EB67BF06AA /* Version3BootstrapCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3BootstrapCoordinatorTests.swift; sourceTree = "<group>"; };
 		CA5BB233E4D7D06021927929 /* AuraFaceZIPArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceZIPArchive.swift; sourceTree = "<group>"; };
@@ -526,6 +532,7 @@
 				B2745B822AD45CDF06BB3463 /* Assets.xcassets */,
 				9C550265145C1840CA4CAF18 /* Info.plist */,
 				7CFFEF79982E355A2DC30231 /* Localizable.xcstrings */,
+				663695B1919776CB35C9673B /* Models */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -591,6 +598,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		663695B1919776CB35C9673B /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				C825D129220D272794E62F74 /* AuraFace-LICENSE.md */,
+				9C35572797947764BD999107 /* AuraFaceR100.mlpackage */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
 		98E1D5D0526F4F5954182595 /* Persistence */ = {
 			isa = PBXGroup;
 			children = (
@@ -630,6 +646,7 @@
 				91E7EC2D829A40BB4B2BDEDB /* AuraFaceDistribution.swift */,
 				BEB828412ECEBBD9478815F7 /* AuraFaceRecognitionRuntime.swift */,
 				CA5BB233E4D7D06021927929 /* AuraFaceZIPArchive.swift */,
+				885A5CB89858194103A3AA97 /* BundledAuraFaceModel.swift */,
 			);
 			path = FaceRecognition;
 			sourceTree = "<group>";
@@ -903,6 +920,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 0914275FBA74B154038FC561 /* Build configuration list for PBXNativeTarget "AagedalFTPSync" */;
 			buildPhases = (
+				76CFB7274A46647FA07DB787 /* Prepare and Verify Bundled AuraFace */,
 				FD3D9C4275F3021F6AC96547 /* Sources */,
 				F652B58BC7D612EF726935EF /* Resources */,
 				93A70F9F0257567897128D02 /* Frameworks */,
@@ -1013,11 +1031,43 @@
 			buildActionMask = 2147483647;
 			files = (
 				FD6B4E4D3B7906C933964D9C /* Assets.xcassets in Resources */,
+				650A23C4E4EEFFED3ED525F0 /* AuraFace-LICENSE.md in Resources */,
 				FFAAC76304EE632FFD35DC19 /* Localizable.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		76CFB7274A46647FA07DB787 /* Prepare and Verify Bundled AuraFace */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Tools/prepare_bundled_auraface.py",
+				"$(SRCROOT)/Tools/verify_bundled_auraface.py",
+				"$(SRCROOT)/Tools/ModelSource/AuraFaceR100.weights.part-aa",
+				"$(SRCROOT)/Tools/ModelSource/AuraFaceR100.weights.part-ab",
+				"$(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFace-LICENSE.md",
+				"$(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Manifest.json",
+				"$(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+			);
+			name = "Prepare and Verify Bundled AuraFace";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights",
+				"$(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\npython3 \"$SRCROOT/Tools/prepare_bundled_auraface.py\"\npython3 \"$SRCROOT/Tools/verify_bundled_auraface.py\" source \"$SRCROOT/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		974811D18BC9EF5CB7049552 /* Sources */ = {
@@ -1151,9 +1201,11 @@
 				B0A02B088F5ACDB73B2F8511 /* AuraFaceComponentController.swift in Sources */,
 				E5059D4CA31424ADFDB76A3A /* AuraFaceComponentInstaller.swift in Sources */,
 				FA96A9F783B24FB8680C577C /* AuraFaceDistribution.swift in Sources */,
+				9B5ABBFB57C92BC85CEA95B9 /* AuraFaceR100.mlpackage in Sources */,
 				740257DD89D115E38035013A /* AuraFaceRecognitionRuntime.swift in Sources */,
 				748353719C04FB4F45D4382C /* AuraFaceZIPArchive.swift in Sources */,
 				C362A55DC6EC0537A118D6EE /* BookmarkAccess.swift in Sources */,
+				0071F7522CDB745ED256C6BA /* BundledAuraFaceModel.swift in Sources */,
 				C66E4381C7CA8F6FBE290F3B /* ConfigurationTransfer.swift in Sources */,
 				DA9400038E9517D826EB6884 /* ConfigurationTransferCoordinator.swift in Sources */,
 				FFE30C3E978D3DA849C1A90A /* ConfigurationTransferView.swift in Sources */,

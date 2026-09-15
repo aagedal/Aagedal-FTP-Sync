@@ -12,3 +12,7 @@ xcuserdata/
 # Private manual-test observations persist locally across sessions.
 Documentation/Testing/*.local.json
 Documentation/Testing/*.local.json.lock
+
+# Reassembled from the pinned sub-100-MB source parts by the Xcode build.
+AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights/weight.bin
+AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights/weight.bin.tmp-*

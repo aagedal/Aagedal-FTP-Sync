@@ -6,6 +6,14 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class AuraFaceRecognitionRuntimeTests: XCTestCase {
+    func testBundledReviewedAuraFaceLoadsWithCompatibleInterface() throws {
+        let model = try BundledAuraFaceModel.admit(from: .main)
+        XCTAssertEqual(model.componentID, PeopleLibraryManifest.EmbeddingContract.auraFaceV1.componentID)
+        XCTAssertEqual(model.modelID, AuraFaceRecognitionRuntime.modelID)
+        XCTAssertEqual(model.embeddingSpaceVersion, 3)
+        XCTAssertEqual(model.runtimeRevision, BundledAuraFaceModel.expectedWeightsSHA256)
+    }
+
     func testProductionInputPackingUsesRGBNCHWNormalization() throws {
         let width = 112
         let height = 112

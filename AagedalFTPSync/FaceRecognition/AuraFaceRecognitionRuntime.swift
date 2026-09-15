@@ -5,10 +5,9 @@ import ImageIO
 import Vision
 
 /// The admitted, in-memory AuraFace inference runtime. The installer constructs
-/// this value only while holding its component lock and after revalidating the
-/// signed descriptor, package hashes, and compiled-model directory. Loading the
-/// `MLModel` before releasing that lock makes an operation independent of a
-/// later component update or removal.
+/// this value after validating either the signed installed component or the
+/// reviewed weights in the codesigned application bundle. The loaded `MLModel`
+/// remains fixed for the lifetime of an admitted operation.
 ///
 /// The image pipeline is derived from Aagedal Photo Agent's GPL-3.0 face
 /// pipeline at revision 78f0209, reduced to decode, detection, alignment, and
@@ -37,12 +36,16 @@ final class AuraFaceRecognitionRuntime: @unchecked Sendable {
 
     private let model: MLModel
 
-    init(
+    convenience init(
         admittedDescriptor descriptor: AuraFaceDistributionDescriptor,
         compiledModelURL: URL,
         runtimeRevision: String
     ) throws {
         try Self.validateIdentity(descriptor)
+        try self.init(compiledModelURL: compiledModelURL, runtimeRevision: runtimeRevision)
+    }
+
+    init(compiledModelURL: URL, runtimeRevision: String) throws {
         guard runtimeRevision.utf8.count == 64,
               runtimeRevision.utf8.allSatisfy({
                   (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
@@ -59,10 +62,10 @@ final class AuraFaceRecognitionRuntime: @unchecked Sendable {
         }
         try Self.validateInterface(loaded.modelDescription)
 
-        componentID = descriptor.componentID
-        modelID = descriptor.modelVersion
+        componentID = PeopleLibraryManifest.EmbeddingContract.auraFaceV1.componentID
+        modelID = Self.modelID
         preprocessingRevision = Self.preprocessingRevision
-        embeddingSpaceVersion = descriptor.embeddingVersion
+        embeddingSpaceVersion = Self.embeddingSpaceVersion
         self.runtimeRevision = runtimeRevision
         model = loaded
     }
