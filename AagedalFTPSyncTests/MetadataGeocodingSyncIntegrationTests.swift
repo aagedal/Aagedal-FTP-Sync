@@ -277,6 +277,53 @@ final class MetadataGeocodingSyncIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
     }
 
+    func testSourceSidecarChangedDuringGeocodingDoesNotPublishStaleProcessedPair() async throws {
+        var f = try fixture()
+        f.job.processedFolder = try endpoint(f.processed)
+        let (raw, sidecar) = try rawPair(at: f.source)
+        let originalRAW = try Data(contentsOf: raw)
+        let sourceDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: sourceDate], ofItemAtPath: sidecar.path)
+        let originalSidecarSize = try Data(contentsOf: sidecar).count
+        let service = MetadataGeocodingService(
+            identity: .init(provider: "injected", version: "1", dataset: "source-mutation-\(UUID())")
+        ) { _ in
+            do {
+                var changed = try XMPSidecar.read(from: sidecar)
+                changed.headline = "Swap headline"
+                try XMPSidecar.write(changed, to: sidecar)
+                try FileManager.default.setAttributes([.modificationDate: sourceDate], ofItemAtPath: sidecar.path)
+                XCTAssertEqual(try Data(contentsOf: sidecar).count, originalSidecarSize)
+            } catch {
+                XCTFail("Could not mutate the disposable source sidecar: \(error)")
+            }
+            return .found(.init(city: "Oslo", country: "Norway",
+                source: "injected source mutation", distanceMeters: 25))
+        }
+        let engine = SyncEngine(geocodingService: service,
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")),
+            now: { Date(timeIntervalSince1970: 1_704_153_600) })
+
+        do {
+            _ = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+            XCTFail("The changed source companion must stop processed publication")
+        } catch let failure as SyncRunFailure {
+            XCTAssertEqual(failure.partialResult.processed, 0)
+        }
+        XCTAssertEqual(try Data(contentsOf: raw), originalRAW)
+        XCTAssertEqual(try XMPSidecar.read(from: sidecar).headline, "Swap headline")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: f.processed.path), [])
+
+        let retry = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(retry.processed, 1)
+        XCTAssertEqual(try Data(contentsOf: f.processed.appendingPathComponent("photo.cr3")), originalRAW)
+        XCTAssertEqual(try XMPSidecar.read(from: f.processed.appendingPathComponent("photo.xmp")).headline,
+            "Swap headline")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: raw.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+    }
+
     func testNewSidecarForUnchangedRAWCompletesCustomAndManagedProcessedPublication() async throws {
         for managed in [false, true] {
             var f = try fixture()

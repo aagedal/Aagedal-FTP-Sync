@@ -2747,6 +2747,20 @@ struct SyncEngine: Sendable {
                     )
                     processedOutputs.append((sidecarImport.url, processedSidecar))
                 }
+                // Processing can await a geocoder or face model after the source
+                // snapshot is read. Reject a changed source before publishing its
+                // processed copy; the removal check below still guards the race
+                // between this verification and final source removal.
+                for (sourceFile, snapshot) in zip(
+                    [file] + (sourceSidecar.map { [$0] } ?? []),
+                    [temporaryURL] + (sourceSidecar == nil ? [] : [temporarySidecarURL])
+                ) {
+                    try await SourceRemovalVerification.validateRemote(matches: snapshot) {
+                        comparison, maximumSize in
+                        try await source.exportFile(sourceFile, to: comparison,
+                            maximumSize: maximumSize)
+                    }
+                }
                 let outputPaths = processedOutputs.map { $0.file.relativePath }
                 let exactCollisions = outputPaths.filter(occupiedProcessedPaths.contains)
                 var outputsWereAlreadyPublished = false
