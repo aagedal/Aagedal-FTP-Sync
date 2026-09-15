@@ -191,7 +191,14 @@ struct JobsWindowView: View {
         }
         .alert("Aagedal FTP Sync", isPresented: Binding(
             get: { store.alertMessage != nil },
-            set: { if !$0 { store.alertMessage = nil } }
+            set: { presented in
+                guard !presented, let dismissedMessage = store.alertMessage else { return }
+                // SwiftUI can write the presentation binding during a view update.
+                // Clear only the alert being dismissed after that update completes.
+                DispatchQueue.main.async {
+                    if store.alertMessage == dismissedMessage { store.alertMessage = nil }
+                }
+            }
         )) {
             Button("OK") { store.alertMessage = nil }
         } message: {
