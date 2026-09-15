@@ -31,11 +31,9 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     }
 
     func testProgrammedFilenameFilterCanBeSavedForServerDownload() {
-        launchVersion3(session: UUID().uuidString, fixture: "populated", seedRemoteJob: true)
-        XCTAssertTrue(element("startup.upgrade").waitForExistence(timeout: 8))
-        element("startup.upgrade").click()
-        XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
-        app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
+        launchVersion3(session: UUID().uuidString, fixture: "populated",
+                       expectsStartupWindow: false, seedRemoteJob: true)
+        XCTAssertFalse(app.windows["Startup and Recovery"].waitForExistence(timeout: 2))
         let jobsWindow = app.windows["jobs"]
         if !jobsWindow.waitForExistence(timeout: 5) {
             openStatusMenu()
@@ -301,22 +299,14 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     func testVersion3StartupMigratesPopulatedStorePausedAndReopensIt() {
         let session = UUID().uuidString
-        launchVersion3(session: session, fixture: "populated")
+        launchVersion3(session: session, fixture: "populated", expectsStartupWindow: false)
 
-        XCTAssertTrue(app.staticTexts["Upgrade to 3.0"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].exists == false)
-        XCTAssertFalse(element("startup.source.jobs-v2.json").exists)
-        let upgrade = element("startup.upgrade")
-        XCTAssertTrue(upgrade.isEnabled)
-        upgrade.click()
-
-        XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
-        XCTAssertTrue(app.staticTexts["Your saved data is open. Jobs and calendar sync remain paused until you explicitly start them."].exists)
-        app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
         XCTAssertFalse(app.windows["Startup and Recovery"].waitForExistence(timeout: 2))
+        XCTAssertFalse(element("startup.source.jobs-v2.json").exists)
         openStatusMenu()
         XCTAssertTrue(app.staticTexts["Migrated 2.9 UI Fixture"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Start"].exists)
+        XCTAssertFalse(element("startup.open").exists)
 
         app.terminate()
         launchVersion3(session: session, expectsStartupWindow: false)
@@ -330,6 +320,20 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
         XCTAssertFalse(app.windows["Startup and Recovery"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.statusItems.firstMatch.exists)
+        openStatusMenu()
+        XCTAssertFalse(element("startup.open").exists)
+    }
+
+    func testVersion3CalendarStartIsAvailableInSettingsWithoutRecoveryShortcut() {
+        launchVersion3(session: UUID().uuidString, expectsStartupWindow: false)
+        openStatusMenu()
+        XCTAssertFalse(element("startup.open").exists)
+        app.buttons["Settings"].click()
+        app.buttons["Metadata Sync"].click()
+        XCTAssertTrue(element("metadata-sync-section").waitForExistence(timeout: 5))
+        let start = element("metadata-calendar-start")
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertFalse(start.isEnabled) // Isolated UI sessions never activate the network.
     }
 
     func testVersion3BackupOnlySourceUsesDetailedRecoveryMigration() {
@@ -344,9 +348,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testVersion3DamagedPrimaryNeverFallsBackToBackup() {
         launchVersion3(session: UUID().uuidString, fixture: "damaged-primary")
 
-        XCTAssertTrue(app.staticTexts["Upgrade to 3.0"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.windows["Startup and Recovery"].waitForExistence(timeout: 8))
         XCTAssertFalse(element("startup.source.jobs-v2.json").exists)
-        element("startup.upgrade").click()
 
         let failClosed = "Startup could not complete safely. Saved data remains available for recovery. Quit and reopen the app before trying Open or Recover; no default configuration was loaded."
         let failure = app.staticTexts.matching(NSPredicate(format: "value == %@", failClosed)).firstMatch

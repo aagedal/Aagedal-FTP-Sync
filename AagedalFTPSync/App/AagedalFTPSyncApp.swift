@@ -15,8 +15,6 @@ struct AagedalFTPSyncApp: App {
                     .disabled(startup.requiresRelaunchAfterConflict || !startup.otherRunningCopies.isEmpty)
                     .environmentObject(session.store)
                     .applyingUITestDynamicTypeSize()
-                Divider()
-                StartupWindowButton()
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Aagedal FTP Sync").font(.headline)

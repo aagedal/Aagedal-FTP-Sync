@@ -16,37 +16,19 @@ struct StartupGate<Content: View>: View {
                             Label(startup.userFacingMessage, systemImage: "exclamationmark.triangle")
                             StartupWindowButton()
                         }.padding(12)
-                    } else {
-                        StartupPauseNotice(calendar: session.calendar)
                     }
                     content(session)
                         .disabled(startup.requiresRelaunchAfterConflict || !startup.otherRunningCopies.isEmpty)
                 }
                 .environmentObject(session.store)
                 .environmentObject(session.calendar)
+                .environmentObject(startup)
                 .applyingUITestDynamicTypeSize()
             } else {
                 Version3StartupView(startup: startup)
             }
         }
         .task { await startup.load() }
-    }
-}
-
-private struct StartupPauseNotice: View {
-    @ObservedObject var calendar: MetadataCalendarCoordinator
-    var body: some View {
-        if calendar.isPaused {
-            HStack {
-                Image(systemName: "pause.circle")
-                Text("Calendar sync is paused. Start it from Startup and Recovery when ready.")
-                    .font(.callout)
-                Spacer()
-                StartupWindowButton()
-            }
-            .padding(10)
-            .background(.quaternary)
-        }
     }
 }
 

@@ -6,9 +6,9 @@ import ServiceManagement
 
 /// Production startup keeps routine launches out of recovery UI. A fresh install is
 /// created silently, a healthy committed v3 store opens automatically, and a normal
-/// legacy install gets one explicit upgrade action. Detailed source selection remains
-/// reserved for ambiguous or recovery cases. Process observation and the cooperative
-/// lease still gate every write; no process is forcibly quit.
+/// legacy install upgrades its unambiguous current sources automatically. Detailed
+/// source selection remains reserved for ambiguous or recovery cases. Process
+/// observation and the cooperative lease still gate every write; no process is forcibly quit.
 @MainActor
 final class Version3StartupController: ObservableObject {
     typealias Driver = Version3MigrationDriver
@@ -191,17 +191,17 @@ final class Version3StartupController: ObservableObject {
             primarySelections = inspection.recommendedPrimarySources
             signatureSelection = inspection.recommendedSignatureSource
 
-            if !inspection.hasLegacyData, otherRunningCopies.isEmpty {
-                // No legacy bytes exist to choose or protect. Create an empty v3 store
-                // without presenting migration internals on a brand-new installation.
-                phase = .upgrade
+            if inspection.supportsStreamlinedUpgrade, otherRunningCopies.isEmpty {
+                // Select only current primaries, never backups. The driver validates
+                // all selected content and rechecks inventory under writer exclusion;
+                // a failure remains in recovery instead of opening empty data.
                 userConfirmedOtherCopiesClosed = true
                 await migrateSelectedSources()
             } else if inspection.supportsStreamlinedUpgrade {
                 phase = .upgrade
                 userFacingMessage = inspection.hasLegacyData
-                    ? "Your existing settings are ready for a one-time upgrade. Your original 2.9 data will be kept as a recovery copy."
-                    : "A new 3.0 library is ready after every other copy of the app is closed."
+                    ? "Close the other running copy before upgrading your current settings. Your original 2.9 data will be kept as a recovery copy."
+                    : "Close the other running copy before creating a new 3.0 library."
             } else {
                 phase = .selection
                 userFacingMessage = "Some saved data needs recovery review before upgrading. Choose which retained source to use."
@@ -245,8 +245,8 @@ final class Version3StartupController: ObservableObject {
         await migrateSelectedSources()
     }
 
-    /// The button is the user's explicit request to use the recommended current
-    /// sources. It never authorizes backup fallback or source repair.
+    /// For a blocked streamlined migration, the button retries after the user
+    /// closes the other copy. It never authorizes backup fallback or source repair.
     func upgrade() async {
         guard phase == .upgrade else { return }
         userConfirmedOtherCopiesClosed = true
@@ -270,6 +270,7 @@ final class Version3StartupController: ObservableObject {
                 calendar: dependencies.calendar(), migrationDate: dependencies.now())
             await admit(.migrateSelectedSources(plan))
         } catch {
+            phase = .selection
             userFacingMessage = "The selected sources are incomplete or no longer available. Review each source choice before migrating."
             recoveryDetail = "Stage: source selection. " + Self.safeReason(error)
         }

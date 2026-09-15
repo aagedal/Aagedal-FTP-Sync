@@ -4,6 +4,7 @@ import SwiftUI
 struct MetadataCalendarSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var sync: MetadataCalendarCoordinator
+    @EnvironmentObject private var startup: Version3StartupController
     @AppStorage("metadataSync.serverURL") private var savedAddress = ""
     @State private var address = ""
     @State private var deviceName = Host.current().localizedName ?? "My Mac"
@@ -24,6 +25,7 @@ struct MetadataCalendarSettingsView: View {
     @State private var inviteStart = Calendar.current.startOfDay(for: Date())
     @State private var inviteEnd = Calendar.current.startOfDay(for: Date())
     @State private var migrationToAbandon: MetadataCalendarMigrationJournal?
+    @State private var activationMessage: String?
 
 
     private var selectedBinding: MetadataCalendarBinding? { sync.binding(for: jobID) }
@@ -46,6 +48,23 @@ struct MetadataCalendarSettingsView: View {
 
     var body: some View {
         Form {
+            if sync.isPaused {
+                Section("Calendar sync") {
+                    Text("Calendar sync is paused. Start it when you are ready to share saved metadata changes.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Start Calendar Sync") {
+                        do { try startup.activateCalendarSync() }
+                        catch { /* The controller keeps the precise failure message. */ }
+                        activationMessage = startup.userFacingMessage
+                    }
+                    .disabled(startup.isTestSession || startup.requiresRelaunchAfterConflict
+                              || !startup.otherRunningCopies.isEmpty)
+                    .accessibilityIdentifier("metadata-calendar-start")
+                    if let activationMessage {
+                        Text(activationMessage).textSelection(.enabled)
+                    }
+                }
+            }
             Section("Calendar type") {
                 Picker("Browse and create", selection: Binding(get: { sync.discoveryProtocol }, set: { sync.selectProtocol($0) })) {
                     Text("Classic — compatible with 2.x").tag(MetadataCalendarProtocol.legacy)

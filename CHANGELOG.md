@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Open routine version 3 installations directly: create a fresh store or migrate
+  unambiguous current 2.9 data automatically, while retaining originals and
+  stopping for backup-only, damaged or conflicting sources. Remove the permanent
+  Startup and Recovery button from the ready menu panel; start paused calendar
+  sync from Metadata Sync settings.
 - Expose saved jobs, photographers and metadata clips to Codex, Claude Code and
   OpenCode through one local MCP server. Photographer and clip additions run in
   the admitted app session, reject unsaved drafts and invalid programming, and

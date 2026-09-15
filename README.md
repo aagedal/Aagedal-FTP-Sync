@@ -15,6 +15,12 @@ release for production work until a 3.0 candidate is published.
 
 The 3.0 source currently adds these guarded workflows:
 
+- A routine first launch creates an empty 3.0 store or copies unambiguous current
+  2.9 settings into a separate 3.0 store without an upgrade page. Original 2.9
+  files stay available for recovery. A backup-only or ambiguous inventory, damaged
+  current data, or another running copy still requires recovery attention. Jobs and
+  calendar sync remain paused after migration; start calendar sync from Settings → Metadata Sync
+  → Calendar Sync when ready. The menu-bar panel has no permanent recovery button.
 - Explicit variables in Headline, Description, Keywords and Copyright. Supported
   variables include the processing date, capture date, photographer, GPS city/country
   and people already present or accepted by recognition. Braces remain literal until

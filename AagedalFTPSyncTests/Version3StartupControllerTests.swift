@@ -126,24 +126,24 @@ final class Version3StartupControllerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: backup), bytes)
     }
 
-    func testOrdinaryUpgradeCanEnterDetailedRecoveryReviewWithoutSelectingBackup() async throws {
+    func testOrdinaryUpgradeUsesCurrentPrimaryAndRetainsBackupWithoutOpeningReview() async throws {
         let base = try base()
         let root = base.appendingPathComponent("profile")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-        try Data("[]".utf8).write(to: root.appendingPathComponent("jobs-v2.json"))
-        try Data("[]".utf8).write(to: root.appendingPathComponent("jobs-v2.json.backup"))
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let current = try encoder.encode([SyncJob(name: "Current primary")])
+        let backup = try encoder.encode([SyncJob(name: "Retained backup")])
+        try current.write(to: root.appendingPathComponent("jobs-v2.json"))
+        try backup.write(to: root.appendingPathComponent("jobs-v2.json.backup"))
         let controller = Controller(dependencies: dependencies(base))
 
         await controller.load()
-        XCTAssertEqual(controller.phase, .upgrade)
+        XCTAssertEqual(controller.phase, .ready)
         XCTAssertEqual(controller.primarySelections["jobs-v2.json"], .file("jobs-v2.json"))
-
-        controller.reviewMigrationSources()
-
-        XCTAssertEqual(controller.phase, .selection)
-        XCTAssertEqual(controller.primarySelections["jobs-v2.json"], .file("jobs-v2.json"))
-        XCTAssertFalse(controller.userConfirmedOtherCopiesClosed)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("v3").path))
+        XCTAssertEqual(controller.session?.store.jobs.map(\.name), ["Current primary"])
+        XCTAssertTrue(controller.userConfirmedOtherCopiesClosed)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("jobs-v2.json.backup")), backup)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("v3").path))
     }
 
     func testCommittedRelaunchRestoresOnlyConfiguredJobsAfterAdmission() async throws {
@@ -162,8 +162,7 @@ final class Version3StartupControllerTests: XCTestCase {
 
         var migrationController: Controller? = Controller(dependencies: dependencies(base))
         await migrationController?.load()
-        XCTAssertEqual(migrationController?.phase, .upgrade)
-        await migrationController?.upgrade()
+        XCTAssertEqual(migrationController?.phase, .ready)
         let migratedJobs = try XCTUnwrap(migrationController?.session).store.jobs
         XCTAssertTrue(migratedJobs.allSatisfy { !$0.isEnabled })
         XCTAssertTrue(try XCTUnwrap(migratedJobs.first(where: { $0.id == automatic.id })).startsOnAppLaunch)
@@ -302,7 +301,6 @@ final class Version3StartupControllerTests: XCTestCase {
         let peers = MutableBox<[Controller.RunningCopy]>([])
         let controller = Controller(dependencies: dependencies(base, peers: { peers.value }))
         await controller.load()
-        await controller.upgrade()
         let session = try XCTUnwrap(controller.session)
         let savedJobsURL = root.appendingPathComponent("v3/jobs-v2.json")
         let savedJobs = try Data(contentsOf: savedJobsURL)
@@ -344,7 +342,6 @@ final class Version3StartupControllerTests: XCTestCase {
         }
         let controller = Controller(dependencies: deps)
         await controller.load()
-        await controller.upgrade()
         XCTAssertEqual(checksAfterCalendar, 2)
         XCTAssertEqual(controller.phase, .recovery)
         XCTAssertNil(controller.session)
@@ -365,7 +362,6 @@ final class Version3StartupControllerTests: XCTestCase {
         }
         let controller = Controller(dependencies: deps)
         await controller.load()
-        await controller.upgrade()
         XCTAssertEqual(controller.phase, .recovery)
         XCTAssertNil(controller.session)
         XCTAssertTrue(controller.requiresRelaunchAfterConflict)
