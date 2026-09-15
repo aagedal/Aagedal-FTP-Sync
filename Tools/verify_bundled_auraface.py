@@ -16,6 +16,7 @@ PACKAGE_HASHES = {
 COMPILED_FILES = {
     "model.mil", "coremldata.bin", "weights/weight.bin"
 }
+LICENSE_HASH = "afc3817e2bb55caedb5fdcb30b0daf786261f0295cb3f1bac3d793ec58961131"
 
 
 def digest(path: Path) -> str:
@@ -47,8 +48,9 @@ def verify_source(package: Path) -> None:
     for relative, expected in PACKAGE_HASHES.items():
         if digest(checked_file(package, relative)) != expected:
             raise ValueError(f"AuraFace source hash differs: {relative}")
-    if not (package.parent / "AuraFace-LICENSE.md").is_file():
-        raise ValueError("AuraFace license notice is missing")
+    license_notice = checked_file(package.parent, "AuraFace-LICENSE.md")
+    if digest(license_notice) != LICENSE_HASH:
+        raise ValueError("AuraFace license notice differs from the reviewed source")
 
 
 def verify_app(app: Path) -> None:
@@ -63,8 +65,9 @@ def verify_app(app: Path) -> None:
     weights = checked_file(model, "weights/weight.bin")
     if digest(weights) != PACKAGE_HASHES["Data/com.apple.CoreML/weights/weight.bin"]:
         raise ValueError("compiled AuraFace weights differ from the reviewed package")
-    if not (resources / "AuraFace-LICENSE.md").is_file():
-        raise ValueError("AuraFace license notice is missing from the app")
+    license_notice = checked_file(resources, "AuraFace-LICENSE.md")
+    if digest(license_notice) != LICENSE_HASH:
+        raise ValueError("AuraFace app license notice differs from the reviewed source")
     if (resources / "AuraFaceR100.mlpackage").exists():
         raise ValueError("uncompiled AuraFace package duplicated in the app")
 
