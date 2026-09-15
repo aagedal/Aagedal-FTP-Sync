@@ -74,3 +74,30 @@ This is source/build verification. A signed/native UI run, VoiceOver, supported
 macOS 14 execution, production model identity and real-face calibration, camera
 RAW/external-reader acceptance, the complete enriched performance matrix and a
 signed 3.0 candidate remain open.
+
+Companion contract follow-up: the adjacent Photo Agent checkout was clean at
+`de8884440bcf391c5c837e841348c1ca08f512aa` and remained unchanged. Its
+focused `KnownPeopleLocalStoreSnapshotBuilderTests` ran from an isolated DerivedData
+path in this FTP Sync workspace and passed all 14 Swift Testing cases in one suite,
+including “Opt-in crops round-trip through schema 3 ZIP and directory packages.”
+The XCTest summary for that run says zero tests because these cases use Swift
+Testing; the Swift Testing result in `build/v3-photo-agent-schema3-contract.log`
+is the relevant count. The command passed with exit 0:
+
+```sh
+xcodebuild test -project '/Users/truls.aagedal/Developer/Aagedal-Photo-Agent/Aagedal Photo Agent.xcodeproj' \
+  -scheme 'Aagedal Photo Agent Tests' -configuration Debug \
+  -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath build/v3-photo-agent-schema3-contract \
+  -disableAutomaticPackageResolution \
+  '-only-testing:Aagedal Photo Agent Tests/KnownPeopleLocalStoreSnapshotBuilderTests' \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+The Photo Agent case creates its own crop, so this verifies the companion's
+schema 3 producer/reader lifecycle but does not yet prove that both apps exchange
+the identical real package through their native UIs. A module-name filter retry
+was rejected by Xcode with exit 70. An unnecessary broad-target retry was
+interrupted with exit 130 and is not counted as a suite pass; the companion test
+host is no longer running. `security find-identity -v -p codesigning` reports
+zero valid identities on this host, so production signing remains unavailable.
