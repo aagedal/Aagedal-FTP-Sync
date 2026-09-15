@@ -6,6 +6,111 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class RemoteTransportIntegrationTests: XCTestCase {
+    func testRemoteRAWSidecarChangedDuringGeocodingDoesNotPublishProcessedPair() async throws {
+        let configuration = try Self.configuration()
+        let rawBytes = Data("opaque remote mutation RAW fixture".utf8)
+        var originalXMP = XMPData()
+        originalXMP.exifGPSLatitude = "59,30N"
+        originalXMP.exifGPSLongitude = "10,15E"
+        originalXMP.headline = "Keep headline"
+        let originalURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xmp")
+        let changedURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xmp")
+        defer {
+            try? FileManager.default.removeItem(at: originalURL)
+            try? FileManager.default.removeItem(at: changedURL)
+        }
+        try XMPSidecar.write(originalXMP, to: originalURL)
+        var changedXMP = originalXMP
+        changedXMP.headline = "Swap headline"
+        try XMPSidecar.write(changedXMP, to: changedURL)
+        let originalSize = try Data(contentsOf: originalURL).count
+        XCTAssertEqual(try Data(contentsOf: changedURL).count, originalSize)
+        let observedAt = Date().addingTimeInterval(-300)
+
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("remote-source-mutation-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let rawName = "MUTATE_" + token + ".CR3"
+            let sidecarName = "MUTATE_" + token + ".xmp"
+            let downloads = root.appendingPathComponent("downloads")
+            let processed = root.appendingPathComponent("processed")
+            for folder in [downloads, processed] {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            }
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            func localEndpoint(_ folder: URL) throws -> Endpoint {
+                Endpoint(kind: .local, localPath: folder.path,
+                    bookmark: try folder.bookmarkData(options: .withSecurityScope,
+                        includingResourceValuesForKeys: nil, relativeTo: nil))
+            }
+            var job = SyncJob(name: "Remote source mutation during geocoding")
+            job.left = remote
+            job.right = try localEndpoint(downloads)
+            job.processedFolder = try localEndpoint(processed)
+            job.filter.photographerInitials = "MUTATE_" + token
+            job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+            job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty,
+                countryPolicy: .fillEmpty, localeIdentifier: "en_US")
+            let sidecarFile = SyncFile(relativePath: sidecarName, size: Int64(originalSize), modifiedAt: observedAt)
+            let rawFile = SyncFile(relativePath: rawName, size: Int64(rawBytes.count), modifiedAt: observedAt)
+            let geocoding = MetadataGeocodingService(identity: .init(provider: "fixture", version: "1",
+                dataset: "remote-source-mutation-" + token)) { _ in
+                do {
+                    try await session.importFile(from: changedURL, as: sidecarFile,
+                        preserveDate: true, verifySize: true)
+                } catch {
+                    XCTFail("Could not mutate the disposable remote sidecar: \(error)")
+                }
+                return .found(.init(city: "Oslo", country: "Norway",
+                    source: "injected remote mutation", distanceMeters: 25))
+            }
+            let engine = SyncEngine(geocodingService: geocoding,
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            let rawURL = try temporaryFile(containing: rawBytes)
+            defer { try? FileManager.default.removeItem(at: rawURL) }
+            do {
+                try await session.importFile(from: rawURL, as: rawFile, preserveDate: true, verifySize: true)
+                try await session.importFile(from: originalURL, as: sidecarFile, preserveDate: true, verifySize: true)
+                do {
+                    _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("A changed remote companion must stop processed publication for \(kind)")
+                } catch let failure as SyncRunFailure {
+                    XCTAssertEqual(failure.partialResult.processed, 0, kind.rawValue)
+                }
+                XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: processed.path), [], kind.rawValue)
+                let remoteAfterFailure = try await session.listFiles()
+                XCTAssertNotNil(remoteAfterFailure[rawName], kind.rawValue)
+                let retainedSidecar = try XCTUnwrap(remoteAfterFailure[sidecarName])
+                let retainedURL = try temporaryFile(containing: Data())
+                defer { try? FileManager.default.removeItem(at: retainedURL) }
+                try await session.exportFile(retainedSidecar, to: retainedURL)
+                XCTAssertEqual(try XMPSidecar.read(from: retainedURL).headline, "Swap headline", kind.rawValue)
+
+                let retry = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(retry.processed, 1, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: processed.appendingPathComponent(rawName)), rawBytes, kind.rawValue)
+                XCTAssertEqual(try XMPSidecar.read(from: processed.appendingPathComponent(sidecarName)).headline,
+                    "Swap headline", kind.rawValue)
+                let remoteAfterRetry = try await session.listFiles()
+                XCTAssertNil(remoteAfterRetry[rawName], kind.rawValue)
+                XCTAssertNil(remoteAfterRetry[sidecarName], kind.rawValue)
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
     func testLateRAWSidecarEnrichesUnchangedRemotePrimaryAcrossLiveTransports() async throws {
         let configuration = try Self.configuration()
         let rawBytes = Data("opaque late-sidecar RAW fixture".utf8)
