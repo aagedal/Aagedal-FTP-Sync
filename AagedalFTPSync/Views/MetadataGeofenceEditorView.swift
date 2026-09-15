@@ -11,12 +11,18 @@ struct MetadataGeofenceEditorView: View {
     @State private var editingID: UUID?
     @State private var name = ""
     @State private var vertices: [MetadataGeofence.Vertex] = []
+    @State private var entryLatitude = 59.9139
+    @State private var entryLongitude = 10.7522
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @State private var message: String?
 
     private var draft: MetadataGeofence {
         MetadataGeofence(id: editingID ?? UUID(), name: name, vertices: vertices)
+    }
+    private var canAddCoordinateCorner: Bool {
+        let corner = MetadataGeofence.Vertex(latitude: entryLatitude, longitude: entryLongitude)
+        return corner.isValid && !vertices.contains(corner)
     }
 
     var body: some View {
@@ -67,7 +73,37 @@ struct MetadataGeofenceEditorView: View {
                     Button("Clear Outline") { vertices = []; message = nil }
                         .disabled(vertices.isEmpty)
                 }
-                Text("Click the map to add corners in order. Drag to pan or scroll to zoom. Use Undo Corner to correct an outline.")
+                if !vertices.isEmpty {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(vertices.indices, id: \.self) { index in
+                                HStack {
+                                    Text("Corner \(index + 1)")
+                                        .frame(width: 70, alignment: .leading)
+                                    TextField("Latitude", value: $vertices[index].latitude, format: .number)
+                                        .accessibilityLabel("Corner \(index + 1) latitude")
+                                        .accessibilityIdentifier("geofence-corner-\(index + 1)-latitude")
+                                    TextField("Longitude", value: $vertices[index].longitude, format: .number)
+                                        .accessibilityLabel("Corner \(index + 1) longitude")
+                                        .accessibilityIdentifier("geofence-corner-\(index + 1)-longitude")
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 155)
+                }
+                HStack {
+                    TextField("Latitude", value: $entryLatitude, format: .number)
+                        .accessibilityLabel("New corner latitude")
+                        .accessibilityIdentifier("geofence-new-latitude")
+                    TextField("Longitude", value: $entryLongitude, format: .number)
+                        .accessibilityLabel("New corner longitude")
+                        .accessibilityIdentifier("geofence-new-longitude")
+                    Button("Add Corner", action: addCoordinateCorner)
+                        .disabled(vertices.count >= 200 || !canAddCoordinateCorner)
+                        .accessibilityIdentifier("geofence-add-corner")
+                }
+                Text("Enter latitude and longitude or click the map to add corners in order. Drag to pan or scroll to zoom. Use Undo Corner to correct an outline.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let message { Text(message).font(.caption).foregroundStyle(.red) }
                 HStack {
@@ -143,6 +179,10 @@ struct MetadataGeofenceEditorView: View {
         editingID = area.id
         name = area.name
         vertices = area.vertices
+        if let last = vertices.last {
+            entryLatitude = last.latitude
+            entryLongitude = last.longitude
+        }
         message = nil
         let latitudes = vertices.map(\.latitude), longitudes = vertices.map(\.longitude)
         if let minLat = latitudes.min(), let maxLat = latitudes.max(),
@@ -158,6 +198,12 @@ struct MetadataGeofenceEditorView: View {
         editingID = nil
         name = ""
         vertices = []
+        message = nil
+    }
+
+    private func addCoordinateCorner() {
+        guard vertices.count < 200, canAddCoordinateCorner else { return }
+        vertices.append(.init(latitude: entryLatitude, longitude: entryLongitude))
         message = nil
     }
 
