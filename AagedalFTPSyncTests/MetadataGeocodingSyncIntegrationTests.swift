@@ -277,4 +277,51 @@ final class MetadataGeocodingSyncIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
     }
 
+    func testNewSidecarForUnchangedRAWCompletesCustomAndManagedProcessedPublication() async throws {
+        for managed in [false, true] {
+            var f = try fixture()
+            if managed {
+                f.job.processedFilesLocation = .processedSubfolder
+            } else {
+                f.job.processedFolder = try endpoint(f.processed)
+            }
+            let sourceRAW = f.source.appendingPathComponent("photo.cr3")
+            let sourceSidecar = f.source.appendingPathComponent("photo.xmp")
+            let originalRAW = Data("opaque fixture RAW".utf8)
+            try originalRAW.write(to: sourceRAW)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)],
+                ofItemAtPath: sourceRAW.path
+            )
+            let engine = engine(f)
+            let first = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(first.transferred, 1)
+            XCTAssertEqual(first.processed, 0, "Incomplete geocoding must leave the RAW source available")
+            XCTAssertEqual(try Data(contentsOf: sourceRAW), originalRAW)
+
+            var xmp = XMPData()
+            xmp.exifGPSLatitude = "59,30N"
+            xmp.exifGPSLongitude = "10,15E"
+            xmp.headline = "Retain source headline"
+            try XMPSidecar.write(xmp, to: sourceSidecar)
+            let second = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(second.transferred, 1, "The new companion must retry the unchanged RAW")
+            XCTAssertEqual(second.processed, 1)
+            let destination = managed ? f.destination.appendingPathComponent("Synced Files") : f.destination
+            let processed = managed ? f.destination.appendingPathComponent("Processed Files") : f.processed
+            for folder in [destination, processed] {
+                XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("photo.cr3")), originalRAW)
+                let delivered = try XMPSidecar.read(from: folder.appendingPathComponent("photo.xmp"))
+                XCTAssertEqual(delivered.city, "Oslo")
+                XCTAssertEqual(delivered.country, "Norway")
+                XCTAssertEqual(delivered.headline, "Retain source headline")
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: sourceRAW.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: sourceSidecar.path))
+            let idle = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(idle.transferred, 0)
+            XCTAssertEqual(idle.processed, 0)
+        }
+    }
+
 }
