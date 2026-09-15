@@ -33,10 +33,19 @@ Focused verification:
 - `Scripts/check-security-baseline.sh`, `Scripts/check-release-identity.sh` and
   `git diff --check` passed.
 
+At a later clean base `5ea4d86`, the disposable programmed-media transport
+fixture was extended to change a remote RAW XMP source companion after the
+delivered sidecar had been edited locally. For each of FTP, implicit FTPS and
+SFTP, preflight reports the RAW path as a conflict; default reprocessing
+preserves the local sidecar bytes and opaque RAW primary while the unchanged
+JPEG stays current. The focused XCTest passed again with exit 0 against the
+one-file uncommitted test diff. Result bundle:
+`build/v3-reviewed-edits/Logs/Test/Test-AagedalFTPSync-2026.09.15_15-14-38-+0200.xcresult`.
+
 The initial sandboxed XCTest attempt stopped at package resolution, exit 74,
 because Xcode's compiler caches were outside writable roots. The authorized
 cache-access retry above passed. Logs are in ignored `build/` paths.
 
-This is a reprocessing guard with generated local media. The full M5 matrix,
-live source-and-destination combined edit scenario, camera RAW/external-reader
-integrity, native UI and supported-OS acceptance remain open.
+This is a reprocessing guard with generated media. The full M5 matrix,
+camera RAW/external-reader integrity, native UI and supported-OS acceptance
+remain open.

@@ -173,6 +173,29 @@ final class RemoteTransportIntegrationTests: XCTestCase {
                 XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
                 XCTAssertEqual(try ImageMetadata.read(from: deliveredJPEG).iptc.headline,
                     "Final: Fixture author in Oslo", kind.rawValue)
+                var secondSourceXMP = changedSourceXMP
+                secondSourceXMP.subject.append("Later source keyword")
+                try XMPSidecar.write(secondSourceXMP, to: sidecarURL)
+                let secondSourceBytes = try Data(contentsOf: sidecarURL)
+                let secondSourceSidecar = SyncFile(relativePath: sidecarName,
+                    size: Int64(secondSourceBytes.count), modifiedAt: observedAt.addingTimeInterval(90))
+                try await session.importFile(from: sidecarURL, as: secondSourceSidecar,
+                    preserveDate: true, verifySize: true)
+                let latestAfterReview = Dictionary(uniqueKeysWithValues: afterReview.metadataReport.entries.map {
+                    ($0.relativePath, $0)
+                })
+                let combinedPreflight = try await engine.preflightExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete, latestOutcomes: latestAfterReview
+                )
+                XCTAssertEqual(combinedPreflight.conflicts, [rawName], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredSidecar), laterSidecarBytes, kind.rawValue)
+                let combinedReprocess = try await engine.reprocessExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete, latestOutcomes: latestAfterReview
+                )
+                XCTAssertEqual(combinedReprocess.conflicts, [rawName], kind.rawValue)
+                XCTAssertEqual(combinedReprocess.applied, 0, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredSidecar), laterSidecarBytes, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
                 _ = try await session.listFiles()
                 for file in files { try await session.removeFile(file) }
                 await session.close()
