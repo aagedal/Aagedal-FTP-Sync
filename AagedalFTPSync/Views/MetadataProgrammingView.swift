@@ -274,7 +274,7 @@ struct MetadataProgrammingView: View {
                     ) {
                         coordinator.confirmReprocessing(
                             in: store,
-                            conflictPolicy: .processEditedOutputs(Set(preflight.conflicts))
+                            conflictPolicy: .processEditedOutputs(preflight.conflictOutputRevisions)
                         )
                     }
                 }

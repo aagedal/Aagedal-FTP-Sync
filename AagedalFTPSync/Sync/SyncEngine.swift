@@ -48,14 +48,14 @@ enum MetadataReprocessFilter: String, CaseIterable, Identifiable, Sendable {
 
 enum MetadataReprocessConflictPolicy: Equatable, Sendable {
     case preserveEditedOutputs
-    case processEditedOutputs(Set<String>)
+    case processEditedOutputs([String: String])
 
-    func protectsEditedOutput(at relativePath: String) -> Bool {
+    func protectsEditedOutput(at relativePath: String, outputRevision: String) -> Bool {
         switch self {
         case .preserveEditedOutputs:
             true
-        case .processEditedOutputs(let approvedPaths):
-            !approvedPaths.contains(relativePath)
+        case .processEditedOutputs(let approvedRevisions):
+            approvedRevisions[relativePath] != outputRevision
         }
     }
 }
@@ -66,6 +66,17 @@ struct MetadataReprocessPreflight: Equatable, Sendable {
     let skipped: Int
     let failed: Int
     let conflicts: [String]
+    let conflictOutputRevisions: [String: String]
+
+    init(scanned: Int, ready: Int, skipped: Int, failed: Int, conflicts: [String],
+         conflictOutputRevisions: [String: String] = [:]) {
+        self.scanned = scanned
+        self.ready = ready
+        self.skipped = skipped
+        self.failed = failed
+        self.conflicts = conflicts
+        self.conflictOutputRevisions = conflictOutputRevisions
+    }
 }
 
 struct MetadataReprocessResult: Equatable, Sendable {
@@ -74,6 +85,7 @@ struct MetadataReprocessResult: Equatable, Sendable {
     let skipped: Int
     let failed: Int
     let conflicts: [String]
+    let conflictOutputRevisions: [String: String]
     let metadataReport: MetadataRunReport
 
     init(
@@ -82,6 +94,7 @@ struct MetadataReprocessResult: Equatable, Sendable {
         skipped: Int,
         failed: Int = 0,
         conflicts: [String] = [],
+        conflictOutputRevisions: [String: String] = [:],
         metadataReport: MetadataRunReport = .empty
     ) {
         self.scanned = scanned
@@ -89,6 +102,7 @@ struct MetadataReprocessResult: Equatable, Sendable {
         self.skipped = skipped
         self.failed = failed
         self.conflicts = conflicts
+        self.conflictOutputRevisions = conflictOutputRevisions
         self.metadataReport = metadataReport
     }
 }
@@ -923,6 +937,7 @@ struct SyncEngine: Sendable {
         var skipped = 0
         var failed = 0
         var conflicts: [String] = []
+        var conflictOutputRevisions: [String: String] = [:]
         var metadataReport = MetadataRunReport.empty
         let runID = UUID()
 
@@ -1020,8 +1035,10 @@ struct SyncEngine: Sendable {
                 }
                 let currentOutputRevision = try MetadataProcessingFingerprint.outputRevision(currentArtifacts)
                 if previousFingerprint.outputRevision != currentOutputRevision,
-                   conflictPolicy.protectsEditedOutput(at: file.relativePath) {
+                   conflictPolicy.protectsEditedOutput(at: file.relativePath,
+                                                      outputRevision: currentOutputRevision) {
                     conflicts.append(file.relativePath)
+                    if isPreflight { conflictOutputRevisions[file.relativePath] = currentOutputRevision }
                     skipped += 1
                     metadataReport.append(MetadataAuditEntry(
                         runID: runID, jobID: job.id, operation: .reprocess,
@@ -1385,6 +1402,7 @@ struct SyncEngine: Sendable {
             skipped: skipped,
             failed: failed,
             conflicts: conflicts,
+            conflictOutputRevisions: conflictOutputRevisions,
             metadataReport: metadataReport
         )
     }
@@ -1412,7 +1430,8 @@ struct SyncEngine: Sendable {
             ready: result.applied,
             skipped: result.skipped,
             failed: result.failed,
-            conflicts: result.conflicts
+            conflicts: result.conflicts,
+            conflictOutputRevisions: result.conflictOutputRevisions
         )
     }
 
