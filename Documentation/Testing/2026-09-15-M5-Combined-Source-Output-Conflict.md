@@ -2,7 +2,8 @@
 
 Implementation was tested as the two-file source/test diff on clean base
 `835fb582826db224def87d8745701f922292b13d` on
-`codex/version-3-0-plan`. The worktree was dirty during testing. Host: macOS
+`codex/version-3-0-plan`. The worktree was dirty during testing; the tested
+source/test change was committed as `a5eec70`. Host: macOS
 27.0 (`26A428`), arm64. The application identity remains the 2.9.2 (37)
 development build; the tracked candidate was not changed.
 
