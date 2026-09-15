@@ -4,6 +4,7 @@ Test source: clean base `45af507` plus the one-file
 `MetadataGeofenceEditorView.swift` diff recorded with this report. Branch:
 `codex/version-3-0-plan`. Host: arm64 macOS 27.0 (`26A428`), Xcode 27.0.
 The tracked development candidate remains the older `9f04fad` build.
+The exact changed app code is committed as `f282dc3`.
 
 The job's Named Areas editor previously placed outline corners only through
 map clicks. It now exposes latitude/longitude entry and an Add Corner action,
