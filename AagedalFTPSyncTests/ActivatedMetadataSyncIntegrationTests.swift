@@ -452,6 +452,44 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                           transfer.metadataReport.entries[0].processingFingerprint?.sourceRevision)
     }
 
+    func testChangedSourceAndEditedDestinationRemainAConflict() async throws {
+        let f = try fixture()
+        try write(jpeg(), name: "FX_BOTH.jpg", root: f.source)
+        let engine = engine(f)
+        let transfer = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let previousEntry = try XCTUnwrap(transfer.metadataReport.entries.first)
+        let target = f.destination.appendingPathComponent("FX_BOTH.jpg")
+        let destinationEdit = Data("external destination edit".utf8)
+        try destinationEdit.write(to: target)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: 1_700_000_001)],
+            ofItemAtPath: f.source.appendingPathComponent("FX_BOTH.jpg").path
+        )
+        var changedJob = f.job
+        var automation = try XCTUnwrap(changedJob.metadataAutomation)
+        automation.existingFieldPolicy = .init(overwriteFields: [.headline])
+        automation.clips[0].fields.setHeadline(try .activated("New source and settings"))
+        changedJob.metadataAutomation = automation
+
+        let preflight = try await engine.preflightExistingLocalFiles(
+            job: changedJob, filter: .staleOrIncomplete,
+            latestOutcomes: ["FX_BOTH.jpg": previousEntry]
+        )
+        XCTAssertEqual(preflight.conflicts, ["FX_BOTH.jpg"])
+        XCTAssertEqual(preflight.ready, 0)
+        XCTAssertEqual(try Data(contentsOf: target), destinationEdit)
+
+        let result = try await engine.reprocessExistingLocalFiles(
+            job: changedJob, filter: .staleOrIncomplete,
+            latestOutcomes: ["FX_BOTH.jpg": previousEntry]
+        )
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertEqual(result.conflicts, ["FX_BOTH.jpg"])
+        XCTAssertEqual(result.metadataReport.entries.first?.processingFingerprint,
+                       previousEntry.processingFingerprint)
+        XCTAssertEqual(try Data(contentsOf: target), destinationEdit)
+    }
+
     func testRemovedSourceSidecarMakesReceiptStaleInsteadOfReusingSavedCompanionEvidence() async throws {
         let f = try fixture()
         try write(Data("synthetic RAW".utf8), name: "FX_REMOVED.cr3", root: f.source)

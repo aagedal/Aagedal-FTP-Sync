@@ -1010,21 +1010,15 @@ struct SyncEngine: Sendable {
                 return true
             }()
 
-            // A receipt's output hash is ownership evidence. When the source is
-            // unchanged but the destination no longer matches, treat that as a
-            // user/external edit even if settings also changed. Never silently
-            // classify it as ordinary staleness and overwrite it.
+            // A receipt's output hash is ownership evidence independent of its
+            // source revision. A source resend must not hide a destination edit.
             let previousOutcome = latestOutcomes[file.relativePath]
             // Failed/partial outcomes are not complete receipts, even if an
             // earlier development build happened to serialize a fingerprint.
             let previousFingerprint = previousOutcome?.status == .failed
                 ? nil
                 : previousOutcome?.processingFingerprint
-            if let previousFingerprint,
-               previousFingerprint.sourceRevision == MetadataProcessingFingerprint.sourceRevision(
-                    primary: sourceEvidence,
-                    companion: sourceSidecarEvidence
-               ) {
+            if let previousFingerprint {
                 var currentArtifacts = [MetadataProcessingFingerprint.OutputArtifact(
                     role: "primary", relativePath: file.relativePath, fileURL: temporaryURL
                 )]
