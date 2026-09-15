@@ -39,7 +39,7 @@ delivered sidecar had been edited locally. For each of FTP, implicit FTPS and
 SFTP, preflight reports the RAW path as a conflict; default reprocessing
 preserves the local sidecar bytes and opaque RAW primary while the unchanged
 JPEG stays current. The focused XCTest passed again with exit 0 against the
-one-file uncommitted test diff. Result bundle:
+one-file uncommitted test diff, committed unchanged as `404b3a6`. Result bundle:
 `build/v3-reviewed-edits/Logs/Test/Test-AagedalFTPSync-2026.09.15_15-14-38-+0200.xcresult`.
 
 The initial sandboxed XCTest attempt stopped at package resolution, exit 74,
