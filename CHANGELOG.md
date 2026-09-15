@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Let one-way server-to-local jobs derive camera filename prefixes from the photographers
+  assigned on the current Metadata Programming day. Empty days select no files; previews
+  use the selected day, while cleanup and reprocessing include historical assignments.
+  Preserve existing fixed-initials jobs, and require configuration format 3 for exports
+  containing the new filter choice.
 - Expose each metadata timeline clip as one keyboard- and VoiceOver-accessible
   control with its assignment, time range, interaction guidance and edit action.
 - Allow the version 3 startup lease to open its already-validated Application

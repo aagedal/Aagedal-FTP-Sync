@@ -87,12 +87,24 @@ struct JobDetailEditor: View {
                         Text("Separate extensions with commas or spaces.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
-                    TextField("Photographer initials", text: filenameFilterBinding(\.photographerInitials), prompt: Text("JAD, TA"))
-                    Text("Only sync filenames starting with these initials, using the same matching rule as the photographer library. Separate initials with commas; leave blank for all photographers. Matching ignores capitalization.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Use Metadata Programming photographers", isOn: Binding(
+                        get: { session.draft.filter.usesMetadataProgrammingPhotographers },
+                        set: { session.draft.filter.usesMetadataProgrammingPhotographers = $0 }
+                    ))
+                    .accessibilityIdentifier("use-metadata-programming-filter")
+                    .help("For server-to-local jobs, use the camera filename initials of photographers on today's Metadata Programming track. An empty day downloads no files.")
+                    if draft.filter.usesMetadataProgrammingPhotographers {
+                        Text("Only server filenames matching photographers on today's programmed day are downloaded. An overlapping clip also counts. Changes to Metadata Programming take effect on the next sync; an empty day selects no files.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .accessibilityIdentifier("metadata-programming-filter-explanation")
+                    } else {
+                        TextField("Photographer initials", text: filenameFilterBinding(\.photographerInitials), prompt: Text("JAD, TA"))
+                        Text("Only sync filenames starting with these initials, using the same matching rule as the photographer library. Separate initials with commas; leave blank for all photographers. Matching ignores capitalization.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     TextField("Ignore filename prefixes", text: filenameFilterBinding(\.excludedFilenamePrefixes), prompt: Text("EDITED_"))
                     TextField("Ignore filename suffixes", text: filenameFilterBinding(\.excludedFilenameSuffixes), prompt: Text("_EDITED, _SENT"))
-                    Text("Separate exclusions with commas. Suffixes match before the extension, for example _EDITED excludes TA_001_EDITED.JPG. Exclusions take priority over initials and also apply to local cleanup.")
+                    Text("Separate exclusions with commas. Suffixes match before the extension, for example _EDITED excludes TA_001_EDITED.JPG. Exclusions take priority over photographer matching and also apply to local cleanup.")
                         .font(.caption).foregroundStyle(.secondary)
                     Toggle("Ignore _aftpsync uploads", isOn: Binding(
                         get: { session.draft.filter.ignoresAFTPSyncUploads },
@@ -922,7 +934,7 @@ struct JobDetailEditor: View {
         }
         saveConfirmation = true
         Task {
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: .seconds(3))
             saveConfirmation = false
         }
         return true

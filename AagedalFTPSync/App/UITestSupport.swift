@@ -196,6 +196,12 @@ enum UITestSupport {
         var job = SyncJob(name: "UI Smoke Fixture")
         job.left = Endpoint(kind: .local, localPath: sourcePath, bookmark: placeholderBookmark)
         job.right = Endpoint(kind: .local, localPath: destinationPath, bookmark: placeholderBookmark)
+        if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_SEED_REMOTE_JOB"] == "1" {
+            // Inert loopback connection; the fixture job stays disabled and no
+            // server operation is started by this editor-only UI test.
+            job.left = Endpoint(kind: .ftp, host: "127.0.0.1", username: "ui-fixture",
+                remotePath: "/incoming")
+        }
         job.isEnabled = false
         job.startsOnAppLaunch = false
         if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_SEED_MAP"] == "1" {

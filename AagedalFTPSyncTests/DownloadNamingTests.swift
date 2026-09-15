@@ -110,6 +110,79 @@ private actor CheckpointDownloadSource: DownloadListingSession {
 }
 
 final class DownloadNamingTests: XCTestCase {
+    func testServerDownloadFollowsSavedProgrammingChangesOnNextRun() async throws {
+        let (root, endpoint, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = NamedDownloadSource([
+            "TA_001.JPG": Data("Jane original".utf8),
+            "TA_001_EDITED.JPG": Data("return upload".utf8),
+            "JAD_001.JPG": Data("Sam original".utf8)
+        ])
+        let jane = PhotographerProfile(name: "Jane", filenamePrefix: "TA", creator: "Jane", copyrightNotice: "")
+        let sam = PhotographerProfile(name: "Sam", filenamePrefix: "JAD", creator: "Sam", copyrightNotice: "")
+        let day = Date()
+        var job = SyncJob(name: "Programmed server downloads")
+        job.left = Endpoint(kind: .ftp, host: "sync.example.org", username: "example")
+        job.right = endpoint
+        job.filter.photographerInitials = "OLD"
+        job.filter.excludedFilenameSuffixes = "_EDITED"
+        job.filter.usesMetadataProgrammingPhotographers = true
+        job.metadataAutomation = MetadataAutomation(photographers: [jane, sam],
+            photographerTracks: [MetadataPhotographerTrack(photographerID: jane.id,
+                date: PhotographerWorkDate(day))], clips: [])
+        let engine = SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+            sessionFactory: { entry, _, _ -> any EndpointSession in entry.kind.isRemote ? source : destination }
+        )
+
+        let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(first.transferred, 1)
+        let firstPaths = Set(try await destination.listFiles().keys)
+        XCTAssertEqual(firstPaths, ["TA_001.JPG"])
+        let firstReads = await source.downloads
+        XCTAssertEqual(firstReads, ["TA_001.JPG"])
+
+        job.metadataAutomation?.photographerTracks = [MetadataPhotographerTrack(
+            photographerID: sam.id, date: PhotographerWorkDate(day))]
+        let second = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(second.transferred, 1)
+        let secondPaths = Set(try await destination.listFiles().keys)
+        XCTAssertEqual(secondPaths, ["TA_001.JPG", "JAD_001.JPG"])
+        let secondReads = await source.downloads
+        XCTAssertEqual(secondReads, ["TA_001.JPG", "JAD_001.JPG"])
+
+        job.metadataAutomation?.photographerTracks = []
+        let empty = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(empty.transferred, 0)
+        let finalReads = await source.downloads
+        XCTAssertEqual(finalReads, ["TA_001.JPG", "JAD_001.JPG"])
+    }
+
+    func testProgrammedPhotographerFilterSelectsSameFilesInEarlyAndFullListings() async throws {
+        let (root, _, destination) = try fixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let photographer = PhotographerProfile(name: "Jane", filenamePrefix: "TA", creator: "Jane", copyrightNotice: "")
+        var job = SyncJob()
+        job.filter.usesMetadataProgrammingPhotographers = true
+        job.metadataAutomation = MetadataAutomation(photographers: [photographer],
+            photographerTracks: [MetadataPhotographerTrack(photographerID: photographer.id,
+                date: PhotographerWorkDate(day))], clips: [])
+        let source = NamedDownloadSource([
+            "TA_001.CR3": Data(), "TA_001.xmp": Data(), "JAD_001.JPG": Data()
+        ])
+        let filter = job.fileFilterForProgrammingDay(day)
+        let adapter = DownloadNamingSession(source: source, destination: destination,
+            mappingURL: root.appendingPathComponent("names.json"), filter: filter)
+        let expected: Set<String> = ["TA_001.CR3", "TA_001.xmp"]
+        let files = try await adapter.listFilesIncrementally { listing in
+            XCTAssertEqual(Set(listing.entries.compactMap(\.file).map(\.relativePath)), expected)
+        }
+        XCTAssertEqual(Set(files.keys), expected)
+        XCTAssertFalse(files.keys.contains("JAD_001.JPG"))
+    }
+
     func testDirectoryDiscoveryCheckpointsOnceAndUnchangedPollDoesNotRewrite() async throws {
         let (root, _, destination) = try fixture()
         defer { try? FileManager.default.removeItem(at: root) }

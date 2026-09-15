@@ -30,6 +30,27 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Edited in UI smoke test"].exists)
     }
 
+    func testProgrammedFilenameFilterCanBeSavedForServerDownload() {
+        launchVersion3(session: UUID().uuidString, fixture: "populated", seedRemoteJob: true)
+        XCTAssertTrue(element("startup.upgrade").waitForExistence(timeout: 8))
+        element("startup.upgrade").click()
+        XCTAssertTrue(app.staticTexts["Review before starting"].waitForExistence(timeout: 12))
+        app.windows["Startup and Recovery"].buttons[XCUIIdentifierCloseWindow].click()
+        let jobsWindow = app.windows["jobs"]
+        if !jobsWindow.waitForExistence(timeout: 5) {
+            openStatusMenu()
+            element("open-jobs-window").click()
+        }
+        XCTAssertTrue(element("job-name").waitForExistence(timeout: 8))
+        let toggle = element("use-metadata-programming-filter")
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertFalse(element("metadata-programming-filter-explanation").exists)
+        toggle.click()
+        XCTAssertTrue(element("metadata-programming-filter-explanation").waitForExistence(timeout: 3))
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+    }
+
     func testRecoversAfterVisibleSaveFailure() {
         launch(failFirstJobSave: true)
 
@@ -388,7 +409,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(expectedContent.waitForExistence(timeout: 8))
     }
 
-    private func launchVersion3(session: String, fixture: String? = nil, expectsStartupWindow: Bool = true) {
+    private func launchVersion3(session: String, fixture: String? = nil, expectsStartupWindow: Bool = true,
+                                seedRemoteJob: Bool = false) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
         app = cleanApp
@@ -396,6 +418,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"] = session
         app.launchEnvironment["AAGEDAL_UI_TEST_V3_STARTUP"] = "1"
         if let fixture { app.launchEnvironment["AAGEDAL_UI_TEST_V3_FIXTURE"] = fixture }
+        if seedRemoteJob { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_REMOTE_JOB"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
         if expectsStartupWindow {

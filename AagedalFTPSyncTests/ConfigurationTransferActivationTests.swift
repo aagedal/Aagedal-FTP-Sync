@@ -49,6 +49,32 @@ final class ConfigurationTransferActivationTests: XCTestCase {
         }
     }
 
+    func testProgrammedFilenameFilterRequiresVersionThreeEvenInJobsOnlyExport() throws {
+        var job = SyncJob(name: "Programmed downloads")
+        job.filter.usesMetadataProgrammingPhotographers = true
+        for scope in [ConfigurationTransferScope.jobs, .package] {
+            let transfer = ConfigurationTransfer(scope: scope, jobs: [job], metadataPresets: [], photographers: [])
+            XCTAssertEqual(transfer.version, 3)
+            let encoded = try ConfigurationTransferCodec.encode(transfer, password: nil)
+            let decoded = try ConfigurationTransferCodec.decode(encoded, password: nil)
+            XCTAssertTrue(decoded.jobs[0].filter.usesMetadataProgrammingPhotographers)
+
+            var mislabeled = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+            mislabeled["version"] = 2
+            XCTAssertThrowsError(try ConfigurationTransferCodec.decode(
+                JSONSerialization.data(withJSONObject: mislabeled), password: nil
+            )) { error in
+                XCTAssertEqual(error as? ConfigurationTransferError, .inconsistentContents)
+            }
+        }
+
+        job.filter.usesMetadataProgrammingPhotographers = false
+        let legacy = ConfigurationTransfer(scope: .jobs, jobs: [job], metadataPresets: [], photographers: [])
+        XCTAssertEqual(legacy.version, 2)
+        XCTAssertFalse(String(decoding: try ConfigurationTransferCodec.encode(legacy, password: nil), as: UTF8.self)
+            .contains("useMetadataProgrammingPhotographers"))
+    }
+
     func testEachSelectedMetadataLibraryIndependentlyRequiresVersionThree() throws {
         let active = try transfer(active: true)
         let presetOnly = ConfigurationTransfer(scope: .metadata, jobs: [], metadataPresets: active.metadataPresets, photographers: [])

@@ -151,7 +151,8 @@ struct VersionedStoreCodec: Sendable {
             if let object = try? decoder.container(keyedBy: Key.self) {
                 for key in object.allKeys {
                     if key.stringValue == "templateVersions" || key.stringValue == "copyrightTemplateVersion"
-                        || ["metadataGeocoding", "metadataFaceRecognition", "pendingMigrations"].contains(key.stringValue)
+                        || ["metadataGeocoding", "metadataFaceRecognition", "pendingMigrations",
+                            "useMetadataProgrammingPhotographers"].contains(key.stringValue)
                         || ["documentSchemaVersion", "minimumClientProtocol", "requiredCapabilities"].contains(key.stringValue) {
                         throw HeaderError.requiresVersion3Storage
                     }

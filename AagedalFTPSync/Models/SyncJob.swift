@@ -71,6 +71,10 @@ struct FileFilter: Codable, Hashable, Sendable {
     var recentHours: Int? = nil
     // Optional to preserve jobs and export packages saved before filename filtering.
     var photographerInitials: String? = nil
+    // Existing jobs retain their fixed initials unless the user explicitly opts in.
+    var useMetadataProgrammingPhotographers: Bool? = nil
+    // Run-local snapshot; never persist a list derived from mutable programming.
+    var resolvedProgrammingPrefixes: [String]? = nil
     var excludedFilenamePrefixes: String? = nil
     var excludedFilenameSuffixes: String? = nil
     var ignoreAFTPSyncUploads: Bool? = nil
@@ -78,6 +82,11 @@ struct FileFilter: Codable, Hashable, Sendable {
     var ignoresAFTPSyncUploads: Bool {
         get { ignoreAFTPSyncUploads ?? false }
         set { ignoreAFTPSyncUploads = newValue }
+    }
+
+    var usesMetadataProgrammingPhotographers: Bool {
+        get { useMetadataProgrammingPhotographers ?? false }
+        set { useMetadataProgrammingPhotographers = newValue ? true : nil }
     }
 
     private func filenameValues(_ value: String?) -> [String] {
@@ -91,6 +100,11 @@ struct FileFilter: Codable, Hashable, Sendable {
         if ignoresAFTPSyncUploads, stem.hasSuffix(UploadNaming.standardSuffix.uppercased()) { return false }
         if filenameValues(excludedFilenamePrefixes).contains(where: { stem.hasPrefix($0) }) { return false }
         if filenameValues(excludedFilenameSuffixes).contains(where: { stem.hasSuffix($0) }) { return false }
+        if usesMetadataProgrammingPhotographers {
+            // An unresolved or empty programmed day must never become "all files".
+            guard let prefixes = resolvedProgrammingPrefixes else { return false }
+            return prefixes.contains { stem.hasPrefix($0) }
+        }
         let initials = filenameValues(photographerInitials)
         // Match the photographer library's camera-prefix convention.
         return initials.isEmpty || initials.contains { stem.hasPrefix($0) }
@@ -130,6 +144,42 @@ struct FileFilter: Codable, Hashable, Sendable {
             return false
         }
         return true
+    }
+}
+
+// Keep the per-run prefix snapshot out of job/configuration packages. The optional
+// opt-in key also preserves the fixed-initials behavior of older saved filters.
+extension FileFilter {
+    private enum CodingKeys: String, CodingKey {
+        case preset, customExtensions, includeHiddenFiles, recentHours
+        case photographerInitials, useMetadataProgrammingPhotographers
+        case excludedFilenamePrefixes, excludedFilenameSuffixes, ignoreAFTPSyncUploads
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        preset = try container.decode(FilterPreset.self, forKey: .preset)
+        customExtensions = try container.decode(String.self, forKey: .customExtensions)
+        includeHiddenFiles = try container.decode(Bool.self, forKey: .includeHiddenFiles)
+        recentHours = try container.decodeIfPresent(Int.self, forKey: .recentHours)
+        photographerInitials = try container.decodeIfPresent(String.self, forKey: .photographerInitials)
+        useMetadataProgrammingPhotographers = try container.decodeIfPresent(Bool.self, forKey: .useMetadataProgrammingPhotographers)
+        excludedFilenamePrefixes = try container.decodeIfPresent(String.self, forKey: .excludedFilenamePrefixes)
+        excludedFilenameSuffixes = try container.decodeIfPresent(String.self, forKey: .excludedFilenameSuffixes)
+        ignoreAFTPSyncUploads = try container.decodeIfPresent(Bool.self, forKey: .ignoreAFTPSyncUploads)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(preset, forKey: .preset)
+        try container.encode(customExtensions, forKey: .customExtensions)
+        try container.encode(includeHiddenFiles, forKey: .includeHiddenFiles)
+        try container.encodeIfPresent(recentHours, forKey: .recentHours)
+        try container.encodeIfPresent(photographerInitials, forKey: .photographerInitials)
+        try container.encodeIfPresent(useMetadataProgrammingPhotographers, forKey: .useMetadataProgrammingPhotographers)
+        try container.encodeIfPresent(excludedFilenamePrefixes, forKey: .excludedFilenamePrefixes)
+        try container.encodeIfPresent(excludedFilenameSuffixes, forKey: .excludedFilenameSuffixes)
+        try container.encodeIfPresent(ignoreAFTPSyncUploads, forKey: .ignoreAFTPSyncUploads)
     }
 }
 
@@ -250,6 +300,35 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
         guard let metadataAutomation else { return false }
         return !metadataAutomation.clips.isEmpty || !metadataAutomation.photographerTracks.isEmpty
             || !metadataAutomation.photographers.isEmpty
+    }
+
+    /// Freeze the selected programming day's camera prefixes for one sync or preview.
+    /// Day tracks are the user's explicit selection; overlapping clips retain legacy
+    /// programming whose track rows have not yet been inferred and saved.
+    func fileFilterForProgrammingDay(_ day: Date, calendar: Calendar = .current) -> FileFilter {
+        var result = filter
+        guard result.usesMetadataProgrammingPhotographers else { return result }
+        let selectedIDs = Set(metadataAutomation?.photographerIDs(on: day, calendar: calendar) ?? [])
+        let prefixes = metadataAutomation?.photographers
+            .filter { selectedIDs.contains($0.id) }
+            .flatMap(\.normalizedPrefixes) ?? []
+        result.resolvedProgrammingPrefixes = Array(Set(prefixes)).sorted()
+        return result
+    }
+
+    /// Existing destination files may belong to earlier programming days. Reprocess
+    /// and local cleanup consider every photographer still referenced by a track or
+    /// clip, rather than only the day on which those operations are requested.
+    func fileFilterForProgrammedHistory() -> FileFilter {
+        var result = filter
+        guard result.usesMetadataProgrammingPhotographers else { return result }
+        let selectedIDs = Set(metadataAutomation?.photographerTracks.map(\.photographerID) ?? [])
+            .union(metadataAutomation?.clips.map(\.photographerID) ?? [])
+        let prefixes = metadataAutomation?.photographers
+            .filter { selectedIDs.contains($0.id) }
+            .flatMap(\.normalizedPrefixes) ?? []
+        result.resolvedProgrammingPrefixes = Array(Set(prefixes)).sorted()
+        return result
     }
 
     var id = UUID()
@@ -451,6 +530,13 @@ struct SyncJob: Codable, Identifiable, Hashable, Sendable {
         if let message = left.validationMessage { return "Left side: \(message)" }
         if let message = right.validationMessage { return "Right side: \(message)" }
         if left.kind.isRemote && right.kind.isRemote { return "Version 2.0 supports remote ↔ local and local ↔ local jobs." }
+        if filter.usesMetadataProgrammingPhotographers {
+            guard direction != .bidirectional,
+                  sourceEndpoint?.kind.isRemote == true,
+                  destinationEndpoint?.kind == .local else {
+                return "Metadata Programming filename filtering requires a one-way server-to-local download job."
+            }
+        }
         if intervalSeconds < 5 { return "The interval must be at least 5 seconds." }
         if let uploadNaming, uploadNaming.isEnabled {
             guard supportsUploadNaming else {

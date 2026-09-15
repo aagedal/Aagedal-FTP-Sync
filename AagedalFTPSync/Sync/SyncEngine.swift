@@ -361,6 +361,11 @@ struct SyncEngine: Sendable {
         rightPassword: String?,
         runID: UUID
     ) async throws -> SyncResult {
+        var jobSnapshot = job
+        // Freeze the programmed day before either completed-directory delivery or
+        // the full listing can select and name a server file.
+        jobSnapshot.filter = jobSnapshot.fileFilterForProgrammingDay(Date())
+        let job = jobSnapshot
         try job.validateMetadataTemplateActivationContext()
         _ = try job.metadataOperationTimeZone
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
@@ -806,6 +811,9 @@ struct SyncEngine: Sendable {
         rightPassword: String? = nil,
         isPreflight: Bool = false
     ) async throws -> MetadataReprocessResult {
+        var jobSnapshot = job
+        jobSnapshot.filter = jobSnapshot.fileFilterForProgrammedHistory()
+        let job = jobSnapshot
         try job.validateMetadataTemplateActivationContext()
         _ = try job.metadataOperationTimeZone
         if faceRecognitionContext == nil, let message = job.metadataFaceRecognitionRuntimeBlocker {
@@ -1515,6 +1523,7 @@ struct SyncEngine: Sendable {
         rightFiles: [String: SyncFile]
     ) async throws -> Int {
         guard let cleanup = job.targetCleanup else { return 0 }
+        let cleanupFilter = job.fileFilterForProgrammedHistory()
         let target: any EndpointSession
         let targetFiles: [String: SyncFile]
         switch job.direction {
@@ -1531,7 +1540,7 @@ struct SyncEngine: Sendable {
         let cutoff = Date().addingTimeInterval(-Double(cleanup.olderThanHours) * 3_600)
         let groups = cleanupOutputGroups(
             targetFiles: targetFiles,
-            filter: job.filter,
+            filter: cleanupFilter,
             cutoff: cutoff
         )
         var deleted = 0
@@ -1541,7 +1550,7 @@ struct SyncEngine: Sendable {
                 deleted += try await target.deleteFilesTransactionally(
                     group,
                     ifOlderThan: cutoff,
-                    matching: job.filter
+                    matching: cleanupFilter
                 )
             } catch is CancellationError {
                 throw CancellationError()

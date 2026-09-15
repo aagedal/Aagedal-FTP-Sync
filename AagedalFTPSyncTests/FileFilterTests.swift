@@ -83,6 +83,48 @@ final class FileFilterTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(FileFilter.self, from: JSONEncoder().encode(configured)), configured)
     }
 
+    func testMetadataProgrammingSelectsDayTracksAndLegacyClipsWithoutPersistingSnapshot() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let firstDay = calendar.date(from: DateComponents(year: 2026, month: 9, day: 15, hour: 12))!
+        let secondDay = calendar.date(byAdding: .day, value: 1, to: firstDay)!
+        let emptyDay = calendar.date(byAdding: .day, value: 2, to: firstDay)!
+        let jane = PhotographerProfile(name: "Jane", filenamePrefix: "TA, T2", creator: "Jane", copyrightNotice: "")
+        let sam = PhotographerProfile(name: "Sam", filenamePrefix: "JAD", creator: "Sam", copyrightNotice: "")
+        let clip = MetadataScheduleClip(photographerID: sam.id, name: "Legacy clip",
+            startsAt: secondDay, endsAt: secondDay.addingTimeInterval(3_600))
+        var job = SyncJob()
+        job.filter.photographerInitials = "OLD"
+        job.filter.excludedFilenameSuffixes = "_EDITED"
+        job.filter.usesMetadataProgrammingPhotographers = true
+        job.metadataAutomation = MetadataAutomation(photographers: [jane, sam],
+            photographerTracks: [MetadataPhotographerTrack(photographerID: jane.id,
+                date: PhotographerWorkDate(firstDay, calendar: calendar))], clips: [clip])
+
+        let first = job.fileFilterForProgrammingDay(firstDay, calendar: calendar)
+        XCTAssertEqual(first.resolvedProgrammingPrefixes, ["T2", "TA"])
+        XCTAssertTrue(first.includesFilename(path: "incoming/ta_001.CR3"))
+        XCTAssertTrue(first.includesFilename(path: "T2_001.xmp"))
+        XCTAssertFalse(first.includesFilename(path: "JAD_001.CR3"))
+        XCTAssertFalse(first.includesFilename(path: "OLD_001.JPG"))
+        XCTAssertFalse(first.includesFilename(path: "TA_001_EDITED.JPG"))
+
+        let second = job.fileFilterForProgrammingDay(secondDay, calendar: calendar)
+        XCTAssertTrue(second.includesFilename(path: "JAD_001.JPG"))
+        XCTAssertFalse(second.includesFilename(path: "TA_001.JPG"))
+        XCTAssertFalse(job.fileFilterForProgrammingDay(emptyDay, calendar: calendar)
+            .includesFilename(path: "TA_001.JPG"))
+        let history = job.fileFilterForProgrammedHistory()
+        XCTAssertTrue(history.includesFilename(path: "TA_001.JPG"))
+        XCTAssertTrue(history.includesFilename(path: "JAD_001.JPG"))
+
+        let decoded = try JSONDecoder().decode(FileFilter.self, from: JSONEncoder().encode(first))
+        XCTAssertTrue(decoded.usesMetadataProgrammingPhotographers)
+        XCTAssertNil(decoded.resolvedProgrammingPrefixes)
+        XCTAssertFalse(decoded.includesFilename(path: "TA_001.JPG"))
+        XCTAssertFalse(FileFilter(photographerInitials: "OLD").usesMetadataProgrammingPhotographers)
+    }
+
     func testAllMediaIncludesPhotosVideoAndAudioButExcludesOtherFiles() {
         let filter = FileFilter(preset: .allMedia)
         for path in ["photo.JPG", "photo.HEIC", "photo.CR3", "photo.NEF", "clip.MOV", "clip.MXF", "clip.mp4", "sound.WAV", "sound.mp3", "sound.flac"] {

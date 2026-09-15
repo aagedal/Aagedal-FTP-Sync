@@ -329,6 +329,9 @@ final class MetadataProgrammingCoordinator: ObservableObject {
               ) == nil,
               let metadataLocalEndpoint = metadataLocalEndpoint(for: job) else { return }
         let previewDraft = draft
+        var previewJob = job
+        previewJob.metadataAutomation = previewDraft
+        previewJob.filter = previewJob.fileFilterForProgrammingDay(selectedDate, calendar: calendar)
         let previewOperation = self.previewOperation
         previewTask?.cancel()
         let requestID = UUID()
@@ -338,7 +341,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         previewTask = Task { [weak self] in
             do {
                 let preview = try await previewOperation(
-                    job,
+                    previewJob,
                     metadataLocalEndpoint,
                     previewDraft,
                     faceRecognitionContext
