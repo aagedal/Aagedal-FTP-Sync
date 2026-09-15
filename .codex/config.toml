@@ -1,0 +1,4 @@
+[mcp_servers."aagedal-metadata"]
+command = "python3"
+args = ["Tools/MetadataMCP/metadata_mcp.py"]
+cwd = "."

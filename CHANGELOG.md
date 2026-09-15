@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Expose saved jobs, photographers and metadata clips to Codex, Claude Code and
+  OpenCode through one local MCP server. Photographer and clip additions run in
+  the admitted app session, reject unsaved drafts and invalid programming, and
+  use the existing job/library save transaction.
 - Let one-way server-to-local jobs derive camera filename prefixes from the photographers
   assigned on the current Metadata Programming day. Empty days select no files; previews
   use the selected day, while cleanup and reprocessing include historical assignments.

@@ -40,6 +40,10 @@ The 3.0 source currently adds these guarded workflows:
   previews counts without writing, skips current receipts and preserves destination
   files edited since their last complete receipt. Replacing those edits requires a
   separate confirmation tied to the exact paths found by that preflight.
+- Local MCP access to saved jobs, the shared photographer library and per-job
+  metadata clips. Codex, Claude Code and OpenCode share one stdio adapter;
+  additions are executed by the running app and use its metadata save path.
+  See the [Metadata Programming MCP guide](Tools/MetadataMCP/README.md).
 
 Preview, transfer and reprocessing use the same frozen per-image decisions. Processing
 receipts cover source evidence, settings, runtime dependencies and exact output content;

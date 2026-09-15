@@ -20,12 +20,19 @@ final class Version3StartupController: ObservableObject {
     @MainActor final class Session {
         let store: AppStore
         let calendar: MetadataCalendarCoordinator
+        let metadataMCPBridge: MetadataMCPBridge?
         /// Retains the cooperative lease for as long as the published pair lives.
         let owner: Version3BootstrapCoordinator.Runtime?
-        init(store: AppStore, calendar: MetadataCalendarCoordinator, owner: Version3BootstrapCoordinator.Runtime? = nil) {
+        init(store: AppStore, calendar: MetadataCalendarCoordinator, owner: Version3BootstrapCoordinator.Runtime? = nil,
+             bridgeDirectory: URL? = nil) {
             self.store = store
             self.calendar = calendar
             self.owner = owner
+            metadataMCPBridge = bridgeDirectory.map {
+                MetadataMCPBridge(directory: $0, store: store, calendar: calendar,
+                                  validateRuntime: { try owner?.validateLease() })
+            }
+            metadataMCPBridge?.start()
         }
     }
     enum Failure: Error, Equatable {
@@ -330,7 +337,8 @@ final class Version3StartupController: ObservableObject {
             try validateWriterPrerequisite()
             try runtime.validateLease()
             attempt = nil
-            session = Session(store: runtime.appStore, calendar: runtime.calendar, owner: runtime)
+            session = Session(store: runtime.appStore, calendar: runtime.calendar, owner: runtime,
+                              bridgeDirectory: runtime.admission.storage.root.appendingPathComponent("mcp-bridge", isDirectory: true))
             phase = .ready
             switch operation {
             case .openCommitted:
