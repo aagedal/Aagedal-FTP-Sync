@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "development-5944d5b-swift-media-3.0.1",
+  "id": "development-5440e77-alert-dismissal",
   "status": "IMPLEMENTING",
-  "commit": "5944d5bbb47f5bbf5afa3a12d4a0b60849464ed2",
+  "commit": "5440e77c26cf8a5654dbf861e9cc48bebfa472fa",
   "version": "2.9.2",
   "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/v3-swift-media-301-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-15-SwiftMediaMetadata-3.0.1.md",
-  "note": "Development build only, not ready for beta or human acceptance. FTP Sync and its compatibility probe now pin SwiftMediaMetadata 3.0.1 exactly at 8662054299a3e13c49c65f74c564360559d1bf7f. The offline/JPEG/XMP compatibility probe, complete non-UI target (1,130 passed, 16 opt-in skips, zero failures), complete signed UI suite (18 passed, zero failures), security/current-identity guards and unsigned arm64 Release build pass. The first signed UI attempt executed no app test because macOS timed out enabling automation mode; the already-built retry passed all 18. Existing non-failing QoS and SwiftUI view-update diagnostics remain for follow-up. PHP is unavailable on this host. Production face trust/artifacts and calibration, authorized actual-face fixtures, oldest-supported-OS evidence, actual image/location workflows, enriched performance, server suites, 3.0 identity, signed archive, the full candidate matrix and all final manual acceptance gates remain open. The app version remains 2.9.2 (37), and prior evidence is preserved."
+  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/v3-alert-binding-ui/Build/Products/Release/AagedalFTPSync.app",
+  "evidence": "Documentation/Testing/2026-09-15-Alert-Dismissal-and-PHP-Release-Checks.md",
+  "note": "Development build only, not ready for beta or human acceptance. The unsigned arm64 Release executable at app-code commit 5440e77 has SHA-256 66f1c3342bad88b6a1e3651d1895ad0f18177d401e05c2920bcffdf66eec1a95. The focused signed save-failure UI test passes without the prior SwiftUI view-update warning, and the disposable PHP/MariaDB suite passes 162 assertions plus all hosting, live-sync, namespace-race and template summaries. Security/current-identity guards pass. The exact SwiftMediaMetadata 3.0.1 compatibility probe, complete non-UI target (1,130 passed, 16 opt-in skips) and complete signed UI suite (18/18) last passed at preceding app-code commit 5944d5b and must be rerun for a release-tier candidate. The remaining production face trust/artifacts and calibration, authorized actual-face fixtures, macOS 14 evidence, native image/location/calendar workflows, enriched performance, 3.0 identity, signed archive, full candidate matrix and final user acceptance remain open. The app remains 2.9.2 (37); prior candidate evidence is preserved."
 }
