@@ -126,6 +126,33 @@ final class RemoteTransportIntegrationTests: XCTestCase {
                 XCTAssertEqual(try XMPSidecar.read(from: deliveredSidecar).headline,
                     "Updated: Fixture author in Oslo", kind.rawValue)
                 XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                let latest = Dictionary(uniqueKeysWithValues: reprocessed.metadataReport.entries.map {
+                    ($0.relativePath, $0)
+                })
+                var editedSidecar = try XMPSidecar.read(from: deliveredSidecar)
+                editedSidecar.subject.append("Reviewed local keyword")
+                try XMPSidecar.write(editedSidecar, to: deliveredSidecar)
+                changedAutomation.clips[0].fields.setHeadline(try .activated("Final: {photographer} in {gps:city}"))
+                job.metadataAutomation = changedAutomation
+                let preflight = try await engine.preflightExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete, latestOutcomes: latest
+                )
+                XCTAssertEqual(preflight.conflicts, [rawName], kind.rawValue)
+                XCTAssertNotNil(preflight.conflictOutputRevisions[rawName], kind.rawValue)
+                editedSidecar.subject.append("Later local keyword")
+                try XMPSidecar.write(editedSidecar, to: deliveredSidecar)
+                let laterSidecarBytes = try Data(contentsOf: deliveredSidecar)
+                let afterReview = try await engine.reprocessExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete,
+                    conflictPolicy: .processEditedOutputs(preflight.conflictOutputRevisions),
+                    latestOutcomes: latest
+                )
+                XCTAssertEqual(afterReview.conflicts, [rawName], kind.rawValue)
+                XCTAssertEqual(afterReview.applied, 1, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredSidecar), laterSidecarBytes, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                XCTAssertEqual(try ImageMetadata.read(from: deliveredJPEG).iptc.headline,
+                    "Final: Fixture author in Oslo", kind.rawValue)
                 _ = try await session.listFiles()
                 for file in files { try await session.removeFile(file) }
                 await session.close()
