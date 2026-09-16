@@ -407,7 +407,7 @@
 		96BEB9DB3BA25A81D2C50D52 /* MetadataProgrammingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinatorTests.swift; sourceTree = "<group>"; };
 		97C0C816A4FB1006374B4D23 /* PhotographerMapTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerMapTimelineTests.swift; sourceTree = "<group>"; };
 		97F55ED30B4C3721009803C5 /* MetadataSyncServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncServerClient.swift; sourceTree = "<group>"; };
-		9C35572797947764BD999107 /* AuraFaceR100.mlpackage */ = {isa = PBXFileReference; path = AuraFaceR100.mlpackage; sourceTree = "<group>"; };
+		9C35572797947764BD999107 /* AuraFaceR100.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = AuraFaceR100.mlpackage; sourceTree = "<group>"; };
 		9C550265145C1840CA4CAF18 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9C7B57A47D6AE4FF9FA83D5B /* ConfigurationTransferActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferActivationTests.swift; sourceTree = "<group>"; };
 		9C80FA23E6C80A52EE89914F /* MetadataCalendarActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarActivationTests.swift; sourceTree = "<group>"; };
@@ -465,7 +465,7 @@
 		D24C6857F785F3CED4B32B0A /* FaceRecognitionMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceRecognitionMatcherTests.swift; sourceTree = "<group>"; };
 		D288034277BC7727C71C3304 /* ServerProfileRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfileRepository.swift; sourceTree = "<group>"; };
 		D33608A378F662B9B2EB5B3D /* SyncJob.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncJob.swift; sourceTree = "<group>"; };
-		D5481D9B2796364B0B025C11 /* AagedalFTPSync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AagedalFTPSync.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D5481D9B2796364B0B025C11 /* Aagedal FTP Sync.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Aagedal FTP Sync.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		D7E1317246636FF4155FF3A9 /* FaceRecognitionMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceRecognitionMatcher.swift; sourceTree = "<group>"; };
 		D7F63E1167F0C4B8DD60E70E /* MetadataPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreview.swift; sourceTree = "<group>"; };
 		DAB8505199CA721AB593DEBF /* MetadataFaceRecognitionSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataFaceRecognitionSettings.swift; sourceTree = "<group>"; };
@@ -591,7 +591,7 @@
 		61E26C603B8DE87342BFFC0D /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				D5481D9B2796364B0B025C11 /* AagedalFTPSync.app */,
+				D5481D9B2796364B0B025C11 /* Aagedal FTP Sync.app */,
 				611ECBA31E1D473200F506F6 /* AagedalFTPSyncTests.xctest */,
 				A83544A59B9CCAA0045D0C01 /* AagedalFTPSyncUITests.xctest */,
 			);
@@ -916,9 +916,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		1C493DABAD34DF55272221B5 /* AagedalFTPSync */ = {
+		1C493DABAD34DF55272221B5 /* Aagedal FTP Sync */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 0914275FBA74B154038FC561 /* Build configuration list for PBXNativeTarget "AagedalFTPSync" */;
+			buildConfigurationList = 0914275FBA74B154038FC561 /* Build configuration list for PBXNativeTarget "Aagedal FTP Sync" */;
 			buildPhases = (
 				76CFB7274A46647FA07DB787 /* Prepare and Verify Bundled AuraFace */,
 				FD3D9C4275F3021F6AC96547 /* Sources */,
@@ -929,14 +929,14 @@
 			);
 			dependencies = (
 			);
-			name = AagedalFTPSync;
+			name = "Aagedal FTP Sync";
 			packageProductDependencies = (
 				746688A9934E8F2A54705932 /* Citadel */,
 				91BAA681FF6474768817AC73 /* SwiftMediaMetadata */,
 				B635B16CFC77ED0476D715ED /* MetadataTemplates */,
 			);
 			productName = AagedalFTPSync;
-			productReference = D5481D9B2796364B0B025C11 /* AagedalFTPSync.app */;
+			productReference = D5481D9B2796364B0B025C11 /* Aagedal FTP Sync.app */;
 			productType = "com.apple.product-type.application";
 		};
 		33C93B57B9FBF25FBBBC2DDA /* AagedalFTPSyncTests */ = {
@@ -1018,7 +1018,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				1C493DABAD34DF55272221B5 /* AagedalFTPSync */,
+				1C493DABAD34DF55272221B5 /* Aagedal FTP Sync */,
 				33C93B57B9FBF25FBBBC2DDA /* AagedalFTPSyncTests */,
 				BFF1E9759FD31558E5CD83CF /* AagedalFTPSyncUITests */,
 			);
@@ -1323,12 +1323,12 @@
 /* Begin PBXTargetDependency section */
 		5A6766B6A79DAC9D68F770A4 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 1C493DABAD34DF55272221B5 /* AagedalFTPSync */;
+			target = 1C493DABAD34DF55272221B5 /* Aagedal FTP Sync */;
 			targetProxy = 28E9370C8CA217F1504E54F5 /* PBXContainerItemProxy */;
 		};
 		B2080D86FF8D7DF63651C579 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 1C493DABAD34DF55272221B5 /* AagedalFTPSync */;
+			target = 1C493DABAD34DF55272221B5 /* Aagedal FTP Sync */;
 			targetProxy = B7FCAA343AC6D1358065DD15 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -1605,7 +1605,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		0914275FBA74B154038FC561 /* Build configuration list for PBXNativeTarget "AagedalFTPSync" */ = {
+		0914275FBA74B154038FC561 /* Build configuration list for PBXNativeTarget "Aagedal FTP Sync" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				C5662DB40E28D2956DBC5A73 /* Debug */,
