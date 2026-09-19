@@ -6,7 +6,10 @@ hidden `.aagedal-sync-<UUID>.transaction` directory inside the destination folde
 state. Reprocessing also refuses to scan or write until retained reprocessing or
 reset recovery folders have been resolved, including older folders without a
 manifest. This avoids approving a partial listing when an original is still held
-in recovery. The error identifies the folder to inspect. Stop the job and any
+in recovery. Ordinary sync checks both local endpoints and any configured processed
+folder before listing or early delivery begins. This prevents a resumed job from
+filling missing paths or forwarding partial outputs before reconciliation, even
+when metadata processing is disabled. The error identifies the folder to inspect. Stop the job and any
 reprocessing before inspecting the folder. Keep a copy
 of the complete recovery directory and the affected current destination files
 until recovery is resolved.

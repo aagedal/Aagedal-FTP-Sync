@@ -281,7 +281,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             if Self.isRecoveryArtifact(named: name) {
                 let recovery = rootURL.appendingPathComponent(name)
                 throw AppError.transferFailed(
-                    "A recovery folder from an earlier operation remains at \(recovery.path). Recover the retained files and remove the resolved hidden folder before retrying metadata reprocessing."
+                    "A recovery folder from an earlier operation remains at \(recovery.path). Recover the retained files and remove the resolved hidden folder before retrying sync or metadata reprocessing."
                 )
             }
         }

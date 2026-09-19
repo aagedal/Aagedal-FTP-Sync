@@ -447,6 +447,13 @@ struct SyncEngine: Sendable {
         }
         let earlyTransferState = EarlyTransferState()
         do {
+            // A retained transaction can leave an original absent or a partial
+            // output visible. Admit every local root before starting any listing
+            // task: completed-directory delivery can publish during listing.
+            // Use the raw sessions so naming wrappers cannot hide local recovery.
+            for session in [rawLeft, rawRight] + [processedDestination].compactMap({ $0 }) {
+                try (session as? LocalEndpointSession)?.validateMetadataRecoveryIsResolved()
+            }
             let processedListingTask = Task {
                 try await loggedListingIfPresent(
                     from: processedDestination,
