@@ -61,6 +61,28 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.processedFileCount(for: photographer, in: store), 0)
     }
 
+    func testSavedReprocessReviewRejectsChangedSettingsFilterScopeAndUnfinishedWork() throws {
+        var job = previewJob()
+        job.metadataGeocoding = try .init(cityPolicy: .overwrite, localeIdentifier: "en")
+        let review = SavedMetadataReprocessReview(job: job, filter: .staleOrIncomplete)
+        let result = MetadataReprocessPreflight(scanned: 3, ready: 1, skipped: 1, failed: 1,
+            conflicts: ["edited.jpg"], conflictOutputRevisions: ["edited.jpg": "reviewed-content"])
+        let ready = MetadataReprocessPhase.ready(Date(), .all, .staleOrIncomplete, result)
+        XCTAssertEqual(review.result(currentJob: job, filter: .staleOrIncomplete, phase: ready), result)
+        XCTAssertNil(review.result(currentJob: nil, filter: .staleOrIncomplete, phase: ready))
+        XCTAssertNil(review.result(currentJob: job, filter: .all, phase: ready))
+        XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete,
+                                   phase: .ready(Date(), .all, .all, result)))
+        XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete,
+                                   phase: .ready(Date(), .photographer(UUID()), .staleOrIncomplete, result)))
+        for phase: MetadataReprocessPhase? in [nil, .idle, .preflighting, .running, .failed("cancelled")] {
+            XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete, phase: phase))
+        }
+        job.metadataGeocoding = try .init(cityPolicy: .fillEmpty, localeIdentifier: "en")
+        XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete, phase: ready),
+                     "A confirmation must not apply newer saved choices using an older review")
+    }
+
     func testIndependentReprocessingAdmissionPreservesRuntimeAndTimestampGuards() throws {
         let coordinator = MetadataProgrammingCoordinator()
         var job = previewJob()

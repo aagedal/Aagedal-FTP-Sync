@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Review saved-file reprocessing before writing, with stale/incomplete and all-file
+  filters, preflight counts, explicit approval for reviewed edited outputs, and
+  completion status. Discard pending reviews when saved settings or drafts change.
+
 - Include enabled face recognition and historical programming filename filters in
   saved-job geocoding previews. Show missing recognition prerequisites before
   preview/reprocessing, and allow admitted face-only jobs through reprocessing.

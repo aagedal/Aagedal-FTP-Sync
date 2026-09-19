@@ -160,6 +160,20 @@ struct MetadataGeocodingSettingsView: View {
 
 }
 
+/// Bind a no-write review to the saved settings and filter that produced it.
+struct SavedMetadataReprocessReview {
+    let job: SyncJob
+    let filter: MetadataReprocessFilter
+
+    func result(currentJob: SyncJob?, filter currentFilter: MetadataReprocessFilter,
+                phase: MetadataReprocessPhase?) -> MetadataReprocessPreflight? {
+        guard currentJob == job, currentFilter == filter,
+              case .ready(_, .all, let preparedFilter, let result) = phase,
+              preparedFilter == filter else { return nil }
+        return result
+    }
+}
+
 /// Saved processing actions shared by scheduled, location-only and face-only jobs.
 struct SavedMetadataProcessingActionsView: View {
     @ObservedObject var store: AppStore
@@ -169,7 +183,8 @@ struct SavedMetadataProcessingActionsView: View {
     @State private var previewTask: Task<Void, Never>?
     @State private var previewRequestID: UUID?
     @State private var preview: PreviewPresentation?
-    @State private var confirmsReprocess = false
+    @State private var reprocessReview: SavedMetadataReprocessReview?
+    @State private var reprocessFilter: MetadataReprocessFilter = .staleOrIncomplete
 
     private struct PreviewPresentation: Identifiable, Sendable {
         let id = UUID()
@@ -188,8 +203,22 @@ struct SavedMetadataProcessingActionsView: View {
         return true
     }
 
+    private var reprocessPreflight: MetadataReprocessPreflight? {
+        guard let review = reprocessReview else { return nil }
+        return review.result(currentJob: store.jobs.first { $0.id == review.job.id },
+                             filter: reprocessFilter, phase: store.metadataReprocessPhases[review.job.id])
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Picker("Reprocess", selection: $reprocessFilter) {
+                ForEach(MetadataReprocessFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .disabled(!savedActionsAvailable || reprocessReview != nil)
+            .help(reprocessFilter.explanation)
+            .accessibilityIdentifier("saved-processing-filter")
             HStack {
                 if previewTask != nil {
                     ProgressView().controlSize(.small)
@@ -199,9 +228,24 @@ struct SavedMetadataProcessingActionsView: View {
                     Button("Preview Saved Metadata…", action: startPreview)
                         .disabled(!savedActionsAvailable)
                         .accessibilityIdentifier("preview-geocoding")
-                    Button("Reprocess Saved Files…") { confirmsReprocess = true }
+                    Button("Reprocess Saved Files…", action: startReprocessReview)
                         .disabled(!savedActionsAvailable)
                         .accessibilityIdentifier("reprocess-geocoding")
+                }
+            }
+            if let job = savedJob {
+                switch store.metadataReprocessPhases[job.id] {
+                case .running:
+                    Text("Reprocessing the local destination…")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .succeeded(_, let result):
+                    Text("Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed, \(result.conflicts.count) edit conflicts preserved.")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .failed(let message):
+                    Text("Reprocessing failed: \(message)")
+                        .font(.caption).foregroundStyle(.red)
+                default:
+                    EmptyView()
                 }
             }
             if hasUnsavedChanges {
@@ -220,23 +264,74 @@ struct SavedMetadataProcessingActionsView: View {
             MetadataFolderPreviewView(folderName: presentation.folderName,
                 timestampPolicy: presentation.timestampPolicy, result: presentation.result)
         }
-        .confirmationDialog("Reprocess existing local files?", isPresented: $confirmsReprocess, titleVisibility: .visible) {
-            Button("Reprocess Saved Files") {
-                guard savedActionsAvailable, let job = savedJob else { return }
-                store.reprocessExistingLocalFiles(job.id)
+        .confirmationDialog("Reprocess existing local files?", isPresented: Binding(
+            get: { reprocessReview != nil },
+            set: { if !$0 { cancelReprocessReview() } }
+        ), titleVisibility: .visible) {
+            if let result = reprocessPreflight {
+                Button("Reprocess Saved Files") { confirmReprocessing() }
+                    .disabled(!savedActionsAvailable || result.ready == 0)
+                if !result.conflictOutputRevisions.isEmpty {
+                    Button("Reprocess \(result.conflictOutputRevisions.count) Edited Outputs", role: .destructive) {
+                        confirmReprocessing(includeEditedOutputs: true)
+                    }
+                    .disabled(!savedActionsAvailable)
+                }
+            } else if let review = reprocessReview,
+                      store.metadataReprocessPhases[review.job.id] == .preflighting {
+                Button("Checking Files…") {}.disabled(true)
             }
-            Button("Cancel", role: .cancel) {}
+            Button("Cancel", role: .cancel, action: cancelReprocessReview)
         } message: {
-            Text("Matching files in \(savedJob?.localDestinationDisplayPath ?? "the saved local destination") will be processed using the saved metadata schedule and enabled geocoding and face recognition. Fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained. Preview first to inspect the proposed changes.")
+            if let result = reprocessPreflight {
+                Text("Preflight checked \(result.scanned) files in \(reprocessReview?.job.localDestinationDisplayPath ?? "the saved local destination"): \(result.ready) ready, \(result.skipped) skipped, and \(result.failed) with errors or incomplete data. \(result.conflicts.count) edited outputs will be preserved unless explicitly included. Saved fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained.")
+            } else if let review = reprocessReview,
+                      case .failed(let message) = store.metadataReprocessPhases[review.job.id] {
+                Text("Reprocessing failed: \(message)")
+            } else {
+                Text("Checking the saved local destination without changing files…")
+            }
         }
-        .onChange(of: savedJob) { _, _ in cancelPreview(); preview = nil; confirmsReprocess = false }
+        .onChange(of: savedJob) { _, _ in invalidateActions() }
         .onChange(of: hasUnsavedChanges) { _, changed in
-            if changed { cancelPreview(); preview = nil; confirmsReprocess = false }
+            if changed { invalidateActions() }
         }
+        .onChange(of: store.jobs) { _, jobs in
+            if let review = reprocessReview,
+               jobs.first(where: { $0.id == review.job.id }) != review.job { invalidateActions() }
+        }
+        .onChange(of: reprocessFilter) { _, _ in cancelReprocessReview() }
         .onChange(of: store.isSuspendedForExternalWriter) { _, suspended in
-            if suspended { cancelPreview(); preview = nil; confirmsReprocess = false }
+            if suspended { invalidateActions() }
         }
-        .onDisappear { cancelPreview() }
+        .onDisappear { invalidateActions() }
+    }
+
+    private func invalidateActions() {
+        cancelPreview()
+        preview = nil
+        cancelReprocessReview()
+    }
+
+    private func startReprocessReview() {
+        guard savedActionsAvailable, let job = savedJob,
+              store.preflightMetadataReprocess(job.id, filter: reprocessFilter) else { return }
+        reprocessReview = SavedMetadataReprocessReview(job: job, filter: reprocessFilter)
+    }
+
+    private func cancelReprocessReview() {
+        if let review = reprocessReview { store.cancelMetadataReprocessPreflight(review.job.id) }
+        reprocessReview = nil
+    }
+
+    private func confirmReprocessing(includeEditedOutputs: Bool = false) {
+        guard savedActionsAvailable, let review = reprocessReview,
+              let result = reprocessPreflight else { return }
+        guard includeEditedOutputs ? !result.conflictOutputRevisions.isEmpty : result.ready > 0 else { return }
+        reprocessReview = nil
+        store.reprocessExistingLocalFiles(review.job.id, filter: review.filter,
+            conflictPolicy: includeEditedOutputs
+                ? .processEditedOutputs(result.conflictOutputRevisions) : .preserveEditedOutputs)
     }
 
     private func cancelPreview() {

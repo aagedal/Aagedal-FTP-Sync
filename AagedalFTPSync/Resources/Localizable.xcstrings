@@ -1,6 +1,19 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Checking the saved local destination without changing files…" : {
+      "extractionState" : "manual"
+    },
+    "Reprocess %lld Edited Outputs" : {
+      "extractionState" : "manual"
+    },
+    "Reprocessed %lld of %lld files; %lld skipped, %lld failed, %lld edit conflicts preserved." : {
+      "extractionState" : "manual"
+    },
+    "Preflight checked %lld files in %@: %lld ready, %lld skipped, and %lld with errors or incomplete data. %lld edited outputs will be preserved unless explicitly included. Saved fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained." : {
+      "extractionState" : "manual"
+    },
+
     "Saved metadata processing" : {
       "extractionState" : "manual"
     },

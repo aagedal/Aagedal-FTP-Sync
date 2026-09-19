@@ -855,6 +855,8 @@ final class AppStore: ObservableObject {
                 filter: filter,
                 conflictPolicy: conflictPolicy
             )
+            // Busy-state consumers must refresh after the final lease has drained.
+            self.objectWillChange.send()
             self.metadataReprocessTasks[jobID] = nil
         }
         metadataReprocessTasks[jobID] = task
@@ -871,6 +873,8 @@ final class AppStore: ObservableObject {
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performMetadataReprocessPreflight(jobID, scope: scope, filter: filter)
+            // Busy-state consumers must refresh after the final lease has drained.
+            self.objectWillChange.send()
             self.metadataReprocessTasks[jobID] = nil
         }
         metadataReprocessTasks[jobID] = task
