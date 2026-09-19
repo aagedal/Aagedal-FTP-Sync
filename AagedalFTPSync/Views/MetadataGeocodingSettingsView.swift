@@ -55,6 +55,7 @@ struct MetadataGeocodingSettingsView: View {
         guard !hasUnsavedChanges, previewTask == nil, !store.isSuspendedForExternalWriter,
               let job = savedJob, settings == job.metadataGeocoding,
               job.metadataGeocoding?.isEnabled == true,
+              store.metadataFaceRecognitionRuntimeBlocker(for: job) == nil,
               job.direction != .bidirectional, job.destinationEndpoint?.kind == .local,
               !store.isJobBusy(job.id), store.jobs.first(where: { $0.id == job.id }) == job else { return false }
         return true
@@ -129,6 +130,9 @@ struct MetadataGeocodingSettingsView: View {
                 Text("Save the job before previewing or reprocessing its saved settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            if let job = savedJob, let blocker = store.metadataFaceRecognitionRuntimeBlocker(for: job) {
+                Text(blocker).font(.caption).foregroundStyle(.secondary)
+            }
             if let errorMessage {
                 Text(errorMessage).font(.caption).foregroundStyle(.red)
                     .textSelection(.enabled)
@@ -163,7 +167,7 @@ struct MetadataGeocodingSettingsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Matching files in \(savedJob?.localDestinationDisplayPath ?? "the saved local destination") will be processed using the saved geocoding choices and any enabled saved metadata schedule. Fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained. Preview first to inspect the proposed changes.")
+            Text("Matching files in \(savedJob?.localDestinationDisplayPath ?? "the saved local destination") will be processed using the saved geocoding choices and any enabled face recognition or saved metadata schedule. Fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained. Preview first to inspect the proposed changes.")
         }
         .onChange(of: settings) { _, _ in cancelPreview() }
         .onChange(of: savedJob) { _, _ in
@@ -228,6 +232,7 @@ struct MetadataGeocodingSettingsView: View {
         let requestID = UUID()
         previewRequestID = requestID
         errorMessage = nil
+        let faceRecognitionContext = store.faceRecognitionContext
         previewTask = Task {
             do {
                 let work = Task.detached(priority: .userInitiated) {
@@ -236,9 +241,7 @@ struct MetadataGeocodingSettingsView: View {
                     let folder = try MetadataPreviewService.localFolderURL(selectedRoot: access.url,
                         usesManagedFolderStructure: job.usesManagedFolderStructure)
                     let result = try await MetadataPreviewService.previewLocalFolder(
-                        at: folder, automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
-                        filter: job.filter,
-                        processingTimeZone: try job.validatedMetadataProcessingTimeZone)
+                        at: folder, savedJob: job, faceRecognitionContext: faceRecognitionContext)
                     return PreviewPresentation(folderName: folder.lastPathComponent,
                         timestampPolicy: job.metadataAutomation?.timestampPolicy ?? .sourceModification, result: result)
                 }

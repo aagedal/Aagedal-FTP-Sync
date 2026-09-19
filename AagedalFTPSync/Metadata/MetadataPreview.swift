@@ -268,6 +268,29 @@ enum MetadataPreviewService {
         })
     }
 
+    /// Saved-job previews include every enabled stage, just like reprocessing.
+    /// Keep the runtime snapshot fixed for the entire folder operation.
+    static func previewLocalFolder(
+        at folderURL: URL,
+        savedJob job: SyncJob,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
+        service: MetadataGeocodingService? = nil,
+        arrivalDate: Date = Date()
+    ) async throws -> MetadataPreviewResult {
+        try Task.checkCancellation()
+        if let message = job.metadataFaceRecognitionRuntimeBlocker(
+            runtimeAvailable: faceRecognitionContext != nil
+        ) {
+            throw AppError.invalidConfiguration(message)
+        }
+        return try await previewLocalFolder(
+            at: folderURL, automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+            service: service, faceRecognition: job.metadataFaceRecognition,
+            faceRecognitionContext: faceRecognitionContext, filter: job.fileFilterForProgrammedHistory(),
+            arrivalDate: arrivalDate, processingTimeZone: try job.validatedMetadataProcessingTimeZone
+        )
+    }
+
     /// Optional scheduling and independent geocoding share the production resolver.
     /// Unlike the original draft-only API, this overload respects isEnabled.
     static func previewLocalFolder(

@@ -145,4 +145,88 @@ final class ActivatedMetadataPreviewTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("cannot run"))
         }
     }
+
+    func testSavedJobPreviewCombinesLocationsNamesAndTemplateReadOnly() async throws {
+        let root = try folder()
+        let file = root.appendingPathComponent("T_combined.jpg")
+        try image(at: file)
+        _ = try MetadataWriter.apply(.init(
+            gpsPosition: ScheduledGPSPosition(latitude: 59, longitude: 10),
+            faceNames: .init(names: ["Existing Person"])
+        ), to: file)
+        let before = try Data(contentsOf: file)
+        var job = SyncJob()
+        job.metadataAutomation = try automation(source: "{gps:city}: {persons}")
+        job.metadataAutomation?.isEnabled = true
+        job.metadataGeocoding = try .init(resolveVariables: true,
+            cityPolicy: .overwrite, countryPolicy: .overwrite, localeIdentifier: "en")
+        job.metadataFaceRecognition = .init(appendToKeywords: true)
+        job.metadataProcessingTimeZoneIdentifier = "Europe/Oslo"
+        job.filter.usesMetadataProgrammingPhotographers = true
+        // The saved filter has no run-local prefixes; preview must derive history
+        // just as reprocessing does, and exclude unrelated destination files.
+        try image(at: root.appendingPathComponent("OTHER.jpg"))
+        let provider = MetadataGeocodingService(identity: .init(provider: "fixture", version: "1", dataset: "test")) { _ in
+            .found(.init(city: "Oslo", country: "Norway", source: "fixture", distanceMeters: 0))
+        }
+
+        let result = try await MetadataPreviewService.previewLocalFolder(
+            at: root, savedJob: job, faceRecognitionContext: try faceContext(name: "Preview Person"),
+            service: provider, arrivalDate: date
+        )
+
+        let item = try XCTUnwrap(result.items.first)
+        XCTAssertEqual(result.scanned, 1)
+        XCTAssertEqual(item.relativePath, "T_combined.jpg")
+        XCTAssertEqual(item.status, .willApply)
+        XCTAssertEqual(item.processing?.changes.headline, "Oslo: Existing Person, Preview Person")
+        XCTAssertEqual(item.processing?.changes.places?.city, "Oslo")
+        XCTAssertEqual(item.processing?.changes.places?.country, "Norway")
+        XCTAssertEqual(item.processing?.recognitionEvidence?.status, .completed)
+        XCTAssertTrue(item.processing?.changes.faceNames?.appendToKeywords == true)
+        XCTAssertEqual(item.proposedPersonNames, ["Existing Person", "Preview Person"])
+        XCTAssertEqual(try Data(contentsOf: file), before)
+    }
+
+    func testSavedJobPreviewRetainsDisabledScheduleWithIndependentRecognition() async throws {
+        let root = try folder()
+        let file = root.appendingPathComponent("T_independent.jpg")
+        try image(at: file)
+        let before = try Data(contentsOf: file)
+        var job = SyncJob()
+        job.metadataAutomation = try automation(source: "Must remain disabled")
+        job.metadataFaceRecognition = .init()
+
+        let result = try await MetadataPreviewService.previewLocalFolder(
+            at: root, savedJob: job, faceRecognitionContext: try faceContext(name: "Preview Person"),
+            arrivalDate: date
+        )
+
+        let item = try XCTUnwrap(result.items.first)
+        XCTAssertEqual(item.status, .willApply)
+        XCTAssertNil(item.clipID)
+        XCTAssertEqual(item.processing?.changes.headline, "")
+        XCTAssertEqual(item.proposedPersonNames, ["Preview Person"])
+        XCTAssertEqual(try Data(contentsOf: file), before)
+    }
+
+    func testSavedJobPreviewRejectsMissingRecognitionBeforeAnyLocationLookup() async throws {
+        var job = SyncJob()
+        job.metadataFaceRecognition = .init()
+        job.metadataGeocoding = try .init(cityPolicy: .overwrite, localeIdentifier: "en")
+        job.metadataProcessingTimeZoneIdentifier = "Europe/Oslo"
+        let provider = MetadataGeocodingService(identity: .init(provider: "forbidden", version: "1", dataset: "test")) { _ in
+            XCTFail("An unadmitted combined preview must not send coordinates")
+            return .noResult
+        }
+        do {
+            _ = try await MetadataPreviewService.previewLocalFolder(
+                at: URL(fileURLWithPath: "/path/that/must/not/be/read"), savedJob: job,
+                service: provider, arrivalDate: date
+            )
+            XCTFail("Saved recognition must not be silently omitted")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, SyncJob.unavailableFaceRecognitionRuntimeMessage)
+        }
+    }
 }

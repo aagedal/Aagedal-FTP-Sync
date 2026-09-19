@@ -835,8 +835,8 @@ struct SyncEngine: Sendable {
         }
         let automation = job.metadataAutomation?.isEnabled == true ? job.metadataAutomation : nil
         let geocodingEnabled = job.metadataGeocoding?.isEnabled == true
-        guard automation != nil || geocodingEnabled else {
-            throw AppError.invalidConfiguration("Enable and save automatic metadata or geocoding before reprocessing files.")
+        guard automation != nil || geocodingEnabled || job.metadataFaceRecognition != nil else {
+            throw AppError.invalidConfiguration("Enable and save automatic metadata, geocoding, or face recognition before reprocessing files.")
         }
         if let message = job.validationMessage { throw AppError.invalidConfiguration(message) }
         if let message = automation?.validationMessage {

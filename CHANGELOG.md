@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Include enabled face recognition and historical programming filename filters in
+  saved-job geocoding previews. Show missing recognition prerequisites before
+  preview/reprocessing, and allow admitted face-only jobs through reprocessing.
 - Release temporary file buffers after each fingerprint chunk so large-image previews
   and reprocessing do not retain a full file's worth of hashing buffers. Check
   cancellation before opening fingerprint inputs and after the final read.

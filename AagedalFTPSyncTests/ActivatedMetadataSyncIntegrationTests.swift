@@ -276,6 +276,49 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(secondEntry.recognitionEvidence?.outcomes?.accepted, 1)
     }
 
+    func testFaceOnlyReprocessingSupportsPreflightReceiptsAndIdleRepeat() async throws {
+        let f = try fixture()
+        let name = "INDEPENDENT.jpg"
+        try write(jpeg(), name: name, root: f.destination)
+        let target = f.destination.appendingPathComponent(name)
+        let before = try Data(contentsOf: target)
+        let modified = try target.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        var job = f.job
+        job.metadataAutomation = nil
+        job.metadataGeocoding = nil
+        job.metadataFaceRecognition = .init(appendToKeywords: true)
+        let engine = engine(f, faceRecognitionContext: try faceContext(name: "Alice Example"))
+
+        let preflight = try await engine.reprocessExistingLocalFiles(job: job, isPreflight: true)
+        XCTAssertEqual(preflight.applied, 1)
+        XCTAssertEqual(try Data(contentsOf: target), before)
+
+        let result = try await engine.reprocessExistingLocalFiles(job: job)
+        XCTAssertEqual(result.applied, 1)
+        let metadata = try ImageMetadata.read(from: target)
+        XCTAssertEqual(metadata.xmp?.personInImage, ["Alice Example"])
+        XCTAssertTrue(metadata.iptc.keywords.contains("Alice Example"))
+        XCTAssertTrue(metadata.iptc.headline?.isEmpty != false)
+        XCTAssertEqual(try target.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
+        let entry = try XCTUnwrap(result.metadataReport.entries.first)
+        XCTAssertEqual(entry.recognitionEvidence?.status, .completed)
+        XCTAssertNotNil(entry.processingFingerprint)
+
+        // A disabled saved schedule must also leave independent recognition usable.
+        job.metadataAutomation = f.job.metadataAutomation
+        job.metadataAutomation?.isEnabled = false
+        let processed = try Data(contentsOf: target)
+        let repeatResult = try await engine.reprocessExistingLocalFiles(
+            job: job, filter: .staleOrIncomplete, latestOutcomes: [name: entry]
+        )
+        XCTAssertEqual(repeatResult.applied, 0)
+        XCTAssertEqual(repeatResult.failed, 0)
+        XCTAssertEqual(repeatResult.metadataReport.entries.first?.status, .skipped)
+        XCTAssertNotNil(repeatResult.metadataReport.entries.first?.processingFingerprint)
+        XCTAssertEqual(try Data(contentsOf: target), processed)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.source.path).isEmpty)
+    }
+
     func testReceiptProtectedOutputEditIsReportedAndPreserved() async throws {
         let f = try fixture()
         try write(jpeg(), name: "FX_EDITED.jpg", root: f.source)
