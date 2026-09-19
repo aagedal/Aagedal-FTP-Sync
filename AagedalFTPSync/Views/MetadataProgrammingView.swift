@@ -265,40 +265,39 @@ struct MetadataProgrammingView: View {
         } message: { change in
             Text("Resizing \(change.clip.name) crosses midnight, so it will appear on more than one day’s timeline.")
         }
-        .confirmationDialog(
-            "Reprocess existing local files?",
-            isPresented: Binding(
-                get: { pendingReprocessScope != nil },
-                set: { if !$0 { coordinator.cancelPendingReprocessing(in: store) } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let preflight = reprocessPreflight {
-                Button(reprocessActionTitle) {
-                    coordinator.confirmReprocessing(in: store)
-                }
-                .disabled(preflight.ready == 0 || !coordinator.canReprocessMetadata(in: store))
-                if !preflight.conflicts.isEmpty {
-                    Button(
-                        "Reprocess \(preflight.conflicts.count) Edited Output\(preflight.conflicts.count == 1 ? "" : "s")",
-                        role: .destructive
-                    ) {
-                        coordinator.confirmReprocessing(
-                            in: store,
-                            conflictPolicy: .processEditedOutputs(preflight.conflictOutputRevisions)
-                        )
+        .sheet(isPresented: Binding(
+            get: { pendingReprocessScope != nil },
+            set: { if !$0 { coordinator.cancelPendingReprocessing(in: store) } }
+        )) {
+            MetadataReprocessReviewSheet {
+                Text(reprocessConfirmationMessage)
+            } actions: {
+                if let preflight = reprocessPreflight {
+                    Button(reprocessActionTitle) {
+                        coordinator.confirmReprocessing(in: store)
                     }
-                    .disabled(!coordinator.canReprocessMetadata(in: store))
+                    .disabled(preflight.ready == 0 || !coordinator.canReprocessMetadata(in: store))
+                    if !preflight.conflicts.isEmpty {
+                        Button(
+                            "Reprocess \(preflight.conflicts.count) Edited Output\(preflight.conflicts.count == 1 ? "" : "s")",
+                            role: .destructive
+                        ) {
+                            coordinator.confirmReprocessing(
+                                in: store,
+                                conflictPolicy: .processEditedOutputs(preflight.conflictOutputRevisions)
+                            )
+                        }
+                        .disabled(!coordinator.canReprocessMetadata(in: store))
+                    }
+                } else if coordinator.isPreflighting(in: store) {
+                    Button("Checking Files…") {}
+                        .disabled(true)
                 }
-            } else if coordinator.isPreflighting(in: store) {
-                Button("Checking Files…") {}
-                    .disabled(true)
+                Button("Cancel", role: .cancel) {
+                    coordinator.cancelPendingReprocessing(in: store)
+                }
+                .keyboardShortcut(.cancelAction)
             }
-            Button("Cancel", role: .cancel) {
-                coordinator.cancelPendingReprocessing(in: store)
-            }
-        } message: {
-            Text(reprocessConfirmationMessage)
         }
     }
 

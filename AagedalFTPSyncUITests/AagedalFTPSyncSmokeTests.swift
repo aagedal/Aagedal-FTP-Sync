@@ -4,22 +4,81 @@ import XCTest
 final class AagedalFTPSyncSmokeTests: XCTestCase {
     private var app: XCUIApplication!
 
-    func testRetainedMetadataRecoveryExplainsBlockedReprocessingAndAllowsRetry() {
+    func testRetainedMetadataRecoveryExplainsBlockedReprocessingAndAllowsRetry() throws {
         launch(seedJob: true, recoveryFixture: true)
         let reprocess = element("reprocess-geocoding")
         XCTAssertTrue(reprocess.waitForExistence(timeout: 5))
         XCTAssertTrue(reprocess.isEnabled)
+        var recoveryURL: URL?
         for _ in 0..<2 {
             reprocess.click()
-            let message = app.staticTexts.containing(NSPredicate(
-                format: "label CONTAINS %@ AND label CONTAINS %@",
-                ".aagedal-sync-ui-fixture.transaction", "Recover the retained files"
+            let sheet = app.sheets.firstMatch
+            XCTAssertTrue(sheet.waitForExistence(timeout: 8))
+            let message = sheet.staticTexts.matching(NSPredicate(
+                format: "(label CONTAINS %@ OR value CONTAINS %@)",
+                ".aagedal-sync-ui-fixture.transaction", ".aagedal-sync-ui-fixture.transaction"
             )).firstMatch
             XCTAssertTrue(message.waitForExistence(timeout: 8))
-            XCTAssertFalse(app.buttons["Reprocess Saved Files"].exists)
-            app.buttons["Cancel"].firstMatch.click()
+            let messageText = message.value as? String ?? message.label
+            let pathStart = try XCTUnwrap(messageText.range(of: "remains at "))
+            let pathEnd = try XCTUnwrap(messageText.range(of: ". Recover the retained files"))
+            recoveryURL = URL(fileURLWithPath: String(messageText[pathStart.upperBound..<pathEnd.lowerBound]))
+            XCTAssertFalse(sheet.buttons["Reprocess Saved Files"].exists)
+            sheet.buttons["Cancel"].click()
             waitForSheetTransition()
+            XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
             XCTAssertTrue(reprocess.isEnabled)
+        }
+
+        // Reconcile only this launch's disposable fixture, preserving both the
+        // chosen visible output and the retained original outside the transaction.
+        let recovery = try XCTUnwrap(recoveryURL)
+        let destination = recovery.deletingLastPathComponent()
+        let root = destination.deletingLastPathComponent()
+        let session = try XCTUnwrap(app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"])
+        guard root.lastPathComponent == session,
+              root.deletingLastPathComponent().lastPathComponent == "AagedalFTPSyncUITests",
+              destination.lastPathComponent == "Destination",
+              recovery.lastPathComponent == ".aagedal-sync-ui-fixture.transaction" else {
+            XCTFail("Refusing to reconcile a folder outside this isolated fixture")
+            return
+        }
+        let manager = FileManager.default
+        let original = recovery.appendingPathComponent("original-held-0")
+        let visible = destination.appendingPathComponent("preserved.txt")
+        let rescued = root.appendingPathComponent("rescued-original.txt")
+        let originalBytes = try Data(contentsOf: original)
+        XCTAssertEqual(originalBytes, Data("retained original fixture bytes".utf8))
+        let reviewedBytes = Data("reviewed visible fixture bytes".utf8)
+        // The runner cannot write the app container. An explicit isolated launch
+        // option performs fixture reconciliation inside its owning sandbox.
+        app.terminate()
+        app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] = "1"
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+
+        for relaunch in [false, true] {
+            if relaunch {
+                app.terminate()
+                app.launch()
+                waitForJobsWindow(seedJob: true)
+            }
+            element("reprocess-geocoding").click()
+            let sheet = app.sheets.firstMatch
+            XCTAssertTrue(sheet.waitForExistence(timeout: 8))
+            let success = sheet.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@", "Preflight checked 0 files", "Preflight checked 0 files"
+            )).firstMatch
+            XCTAssertTrue(success.waitForExistence(timeout: 8))
+            // The text fixture is deliberately not an image: admission succeeds,
+            // while no metadata publication is offered for an empty image batch.
+            XCTAssertFalse(sheet.buttons["Reprocess Saved Files"].isEnabled)
+            sheet.buttons["Cancel"].click()
+            waitForSheetTransition()
+            XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+            XCTAssertFalse(manager.fileExists(atPath: recovery.path))
+            XCTAssertEqual(try Data(contentsOf: rescued), originalBytes)
+            XCTAssertEqual(try Data(contentsOf: visible), reviewedBytes)
         }
     }
 
@@ -439,6 +498,10 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 
+        waitForJobsWindow(seedJob: seedJob)
+    }
+
+    private func waitForJobsWindow(seedJob: Bool) {
         let jobsWindow = app.windows["jobs"]
         if !jobsWindow.waitForExistence(timeout: 5) {
             // SwiftUI occasionally restores only the menu-bar scene during a

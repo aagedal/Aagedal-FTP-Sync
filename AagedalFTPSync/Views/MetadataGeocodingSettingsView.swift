@@ -272,32 +272,35 @@ struct SavedMetadataProcessingActionsView: View {
             MetadataFolderPreviewView(folderName: presentation.folderName,
                 timestampPolicy: presentation.timestampPolicy, result: presentation.result)
         }
-        .confirmationDialog("Reprocess existing local files?", isPresented: Binding(
+        .sheet(isPresented: Binding(
             get: { reprocessReview != nil },
             set: { if !$0 { cancelReprocessReview() } }
-        ), titleVisibility: .visible) {
-            if let result = reprocessPreflight {
-                Button("Reprocess Saved Files") { confirmReprocessing() }
-                    .disabled(!savedActionsAvailable || result.ready == 0)
-                if !result.conflictOutputRevisions.isEmpty {
-                    Button("Reprocess \(result.conflictOutputRevisions.count) Edited Outputs", role: .destructive) {
-                        confirmReprocessing(includeEditedOutputs: true)
-                    }
-                    .disabled(!savedActionsAvailable)
+        )) {
+            MetadataReprocessReviewSheet {
+                if let result = reprocessPreflight {
+                    Text("Preflight checked \(result.scanned) files in \(reprocessReview?.job.localDestinationDisplayPath ?? "the saved local destination"): \(result.ready) ready, \(result.skipped) skipped, and \(result.failed) with errors or incomplete data. \(result.conflicts.count) edited outputs will be preserved unless explicitly included. Saved fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained.")
+                } else if let review = reprocessReview,
+                          case .failed(let message) = store.metadataReprocessPhases[review.job.id] {
+                    Text("Reprocessing failed: \(message)")
+                } else {
+                    Text("Checking the saved local destination without changing files…")
                 }
-            } else if let review = reprocessReview,
-                      store.metadataReprocessPhases[review.job.id] == .preflighting {
-                Button("Checking Files…") {}.disabled(true)
-            }
-            Button("Cancel", role: .cancel, action: cancelReprocessReview)
-        } message: {
-            if let result = reprocessPreflight {
-                Text("Preflight checked \(result.scanned) files in \(reprocessReview?.job.localDestinationDisplayPath ?? "the saved local destination"): \(result.ready) ready, \(result.skipped) skipped, and \(result.failed) with errors or incomplete data. \(result.conflicts.count) edited outputs will be preserved unless explicitly included. Saved fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained.")
-            } else if let review = reprocessReview,
-                      case .failed(let message) = store.metadataReprocessPhases[review.job.id] {
-                Text("Reprocessing failed: \(message)")
-            } else {
-                Text("Checking the saved local destination without changing files…")
+            } actions: {
+                if let result = reprocessPreflight {
+                    Button("Reprocess Saved Files") { confirmReprocessing() }
+                        .disabled(!savedActionsAvailable || result.ready == 0)
+                    if !result.conflictOutputRevisions.isEmpty {
+                        Button("Reprocess \(result.conflictOutputRevisions.count) Edited Outputs", role: .destructive) {
+                            confirmReprocessing(includeEditedOutputs: true)
+                        }
+                        .disabled(!savedActionsAvailable)
+                    }
+                } else if let review = reprocessReview,
+                          store.metadataReprocessPhases[review.job.id] == .preflighting {
+                    Button("Checking Files…") {}.disabled(true)
+                }
+                Button("Cancel", role: .cancel, action: cancelReprocessReview)
+                    .keyboardShortcut(.cancelAction)
             }
         }
         .onChange(of: savedJob) { _, _ in invalidateActions() }
@@ -379,5 +382,26 @@ struct SavedMetadataProcessingActionsView: View {
                 previewTask = nil
             }
         }
+    }
+}
+
+/// Unlike a native confirmation dialog, sheet content follows asynchronous
+/// preflight changes while remaining open for review and cancellation.
+struct MetadataReprocessReviewSheet<Message: View, Actions: View>: View {
+    @ViewBuilder let message: Message
+    @ViewBuilder let actions: Actions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Reprocess existing local files?").font(.headline)
+            message.textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                actions
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(24)
+        .frame(width: 560)
     }
 }

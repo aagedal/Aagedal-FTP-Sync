@@ -1419,7 +1419,6 @@ final class AppStore: ObservableObject {
         } catch {
             let message = error.localizedDescription
             metadataReprocessPhases[jobID] = .failed(message)
-            alertMessage = message
             return
         }
         let leaseID: UUID
@@ -1431,7 +1430,6 @@ final class AppStore: ObservableObject {
         } catch {
             let message = error.localizedDescription
             metadataReprocessPhases[jobID] = .failed(message)
-            alertMessage = message
             return
         }
         if Task.isCancelled {
@@ -1464,7 +1462,6 @@ final class AppStore: ObservableObject {
         } catch {
             let message = error.localizedDescription
             metadataReprocessPhases[jobID] = .failed(message)
-            alertMessage = message
         }
         scheduler.endRunning(jobID)
         await syncConcurrencyController.release(leaseID)

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Keep metadata reprocessing review open and up to date as asynchronous preflight
+  completes, including recovery errors, file counts and available actions.
+
 - Reduce local folder scan overhead while preserving symbolic-link checks at file
   access. Report inaccessible folders as errors and honor cancellation on empty scans.
 

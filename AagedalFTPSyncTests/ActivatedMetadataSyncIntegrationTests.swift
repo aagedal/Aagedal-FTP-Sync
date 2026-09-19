@@ -288,7 +288,11 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                 return XCTFail("A missing later input must remain a visible batch failure")
             }
             XCTAssertFalse(message.isEmpty)
-            XCTAssertTrue(store.alertMessage?.contains(message) == true)
+            if isPreflight {
+                XCTAssertNil(store.alertMessage, "The live review presents preflight failures without a competing global alert")
+            } else {
+                XCTAssertTrue(store.alertMessage?.contains(message) == true)
+            }
             XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
             let persisted = try audit.load(jobID: job.id)
             if isPreflight {

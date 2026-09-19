@@ -87,11 +87,23 @@ final class LocalMatchingPublicationTests: XCTestCase {
         } catch { XCTAssertFalse(error is CancellationError) }
     }
 
-    func testNativeRecoveryFixtureUsesRealAdmissionAndDoesNotReseedAfterReconciliation() throws {
+    func testNativeRecoveryFixtureUsesRealAdmissionAndDoesNotReseedAfterReconciliation() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("native-recovery-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         var job = SyncJob(name: "Disposable native recovery")
         try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        let repository = try UITestSupport.recoveryFixtureRepository(job: job, rootURL: root)
+        job = try XCTUnwrap(repository.load().first)
+        XCTAssertEqual(job.metadataProcessingTimeZoneIdentifier, "Etc/UTC")
+        let engine = SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")))
+        do {
+            _ = try await engine.preflightExistingLocalFiles(job: job)
+            XCTFail("Native fixture must fail preflight while recovery is retained")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Recover the retained files"))
+        }
         let source = try LocalEndpointSession(endpoint: job.left)
         XCTAssertNoThrow(try source.validateMetadataRecoveryIsResolved())
         let destination = try LocalEndpointSession(endpoint: job.right)
@@ -123,6 +135,40 @@ final class LocalMatchingPublicationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
         XCTAssertEqual(try Data(contentsOf: rescued), originalBytes)
         XCTAssertEqual(try Data(contentsOf: visible), Data("reviewed visible bytes".utf8))
+        job.name = "Reviewed recovery job"
+        try repository.save([job])
+        let reopened = try UITestSupport.recoveryFixtureRepository(job: SyncJob(name: "Must not replace"), rootURL: root)
+        XCTAssertEqual(try reopened.load().first?.name, "Reviewed recovery job")
+        job = try XCTUnwrap(reopened.load().first)
+        let preflight = try await engine.preflightExistingLocalFiles(job: job)
+        XCTAssertEqual(preflight.scanned, 0)
+        XCTAssertEqual(preflight.ready, 0)
+        XCTAssertEqual(preflight.failed, 0)
+        XCTAssertEqual(try Data(contentsOf: rescued), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: visible), Data("reviewed visible bytes".utf8))
+        let storeURL = root.appendingPathComponent("jobs-v2.json")
+        let damaged = Data("invalid fixture store".utf8)
+        try damaged.write(to: storeURL)
+        XCTAssertThrowsError(try UITestSupport.recoveryFixtureRepository(job: job, rootURL: root))
+        XCTAssertEqual(try Data(contentsOf: storeURL), damaged)
+    }
+
+    func testNativeRecoveryReconciliationLaunchStepPreservesSnapshotsAndIsIdempotent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("native-reconcile-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var job = SyncJob(name: "Disposable recovery")
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        try UITestSupport.reconcileMetadataRecoveryFixture(rootURL: root)
+        let rescued = root.appendingPathComponent("rescued-original.txt")
+        XCTAssertEqual(try Data(contentsOf: rescued), Data("retained original fixture bytes".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("reconciled-recovery/recovery.json").path))
+        let visible = root.appendingPathComponent("Destination/preserved.txt")
+        XCTAssertEqual(try Data(contentsOf: visible), Data("reviewed visible fixture bytes".utf8))
+        try Data("later review edit".utf8).write(to: visible)
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        try UITestSupport.reconcileMetadataRecoveryFixture(rootURL: root)
+        XCTAssertEqual(try Data(contentsOf: visible), Data("later review edit".utf8))
+        XCTAssertNoThrow(try LocalEndpointSession(endpoint: job.right).validateMetadataRecoveryIsResolved())
     }
 
     private struct Fixture {
