@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve metadata outcome order when saved timestamps share a second, so a later
+  failure cannot be replaced by an earlier success during reprocessing or history retention.
+
 - Require recovery of retained reprocessing/reset folders before metadata preflight
   or another replacement, with a path-specific error and retry after recovery.
 

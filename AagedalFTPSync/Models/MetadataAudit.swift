@@ -758,6 +758,17 @@ struct MetadataRunReport: Codable, Equatable, Sendable {
     var failed: Int { count(.failed) }
     var hasActivity: Bool { !entries.isEmpty }
 
+    /// Entries retain chronological append/file order. Persisted timestamps have
+    /// whole-second precision, so a later row wins ties rather than a random UUID.
+    var latestOutcomes: [String: MetadataAuditEntry] {
+        entries.reduce(into: [:]) { latest, entry in
+            if let current = latest[entry.relativePath], current.occurredAt > entry.occurredAt {
+                return
+            }
+            latest[entry.relativePath] = entry
+        }
+    }
+
     mutating func append(_ entry: MetadataAuditEntry) {
         entries.append(entry)
     }

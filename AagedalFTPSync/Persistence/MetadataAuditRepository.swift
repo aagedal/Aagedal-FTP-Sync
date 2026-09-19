@@ -59,15 +59,7 @@ struct MetadataAuditRepository: Sendable {
     /// fingerprint in this index. Callers must not treat a previously complete
     /// result as current after a newer attempt observed a different outcome.
     func latestEntries(jobID: UUID) throws -> [String: MetadataAuditEntry] {
-        try load(jobID: jobID).reduce(into: [:]) { latest, entry in
-            guard let current = latest[entry.relativePath] else {
-                latest[entry.relativePath] = entry
-                return
-            }
-            if Self.oldestFirst(current, entry) {
-                latest[entry.relativePath] = entry
-            }
-        }
+        try MetadataRunReport(entries: load(jobID: jobID)).latestOutcomes
     }
 
     /// Complete processing receipts from the newest outcome for each path.
@@ -90,9 +82,17 @@ struct MetadataAuditRepository: Sendable {
 
     @discardableResult
     func save(_ entries: [MetadataAuditEntry]) throws -> [MetadataAuditEntry] {
-        let retained = Array(entries
-            .sorted(by: Self.oldestFirst)
-            .suffix(maximumEntries))
+        let retained = Array(entries.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.occurredAt != rhs.element.occurredAt {
+                    return lhs.element.occurredAt < rhs.element.occurredAt
+                }
+                // Preserve append/file order through saves and retention after
+                // timestamp precision is lost in the compatible ISO-8601 codec.
+                return lhs.offset < rhs.offset
+            }
+            .suffix(maximumEntries)
+            .map(\.element))
         try codec.validateExistingStore(at: fileURL)
         try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
@@ -113,11 +113,6 @@ struct MetadataAuditRepository: Sendable {
 
     private func decode(at url: URL) throws -> [MetadataAuditEntry] {
         try codec.decode([MetadataAuditEntry].self, from: Data(contentsOf: url), decoder: JSONDecoder.metadataAuditConfigured)
-    }
-
-    private static func oldestFirst(_ lhs: MetadataAuditEntry, _ rhs: MetadataAuditEntry) -> Bool {
-        if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
-        return lhs.id.uuidString < rhs.id.uuidString
     }
 }
 

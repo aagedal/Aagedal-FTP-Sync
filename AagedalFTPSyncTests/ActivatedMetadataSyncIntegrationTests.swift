@@ -52,6 +52,102 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_704_153_600) })
     }
 
+    /// Measures the complete local path with real JPEG/XMP writes and deterministic
+    /// place resolution. This does not measure a production provider or face model.
+    func testLargeFolderEnrichedReprocessingBenchmark() async throws {
+        guard ProcessInfo.processInfo.environment["AAGEDAL_ENRICHED_REPROCESS_BENCHMARK"] == "1" else {
+            throw XCTSkip("Opt-in disposable enriched reprocessing benchmark")
+        }
+        for backgroundCount in [0, 100_000] {
+            let f = try fixture()
+            let image = try jpeg()
+            let raw = Data("opaque benchmark RAW".utf8)
+            let names = (0..<50).map { "FX_\($0)." + ($0.isMultiple(of: 2) ? "jpg" : "cr3") }
+            for name in names {
+                try write(name.hasSuffix("jpg") ? image : raw, name: name, root: f.source)
+            }
+            let transfer = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+            XCTAssertEqual(transfer.metadataReport.applied, 50)
+            for index in 0..<backgroundCount {
+                try Data().write(to: f.destination.appendingPathComponent("background-\(index).txt"))
+            }
+            var job = f.job
+            job.metadataAutomation?.existingFieldPolicy = .overwrite
+            job.metadataAutomation?.clips[0].gpsPosition = .init(latitude: 59.5, longitude: 10.25)
+            job.metadataAutomation?.clips[0].fields.setHeadline(try .activated("{gps:city} {date:YYYY-MM-DD}"))
+            job.metadataGeocoding = try .init(resolveVariables: true, cityPolicy: .overwrite,
+                countryPolicy: .overwrite, localeIdentifier: "en_US")
+            let provider = MetadataGeocodingService(identity: .init(provider: "injected", version: "1", dataset: "benchmark")) { _ in
+                .found(.init(city: "Oslo", country: "Norway", source: "local fixture", distanceMeters: 25))
+            }
+            let processingEngine = SyncEngine(geocodingService: provider,
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")),
+                now: { Date(timeIntervalSince1970: 1_704_153_600) })
+            let auditURL = f.root.appendingPathComponent("audit.json")
+            let audit = MetadataAuditRepository(fileURL: auditURL)
+            try audit.append(transfer.metadataReport)
+            let latest = try audit.latestEntries(jobID: job.id)
+            func snapshots() throws -> [String: Data] {
+                try Dictionary(uniqueKeysWithValues: names.flatMap { name -> [String] in
+                    name.hasSuffix("cr3") ? [name, String(name.dropLast(3)) + "xmp"] : [name]
+                }.map { ($0, try Data(contentsOf: f.destination.appendingPathComponent($0))) })
+            }
+            let before = try snapshots()
+            let clock = ContinuousClock()
+            func seconds(since start: ContinuousClock.Instant) -> Double {
+                let d = start.duration(to: clock.now).components
+                return Double(d.seconds) + Double(d.attoseconds) / 1e18
+            }
+            let preflightStart = clock.now
+            let preflight = try await processingEngine.reprocessExistingLocalFiles(
+                job: job, filter: .staleOrIncomplete, latestOutcomes: latest, isPreflight: true)
+            let preflightSeconds = seconds(since: preflightStart)
+            XCTAssertEqual(preflight.applied, 50)
+            XCTAssertEqual(preflight.failed, 0)
+            XCTAssertEqual(try snapshots(), before, "Preflight must leave every primary and sidecar unchanged")
+            let publicationStart = clock.now
+            let result = try await processingEngine.reprocessExistingLocalFiles(
+                job: job, filter: .staleOrIncomplete, latestOutcomes: latest)
+            try audit.append(result.metadataReport)
+            let publicationSeconds = seconds(since: publicationStart)
+            XCTAssertEqual(result.scanned, 50)
+            XCTAssertEqual(result.applied, 50)
+            XCTAssertEqual(result.failed, 0)
+            XCTAssertTrue(result.conflicts.isEmpty)
+            let reopened = MetadataAuditRepository(fileURL: auditURL)
+            let receipts = try reopened.latestEntries(jobID: job.id)
+            XCTAssertEqual(receipts.count, 50)
+            XCTAssertEqual(try reopened.latestProcessingFingerprints(jobID: job.id).count, 50)
+            for name in names {
+                let destination = f.destination.appendingPathComponent(name)
+                XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent(name)), name.hasSuffix("jpg") ? image : raw)
+                if name.hasSuffix("jpg") {
+                    let metadata = try ImageMetadata.read(from: destination)
+                    XCTAssertEqual(metadata.iptc.headline, "Oslo 2024-01-02")
+                    XCTAssertEqual(metadata.iptc.city, "Oslo")
+                } else {
+                    XCTAssertEqual(try Data(contentsOf: destination), raw)
+                    let metadata = try XMPSidecar.read(from: destination.deletingPathExtension().appendingPathExtension("xmp"))
+                    XCTAssertEqual(metadata.headline, "Oslo 2024-01-02")
+                    XCTAssertEqual(metadata.city, "Oslo")
+                    XCTAssertEqual(metadata.country, "Norway")
+                }
+            }
+            let published = try snapshots()
+            let repeatStart = clock.now
+            let repeated = try await processingEngine.reprocessExistingLocalFiles(
+                job: job, filter: .staleOrIncomplete, latestOutcomes: receipts)
+            let repeatSeconds = seconds(since: repeatStart)
+            XCTAssertEqual(repeated.applied, 0)
+            XCTAssertEqual(repeated.skipped, 50)
+            XCTAssertEqual(repeated.failed, 0)
+            XCTAssertEqual(try snapshots(), published)
+            XCTAssertTrue(repeated.metadataReport.entries.allSatisfy { $0.detail?.contains("receipt is current") == true })
+            print("ENRICHED_REPROCESS_BENCHMARK backgroundFiles=\(backgroundCount) images=50 jpeg=25 syntheticRAW=25 preflightSeconds=\(preflightSeconds) publicationAndAuditSeconds=\(publicationSeconds) currentReceiptRepeatSeconds=\(repeatSeconds)")
+        }
+    }
+
     func testReprocessingRequiresRecoveryBeforePreflightOrWrites() async throws {
         for managed in [false, true] {
             for suffix in ["transaction", "trash"] {

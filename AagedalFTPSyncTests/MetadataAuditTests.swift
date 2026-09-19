@@ -197,6 +197,40 @@ final class MetadataAuditTests: XCTestCase {
         XCTAssertEqual(receipts[otherPath.relativePath], fingerprint)
     }
 
+    func testSameSecondFailureStaysNewestAfterReopenResaveAndRetention() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("audit-order-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("audit.json")
+        let fixture = AuditFixture()
+        // The old UUID tie-break deliberately favors the earlier success.
+        let success = MetadataAuditEntry(
+            id: try XCTUnwrap(UUID(uuidString: "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF")),
+            runID: fixture.runID, jobID: fixture.jobID, occurredAt: fixture.timestamp,
+            operation: .transfer, relativePath: "photo.jpg", status: .applied,
+            timestampPolicy: .sourceModification, scheduledAt: nil)
+        for interval in [0.0, 0.25] {
+            let failure = MetadataAuditEntry(
+                id: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000001")),
+                runID: UUID(), jobID: fixture.jobID,
+                occurredAt: fixture.timestamp.addingTimeInterval(interval),
+                operation: .reprocess, relativePath: "photo.jpg", status: .failed,
+                timestampPolicy: .sourceModification, scheduledAt: nil)
+            let repository = MetadataAuditRepository(fileURL: url)
+            try repository.save([success])
+            try repository.append(.init(entries: [failure]))
+            let reopened = MetadataAuditRepository(fileURL: url)
+            XCTAssertEqual(try reopened.latestEntries(jobID: fixture.jobID)["photo.jpg"]?.id, failure.id)
+            XCTAssertEqual(try MetadataRunReport(entries: reopened.load()).latestOutcomes["photo.jpg"]?.id, failure.id)
+            // A later write must preserve persisted chronological ordering even
+            // though ISO-8601 storage has rounded both timestamps to one second.
+            try reopened.save(reopened.load())
+            XCTAssertEqual(try reopened.latestEntries(jobID: fixture.jobID)["photo.jpg"]?.id, failure.id)
+            let bounded = MetadataAuditRepository(fileURL: url, maximumEntries: 1)
+            try bounded.save(bounded.load())
+            XCTAssertEqual(try bounded.load().map(\.id), [failure.id])
+        }
+    }
+
     func testAuditRepositoryRecoversFromLastValidBackup() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metadata-audit-recovery-\(UUID().uuidString)", isDirectory: true)

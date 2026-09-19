@@ -1471,16 +1471,7 @@ final class AppStore: ObservableObject {
     }
 
     private func latestMetadataAuditOutcomes(for jobID: UUID) -> [String: MetadataAuditEntry] {
-        metadataAuditEntries[jobID, default: []].reduce(into: [:]) { latest, entry in
-            guard let current = latest[entry.relativePath] else {
-                latest[entry.relativePath] = entry
-                return
-            }
-            if current.occurredAt < entry.occurredAt
-                || (current.occurredAt == entry.occurredAt && current.id.uuidString < entry.id.uuidString) {
-                latest[entry.relativePath] = entry
-            }
-        }
+        MetadataRunReport(entries: metadataAuditEntries[jobID, default: []]).latestOutcomes
     }
 
     private var currentPersistentState: AppPersistentState {
