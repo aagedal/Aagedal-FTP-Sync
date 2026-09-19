@@ -215,6 +215,60 @@ final class LocalMatchingPublicationTests: XCTestCase {
         XCTAssertEqual(Set(listing.keys), Set([rawPath, sidecarPath]))
     }
 
+    func testPublishedReplacementReportsRecoveryCleanupFailureAndBlocksRetry() async throws {
+        let f = try fixture()
+        try write("original", "photo.jpg", fixture: f)
+        let original = try staged("photo.jpg", contents: "original", fixture: f, prefix: "old")
+        let output = try staged("photo.jpg", contents: "processed", fixture: f, prefix: "new")
+        let session = try LocalEndpointSession(endpoint: f.endpoint, matchingRecoveryRemoval: { _ in
+            throw CocoaError(.fileWriteNoPermission)
+        })
+        do {
+            try await session.importFilesTransactionallyMatching([output], replacing: [original],
+                preserveDate: true, verifySize: true)
+            XCTFail("Cleanup failure must not report successful processing")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Replacement was published"))
+            XCTAssertTrue(error.localizedDescription.contains("recovery folder cleanup failed"))
+            XCTAssertTrue(error.localizedDescription.contains(f.root.path))
+        }
+        XCTAssertEqual(try read("photo.jpg", fixture: f), "processed")
+        let retained = try recoveryFiles(f)
+        XCTAssertTrue(retained.contains { $0.lastPathComponent == "recovery.json" })
+        XCTAssertFalse(retained.contains { $0.lastPathComponent == "original-held-0" })
+        let reopened = try LocalEndpointSession(endpoint: f.endpoint)
+        XCTAssertThrowsError(try reopened.validateMetadataRecoveryIsResolved())
+        // Reconciliation keeps the published output and removes only this test's recovery folder.
+        let manifest = try XCTUnwrap(retained.first { $0.lastPathComponent == "recovery.json" })
+        try FileManager.default.removeItem(at: manifest.deletingLastPathComponent())
+        try reopened.validateMetadataRecoveryIsResolved()
+        XCTAssertEqual(try read("photo.jpg", fixture: f), "processed")
+    }
+
+    func testRolledBackReplacementReportsRecoveryCleanupFailureAndPreservesOriginal() async throws {
+        let f = try fixture()
+        try write("original", "photo.jpg", fixture: f)
+        let original = try staged("photo.jpg", contents: "original", fixture: f, prefix: "old")
+        let output = try staged("photo.jpg", contents: "processed", fixture: f, prefix: "new")
+        let session = try LocalEndpointSession(endpoint: f.endpoint, matchingRecoveryRemoval: { _ in
+            throw CocoaError(.fileWriteNoPermission)
+        }, matchingImportHook: { phase in
+            if case .published = phase { throw CancellationError() }
+        })
+        do {
+            try await session.importFilesTransactionallyMatching([output], replacing: [original],
+                preserveDate: true, verifySize: true)
+            XCTFail("Cancelled publication must fail")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("originals were preserved or restored"))
+            XCTAssertTrue(error.localizedDescription.contains("recovery folder cleanup failed"))
+            XCTAssertTrue(error.localizedDescription.contains(f.root.path))
+        }
+        XCTAssertEqual(try read("photo.jpg", fixture: f), "original")
+        XCTAssertTrue(try recoveryFiles(f).contains { $0.lastPathComponent == "recovery.json" })
+        XCTAssertThrowsError(try LocalEndpointSession(endpoint: f.endpoint).validateMetadataRecoveryIsResolved())
+    }
+
     func testMatchingEmbeddedReplacementPublishesAndRemovesPrivateHoldings() async throws {
         let f = try fixture()
         try write("original", "photo.jpg", fixture: f)

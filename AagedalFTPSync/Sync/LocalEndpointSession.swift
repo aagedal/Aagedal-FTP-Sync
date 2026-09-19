@@ -7,6 +7,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     private let fileManager = FileManager.default
     private let holdingURLFactory: @Sendable (URL) -> URL
     private let holdingRemoval: @Sendable (URL) throws -> Void
+    private let matchingRecoveryRemoval: @Sendable (URL) throws -> Void
     enum MatchingImportPhase: Sendable { case prepared, originalsHeld, published(Int), beforeCommit }
     private let matchingImportHook: @Sendable (MatchingImportPhase) throws -> Void
 
@@ -41,12 +42,16 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         holdingRemoval: @escaping @Sendable (URL) throws -> Void = {
             try FileManager.default.removeItem(at: $0)
         },
+        matchingRecoveryRemoval: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        },
         matchingImportHook: @escaping @Sendable (MatchingImportPhase) throws -> Void = { _ in }
     ) throws {
         access = try BookmarkAccess(endpoint: endpoint)
         self.holdingURLFactory = holdingURLFactory
         self.holdingRemoval = holdingRemoval
         self.matchingImportHook = matchingImportHook
+        self.matchingRecoveryRemoval = matchingRecoveryRemoval
         if let managedFolder {
             rootURL = try managedFolder.url(inside: access.url, createIfNeeded: true)
         } else {
@@ -326,7 +331,6 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         var originalsPrepared: [Original] = [], outputs: [Output] = []
         var heldIndices: [Int] = [], publishedIndices: [Int] = []
         var retainRecovery = false
-        defer { if !retainRecovery { try? fileManager.removeItem(at: recovery) } }
         do {
             // Freeze caller-owned immutable inputs before altering any destination.
             for (index, original) in originals.enumerated() {
@@ -432,6 +436,10 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             if retainRecovery {
                 throw AppError.transferFailed("Replacement stopped; concurrent edits were not overwritten. Recover retained files at \(recovery.path). Cause: \(failure.localizedDescription)")
             }
+            do { try matchingRecoveryRemoval(recovery) }
+            catch {
+                throw AppError.transferFailed("Replacement stopped and originals were preserved or restored, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(failure.localizedDescription). Cleanup: \(error.localizedDescription)")
+            }
             throw failure
         }
         // Publication has committed. A cleanup failure retains the remaining old
@@ -439,9 +447,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         for index in heldIndices {
             do { try fileManager.removeItem(at: originalsPrepared[index].held) }
             catch {
-                retainRecovery = true
                 throw AppError.transferFailed("Replacement was published, but original backup cleanup failed. Retained files: \(recovery.path)")
             }
+        }
+        do { try matchingRecoveryRemoval(recovery) }
+        catch {
+            throw AppError.transferFailed("Replacement was published, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(error.localizedDescription)")
         }
     }
 

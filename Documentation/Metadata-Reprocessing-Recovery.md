@@ -39,5 +39,12 @@ may have no manifest; retain their contents and determine their original paths
 from the failed operation before restoring anything. No automatic recovery or
 power-loss durability guarantee is implied by this manifest.
 
+Cleanup errors distinguish a published replacement from an operation whose originals
+were preserved or restored. A published replacement is not rolled back merely because
+removing its recovery folder failed. Original backups may already have been deleted;
+inspect the current destination and remaining files rather than assuming every manifest
+entry still exists. Both outcomes report the recovery path and require reconciliation
+before another reprocessing run.
+
 The directory is private to the destination user, but its manifest contains photo
 filenames. Keep recovery files out of shared diagnostics and source control.
