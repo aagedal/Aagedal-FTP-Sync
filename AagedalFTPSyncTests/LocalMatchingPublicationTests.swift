@@ -4,6 +4,44 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class LocalMatchingPublicationTests: XCTestCase {
+    func testNativeRecoveryFixtureUsesRealAdmissionAndDoesNotReseedAfterReconciliation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("native-recovery-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var job = SyncJob(name: "Disposable native recovery")
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        let source = try LocalEndpointSession(endpoint: job.left)
+        XCTAssertNoThrow(try source.validateMetadataRecoveryIsResolved())
+        let destination = try LocalEndpointSession(endpoint: job.right)
+        let folder = root.appendingPathComponent("Destination")
+        let recovery = folder.appendingPathComponent(".aagedal-sync-ui-fixture.transaction")
+        let original = recovery.appendingPathComponent("original-held-0")
+        let visible = folder.appendingPathComponent("preserved.txt")
+        let originalBytes = try Data(contentsOf: original)
+        let visibleBytes = try Data(contentsOf: visible)
+        XCTAssertThrowsError(try destination.validateMetadataRecoveryIsResolved()) { error in
+            XCTAssertTrue(error.localizedDescription.contains(recovery.lastPathComponent))
+        }
+        let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
+            from: Data(contentsOf: recovery.appendingPathComponent("recovery.json")))
+        XCTAssertEqual(manifest.originals.map(\.relativePath), ["preserved.txt"])
+        XCTAssertEqual(manifest.outputs.map(\.relativePath), ["preserved.txt"])
+        // A repeated launch must preserve any edits made while inspecting recovery.
+        try Data("reviewed visible bytes".utf8).write(to: visible)
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        XCTAssertEqual(try Data(contentsOf: original), originalBytes)
+        XCTAssertNotEqual(try Data(contentsOf: visible), visibleBytes)
+        // Reconcile by keeping the current output and moving the retained original
+        // outside the transaction before removing its remaining snapshots.
+        let rescued = root.appendingPathComponent("rescued-original.txt")
+        try FileManager.default.moveItem(at: original, to: rescued)
+        try FileManager.default.removeItem(at: recovery)
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        XCTAssertNoThrow(try destination.validateMetadataRecoveryIsResolved())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
+        XCTAssertEqual(try Data(contentsOf: rescued), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: visible), Data("reviewed visible bytes".utf8))
+    }
+
     private struct Fixture {
         let root: URL
         let inputs: URL

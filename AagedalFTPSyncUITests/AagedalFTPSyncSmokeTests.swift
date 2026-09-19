@@ -4,6 +4,25 @@ import XCTest
 final class AagedalFTPSyncSmokeTests: XCTestCase {
     private var app: XCUIApplication!
 
+    func testRetainedMetadataRecoveryExplainsBlockedReprocessingAndAllowsRetry() {
+        launch(seedJob: true, recoveryFixture: true)
+        let reprocess = element("reprocess-geocoding")
+        XCTAssertTrue(reprocess.waitForExistence(timeout: 5))
+        XCTAssertTrue(reprocess.isEnabled)
+        for _ in 0..<2 {
+            reprocess.click()
+            let message = app.staticTexts.containing(NSPredicate(
+                format: "label CONTAINS %@ AND label CONTAINS %@",
+                ".aagedal-sync-ui-fixture.transaction", "Recover the retained files"
+            )).firstMatch
+            XCTAssertTrue(message.waitForExistence(timeout: 8))
+            XCTAssertFalse(app.buttons["Reprocess Saved Files"].exists)
+            app.buttons["Cancel"].firstMatch.click()
+            waitForSheetTransition()
+            XCTAssertTrue(reprocess.isEnabled)
+        }
+    }
+
     func testCreatesJobFromDraft() {
         launch()
 
@@ -403,7 +422,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         seedMap: Bool = false,
         seedServer: Bool = false,
         failFirstJobSave: Bool = false,
-        accessibilityText: Bool = false
+        accessibilityText: Bool = false,
+        recoveryFixture: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -415,6 +435,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if seedServer { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_SERVER"] = "1" }
         if failFirstJobSave { app.launchEnvironment["AAGEDAL_UI_TEST_FAIL_FIRST_JOB_SAVE"] = "1" }
         if accessibilityText { app.launchEnvironment["AAGEDAL_UI_TEST_ACCESSIBILITY_TEXT"] = "1" }
+        if recoveryFixture { app.launchEnvironment["AAGEDAL_UI_TEST_RECOVERY"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 

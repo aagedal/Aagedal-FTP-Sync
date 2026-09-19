@@ -216,6 +216,13 @@ enum UITestSupport {
         }
         job.isEnabled = false
         job.startsOnAppLaunch = false
+        if enabled, ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECOVERY"] == "1" {
+            do {
+                try seedMetadataRecoveryFixture(job: &job, rootURL: rootURL)
+            } catch {
+                preconditionFailure("Unable to prepare isolated metadata recovery fixture: \(error)")
+            }
+        }
         if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_SEED_MAP"] == "1" {
             let calendar = Calendar.current
             let dayStart = calendar.startOfDay(for: Date())
@@ -245,6 +252,39 @@ enum UITestSupport {
             )
         }
         return job
+    }
+
+    /// Real folder permissions let native tests reach recovery admission instead
+    /// of failing at placeholder-bookmark resolution. Seed once so relaunch after
+    /// manual reconciliation cannot silently recreate the retained backup.
+    static func seedMetadataRecoveryFixture(job: inout SyncJob, rootURL: URL) throws {
+        let manager = FileManager.default
+        for side in ["Source", "Destination"] {
+            let folder = rootURL.appendingPathComponent(side, isDirectory: true)
+            try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+            let bookmark = try FolderBookmark.create(for: folder)
+            let endpoint = Endpoint(kind: .local, localPath: bookmark.resolvedURL.path, bookmark: bookmark.data)
+            if side == "Source" { job.left = endpoint } else { job.right = endpoint }
+        }
+        job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty, localeIdentifier: "en_US")
+        let marker = rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")
+        guard !manager.fileExists(atPath: marker.path) else { return }
+        let destination = rootURL.appendingPathComponent("Destination", isDirectory: true)
+        let recovery = destination.appendingPathComponent(".aagedal-sync-ui-fixture.transaction", isDirectory: true)
+        try manager.createDirectory(at: recovery, withIntermediateDirectories: true)
+        try Data("retained original fixture bytes".utf8).write(to: recovery.appendingPathComponent("original-held-0"))
+        try Data("retained original fixture bytes".utf8).write(to: recovery.appendingPathComponent("original-copy-0"))
+        try Data("visible destination fixture bytes".utf8).write(to: destination.appendingPathComponent("preserved.txt"))
+        try Data("visible destination fixture bytes".utf8).write(to: recovery.appendingPathComponent("output-copy-0"))
+        let manifest = LocalEndpointSession.MatchingRecoveryManifest(schemaVersion: 1,
+            originals: [.init(relativePath: "preserved.txt", snapshotFilename: "original-copy-0",
+                              heldFilename: "original-held-0", isReplaced: true)],
+            outputs: [.init(relativePath: "preserved.txt", stagedFilename: "output-stage-0",
+                            snapshotFilename: "output-copy-0", rollbackFilename: "rollback-output-0")])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"), options: .atomic)
+        try Data("seeded".utf8).write(to: marker, options: .atomic)
     }
 
     private static func oneShotJobSaveFailure() -> @Sendable () throws -> Void {
