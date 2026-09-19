@@ -273,6 +273,11 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                 }
                 break
             }
+            // All recovery artifacts are hidden. Most large photo folders contain
+            // ordinary filenames; avoid constructing a Swift String for each one
+            // at every snapshot/publication boundary. Cancellation is still checked
+            // for every entry, and hidden names retain the full predicate below.
+            guard entry.pointee.d_name.0 == 46 else { continue } // ASCII "."
             let name = withUnsafePointer(to: &entry.pointee.d_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
                     String(cString: $0)

@@ -196,6 +196,10 @@ final class LocalMatchingPublicationTests: XCTestCase {
         let f = try fixture()
         let session = try LocalEndpointSession(endpoint: f.endpoint)
         try write("unrelated", ".ordinary-hidden-file", fixture: f)
+        for name in ["aagedal-sync-visible.transaction", "Åse.jpg", ".aagedal-sync-photo.jpg",
+                     ".aagedal-sync-reset-photo.jpg", ".aagedal-sync-other.trash"] {
+            try write("unrelated", name, fixture: f)
+        }
         try session.validateMetadataRecoveryIsResolved()
         let name = ".aagedal-sync-Åse.transaction"
         try write("retained", name, fixture: f)
@@ -255,6 +259,65 @@ final class LocalMatchingPublicationTests: XCTestCase {
         try write("retained", ".aagedal-sync-late.transaction", fixture: f)
         XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved())
         XCTAssertEqual(try read(".aagedal-sync-late.transaction", fixture: f), "retained")
+    }
+
+    func testLargeFolderRecoveryPublicationBatchBenchmark() async throws {
+        guard ProcessInfo.processInfo.environment["AAGEDAL_RECOVERY_BATCH_BENCHMARK"] == "1" else {
+            throw XCTSkip("Opt-in disposable recovery publication batch benchmark")
+        }
+        for backgroundCount in [0, 100_000] {
+            let f = try fixture()
+            for index in 0..<backgroundCount {
+                try Data().write(to: f.root.appendingPathComponent("background-\(index).jpg"))
+            }
+            try FileManager.default.createDirectory(at: f.root.appendingPathComponent("photos"), withIntermediateDirectories: false)
+            var batch: [(EndpointFileImport, EndpointFileImport)] = []
+            for index in 0..<50 {
+                let rawPath = "photos/photo-\(index).cr3"
+                try write("unchanged RAW \(index)", rawPath, fixture: f)
+                let original = try staged(rawPath, contents: "unchanged RAW \(index)", fixture: f, prefix: "original")
+                let output = try staged("photos/photo-\(index).xmp", contents: "processed metadata \(index)", fixture: f, prefix: "output")
+                batch.append((original, output))
+            }
+            let session = try LocalEndpointSession(endpoint: f.endpoint)
+            let clock = ContinuousClock()
+            let started = clock.now
+            try session.validateMetadataRecoveryIsResolved()
+            var durations: [Double] = []
+            for (original, output) in batch {
+                let start = clock.now
+                try session.validateMetadataSnapshot(primary: original, sidecar: nil,
+                    absentSidecarPath: output.file.relativePath)
+                try await session.importFilesTransactionallyMatching([output], replacing: [original],
+                    preserveDate: true, verifySize: true)
+                let elapsed = start.duration(to: clock.now).components
+                durations.append(Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18)
+            }
+            let elapsed = started.duration(to: clock.now).components
+            let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
+            print("RECOVERY_BATCH_BENCHMARK backgroundFiles=\(backgroundCount) images=50 admissionScans=101 totalSeconds=\(seconds) imageSeconds=\(durations)")
+            // Timing excludes these integrity checks and the fixture setup/cleanup.
+            for (original, output) in batch {
+                XCTAssertEqual(try Data(contentsOf: f.root.appendingPathComponent(original.file.relativePath)),
+                    try Data(contentsOf: original.localURL))
+                XCTAssertEqual(try Data(contentsOf: f.root.appendingPathComponent(output.file.relativePath)),
+                    try Data(contentsOf: output.localURL))
+            }
+            XCTAssertTrue(try recoveryFiles(f).isEmpty)
+            // No successful scan may be reused after a later recovery artifact appears.
+            try write("retained original", ".aagedal-sync-late.transaction", fixture: f)
+            let (original, output) = batch[0]
+            XCTAssertThrowsError(try session.validateMetadataSnapshot(primary: original,
+                sidecar: output, absentSidecarPath: nil))
+            do {
+                try await session.importFilesTransactionallyMatching([output], replacing: [original, output],
+                    preserveDate: true, verifySize: true)
+                XCTFail("Recovery created after the batch must block publication")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains(".aagedal-sync-late.transaction"))
+            }
+            XCTAssertEqual(try read(".aagedal-sync-late.transaction", fixture: f), "retained original")
+        }
     }
 
     func testRecoveryAppearingAfterAdmissionBlocksSnapshotAndPublication() async throws {
