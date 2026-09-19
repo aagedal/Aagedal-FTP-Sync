@@ -81,6 +81,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     let calendar: Calendar
 
     private let previewOperation: MetadataPreviewOperation
+    private var reprocessReview: SavedMetadataReprocessReview?
     private var autosaveTask: Task<Void, Never>?
     private var previewRequestID: UUID?
     private var previewTask: Task<Void, Never>?
@@ -280,10 +281,22 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func reprocessPreflight(in store: AppStore) -> MetadataReprocessPreflight? {
-        guard let loadedJobID, let pendingReprocessScope else { return nil }
-        guard case .ready(_, let scope, let filter, let result) = store.metadataReprocessPhases[loadedJobID],
-              scope == pendingReprocessScope, filter == reprocessFilter else { return nil }
-        return result
+        guard let loadedJobID, let review = reprocessReview,
+              selectedJob(in: store)?.id == loadedJobID,
+              pendingReprocessScope == review.scope,
+              draft == review.job.metadataAutomation else { return nil }
+        return review.result(currentJob: selectedJob(in: store), filter: reprocessFilter,
+                             phase: store.metadataReprocessPhases[loadedJobID])
+    }
+
+    /// Dismiss stale approval even while preflight is still running.
+    func invalidateReprocessingReviewIfNeeded(in store: AppStore) {
+        guard let review = reprocessReview else { return }
+        if selectedJob(in: store) != review.job || draft != review.job.metadataAutomation
+            || reprocessFilter != review.filter || pendingReprocessScope != review.scope
+            || store.isSuspendedForExternalWriter {
+            cancelPendingReprocessing(in: store)
+        }
     }
 
     @discardableResult
@@ -291,12 +304,14 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         _ scope: MetadataReprocessScope,
         in store: AppStore
     ) -> Bool {
-        guard save(in: store), let loadedJobID else { return false }
+        guard canReprocessMetadata(in: store), save(in: store), let loadedJobID,
+              let job = selectedJob(in: store) else { return false }
         guard store.preflightMetadataReprocess(
             loadedJobID,
             scope: scope,
             filter: reprocessFilter
         ) else { return false }
+        reprocessReview = SavedMetadataReprocessReview(job: job, filter: reprocessFilter, scope: scope)
         pendingReprocessScope = scope
         return true
     }
@@ -304,6 +319,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func cancelPendingReprocessing(in store: AppStore) {
         if let loadedJobID { store.cancelMetadataReprocessPreflight(loadedJobID) }
         pendingReprocessScope = nil
+        reprocessReview = nil
     }
 
     @discardableResult
@@ -311,11 +327,11 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         in store: AppStore,
         conflictPolicy: MetadataReprocessConflictPolicy = .preserveEditedOutputs
     ) -> Bool {
-        guard let scope = pendingReprocessScope,
-              let loadedJobID,
-              case .ready(_, let preparedScope, let preparedFilter, _) = store.metadataReprocessPhases[loadedJobID],
-              preparedScope == scope, preparedFilter == reprocessFilter else { return false }
+        invalidateReprocessingReviewIfNeeded(in: store)
+        guard canReprocessMetadata(in: store), let scope = pendingReprocessScope,
+              let loadedJobID, reprocessPreflight(in: store) != nil else { return false }
         pendingReprocessScope = nil
+        reprocessReview = nil
         store.reprocessExistingLocalFiles(
             loadedJobID,
             scope: scope,
@@ -547,6 +563,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func loadSelectedJob(from store: AppStore) {
+        cancelPendingReprocessing(in: store)
         // Save the loaded job before replacing its draft, even if selection already
         // changed elsewhere or SwiftUI has not scheduled the debounce yet.
         if let loadedJobID {

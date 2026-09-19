@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Discard Metadata Programming reprocessing approval when its saved job, draft,
+  filter or selected job changes; cancel pending preflight when leaving the editor.
+
 - Review saved-file reprocessing before writing, with stale/incomplete and all-file
   filters, preflight counts, explicit approval for reviewed edited outputs, and
   completion status. Discard pending reviews when saved settings or drafts change.

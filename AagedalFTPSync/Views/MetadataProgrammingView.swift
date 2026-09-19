@@ -121,6 +121,7 @@ struct MetadataProgrammingView: View {
         )
         .onAppear(perform: loadSelectedJob)
         .onDisappear {
+            coordinator.cancelPendingReprocessing(in: store)
             flushAutosave()
             if let id = coordinator.loadedJobID { store.metadataDraftsBeingEdited.remove(id) }
         }
@@ -130,7 +131,17 @@ struct MetadataProgrammingView: View {
         .onChange(of: selectedJob?.metadataAutomation) { _, _ in
             coordinator.refreshSavedMetadata(in: store)
         }
+        .onChange(of: selectedJob) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        }
+        .onChange(of: coordinator.reprocessFilter) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        }
+        .onChange(of: store.isSuspendedForExternalWriter) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        }
         .onChange(of: draft) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
             scheduleAutosave()
         }
         .onChange(of: store.photographerLibrary) { _, _ in
@@ -266,7 +277,7 @@ struct MetadataProgrammingView: View {
                 Button(reprocessActionTitle) {
                     coordinator.confirmReprocessing(in: store)
                 }
-                .disabled(preflight.ready == 0)
+                .disabled(preflight.ready == 0 || !coordinator.canReprocessMetadata(in: store))
                 if !preflight.conflicts.isEmpty {
                     Button(
                         "Reprocess \(preflight.conflicts.count) Edited Output\(preflight.conflicts.count == 1 ? "" : "s")",
@@ -277,6 +288,7 @@ struct MetadataProgrammingView: View {
                             conflictPolicy: .processEditedOutputs(preflight.conflictOutputRevisions)
                         )
                     }
+                    .disabled(!coordinator.canReprocessMetadata(in: store))
                 }
             } else if coordinator.isPreflighting(in: store) {
                 Button("Checking Files…") {}

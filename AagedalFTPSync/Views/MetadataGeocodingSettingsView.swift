@@ -164,12 +164,13 @@ struct MetadataGeocodingSettingsView: View {
 struct SavedMetadataReprocessReview {
     let job: SyncJob
     let filter: MetadataReprocessFilter
+    var scope: MetadataReprocessScope = .all
 
     func result(currentJob: SyncJob?, filter currentFilter: MetadataReprocessFilter,
                 phase: MetadataReprocessPhase?) -> MetadataReprocessPreflight? {
         guard currentJob == job, currentFilter == filter,
-              case .ready(_, .all, let preparedFilter, let result) = phase,
-              preparedFilter == filter else { return nil }
+              case .ready(_, let preparedScope, let preparedFilter, let result) = phase,
+              preparedScope == scope, preparedFilter == filter else { return nil }
         return result
     }
 }

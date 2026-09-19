@@ -78,9 +78,59 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         for phase: MetadataReprocessPhase? in [nil, .idle, .preflighting, .running, .failed("cancelled")] {
             XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete, phase: phase))
         }
+        let scope = MetadataReprocessScope.clip(UUID())
+        let scopedReview = SavedMetadataReprocessReview(job: job, filter: .staleOrIncomplete, scope: scope)
+        XCTAssertEqual(scopedReview.result(currentJob: job, filter: .staleOrIncomplete,
+            phase: .ready(Date(), scope, .staleOrIncomplete, result)), result)
+        XCTAssertNil(scopedReview.result(currentJob: job, filter: .staleOrIncomplete, phase: ready))
         job.metadataGeocoding = try .init(cityPolicy: .fillEmpty, localeIdentifier: "en")
         XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete, phase: ready),
                      "A confirmation must not apply newer saved choices using an older review")
+    }
+
+    func testProgrammingReviewInvalidatesChangedDraftFilterSettingsAndSelection() async throws {
+        for change in ["draft", "filter", "settings", "selection", "close"] {
+            let (root, store, _, coordinator, source, target) = try switchFixture(realFolders: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            XCTAssertTrue(coordinator.beginReprocessing(.all, in: store))
+            let deadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(source), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(store.isJobBusy(source))
+            XCTAssertNotNil(coordinator.reprocessPreflight(in: store), "Real empty-folder preflight should complete: \(store.metadataReprocessPhases)")
+            switch change {
+            case "draft":
+                coordinator.draft.clips[0].name = "Unreviewed caption assignment"
+            case "filter":
+                coordinator.reprocessFilter = .all
+            case "settings":
+                var job = try XCTUnwrap(store.jobs.first { $0.id == source })
+                job.metadataAutomation?.existingFieldPolicy = .fillEmpty
+                XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""), store.alertMessage ?? "Save failed")
+            case "selection":
+                store.selectedJobID = target
+            default:
+                coordinator.cancelPendingReprocessing(in: store)
+            }
+            // Call confirmation before SwiftUI onChange can dismiss the stale dialog.
+            XCTAssertNil(coordinator.reprocessPreflight(in: store), change)
+            XCTAssertFalse(coordinator.confirmReprocessing(in: store), change)
+            XCTAssertNil(coordinator.pendingReprocessScope, change)
+            XCTAssertFalse(store.isJobBusy(source), "Stale approval must not enqueue writes")
+        }
+    }
+
+    func testProgrammingReviewCancellationStopsInFlightPreflight() throws {
+        let (root, store, _, coordinator, source, _) = try switchFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertTrue(coordinator.beginReprocessing(.all, in: store))
+        XCTAssertEqual(store.metadataReprocessPhases[source], .preflighting)
+        coordinator.draft.clips[0].name = "Changed while checking"
+        coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        XCTAssertNil(coordinator.pendingReprocessScope)
+        XCTAssertEqual(store.metadataReprocessPhases[source], .idle)
+        XCTAssertFalse(coordinator.confirmReprocessing(in: store))
     }
 
     func testIndependentReprocessingAdmissionPreservesRuntimeAndTimestampGuards() throws {
@@ -653,7 +703,7 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.playhead)
     }
 
-    private func switchFixture(clipCount: Int = 2, beforeSave: @escaping @Sendable () throws -> Void = {}) throws -> (URL, AppStore, JobRepository, MetadataProgrammingCoordinator, UUID, UUID) {
+    private func switchFixture(clipCount: Int = 2, realFolders: Bool = false, beforeSave: @escaping @Sendable () throws -> Void = {}) throws -> (URL, AppStore, JobRepository, MetadataProgrammingCoordinator, UUID, UUID) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("metadata-switch-\(UUID())")
         let photographer = PhotographerProfile(name: "Example", filenamePrefix: "EX", creator: "Example", copyrightNotice: "")
         let start = Date(timeIntervalSince1970: 1_800_000_000)
@@ -662,6 +712,15 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         source.startsOnAppLaunch = false
         source.left = Endpoint(kind: .local, localPath: root.appendingPathComponent("input").path, bookmark: Data([1]))
         source.right = Endpoint(kind: .local, localPath: root.appendingPathComponent("output").path, bookmark: Data([1]))
+        if realFolders {
+            for path in [source.left.localPath, source.right.localPath] {
+                try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+            }
+            source.left.bookmark = try URL(fileURLWithPath: source.left.localPath).bookmarkData(
+                options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            source.right.bookmark = try URL(fileURLWithPath: source.right.localPath).bookmarkData(
+                options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+        }
         source.metadataAutomation = MetadataAutomation(isEnabled: true, photographers: [photographer], clips: (0..<clipCount).map {
             MetadataScheduleClip(photographerID: photographer.id, name: "Clip \($0)",
                 startsAt: start.addingTimeInterval(Double($0 * 200)), endsAt: start.addingTimeInterval(Double($0 * 200 + 100)))
