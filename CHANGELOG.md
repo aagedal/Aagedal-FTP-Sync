@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Block Reset Job while retained reprocessing or reset recovery folders remain,
+  preserving backups and download history in managed and ordinary destinations.
+
 - Reject reprocessing batches whose RAW files share an XMP output before changing
   any files, including scheduled-only literal and variable templates.
 

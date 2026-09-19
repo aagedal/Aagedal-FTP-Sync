@@ -831,15 +831,27 @@ actor JobResetService {
             jobID: job.id,
             destinationEndpoint: destination
         )
-        if job.usesManagedFolderStructure {
-            guard fileManager.fileExists(atPath: rootURL.path) else {
-                return ResetPlan(rootURL: rootURL, items: [], fileCount: 0, manifestPaths: manifestPaths)
-            }
-            let children = try fileManager.contentsOfDirectory(
-                at: rootURL,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-                options: []
+        if job.usesManagedFolderStructure, !fileManager.fileExists(atPath: rootURL.path) {
+            return ResetPlan(rootURL: rootURL, items: [], fileCount: 0, manifestPaths: manifestPaths)
+        }
+        let children = try fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: []
+        )
+        // A managed folder is wholly owned by the job, but retained originals
+        // still require recovery. Neither reset mode may delete them or clear
+        // their download history before the user resolves the failed operation.
+        if let recovery = children.first(where: {
+            let name = $0.lastPathComponent
+            return (name.hasPrefix(".aagedal-sync-reset-") && name.hasSuffix(".trash"))
+                || (name.hasPrefix(".aagedal-sync-") && name.hasSuffix(".transaction"))
+        }) {
+            throw AppError.transferFailed(
+                "A recovery folder from an earlier operation remains at \(recovery.path). Recover or remove that hidden folder before retrying Reset Job so retained files and download history are preserved."
             )
+        }
+        if job.usesManagedFolderStructure {
             let fileCount = children.reduce(into: 0) { count, child in
                 count += Self.fileCount(at: child, fileManager: fileManager)
             }
@@ -851,19 +863,6 @@ actor JobResetService {
             )
         }
 
-        let children = try fileManager.contentsOfDirectory(
-            at: rootURL,
-            includingPropertiesForKeys: nil,
-            options: []
-        )
-        if children.contains(where: {
-            $0.lastPathComponent.hasPrefix(".aagedal-sync-reset-")
-                && $0.lastPathComponent.hasSuffix(".trash")
-        }) {
-            throw AppError.transferFailed(
-                "A recovery folder from an earlier Reset Job attempt remains inside \(rootURL.path). Recover or remove that hidden folder before retrying so download history is not cleared prematurely."
-            )
-        }
         guard !manifestPaths.isEmpty || children.isEmpty else {
             throw AppError.invalidConfiguration(
                 "This ordinary download folder has no ownership manifest. Reset Job will not delete its contents. Move the job to the managed Synced Files structure, or remove the files manually."

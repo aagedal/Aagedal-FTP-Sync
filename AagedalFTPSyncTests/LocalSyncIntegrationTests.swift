@@ -569,6 +569,51 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: sourceFile.path))
     }
 
+    func testResetPreservesRecoveryFilesAndHistoryUntilRecoveryIsResolved() async throws {
+        for managed in [false, true] {
+            for suffix in ["transaction", "trash"] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                var job = try fixture.job(direction: .leftToRight)
+                if managed { job.processedFilesLocation = .processedSubfolder }
+                let root = managed
+                    ? fixture.right.appendingPathComponent("Synced Files", isDirectory: true)
+                    : fixture.right
+                let recovery = root.appendingPathComponent(
+                    suffix == "transaction" ? ".aagedal-sync-\(UUID()).transaction"
+                        : ".aagedal-sync-reset-\(UUID()).trash", isDirectory: true)
+                try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+                let retained = recovery.appendingPathComponent("original-held-0")
+                let downloaded = root.appendingPathComponent("photo.jpg")
+                try Data("retained original".utf8).write(to: retained)
+                try Data("published edit".utf8).write(to: downloaded)
+                let manifest = DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("downloads.json"))
+                try await manifest.record(relativePaths: ["photo.jpg"], jobID: job.id, destinationEndpoint: job.right)
+                let service = JobResetService(downloadManifestRepository: manifest)
+                for previewOnly in [true, false] {
+                    do {
+                        if previewOnly { _ = try await service.preview(for: job) }
+                        else { _ = try await service.resetDownloads(for: job) }
+                        XCTFail("Reset must preserve unresolved \(suffix) recovery, managed=\(managed)")
+                    } catch {
+                        XCTAssertTrue(error.localizedDescription.contains("recovery folder"))
+                    }
+                    XCTAssertEqual(try? Data(contentsOf: retained), Data("retained original".utf8))
+                    XCTAssertEqual(try? Data(contentsOf: downloaded), Data("published edit".utf8))
+                    let paths = try await manifest.relativePaths(jobID: job.id, destinationEndpoint: job.right)
+                    XCTAssertEqual(paths, ["photo.jpg"])
+                }
+                // Resolving the recovery explicitly admits an ordinary reset again.
+                try? FileManager.default.removeItem(at: recovery)
+                let result = try await service.resetDownloads(for: job)
+                XCTAssertEqual(result.deletedFiles, 1)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: downloaded.path))
+                let paths = try await manifest.relativePaths(jobID: job.id, destinationEndpoint: job.right)
+                XCTAssertTrue(paths.isEmpty)
+            }
+        }
+    }
+
     func testResetJobDeletesOnlyManifestOwnedFilesFromOrdinaryDestination() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
