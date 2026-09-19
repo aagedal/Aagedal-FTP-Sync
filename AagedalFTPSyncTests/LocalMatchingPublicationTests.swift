@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import AagedalFTPSync
@@ -33,6 +34,106 @@ final class LocalMatchingPublicationTests: XCTestCase {
         let directories = try FileManager.default.contentsOfDirectory(at: fixture.root, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasSuffix(".transaction") }
         return try directories.flatMap { try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) }
+    }
+
+    // Invoked only by Scripts/test-metadata-process-interruption.py. The worker
+    // intentionally dies without Swift cleanup; the verifier runs in a fresh host.
+    private func interruptionFixture() throws -> (Fixture, String) {
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["AAGEDAL_INTERRUPTION_ROOT"],
+              let phase = environment["AAGEDAL_INTERRUPTION_PHASE"] else {
+            throw XCTSkip("Opt-in subprocess interruption harness")
+        }
+        let base = URL(fileURLWithPath: path)
+        guard base.lastPathComponent.hasPrefix("aagedal-interruption-") else {
+            throw AppError.transferFailed("Interruption fixtures must use a disposable harness directory.")
+        }
+        let root = base.appendingPathComponent("destination")
+        let inputs = base.appendingPathComponent("inputs")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: inputs, withIntermediateDirectories: true)
+        let bookmark = try FolderBookmark.create(for: root)
+        return (Fixture(root: root, inputs: inputs, endpoint: Endpoint(kind: .local,
+            localPath: bookmark.resolvedURL.path, bookmark: bookmark.data)), phase)
+    }
+
+    func testProcessInterruptionWorker() async throws {
+        let (f, requestedPhase) = try interruptionFixture()
+        try write("original RAW", "nested/photo.cr3", fixture: f)
+        try write("original XMP", "nested/photo.xmp", fixture: f)
+        let raw = try staged("nested/photo.cr3", contents: "original RAW", fixture: f, prefix: "raw")
+        let xmp = try staged("nested/photo.xmp", contents: "original XMP", fixture: f, prefix: "xmp")
+        let output = try staged("nested/photo.xmp", contents: "processed XMP", fixture: f, prefix: "output")
+        let marker = f.inputs.appendingPathComponent("interrupted-phase")
+        let session = try LocalEndpointSession(endpoint: f.endpoint, matchingImportHook: { phase in
+            let name: String
+            switch phase {
+            case .prepared: name = "prepared"
+            case .originalsHeld: name = "originalsHeld"
+            case .published(let index): name = "published-\(index)"
+            case .beforeCommit: name = "beforeCommit"
+            }
+            guard name == requestedPhase else { return }
+            try Data(name.utf8).write(to: marker, options: .atomic)
+            guard kill(getpid(), SIGKILL) == 0 else { _exit(99) }
+            // Signal delivery can follow the syscall return. Do not race it with
+            // exit(), which would obscure whether SIGKILL actually killed us.
+            while true { pause() }
+        })
+        try await session.importFilesTransactionallyMatching([output], replacing: [raw, xmp],
+            preserveDate: true, verifySize: true)
+        XCTFail("The requested interruption phase was never reached")
+    }
+
+    func testProcessInterruptionRecovery() async throws {
+        let (f, phase) = try interruptionFixture()
+        XCTAssertEqual(try String(contentsOf: f.inputs.appendingPathComponent("interrupted-phase"), encoding: .utf8), phase)
+        let manifestURL = try XCTUnwrap(recoveryFiles(f).first { $0.lastPathComponent == "recovery.json" })
+        let recovery = manifestURL.deletingLastPathComponent()
+        let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
+            from: Data(contentsOf: manifestURL))
+        XCTAssertEqual(manifest.schemaVersion, 1)
+        XCTAssertEqual(manifest.originals.map(\.relativePath), ["nested/photo.cr3", "nested/photo.xmp"])
+        XCTAssertEqual(manifest.originals.map(\.isReplaced), [false, true])
+        XCTAssertEqual(manifest.outputs.map(\.relativePath), ["nested/photo.xmp"])
+        let held = phase != "prepared"
+        let published = phase == "published-0" || phase == "beforeCommit"
+        for (index, original) in manifest.originals.enumerated() {
+            let expected = Data((index == 0 ? "original RAW" : "original XMP").utf8)
+            XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(original.snapshotFilename)), expected)
+            XCTAssertEqual(FileManager.default.fileExists(atPath: recovery.appendingPathComponent(original.heldFilename).path), held)
+            if held {
+                XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(original.heldFilename)), expected)
+            }
+            let exists = FileManager.default.fileExists(atPath: f.root.appendingPathComponent(original.relativePath).path)
+            XCTAssertEqual(exists, !held || (index == 1 && published))
+        }
+        if published { XCTAssertEqual(try read("nested/photo.xmp", fixture: f), "processed XMP") }
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved()) { error in
+            XCTAssertTrue(error.localizedDescription.contains(recovery.path))
+        }
+        // Follow the documented manual choice: retain the published XMP if present,
+        // otherwise restore the originals. Guard-only RAW must always be restored.
+        for original in manifest.originals {
+            let destination = f.root.appendingPathComponent(original.relativePath)
+            if !FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.moveItem(at: recovery.appendingPathComponent(original.heldFilename), to: destination)
+            }
+        }
+        XCTAssertEqual(try read("nested/photo.cr3", fixture: f), "original RAW")
+        XCTAssertEqual(try read("nested/photo.xmp", fixture: f), published ? "processed XMP" : "original XMP")
+        try FileManager.default.removeItem(at: recovery)
+        try session.validateMetadataRecoveryIsResolved()
+        let raw = try staged("nested/photo.cr3", contents: "original RAW", fixture: f, prefix: "retry-raw")
+        let xmp = try staged("nested/photo.xmp", contents: published ? "processed XMP" : "original XMP", fixture: f, prefix: "retry-xmp")
+        let output = try staged("nested/photo.xmp", contents: "retried XMP", fixture: f, prefix: "retry-output")
+        try await session.importFilesTransactionallyMatching([output], replacing: [raw, xmp],
+            preserveDate: true, verifySize: true)
+        XCTAssertEqual(try read("nested/photo.cr3", fixture: f), "original RAW")
+        XCTAssertEqual(try read("nested/photo.xmp", fixture: f), "retried XMP")
+        XCTAssertTrue(try recoveryFiles(f).isEmpty)
+        try Data(phase.utf8).write(to: f.inputs.appendingPathComponent("recovery-verified"), options: .atomic)
     }
 
     func testReadOnlySnapshotValidationDetectsNewCompanionAndPrimaryEdits() throws {

@@ -51,3 +51,22 @@ before another reprocessing run.
 
 The directory is private to the destination user, but its manifest contains photo
 filenames. Keep recovery files out of shared diagnostics and source control.
+
+## Repeatable process-interruption check
+
+`Scripts/test-metadata-process-interruption.py` exercises the actual local publication
+implementation with disposable nested RAW/XMP byte fixtures. Build the unit tests with
+`xcodebuild build-for-testing`, then pass its generated unit-test `.xctestrun` file to
+`python3 Scripts/test-metadata-process-interruption.py`. The script preserves Xcode's
+`__TESTROOT__` paths and stores logs, result bundles and fixtures under `build/`.
+
+The worker deliberately terminates itself with SIGKILL after preparation, after moving
+originals into recovery, after publishing the XMP, and immediately before commit.
+Each case requires Xcode's signal-9 failure plus an exact phase marker. A fresh test
+host checks the manifest, original bytes, partial output and admission block, follows
+the documented reconciliation choice, and completes a new publication. Both tests
+skip unless the harness supplies its disposable fixture configuration. A skipped
+verification cannot pass the harness.
+
+This checks abrupt process termination at controlled transaction boundaries. It does
+not prove power-loss durability, native recovery UI behavior, or camera RAW decoding.
