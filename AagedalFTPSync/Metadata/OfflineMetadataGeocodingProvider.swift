@@ -5,7 +5,7 @@ import SwiftMediaMetadata
 /// administrative-boundary determination. City names retain the dataset's spelling.
 enum OfflineMetadataGeocodingProvider {
     static let identity = MetadataGeocodingService.Identity(
-        provider: "geonames-offline", version: "SwiftMediaMetadata-2.0.0",
+        provider: "geonames-offline", version: MetadataWriter.dependencyRevision,
         dataset: "sha256:1c0d66422b009340135398674ec93d69366776917be9e9ef179cf1457cceb26b")
 
     /// The caller should retain and share this service across jobs and previews.

@@ -1,6 +1,24 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "Saved metadata processing" : {
+      "extractionState" : "manual"
+    },
+    "Preview Saved Metadata…" : {
+      "extractionState" : "manual"
+    },
+    "Reprocess matching files using the saved geocoding and face recognition choices." : {
+      "extractionState" : "manual"
+    },
+    "Apply the saved schedule and enabled geocoding and face recognition to matching files already in the local destination." : {
+      "extractionState" : "manual"
+    },
+    "Save the job to apply these choices. Use Preview Saved Metadata to inspect existing destination files before explicitly reprocessing them." : {
+      "extractionState" : "manual"
+    },
+    "Matching files in %@ will be processed using the saved metadata schedule and enabled geocoding and face recognition. Fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained. Preview first to inspect the proposed changes." : {
+      "extractionState" : "manual"
+    },
     "_EDITED" : {
 
     },

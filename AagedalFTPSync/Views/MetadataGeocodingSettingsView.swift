@@ -19,28 +19,14 @@ struct MetadataGeocodingAppleConsent {
     }
 }
 
-/// Draft controls only. Preview/reprocess explicitly use the saved job and never
-/// persist the displayed default locale merely because this section was opened.
+/// Draft controls never persist the displayed default locale merely because this section opens.
 struct MetadataGeocodingSettingsView: View {
     @Binding var settings: MetadataGeocodingSettings?
-    @ObservedObject var store: AppStore
     let savedJob: SyncJob?
-    let hasUnsavedChanges: Bool
     @State private var errorMessage: String?
-    @State private var previewTask: Task<Void, Never>?
-    @State private var previewRequestID: UUID?
-    @State private var preview: PreviewPresentation?
-    @State private var confirmsReprocess = false
     @State private var confirmsApple = false
     @State private var appleConsent: MetadataGeocodingAppleConsent?
     @State private var showsGeofenceEditor = false
-
-    private struct PreviewPresentation: Identifiable, Sendable {
-        let id = UUID()
-        let folderName: String
-        let timestampPolicy: MetadataTimestampPolicy
-        let result: MetadataPreviewResult
-    }
 
     private static let languages = ["en", "nb", "nn", "sv", "da", "fi", "de", "fr", "es", "it", "pt", "nl", "pl", "uk", "ja", "ko", "zh", "ar"]
         .filter { MetadataGeocodingService.Query(latitude: 0, longitude: 0, locale: $0) != nil }
@@ -49,16 +35,6 @@ struct MetadataGeocodingSettingsView: View {
         var values = Set(Self.languages)
         if let selected = settings?.localeIdentifier { values.insert(selected) }
         return values.sorted { localeName($0).localizedStandardCompare(localeName($1)) == .orderedAscending }
-    }
-
-    private var savedActionsAvailable: Bool {
-        guard !hasUnsavedChanges, previewTask == nil, !store.isSuspendedForExternalWriter,
-              let job = savedJob, settings == job.metadataGeocoding,
-              job.metadataGeocoding?.isEnabled == true,
-              store.metadataFaceRecognitionRuntimeBlocker(for: job) == nil,
-              job.direction != .bidirectional, job.destinationEndpoint?.kind == .local,
-              !store.isJobBusy(job.id), store.jobs.first(where: { $0.id == job.id }) == job else { return false }
-        return true
     }
 
     var body: some View {
@@ -106,41 +82,17 @@ struct MetadataGeocodingSettingsView: View {
             }
             Text("Writing City or Country does not require a metadata schedule. Choosing a provider alone does not enable either field or variable resolution.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text(settings == nil ? "Geocoding is off. English is shown as a default; no setting is created until you make a choice." : "Save the job to apply these choices. Use Preview Geocoding to inspect existing destination files before explicitly reprocessing them.")
+            Text(settings == nil ? "Geocoding is off. English is shown as a default; no setting is created until you make a choice." : "Save the job to apply these choices. Use Preview Saved Metadata to inspect existing destination files before explicitly reprocessing them.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("Clear Geocoding Choices") { settings = nil; errorMessage = nil }
-                    .disabled(settings == nil || previewTask != nil)
+                    .disabled(settings == nil)
                     .accessibilityIdentifier("clear-geocoding-settings")
-                Spacer()
-                if previewTask != nil {
-                    ProgressView().controlSize(.small)
-                    Button("Cancel Preview", action: cancelPreview)
-                        .accessibilityIdentifier("cancel-geocoding-preview")
-                } else {
-                    Button("Preview Geocoding…", action: startPreview)
-                        .disabled(!savedActionsAvailable)
-                        .accessibilityIdentifier("preview-geocoding")
-                    Button("Reprocess Saved Files…") { confirmsReprocess = true }
-                        .disabled(!savedActionsAvailable)
-                        .accessibilityIdentifier("reprocess-geocoding")
-                }
-            }
-            if hasUnsavedChanges || settings != savedJob?.metadataGeocoding {
-                Text("Save the job before previewing or reprocessing its saved settings.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let job = savedJob, let blocker = store.metadataFaceRecognitionRuntimeBlocker(for: job) {
-                Text(blocker).font(.caption).foregroundStyle(.secondary)
             }
             if let errorMessage {
                 Text(errorMessage).font(.caption).foregroundStyle(.red)
                     .textSelection(.enabled)
             }
-        }
-        .sheet(item: $preview) { presentation in
-            MetadataFolderPreviewView(folderName: presentation.folderName,
-                timestampPolicy: presentation.timestampPolicy, result: presentation.result)
         }
         .sheet(isPresented: $showsGeofenceEditor) {
             MetadataGeofenceEditorView(geofences: Binding(
@@ -160,23 +112,8 @@ struct MetadataGeocodingSettingsView: View {
         } message: {
             Text("Apple online looks up place names using GPS coordinates supplied by your image files. Those coordinates are sent to Apple over the network when a lookup is needed. This does not request or track your Mac’s device location. Confirming changes only this job draft; save the job before processing with Apple.")
         }
-        .confirmationDialog("Reprocess existing local files?", isPresented: $confirmsReprocess, titleVisibility: .visible) {
-            Button("Reprocess Saved Files") {
-                guard savedActionsAvailable, let job = savedJob else { return }
-                store.reprocessExistingLocalFiles(job.id)
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Matching files in \(savedJob?.localDestinationDisplayPath ?? "the saved local destination") will be processed using the saved geocoding choices and any enabled face recognition or saved metadata schedule. Fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained. Preview first to inspect the proposed changes.")
-        }
-        .onChange(of: settings) { _, _ in cancelPreview() }
-        .onChange(of: savedJob) { _, _ in
-            cancelPreview(); preview = nil
-            appleConsent = nil; confirmsApple = false
-        }
-        .onChange(of: hasUnsavedChanges) { _, changed in if changed { cancelPreview() } }
-        .onChange(of: store.isSuspendedForExternalWriter) { _, suspended in if suspended { cancelPreview() } }
-        .onDisappear { cancelPreview(); appleConsent = nil; confirmsApple = false }
+        .onChange(of: savedJob) { _, _ in appleConsent = nil; confirmsApple = false }
+        .onDisappear { appleConsent = nil; confirmsApple = false }
     }
 
     private func selectProvider(_ provider: MetadataGeocodingProviderSelection) {
@@ -219,6 +156,87 @@ struct MetadataGeocodingSettingsView: View {
             settings = updated
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
+    }
+
+}
+
+/// Saved processing actions shared by scheduled, location-only and face-only jobs.
+struct SavedMetadataProcessingActionsView: View {
+    @ObservedObject var store: AppStore
+    let savedJob: SyncJob?
+    let hasUnsavedChanges: Bool
+    @State private var errorMessage: String?
+    @State private var previewTask: Task<Void, Never>?
+    @State private var previewRequestID: UUID?
+    @State private var preview: PreviewPresentation?
+    @State private var confirmsReprocess = false
+
+    private struct PreviewPresentation: Identifiable, Sendable {
+        let id = UUID()
+        let folderName: String
+        let timestampPolicy: MetadataTimestampPolicy
+        let result: MetadataPreviewResult
+    }
+
+    private var savedActionsAvailable: Bool {
+        guard !hasUnsavedChanges, previewTask == nil, !store.isSuspendedForExternalWriter,
+              let job = savedJob,
+              job.metadataAutomation?.isEnabled == true || job.metadataGeocoding?.isEnabled == true || job.metadataFaceRecognition != nil,
+              store.metadataFaceRecognitionRuntimeBlocker(for: job) == nil,
+              job.direction != .bidirectional, job.destinationEndpoint?.kind == .local,
+              !store.isJobBusy(job.id), store.jobs.first(where: { $0.id == job.id }) == job else { return false }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                if previewTask != nil {
+                    ProgressView().controlSize(.small)
+                    Button("Cancel Preview", action: cancelPreview)
+                        .accessibilityIdentifier("cancel-geocoding-preview")
+                } else {
+                    Button("Preview Saved Metadata…", action: startPreview)
+                        .disabled(!savedActionsAvailable)
+                        .accessibilityIdentifier("preview-geocoding")
+                    Button("Reprocess Saved Files…") { confirmsReprocess = true }
+                        .disabled(!savedActionsAvailable)
+                        .accessibilityIdentifier("reprocess-geocoding")
+                }
+            }
+            if hasUnsavedChanges {
+                Text("Save the job before previewing or reprocessing its saved settings.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let job = savedJob, let blocker = store.metadataFaceRecognitionRuntimeBlocker(for: job) {
+                Text(blocker).font(.caption).foregroundStyle(.secondary)
+            }
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+        }
+        .sheet(item: $preview) { presentation in
+            MetadataFolderPreviewView(folderName: presentation.folderName,
+                timestampPolicy: presentation.timestampPolicy, result: presentation.result)
+        }
+        .confirmationDialog("Reprocess existing local files?", isPresented: $confirmsReprocess, titleVisibility: .visible) {
+            Button("Reprocess Saved Files") {
+                guard savedActionsAvailable, let job = savedJob else { return }
+                store.reprocessExistingLocalFiles(job.id)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Matching files in \(savedJob?.localDestinationDisplayPath ?? "the saved local destination") will be processed using the saved metadata schedule and enabled geocoding and face recognition. Fill-empty choices preserve existing values; overwrite choices replace them. Source files are untouched and modification dates are retained. Preview first to inspect the proposed changes.")
+        }
+        .onChange(of: savedJob) { _, _ in cancelPreview(); preview = nil; confirmsReprocess = false }
+        .onChange(of: hasUnsavedChanges) { _, changed in
+            if changed { cancelPreview(); preview = nil; confirmsReprocess = false }
+        }
+        .onChange(of: store.isSuspendedForExternalWriter) { _, suspended in
+            if suspended { cancelPreview(); preview = nil; confirmsReprocess = false }
+        }
+        .onDisappear { cancelPreview() }
     }
 
     private func cancelPreview() {

@@ -61,6 +61,32 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.processedFileCount(for: photographer, in: store), 0)
     }
 
+    func testIndependentReprocessingAdmissionPreservesRuntimeAndTimestampGuards() throws {
+        let coordinator = MetadataProgrammingCoordinator()
+        var job = previewJob()
+        coordinator.draft = previewAutomation()
+        coordinator.draft.isEnabled = false
+        coordinator.draft.timestampPolicy = .localArrival
+        func available(_ runtime: Bool = true) -> Bool {
+            coordinator.canReprocessMetadata(for: job, faceRecognitionRuntimeAvailable: runtime)
+        }
+        XCTAssertFalse(available())
+        job.metadataGeocoding = try .init(cityPolicy: .fillEmpty, localeIdentifier: "en")
+        XCTAssertTrue(available())
+        coordinator.draft.isEnabled = true
+        XCTAssertFalse(available())
+        coordinator.draft.timestampPolicy = .sourceModification
+        XCTAssertTrue(available())
+        coordinator.draft.isEnabled = false
+        job.metadataFaceRecognition = .init()
+        XCTAssertFalse(available(false), "Missing runtime must block combined processing")
+        XCTAssertTrue(available())
+        job.metadataGeocoding = nil
+        XCTAssertTrue(available(), "Recognition alone does not require a schedule or geocoding")
+        job.direction = .bidirectional
+        XCTAssertFalse(available())
+    }
+
     func testOpenClipSelectsItsDayTrackAndEditor() {
         let calendar = utcCalendar
         let photographerID = UUID()

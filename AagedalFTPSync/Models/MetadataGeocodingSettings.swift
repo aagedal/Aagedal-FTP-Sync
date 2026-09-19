@@ -28,6 +28,8 @@ enum MetadataGeocodingSettingsError: LocalizedError, Equatable {
 struct MetadataGeocodingSettings: Codable, Hashable, Sendable {
     static let schemaVersion = 1
     static let providerIdentifier = "geonames-offline"
+    // Persisted policy identity, retained for decoding existing jobs; runtime receipt
+    // versions are supplied separately by OfflineMetadataGeocodingProvider.
     static let providerVersion = "SwiftMediaMetadata-2.0.0"
     static let datasetIdentifier = "sha256:1c0d66422b009340135398674ec93d69366776917be9e9ef179cf1457cceb26b"
     static let maximumDistanceMeters = 50_000

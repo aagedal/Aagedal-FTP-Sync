@@ -2370,7 +2370,7 @@ struct SyncEngine: Sendable {
         sidecarURL: URL?
     ) throws -> MetadataProcessingFingerprint? {
         guard processing.resolutionComplete else { return nil }
-        var dependencies = ["metadata-writer": "SwiftMediaMetadata-2.0.0"]
+        var dependencies = ["metadata-writer": MetadataWriter.dependencyRevision]
         if let identity = processing.geocodingProviderIdentity {
             dependencies["geocoder-provider"] = identity.provider
             dependencies["geocoder-version"] = identity.version

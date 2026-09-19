@@ -52,6 +52,43 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_704_153_600) })
     }
 
+    func testWriterUpgradeInvalidatesReceiptWithoutAutomaticRetransfer() async throws {
+        let f = try fixture()
+        let name = "FX_WRITER.jpg"
+        try write(jpeg(), name: name, root: f.source)
+        let engine = engine(f)
+        let transferred = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        let entry = try XCTUnwrap(transferred.metadataReport.entries.first)
+        let fingerprint = try XCTUnwrap(entry.processingFingerprint)
+        let currentRevision = MetadataProcessingFingerprint.dependencyRevision([
+            "metadata-writer": "SwiftMediaMetadata-3.0.1"
+        ])
+        XCTAssertEqual(fingerprint.dependencyRevision, currentRevision)
+
+        // Simulate a durable receipt written before the dependency identity correction.
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(entry)) as? [String: Any])
+        var oldFingerprint = try XCTUnwrap(object["processingFingerprint"] as? [String: Any])
+        oldFingerprint["dependencyRevision"] = MetadataProcessingFingerprint.dependencyRevision([
+            "metadata-writer": "SwiftMediaMetadata-2.0.0"
+        ])
+        object["processingFingerprint"] = oldFingerprint
+        let oldEntry = try JSONDecoder().decode(MetadataAuditEntry.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertEqual(oldEntry.processingFingerprint?.freshness(
+            sourceRevision: fingerprint.sourceRevision, settingsRevision: fingerprint.settingsRevision,
+            dependencyRevision: currentRevision, outputRevision: fingerprint.outputRevision), .dependenciesChanged)
+        let target = f.destination.appendingPathComponent(name)
+        let before = try Data(contentsOf: target)
+        let poll = try await engine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        XCTAssertTrue(poll.metadataReport.entries.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: target), before)
+        let refreshed = try await engine.reprocessExistingLocalFiles(
+            job: f.job, filter: .staleOrIncomplete, latestOutcomes: [name: oldEntry])
+        XCTAssertEqual(refreshed.failed, 0)
+        XCTAssertEqual(refreshed.metadataReport.entries.first?.processingFingerprint?.dependencyRevision, currentRevision)
+        XCTAssertEqual(try Data(contentsOf: target), before)
+    }
+
     private func faceContext(
         name: String,
         libraryRevision: Character = "a"

@@ -185,9 +185,14 @@ struct JobDetailEditor: View {
                     }
                 }
 
+                Section("Saved metadata processing") {
+                    SavedMetadataProcessingActionsView(store: store, savedJob: savedJob,
+                        hasUnsavedChanges: session.hasUnsavedChanges)
+                }
+
                 Section("Geocoding") {
                     MetadataGeocodingSettingsView(settings: $session.draft.metadataGeocoding,
-                        store: store, savedJob: savedJob, hasUnsavedChanges: session.hasUnsavedChanges)
+                        savedJob: savedJob)
                 }
 
                 Section("Face recognition") {

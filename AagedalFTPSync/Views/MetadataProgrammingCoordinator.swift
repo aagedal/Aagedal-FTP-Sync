@@ -131,12 +131,19 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func canReprocessMetadata(in store: AppStore) -> Bool {
-        guard let loadedJobID else { return false }
-        return draft.isEnabled
-            && draft.validationMessage == nil
-            && canEnableMetadata(for: selectedJob(in: store))
-            && draft.timestampPolicy != .localArrival
+        guard let loadedJobID, let job = selectedJob(in: store), job.id == loadedJobID,
+              !store.isSuspendedForExternalWriter,
+              store.metadataFaceRecognitionRuntimeBlocker(for: job) == nil else { return false }
+        return canReprocessMetadata(for: job, faceRecognitionRuntimeAvailable: store.faceRecognitionContext != nil)
             && !store.isJobBusy(loadedJobID)
+    }
+
+    func canReprocessMetadata(for job: SyncJob, faceRecognitionRuntimeAvailable: Bool) -> Bool {
+        (draft.isEnabled || job.metadataGeocoding?.isEnabled == true || job.metadataFaceRecognition != nil)
+            && draft.validationMessage == nil
+            && canEnableMetadata(for: job)
+            && job.metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: faceRecognitionRuntimeAvailable) == nil
+            && (!draft.isEnabled || draft.timestampPolicy != .localArrival)
     }
 
     func previewValidationMessage(
@@ -221,13 +228,13 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     var reprocessHelp: String {
-        if draft.timestampPolicy == .localArrival {
+        if draft.isEnabled && draft.timestampPolicy == .localArrival {
             return "Arrival timestamps were not recorded for existing files. Choose source modification or camera capture time."
         }
         if !draft.isEnabled {
-            return "Enable automatic metadata before reprocessing existing files."
+            return "Reprocess matching files using the saved geocoding and face recognition choices."
         }
-        return "Apply the saved schedule to matching files already in the local destination."
+        return "Apply the saved schedule and enabled geocoding and face recognition to matching files already in the local destination."
     }
 
     func reprocessConfirmationMessage(

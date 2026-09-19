@@ -2,6 +2,9 @@ import Foundation
 import SwiftMediaMetadata
 
 enum MetadataWriter {
+    // Keep aligned with the exact SwiftPM pin; receipts must become stale after a writer upgrade.
+    static let dependencyRevision = "SwiftMediaMetadata-3.0.1"
+
     enum ApplicationAssessment: Equatable, Sendable {
         case willApply
         case alreadyApplied
