@@ -21,15 +21,33 @@ enum PathSafety {
 
     static func localPathCollision(in paths: [String]) -> [String]? {
         var originalPathByComparisonKey: [String: String] = [:]
-        for path in paths.sorted(by: { Array($0.utf8).lexicographicallyPrecedes(Array($1.utf8)) }) {
+        originalPathByComparisonKey.reserveCapacity(paths.count)
+        var collision: (first: String, second: String)?
+        // Track the byte-smallest spelling per key and the best collision pair.
+        // Selecting the smallest second spelling reproduces the first collision
+        // in a byte-sorted scan without sorting every path in a large folder.
+        for path in paths {
             let comparisonKey = localComparisonKey(path)
-            if let originalPath = originalPathByComparisonKey[comparisonKey],
-               !hasIdenticalRepresentation(originalPath, path) {
-                return [originalPath, path]
+            guard let originalPath = originalPathByComparisonKey[comparisonKey] else {
+                originalPathByComparisonKey[comparisonKey] = path
+                continue
             }
-            originalPathByComparisonKey[comparisonKey] = path
+            guard !hasIdenticalRepresentation(originalPath, path) else { continue }
+            let pair = path.utf8.lexicographicallyPrecedes(originalPath.utf8)
+                ? (first: path, second: originalPath)
+                : (first: originalPath, second: path)
+            originalPathByComparisonKey[comparisonKey] = pair.first
+            if let current = collision {
+                if pair.second.utf8.lexicographicallyPrecedes(current.second.utf8)
+                    || (hasIdenticalRepresentation(pair.second, current.second)
+                        && pair.first.utf8.lexicographicallyPrecedes(current.first.utf8)) {
+                    collision = pair
+                }
+            } else {
+                collision = pair
+            }
         }
-        return nil
+        return collision.map { [$0.first, $0.second] }
     }
 
     static func localComparisonKey(_ path: String) -> String {

@@ -101,4 +101,42 @@ final class PathSafetyTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("already contains a file named Synced Files"))
         }
     }
+
+    func testCollisionSelectionPreservesByteSortedDiagnosticsForEveryInputOrder() {
+        // Swift String equality treats the two accents as equal. Compare bytes
+        // so this also catches a changed diagnostic spelling, not only its key.
+        let fixtures = [
+            ["news.jpg", "NEWS.JPG", "News.jpg", "NEWS.JPG"],
+            ["café.jpg", "cafe\u{301}.jpg", "CAFÉ.JPG", "café.jpg"],
+            ["b.jpg", "B.JPG", "a.jpg", "A.JPG"],
+            ["dir/Å.jpg", "DIR/A\u{30A}.JPG", "dir/å.jpg", "other.jpg"],
+            ["one.jpg", "one.jpg", "two.jpg", "nested/one.jpg"]
+        ]
+        func reference(_ paths: [String]) -> [String]? {
+            var seen: [String: String] = [:]
+            for path in paths.sorted(by: { $0.utf8.lexicographicallyPrecedes($1.utf8) }) {
+                let key = PathSafety.localComparisonKey(path)
+                if let prior = seen[key], !PathSafety.hasIdenticalRepresentation(prior, path) {
+                    return [prior, path]
+                }
+                seen[key] = path
+            }
+            return nil
+        }
+        func permutations(_ paths: [String]) -> [[String]] {
+            guard !paths.isEmpty else { return [[]] }
+            return paths.indices.flatMap { index in
+                var rest = paths
+                let first = rest.remove(at: index)
+                return permutations(rest).map { [first] + $0 }
+            }
+        }
+        for fixture in fixtures {
+            let expected = reference(fixture)?.map { Array($0.utf8) }
+            for order in permutations(fixture) {
+                XCTAssertEqual(PathSafety.localPathCollision(in: order)?.map { Array($0.utf8) }, expected)
+            }
+        }
+        XCTAssertNil(PathSafety.localPathCollision(in: []))
+    }
 }
