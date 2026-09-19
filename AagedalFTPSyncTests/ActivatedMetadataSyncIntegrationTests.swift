@@ -866,4 +866,58 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(result.applied, 0)
         XCTAssertEqual(try Data(contentsOf: target), Data("concurrent edit".utf8))
     }
+    func testConcurrentDestinationEditDuringLiteralReprocessIsNotOverwritten() async throws {
+        let f = try fixture()
+        for root in [f.source, f.destination] { try write(jpeg(), name: "FX_EDIT.jpg", root: root) }
+        var job = f.job
+        job.metadataAutomation?.clips[0].fields.setHeadline(.literal("Literal headline"))
+        let target = f.destination.appendingPathComponent("FX_EDIT.jpg")
+        let hookCalled = expectation(description: "Literal reprocess reached held-original transaction phase")
+        hookCalled.assertForOverFulfill = true
+        let engine = SyncEngine(sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")),
+            now: { Date(timeIntervalSince1970: 1_704_153_600) },
+            localReprocessSessionFactory: { endpoint, managed in
+                try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                    if case .originalsHeld = phase {
+                        hookCalled.fulfill()
+                        try Data("concurrent edit".utf8).write(to: target)
+                    }
+                })
+            })
+        let result = try await engine.reprocessExistingLocalFiles(job: job)
+        await fulfillment(of: [hookCalled], timeout: 1)
+        XCTAssertEqual(result.failed, 1)
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertEqual(try Data(contentsOf: target), Data("concurrent edit".utf8))
+    }
+    func testLiteralRawReprocessingPreservesPrimaryAndUnrelatedSidecarFields() async throws {
+        let f = try fixture()
+        var job = f.job
+        job.metadataAutomation?.clips[0].fields.setHeadline(.literal("Literal headline"))
+        for root in [f.source, f.destination] {
+            try write(Data("synthetic RAW".utf8), name: "FX_RAW.cr3", root: root)
+        }
+        let raw = f.destination.appendingPathComponent("FX_RAW.cr3")
+        let sidecar = f.destination.appendingPathComponent("FX_RAW.xmp")
+        let originalAttributes = try FileManager.default.attributesOfItem(atPath: raw.path)
+        // Exercise both creation and replacement of a companion.
+        for existingSidecar in [false, true] {
+            if existingSidecar {
+                var xmp = XMPData(); xmp.description = "Keep this caption"
+                try XMPSidecar.write(xmp, to: sidecar)
+            }
+            let result = try await engine(f).reprocessExistingLocalFiles(job: job)
+            XCTAssertEqual(result.applied, 1)
+            XCTAssertEqual(result.failed, 0)
+            let metadata = try XMPSidecar.read(from: sidecar)
+            XCTAssertEqual(metadata.headline, "Literal headline")
+            if existingSidecar { XCTAssertEqual(metadata.description, "Keep this caption") }
+            let attributes = try FileManager.default.attributesOfItem(atPath: raw.path)
+            XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, originalAttributes[.systemFileNumber] as? NSNumber)
+            XCTAssertEqual(attributes[.modificationDate] as? Date, originalAttributes[.modificationDate] as? Date)
+            XCTAssertEqual(try Data(contentsOf: raw), Data("synthetic RAW".utf8))
+        }
+    }
+
 }

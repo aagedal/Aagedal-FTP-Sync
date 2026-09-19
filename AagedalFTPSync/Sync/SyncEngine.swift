@@ -1280,16 +1280,15 @@ struct SyncEngine: Sendable {
             var immutableOriginals: [EndpointFileImport] = []
             defer { for original in immutableOriginals { try? FileManager.default.removeItem(at: original.localURL) } }
             do {
-                if activated {
-                    let originalURL = try makeTemporaryURL(for: file)
-                    try FileManager.default.copyItem(at: temporaryURL, to: originalURL)
-                    immutableOriginals.append(EndpointFileImport(localURL: originalURL, file: file))
-                    if MetadataWriter.usesXMPSidecar(for: file.relativePath),
-                       let sidecar = destinationFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
-                        let snapshot = try makeTemporaryURL(for: sidecar)
-                        try FileManager.default.copyItem(at: temporarySidecarURL, to: snapshot)
-                        immutableOriginals.append(EndpointFileImport(localURL: snapshot, file: sidecar))
-                    }
+                // Literal and activated templates share the same edit protection.
+                let originalURL = try makeTemporaryURL(for: file)
+                try FileManager.default.copyItem(at: temporaryURL, to: originalURL)
+                immutableOriginals.append(EndpointFileImport(localURL: originalURL, file: file))
+                if MetadataWriter.usesXMPSidecar(for: file.relativePath),
+                   let sidecar = destinationFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
+                    let snapshot = try makeTemporaryURL(for: sidecar)
+                    try FileManager.default.copyItem(at: temporarySidecarURL, to: snapshot)
+                    immutableOriginals.append(EndpointFileImport(localURL: snapshot, file: sidecar))
                 }
                 writeResult = try MetadataWriter.apply(
                     processing.changes,
@@ -1381,12 +1380,8 @@ struct SyncEngine: Sendable {
                 case .embedded(let rewrittenSize, _):
                     let output = EndpointFileImport(localURL: temporaryURL, file: SyncFile(relativePath: file.relativePath,
                         size: rewrittenSize, modifiedAt: file.modifiedAt))
-                    if activated {
-                        try await destination.importFilesTransactionallyMatching([output], replacing: immutableOriginals,
-                            preserveDate: true, verifySize: true)
-                    } else {
-                        try await destination.importFile(from: output.localURL, as: output.file, preserveDate: true, verifySize: true)
-                    }
+                    try await destination.importFilesTransactionallyMatching([output], replacing: immutableOriginals,
+                        preserveDate: true, verifySize: true)
                     try await downloadManifestRepository.record(
                         relativePaths: [file.relativePath],
                         jobID: job.id,
@@ -1396,12 +1391,8 @@ struct SyncEngine: Sendable {
                     let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
                     let output = EndpointFileImport(localURL: localURL, file: SyncFile(relativePath: sidecarPath,
                         size: sidecarSize, modifiedAt: file.modifiedAt))
-                    if activated {
-                        try await destination.importFilesTransactionallyMatching([output], replacing: immutableOriginals,
-                            preserveDate: true, verifySize: true)
-                    } else {
-                        try await destination.importFile(from: output.localURL, as: output.file, preserveDate: true, verifySize: true)
-                    }
+                    try await destination.importFilesTransactionallyMatching([output], replacing: immutableOriginals,
+                        preserveDate: true, verifySize: true)
                     try await downloadManifestRepository.record(
                         relativePaths: [sidecarPath],
                         jobID: job.id,
@@ -1410,7 +1401,6 @@ struct SyncEngine: Sendable {
                 }
             } catch is CancellationError { throw CancellationError() }
             catch {
-                guard activated else { throw error }
                 failed += 1
                 metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
                     relativePath: file.relativePath, status: .failed, timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
