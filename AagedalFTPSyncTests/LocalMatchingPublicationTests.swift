@@ -53,6 +53,71 @@ final class LocalMatchingPublicationTests: XCTestCase {
         XCTAssertTrue(try recoveryFiles(f).isEmpty)
     }
 
+    func testRecoveryScanIncludesHiddenFilesAndDanglingLinksAndFailsForMissingRoot() throws {
+        let f = try fixture()
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        try write("unrelated", ".ordinary-hidden-file", fixture: f)
+        try session.validateMetadataRecoveryIsResolved()
+        let name = ".aagedal-sync-Åse.transaction"
+        try write("retained", name, fixture: f)
+        XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved())
+        XCTAssertEqual(try read(name, fixture: f), "retained")
+        try FileManager.default.removeItem(at: f.root.appendingPathComponent(name))
+        let link = f.root.appendingPathComponent(".aagedal-sync-reset-interrupted.trash")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: f.inputs.appendingPathComponent("missing"))
+        XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved())
+        try FileManager.default.removeItem(at: link)
+        try session.validateMetadataRecoveryIsResolved()
+        try FileManager.default.removeItem(at: f.root)
+        XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved()) { error in
+            XCTAssertEqual((error as NSError).domain, NSPOSIXErrorDomain)
+            XCTAssertEqual((error as NSError).code, Int(ENOENT))
+        }
+    }
+
+    func testCancelledRecoveryScanDoesNotAdmitOrChangeDestination() async throws {
+        let f = try fixture()
+        try write("original", "photo.jpg", fixture: f)
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            try session.validateMetadataRecoveryIsResolved()
+        }
+        do {
+            try await task.value
+            XCTFail("Cancelled recovery admission must fail")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+        XCTAssertEqual(try read("photo.jpg", fixture: f), "original")
+    }
+
+    func testLargeFolderRecoveryScanBenchmark() throws {
+        guard ProcessInfo.processInfo.environment["AAGEDAL_RECOVERY_SCAN_BENCHMARK"] == "1" else {
+            throw XCTSkip("Opt-in disposable 100,000-file recovery scan benchmark")
+        }
+        let f = try fixture()
+        for index in 0..<100_000 {
+            try Data().write(to: f.root.appendingPathComponent("photo-\(index).jpg"))
+        }
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        var previous: [Double] = [], streaming: [Double] = []
+        for _ in 0..<20 {
+            let oldStart = Date()
+            try autoreleasepool {
+                let names = try FileManager.default.contentsOfDirectory(atPath: f.root.path)
+                XCTAssertFalse(names.contains(where: LocalEndpointSession.isRecoveryArtifact(named:)))
+            }
+            previous.append(Date().timeIntervalSince(oldStart))
+            let start = Date()
+            try session.validateMetadataRecoveryIsResolved()
+            streaming.append(Date().timeIntervalSince(start))
+        }
+        print("RECOVERY_SCAN_BENCHMARK files=100000 samples=20 previousSeconds=\(previous) streamingSeconds=\(streaming)")
+        // A new recovery name must still be found after repeated successful scans.
+        try write("retained", ".aagedal-sync-late.transaction", fixture: f)
+        XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved())
+        XCTAssertEqual(try read(".aagedal-sync-late.transaction", fixture: f), "retained")
+    }
+
     func testRecoveryAppearingAfterAdmissionBlocksSnapshotAndPublication() async throws {
         let f = try fixture()
         try write("original", "photo.jpg", fixture: f)

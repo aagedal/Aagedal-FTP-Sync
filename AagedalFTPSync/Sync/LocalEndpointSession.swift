@@ -251,13 +251,36 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     /// Require reconciliation before treating that listing as a complete batch.
     func validateMetadataRecoveryIsResolved() throws {
         try Task.checkCancellation()
-        let names = try fileManager.contentsOfDirectory(atPath: rootURL.path)
-        if let name = names.first(where: Self.isRecoveryArtifact(named:)) {
-            let recovery = rootURL.appendingPathComponent(name)
-            throw AppError.transferFailed(
-                "A recovery folder from an earlier operation remains at \(recovery.path). Recover the retained files and remove the resolved hidden folder before retrying metadata reprocessing."
-            )
+        // Recheck every boundary without retaining an array of every child name.
+        // Do not cache this result: another operation can leave recovery behind
+        // while metadata resolution is suspended. Include hidden names and links.
+        guard let directory = opendir(rootURL.path) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
+        defer { closedir(directory) }
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let entry = readdir(directory) else {
+                let error = errno
+                guard error == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(error))
+                }
+                break
+            }
+            let name = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
+                    String(cString: $0)
+                }
+            }
+            if Self.isRecoveryArtifact(named: name) {
+                let recovery = rootURL.appendingPathComponent(name)
+                throw AppError.transferFailed(
+                    "A recovery folder from an earlier operation remains at \(recovery.path). Recover the retained files and remove the resolved hidden folder before retrying metadata reprocessing."
+                )
+            }
+        }
+        try Task.checkCancellation()
     }
 
     /// Check the snapshot used by metadata resolution without changing the destination.
