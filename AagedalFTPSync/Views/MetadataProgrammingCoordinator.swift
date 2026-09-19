@@ -242,6 +242,13 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         return "Apply the saved schedule and enabled geocoding and face recognition to matching files already in the local destination."
     }
 
+    func reprocessConfirmationMessage(in store: AppStore) -> String {
+        if let loadedJobID, case .failed(let message) = store.metadataReprocessPhases[loadedJobID] {
+            return "Preflight failed: \(message)"
+        }
+        return reprocessConfirmationMessage(for: selectedJob(in: store), preflight: reprocessPreflight(in: store))
+    }
+
     func reprocessConfirmationMessage(
         for job: SyncJob?,
         preflight: MetadataReprocessPreflight? = nil

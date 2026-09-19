@@ -1012,7 +1012,7 @@ struct MetadataProgrammingView: View {
     }
 
     private var reprocessConfirmationMessage: String {
-        coordinator.reprocessConfirmationMessage(for: selectedJob, preflight: reprocessPreflight)
+        coordinator.reprocessConfirmationMessage(in: store)
     }
 
     private var reprocessPreflight: MetadataReprocessPreflight? {

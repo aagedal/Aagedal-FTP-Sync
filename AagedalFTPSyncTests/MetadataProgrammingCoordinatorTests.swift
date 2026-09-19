@@ -121,6 +121,51 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         }
     }
 
+    func testProgrammingReviewShowsRecoveryFailureAndClearsItOnRetryForEveryScope() async throws {
+        let (root, store, _, coordinator, jobID, _) = try switchFixture(realFolders: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recovery = root.appendingPathComponent("output/.aagedal-sync-review.transaction")
+        let retained = Data("retained original".utf8)
+        let scopes: [MetadataReprocessScope] = [
+            .all, .photographer(coordinator.draft.photographers[0].id), .clip(coordinator.draft.clips[0].id)
+        ]
+        for scope in scopes {
+            try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+            let original = recovery.appendingPathComponent("original-held-0")
+            try retained.write(to: original)
+            XCTAssertTrue(coordinator.beginReprocessing(scope, in: store))
+            let deadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(jobID), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard case .failed = store.metadataReprocessPhases[jobID] else {
+                return XCTFail("Retained recovery must reject preflight")
+            }
+            let message = coordinator.reprocessConfirmationMessage(in: store)
+            XCTAssertTrue(message.contains("Preflight failed:"))
+            XCTAssertTrue(message.contains(recovery.path))
+            XCTAssertTrue(message.contains("Recover the retained files"))
+            XCTAssertFalse(message.contains("is checking"))
+            XCTAssertNil(store.alertMessage, "The sheet must contain the failure without a competing alert")
+            XCTAssertFalse(coordinator.confirmReprocessing(in: store))
+            XCTAssertEqual(try Data(contentsOf: original), retained)
+            coordinator.cancelPendingReprocessing(in: store)
+            XCTAssertNil(coordinator.pendingReprocessScope)
+
+            // Reconcile only this disposable transaction, preserving its contents.
+            try FileManager.default.moveItem(at: recovery, to: root.appendingPathComponent(UUID().uuidString))
+            XCTAssertTrue(coordinator.beginReprocessing(scope, in: store))
+            XCTAssertFalse(coordinator.reprocessConfirmationMessage(in: store).contains("Preflight failed:"))
+            let retryDeadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(jobID), Date() < retryDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertNotNil(coordinator.reprocessPreflight(in: store))
+            XCTAssertTrue(coordinator.reprocessConfirmationMessage(in: store).contains("Preflight checked 0 files"))
+            coordinator.cancelPendingReprocessing(in: store)
+        }
+    }
+
     func testProgrammingReviewCancellationStopsInFlightPreflight() throws {
         let (root, store, _, coordinator, source, _) = try switchFixture()
         defer { try? FileManager.default.removeItem(at: root) }

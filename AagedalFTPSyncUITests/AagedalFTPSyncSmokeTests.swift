@@ -82,6 +82,57 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         }
     }
 
+    func testProgrammingRecoveryReviewShowsFailureForAllAndClipScopesThenRetries() {
+        launch(seedJob: true, seedMap: true, recoveryFixture: true)
+        element("open-metadata-programming").click()
+        let window = app.windows["Metadata Programming"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        for scoped in [false, true] {
+            if scoped {
+                let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
+                XCTAssertTrue(clip.waitForExistence(timeout: 5))
+                clip.rightClick()
+                let action = app.menuItems["Reprocess This Clip’s Files…"]
+                XCTAssertTrue(action.waitForExistence(timeout: 3))
+                XCTAssertTrue(action.isEnabled)
+                action.click()
+            } else {
+                window.buttons["Reprocess Existing Files…"].click()
+            }
+            let sheet = window.sheets.firstMatch
+            XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+            let failure = sheet.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "Recover the retained files", "Recover the retained files"
+            )).firstMatch
+            XCTAssertTrue(failure.waitForExistence(timeout: 8))
+            XCTAssertFalse(sheet.buttons["Checking Files…"].exists)
+            XCTAssertFalse(sheet.buttons["Reprocess Files"].exists)
+            XCTAssertFalse(sheet.buttons["Reprocess Clip’s Files"].exists)
+            sheet.buttons["Cancel"].click()
+            waitForSheetTransition()
+            XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+        }
+        app.terminate()
+        app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] = "1"
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        element("open-metadata-programming").click()
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        window.buttons["Reprocess Existing Files…"].click()
+        let sheet = window.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let success = sheet.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Preflight checked 0 files", "Preflight checked 0 files"
+        )).firstMatch
+        XCTAssertTrue(success.waitForExistence(timeout: 8))
+        XCTAssertFalse(sheet.buttons["Reprocess Files"].isEnabled)
+        sheet.buttons["Cancel"].click()
+        waitForSheetTransition()
+        XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+    }
+
     func testCreatesJobFromDraft() {
         launch()
 
