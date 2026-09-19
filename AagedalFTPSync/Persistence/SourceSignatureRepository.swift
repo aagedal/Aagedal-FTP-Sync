@@ -180,13 +180,16 @@ actor SourceSignatureRepository {
                 database: database,
                 operation: "load"
             )
+            // Keep requested paths as the outer loop. An ordinary join can scan
+            // all history for this job/source before testing the requested set.
+            // CROSS JOIN preserves indexed point lookups for small batches too.
             let statement = try prepare(
                 """
                 SELECT signatures.relative_path, signatures.size, signatures.modified_at
-                FROM source_signatures AS signatures
-                INNER JOIN requested_signature_paths AS requested
-                    ON requested.relative_path = signatures.relative_path
+                FROM requested_signature_paths AS requested
+                CROSS JOIN source_signatures AS signatures
                 WHERE signatures.job_id = ? AND signatures.source_key = ?
+                    AND signatures.relative_path = requested.relative_path
                 """,
                 in: database
             )

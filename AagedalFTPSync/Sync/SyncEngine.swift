@@ -909,16 +909,6 @@ struct SyncEngine: Sendable {
             leftPassword: leftPassword,
             rightPassword: rightPassword
         )
-        let savedSourceSignatures: [String: SourceFileSignature]
-        if let sourceEndpoint = job.sourceEndpoint {
-            savedSourceSignatures = try await sourceSignatureRepository.signatures(
-                jobID: job.id,
-                sourceEndpoint: sourceEndpoint,
-                relativePaths: destinationFiles.keys
-            )
-        } else {
-            savedSourceSignatures = [:]
-        }
         let files = destinationFiles.values
             .filter { job.filter.includesFileType(path: $0.relativePath) }
             .filter {
@@ -931,6 +921,25 @@ struct SyncEngine: Sendable {
                 return automation?.matchingPhotographer(for: file.relativePath)?.id == scopedPhotographerID
             }
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
+        let savedSourceSignatures: [String: SourceFileSignature]
+        if let sourceEndpoint = job.sourceEndpoint {
+            // Only candidate primaries and their existing companions can contribute
+            // source evidence below. Keep companions even when the file-type filter
+            // excludes XMP, without loading history for unrelated destination files.
+            var signaturePaths = Set(files.map(\.relativePath))
+            for file in files {
+                try Task.checkCancellation()
+                let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
+                if destinationFiles[sidecarPath] != nil { signaturePaths.insert(sidecarPath) }
+            }
+            savedSourceSignatures = try await sourceSignatureRepository.signatures(
+                jobID: job.id,
+                sourceEndpoint: sourceEndpoint,
+                relativePaths: signaturePaths
+            )
+        } else {
+            savedSourceSignatures = [:]
+        }
         // Reserve the complete batch before processing any image. Scheduled
         // metadata can generate RAW companions even without geocoding or faces.
         // Two primaries must never compete for the same existing or new sidecar.

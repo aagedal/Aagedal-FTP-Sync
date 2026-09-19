@@ -429,6 +429,48 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(before[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
     }
 
+    func testReprocessBootstrapRetainsCompanionEvidenceExcludedByFileTypeFilter() async throws {
+        let f = try fixture()
+        let name = "FX_COMPANION.cr3"
+        let sidecarName = "FX_COMPANION.xmp"
+        let raw = Data("synthetic RAW with saved source companion".utf8)
+        try write(raw, name: name, root: f.source)
+        try XMPSidecar.write(XMPData(), to: f.source.appendingPathComponent(sidecarName))
+        XCTAssertFalse(f.job.filter.includesFileType(path: sidecarName))
+        let processingEngine = engine(f)
+        let transfer = try await processingEngine.run(job: f.job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(transfer.metadataReport.applied, 1)
+        // Legacy RAW transfers did not always persist primary signatures. Seed
+        // that explicit ownership prerequisite; transfer recorded the companion.
+        let signatures = SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite"))
+        try await signatures.record(SyncFile(relativePath: name, size: Int64(raw.count),
+            modifiedAt: Date(timeIntervalSince1970: 1_700_000_000)),
+            jobID: f.job.id, sourceEndpoint: f.job.left)
+        let output = f.destination.appendingPathComponent(sidecarName)
+        let before = try Data(contentsOf: output)
+        let attributes = try FileManager.default.attributesOfItem(atPath: output.path)
+        // Unrelated files must not broaden the candidate batch or its audit.
+        try write(Data("unrelated".utf8), name: "background.txt", root: f.destination)
+
+        for preflight in [true, false] {
+            let result = try await processingEngine.reprocessExistingLocalFiles(
+                job: f.job, filter: .staleOrIncomplete, isPreflight: preflight)
+            XCTAssertEqual(result.scanned, 1)
+            XCTAssertEqual(result.applied, 0)
+            XCTAssertEqual(result.skipped, 1)
+            XCTAssertEqual(result.failed, 0)
+            let entry = try XCTUnwrap(result.metadataReport.entries.first)
+            XCTAssertEqual(entry.relativePath, name)
+            XCTAssertNotNil(entry.processingFingerprint)
+            XCTAssertTrue(entry.detail?.contains("bootstrapped from durable source evidence") == true, entry.detail ?? "Missing detail")
+            XCTAssertEqual(try Data(contentsOf: output), before)
+            XCTAssertEqual(try Data(contentsOf: f.destination.appendingPathComponent(name)), raw)
+            let after = try FileManager.default.attributesOfItem(atPath: output.path)
+            XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, after[.systemFileNumber] as? NSNumber)
+            XCTAssertEqual(attributes[.modificationDate] as? Date, after[.modificationDate] as? Date)
+        }
+    }
+
     func testAlreadyAppliedLegacyDestinationWithoutDurableSourceEvidenceRemainsIncomplete() async throws {
         let f = try fixture()
         try write(jpeg(), name: "FX_UNOWNED.jpg", root: f.source)
