@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Release temporary file buffers after each fingerprint chunk so large-image previews
+  and reprocessing do not retain a full file's worth of hashing buffers. Check
+  cancellation before opening fingerprint inputs and after the final read.
 - Open routine version 3 installations directly: create a fresh store or migrate
   unambiguous current 2.9 data automatically, while retaining originals and
   stopping for backup-only, damaged or conflicting sources. Remove the permanent

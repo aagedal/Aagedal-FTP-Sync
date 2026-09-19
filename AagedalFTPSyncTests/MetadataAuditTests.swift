@@ -1,10 +1,67 @@
 import AppKit
+import Darwin
 import Foundation
 import SwiftMediaMetadata
 import XCTest
 @testable import AagedalFTPSync
 
 final class MetadataAuditTests: XCTestCase {
+    func testLargeOutputFingerprintReleasesReadBuffersBeforeReturning() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        XCTAssertTrue(FileManager.default.createFile(atPath: file.path, contents: nil))
+        defer { try? FileManager.default.removeItem(at: file) }
+        let writer = try FileHandle(forWritingTo: file)
+        try writer.truncate(atOffset: 128 * 1_048_576)
+        try writer.close()
+        let artifacts = [MetadataProcessingFingerprint.OutputArtifact(
+            role: "primary", relativePath: "large.CR3", fileURL: file)]
+
+        // Keep an outer pool alive as a long-running preview/transfer worker can.
+        // Without per-chunk draining, Foundation retains the whole 128 MiB input.
+        try autoreleasepool {
+            let before = try residentBytes()
+            let first = try MetadataProcessingFingerprint.outputRevision(artifacts)
+            let after = try residentBytes()
+            let growth = after > before ? after - before : 0
+            print("Fingerprint 128 MiB retained growth: \(growth) bytes")
+            XCTAssertLessThan(growth, 32 * 1_048_576)
+            XCTAssertEqual(try MetadataProcessingFingerprint.outputRevision(artifacts), first)
+        }
+    }
+
+    func testCancelledOutputFingerprintThrowsBeforeOpeningFilesOrReturningEmptyRevision() async throws {
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let cases: [[MetadataProcessingFingerprint.OutputArtifact]] = [
+            [], [.init(role: "primary", relativePath: "missing.CR3", fileURL: missing)]
+        ]
+        for artifacts in cases {
+            let task = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return try MetadataProcessingFingerprint.outputRevision(artifacts)
+            }
+            do {
+                _ = try await task.value
+                XCTFail("Cancelled fingerprint must not return a revision")
+            } catch is CancellationError {
+                // Missing files must not mask cancellation with an I/O error.
+            } catch { XCTFail("Expected cancellation, got \(error)") }
+        }
+    }
+
+    private func residentBytes() throws -> UInt64 {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else {
+            throw NSError(domain: NSMachErrorDomain, code: Int(result))
+        }
+        return UInt64(info.resident_size)
+    }
+
     func testRunReportCountsOutcomesSeparately() {
         let fixture = AuditFixture()
         let report = MetadataRunReport(entries: [

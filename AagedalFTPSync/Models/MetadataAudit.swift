@@ -515,6 +515,7 @@ struct MetadataProcessingFingerprint: Codable, Equatable, Sendable {
     }
 
     static func outputRevision(_ artifacts: [OutputArtifact]) throws -> String {
+        try Task.checkCancellation()
         var canonical = CanonicalDigest(domain: "metadata-output-v1")
         for artifact in artifacts.sorted(by: {
             if $0.role != $1.role { return $0.role < $1.role }
@@ -528,13 +529,23 @@ struct MetadataProcessingFingerprint: Codable, Equatable, Sendable {
     }
 
     private static func contentRevision(at url: URL) throws -> String {
+        try Task.checkCancellation()
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+        while true {
             try Task.checkCancellation()
-            hasher.update(data: data)
+            // FileHandle's Foundation buffers can otherwise survive until the
+            // caller's autorelease pool drains, retaining the entire RAW file.
+            let hasMore = try autoreleasepool {
+                guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { return false }
+                try Task.checkCancellation()
+                hasher.update(data: data)
+                return true
+            }
+            if !hasMore { break }
         }
+        try Task.checkCancellation()
         return hasher.finalize().hexString
     }
 
