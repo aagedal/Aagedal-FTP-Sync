@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retain audit receipts for completed files when a later input failure interrupts
+  metadata reprocessing, while keeping the batch failure visible.
+
 - Discard Metadata Programming reprocessing approval when its saved job, draft,
   filter or selected job changes; cancel pending preflight when leaving the editor.
 

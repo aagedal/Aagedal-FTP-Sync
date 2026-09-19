@@ -84,6 +84,14 @@ struct MetadataReprocessCancellation: Error {
     let metadataReport: MetadataRunReport
 }
 
+/// A later input failure must not discard receipts for already published files.
+struct MetadataReprocessFailure: LocalizedError {
+    let underlyingError: Error
+    let metadataReport: MetadataRunReport
+
+    var errorDescription: String? { underlyingError.localizedDescription }
+}
+
 struct MetadataReprocessResult: Equatable, Sendable {
     let scanned: Int
     let applied: Int
@@ -1407,6 +1415,9 @@ struct SyncEngine: Sendable {
         } catch is CancellationError {
             if isPreflight { throw CancellationError() }
             throw MetadataReprocessCancellation(metadataReport: metadataReport)
+        } catch {
+            guard !isPreflight, metadataReport.hasActivity else { throw error }
+            throw MetadataReprocessFailure(underlyingError: error, metadataReport: metadataReport)
         }
 
         return MetadataReprocessResult(

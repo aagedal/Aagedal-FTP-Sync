@@ -1390,6 +1390,11 @@ final class AppStore: ObservableObject {
         } catch let cancellation as MetadataReprocessCancellation {
             recordMetadataAudit(cancellation.metadataReport, jobID: jobID)
             metadataReprocessPhases[jobID] = .cancelled
+        } catch let failure as MetadataReprocessFailure {
+            recordMetadataAudit(failure.metadataReport, jobID: jobID)
+            let message = failure.localizedDescription
+            metadataReprocessPhases[jobID] = .failed(message)
+            appendAlert(message)
         } catch is CancellationError {
             metadataReprocessPhases[jobID] = .cancelled
         } catch {

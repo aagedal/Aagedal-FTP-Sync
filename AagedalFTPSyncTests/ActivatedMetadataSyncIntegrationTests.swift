@@ -91,6 +91,92 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertNotEqual(try Data(contentsOf: f.destination.appendingPathComponent("FX_1.jpg")), untouched)
     }
 
+    @MainActor
+    func testLaterInputFailureRetainsDurableReceiptsOnlyForPublishedWork() async throws {
+        for isPreflight in [false, true] {
+            let f = try fixture(headline: "Before")
+            for name in ["FX_1.jpg", "FX_2.jpg"] { try write(jpeg(), name: name, root: f.source) }
+            _ = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+            var job = f.job
+            job.metadataAutomation?.existingFieldPolicy = .overwrite
+            job.metadataAutomation?.clips[0].fields.setHeadline(try .activated("After"))
+            let first = f.destination.appendingPathComponent("FX_1.jpg")
+            let second = f.destination.appendingPathComponent("FX_2.jpg")
+            let before = try Data(contentsOf: first)
+
+            // Simulate a destination disappearing after enumeration and after
+            // the first image has completed, before the second export begins.
+            final class DisappearingInputClock: @unchecked Sendable {
+                private let lock = NSLock()
+                private var calls = 0
+                let target: URL
+                init(target: URL) { self.target = target }
+                func now() -> Date {
+                    lock.lock()
+                    calls += 1
+                    let remove = calls == 2
+                    lock.unlock()
+                    if remove { try? FileManager.default.removeItem(at: target) }
+                    return Date(timeIntervalSince1970: 1_704_153_600)
+                }
+            }
+            let clock = DisappearingInputClock(target: second)
+            let signatures = SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite"))
+            let manifest = DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json"))
+            let failingEngine = SyncEngine(sourceSignatureRepository: signatures,
+                downloadManifestRepository: manifest, now: { clock.now() })
+            let storage = AppStorageLayout(root: f.root, storageFormat: .version3)
+            try VersionedStoreCodec(format: .version3, store: .jobs)
+                .encode([SyncJob](), encoder: JSONEncoder())
+                .write(to: f.root.appendingPathComponent("jobs.json"))
+            try VersionedStoreCodec(format: .version3, store: .metadataAudit)
+                .encode([MetadataAuditEntry](), encoder: JSONEncoder())
+                .write(to: f.root.appendingPathComponent("audit.json"))
+            let jobs = JobRepository(fileURL: f.root.appendingPathComponent("jobs.json"), storage: storage)
+            try jobs.save([job])
+            let audit = MetadataAuditRepository(fileURL: f.root.appendingPathComponent("audit.json"), storage: storage)
+            let store = AppStore(repository: jobs,
+                metadataPresetRepository: MetadataPresetRepository(fileURL: f.root.appendingPathComponent("presets.json")),
+                photographerProfileRepository: PhotographerProfileRepository(fileURL: f.root.appendingPathComponent("photographers.json")),
+                serverProfileRepository: ServerProfileRepository(fileURL: f.root.appendingPathComponent("servers.json")),
+                metadataAuditRepository: audit,
+                syncFailureRepository: SyncFailureRepository(fileURL: f.root.appendingPathComponent("failures.json")),
+                sourceSignatureRepository: signatures, downloadManifestRepository: manifest,
+                engine: failingEngine, allowsCredentialGarbageCollection: false, startsJobsOnInitialization: false)
+            if isPreflight {
+                XCTAssertTrue(store.preflightMetadataReprocess(job.id, filter: .all))
+            } else {
+                store.reprocessExistingLocalFiles(job.id, filter: .all)
+            }
+            let deadline = Date().addingTimeInterval(10)
+            while store.isJobBusy(job.id), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(store.isJobBusy(job.id))
+            guard case .failed(let message) = store.metadataReprocessPhases[job.id] else {
+                return XCTFail("A missing later input must remain a visible batch failure")
+            }
+            XCTAssertFalse(message.isEmpty)
+            XCTAssertTrue(store.alertMessage?.contains(message) == true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
+            let persisted = try audit.load(jobID: job.id)
+            if isPreflight {
+                XCTAssertTrue(persisted.isEmpty, "Preflight receipts must never claim publication")
+                XCTAssertEqual(try Data(contentsOf: first), before)
+            } else {
+                XCTAssertEqual(persisted.count, 1)
+                let receipt = try XCTUnwrap(persisted.first)
+                XCTAssertEqual(receipt.relativePath, "FX_1.jpg")
+                XCTAssertEqual(receipt.status, .applied)
+                XCTAssertNotNil(receipt.processingFingerprint)
+                XCTAssertEqual(store.metadataAuditEntries[job.id]?.map(\.id), persisted.map(\.id))
+                XCTAssertEqual(store.metadataAuditEntries[job.id]?.first?.processingFingerprint,
+                               receipt.processingFingerprint)
+                XCTAssertEqual(try ImageMetadata.read(from: first).iptc.headline, "After")
+            }
+        }
+    }
+
     func testWriterUpgradeInvalidatesReceiptWithoutAutomaticRetransfer() async throws {
         let f = try fixture()
         let name = "FX_WRITER.jpg"
