@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reject reprocessing batches whose RAW files share an XMP output before changing
+  any files, including scheduled-only literal and variable templates.
+
 - Reject metadata reprocessing receipts when the destination image or RAW sidecar
   changes during resolution, including passes that would not rewrite metadata.
 

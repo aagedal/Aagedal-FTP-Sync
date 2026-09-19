@@ -923,16 +923,14 @@ struct SyncEngine: Sendable {
                 return automation?.matchingPhotographer(for: file.relativePath)?.id == scopedPhotographerID
             }
             .sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
-        if geocodingEnabled || job.metadataFaceRecognition != nil {
-            try validateGeneratedSidecarOutputPaths(
-                candidates: files.filter {
-                    MetadataProcessingServices.geocodingApplies(to: $0.relativePath, settings: job.metadataGeocoding)
-                        || MetadataProcessingServices.faceRecognitionApplies(to: $0.relativePath, settings: job.metadataFaceRecognition)
-                },
-                sourceFiles: destinationFiles, automation: automation, geocoding: job.metadataGeocoding,
-                faceRecognition: job.metadataFaceRecognition,
-                enforceLocalPathRules: true, occupiedDestinationPaths: Set(destinationFiles.keys))
-        }
+        // Reserve the complete batch before processing any image. Scheduled
+        // metadata can generate RAW companions even without geocoding or faces.
+        // Two primaries must never compete for the same existing or new sidecar.
+        try validateGeneratedSidecarOutputPaths(
+            candidates: files,
+            sourceFiles: destinationFiles, automation: automation, geocoding: job.metadataGeocoding,
+            faceRecognition: job.metadataFaceRecognition,
+            enforceLocalPathRules: true, occupiedDestinationPaths: Set(destinationFiles.keys))
         if automation?.timestampPolicy == .sourceModification, !job.preserveModificationDates {
             let missingSourcePaths = files
                 .map(\.relativePath)

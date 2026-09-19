@@ -891,6 +891,49 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(result.applied, 0)
         XCTAssertEqual(try Data(contentsOf: target), Data("concurrent edit".utf8))
     }
+    func testScheduledReprocessingRejectsSharedRawSidecarsBeforeAnyWrite() async throws {
+        for activated in [false, true] {
+            for existingSidecar in [false, true] {
+                let f = try fixture()
+                var job = f.job
+                if !activated {
+                    job.metadataAutomation?.clips[0].fields.setHeadline(.literal("Literal headline"))
+                }
+                let names = ["FX_0.jpg", "FX_SHARED.cr3", "FX_SHARED.nef"]
+                for root in [f.source, f.destination] {
+                    try write(jpeg(), name: names[0], root: root)
+                    for name in names.dropFirst() {
+                        try write(Data("synthetic RAW \(name)".utf8), name: name, root: root)
+                    }
+                }
+                let sidecar = f.destination.appendingPathComponent("FX_SHARED.xmp")
+                if existingSidecar {
+                    var xmp = XMPData(); xmp.description = "Preserve this caption"
+                    try XMPSidecar.write(xmp, to: sidecar)
+                }
+                let before = try names.map { try Data(contentsOf: f.destination.appendingPathComponent($0)) }
+                let beforeSidecar = existingSidecar ? try Data(contentsOf: sidecar) : nil
+                for preflight in [true, false] {
+                    do {
+                        _ = try await engine(f).reprocessExistingLocalFiles(job: job, isPreflight: preflight)
+                        XCTFail("Shared RAW sidecars must be rejected before processing")
+                    } catch {
+                        XCTAssertTrue(error.localizedDescription.contains("would both write FX_SHARED.xmp"),
+                                      error.localizedDescription)
+                    }
+                    for (name, bytes) in zip(names, before) {
+                        XCTAssertEqual(try Data(contentsOf: f.destination.appendingPathComponent(name)), bytes)
+                    }
+                    if let beforeSidecar {
+                        XCTAssertEqual(try Data(contentsOf: sidecar), beforeSidecar)
+                    } else {
+                        XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
+                    }
+                }
+            }
+        }
+    }
+
     func testLiteralRawReprocessingPreservesPrimaryAndUnrelatedSidecarFields() async throws {
         let f = try fixture()
         var job = f.job
