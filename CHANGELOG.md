@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reject metadata reprocessing receipts when the destination image or RAW sidecar
+  changes during resolution, including passes that would not rewrite metadata.
+
 - Limit clip reprocessing conflict review and audit results to the selected clip,
   and include its edited images in the scanned count.
 

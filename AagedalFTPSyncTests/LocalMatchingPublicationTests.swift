@@ -35,6 +35,24 @@ final class LocalMatchingPublicationTests: XCTestCase {
         return try directories.flatMap { try FileManager.default.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil) }
     }
 
+    func testReadOnlySnapshotValidationDetectsNewCompanionAndPrimaryEdits() throws {
+        let f = try fixture()
+        try write("RAW bytes", "photo.cr3", fixture: f)
+        let original = try staged("photo.cr3", contents: "RAW bytes", fixture: f, prefix: "original")
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        XCTAssertNoThrow(try session.validateMetadataSnapshot(primary: original,
+            sidecar: nil, absentSidecarPath: "photo.xmp"))
+        try write("User sidecar", "photo.xmp", fixture: f)
+        XCTAssertThrowsError(try session.validateMetadataSnapshot(primary: original,
+            sidecar: nil, absentSidecarPath: "photo.xmp"))
+        XCTAssertEqual(try read("photo.xmp", fixture: f), "User sidecar")
+        try write("NEW bytes", "photo.cr3", fixture: f)
+        XCTAssertThrowsError(try session.validateMetadataSnapshot(primary: original,
+            sidecar: nil, absentSidecarPath: nil))
+        XCTAssertEqual(try read("photo.cr3", fixture: f), "NEW bytes")
+        XCTAssertTrue(try recoveryFiles(f).isEmpty)
+    }
+
     func testMatchingEmbeddedReplacementPublishesAndRemovesPrivateHoldings() async throws {
         let f = try fixture()
         try write("original", "photo.jpg", fixture: f)

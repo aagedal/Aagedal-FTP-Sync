@@ -327,6 +327,47 @@ final class MetadataGeocodingSyncIntegrationTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sidecar.path))
     }
 
+    func testDestinationEditDuringNoChangeReprocessingCannotReceiveCompleteReceipt() async throws {
+        for preflight in [false, true] {
+            for filter in [MetadataReprocessFilter.all, .staleOrIncomplete] {
+                var f = try fixture()
+                _ = try rawPair(at: f.source)
+                let initial = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+                let previous = try XCTUnwrap(initial.metadataReport.entries.first)
+                XCTAssertNotNil(previous.processingFingerprint)
+                f.job.metadataGeocoding = try .init(cityPolicy: .overwrite,
+                    countryPolicy: .overwrite, localeIdentifier: "en_US")
+                let target = f.destination.appendingPathComponent("photo.xmp")
+                let original = try Data(contentsOf: target)
+                let date = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: target.path)[.modificationDate] as? Date)
+                let provider = MetadataGeocodingService(
+                    identity: .init(provider: "injected", version: "1", dataset: "fixture")
+                ) { _ in
+                    do {
+                        var xmp = try XMPSidecar.read(from: target)
+                        xmp.headline = "Swap headline"
+                        try XMPSidecar.write(xmp, to: target)
+                        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: target.path)
+                        XCTAssertEqual(try Data(contentsOf: target).count, original.count)
+                    } catch { XCTFail("Could not edit fixture: \(error)") }
+                    return .found(.init(city: "Oslo", country: "Norway", source: "local fixture", distanceMeters: 25))
+                }
+                let resolver = SyncEngine(geocodingService: provider,
+                    sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+                    downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")))
+                let result = try await resolver.reprocessExistingLocalFiles(job: f.job,
+                    filter: filter, latestOutcomes: ["photo.cr3": previous], isPreflight: preflight)
+                XCTAssertEqual(result.failed, 1)
+                XCTAssertEqual(result.applied, 0)
+                let outcome = try XCTUnwrap(result.metadataReport.entries.first)
+                XCTAssertEqual(outcome.status, .failed)
+                XCTAssertNil(outcome.processingFingerprint)
+                XCTAssertTrue(outcome.detail?.contains("destination changed") == true)
+                XCTAssertEqual(try XMPSidecar.read(from: target).headline, "Swap headline")
+            }
+        }
+    }
+
     func testSourceSidecarChangedDuringGeocodingDoesNotPublishStaleProcessedPair() async throws {
         var f = try fixture()
         f.job.processedFolder = try endpoint(f.processed)

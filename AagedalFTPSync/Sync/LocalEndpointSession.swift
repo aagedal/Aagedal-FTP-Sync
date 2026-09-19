@@ -222,6 +222,26 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         }
     }
 
+    /// Check the snapshot used by metadata resolution without changing the destination.
+    func validateMetadataSnapshot(primary: EndpointFileImport, sidecar: EndpointFileImport?,
+                                  absentSidecarPath: String?) throws {
+        for original in [primary, sidecar].compactMap({ $0 }) {
+            try Task.checkCancellation()
+            let destination = try safeURL(for: original.file.relativePath)
+            _ = try regularIdentity(destination)
+            guard fileManager.contentsEqual(atPath: destination.path, andPath: original.localURL.path) else {
+                throw AppError.transferFailed("The destination changed during metadata processing. Review it and retry.")
+            }
+        }
+        if let absentSidecarPath {
+            let destination = try safeURL(for: absentSidecarPath)
+            var info = stat()
+            guard lstat(destination.path, &info) != 0, errno == ENOENT else {
+                throw AppError.transferFailed("A sidecar appeared during metadata processing. Review the destination and retry.")
+            }
+        }
+    }
+
     /// Per-image publication (image and optional sidecar). Originals are held by
     /// exclusive rename, then compared by bytes, never just size/date. Conflicting
     /// edits and originals that cannot be restored are retained in the recovery

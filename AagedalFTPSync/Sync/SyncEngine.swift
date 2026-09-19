@@ -1100,6 +1100,27 @@ struct SyncEngine: Sendable {
                     scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription))
                 continue
             }
+            // Resolution can suspend for providers. Validate even no-write paths:
+            // a receipt must describe the destination actually inspected.
+            do {
+                let usesSidecar = MetadataWriter.usesXMPSidecar(for: file.relativePath)
+                let sidecar = existingOutputSidecarURL.flatMap { url in
+                    destinationFiles[sidecarPath].map { EndpointFileImport(localURL: url, file: $0) }
+                }
+                try destination.validateMetadataSnapshot(
+                    primary: EndpointFileImport(localURL: temporaryURL, file: file),
+                    sidecar: sidecar,
+                    absentSidecarPath: usesSidecar && sidecar == nil ? sidecarPath : nil)
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                failed += 1
+                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: .failed,
+                    timestampPolicy: automation?.timestampPolicy ?? .sourceModification,
+                    scheduledAt: scheduledAt, assignment: assignment,
+                    detail: "The destination changed during metadata processing; no changes or receipt were published. \(error.localizedDescription)"))
+                continue
+            }
             try Task.checkCancellation()
             if filter == .staleOrIncomplete,
                let previousFingerprint,
