@@ -91,6 +91,7 @@ contract and open validation matrix.
 - Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
 - A read-only local-folder preview, separate metadata outcome counts, and a per-file audit trail make automation decisions inspectable
 - Indexed, recoverable source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
+- Retained reprocessing backups include a path manifest; follow the [recovery guide](Documentation/Metadata-Reprocessing-Recovery.md) to reconcile originals and concurrent edits
 - Successfully tagged files can use a custom processed folder or a managed main folder containing sibling `Synced Files` and `Processed Files` folders
 - Processed pictures can optionally be sorted into sanitized `Photographer Name (INITIALS)` sub-folders while preserving their source-relative paths
 - Sync jobs, their referenced server profiles, and metadata programming can be exported separately or together in `.aftpsync` packages, with password protection enabled by default

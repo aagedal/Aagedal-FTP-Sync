@@ -7,8 +7,28 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     private let fileManager = FileManager.default
     private let holdingURLFactory: @Sendable (URL) -> URL
     private let holdingRemoval: @Sendable (URL) throws -> Void
-    enum MatchingImportPhase: Sendable { case originalsHeld, published(Int), beforeCommit }
+    enum MatchingImportPhase: Sendable { case prepared, originalsHeld, published(Int), beforeCommit }
     private let matchingImportHook: @Sendable (MatchingImportPhase) throws -> Void
+
+    /// Immutable path map, written before moving originals. File presence must be
+    /// inspected during recovery: this is not a commit marker or an automatic replay log.
+    struct MatchingRecoveryManifest: Codable {
+        struct Original: Codable {
+            let relativePath: String
+            let snapshotFilename: String
+            let heldFilename: String
+            let isReplaced: Bool
+        }
+        struct Output: Codable {
+            let relativePath: String
+            let stagedFilename: String
+            let snapshotFilename: String
+            let rollbackFilename: String
+        }
+        let schemaVersion: Int
+        let originals: [Original]
+        let outputs: [Output]
+    }
 
     init(
         endpoint: Endpoint,
@@ -296,6 +316,26 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                 outputs.append(Output(destination: destination, staged: staged, expected: expected,
                                       identity: try regularIdentity(staged)))
             }
+            // Keep the map beside the backups so a process interruption cannot
+            // leave numbered holdings with no record of their nested destination.
+            let manifest = MatchingRecoveryManifest(
+                schemaVersion: 1,
+                originals: originals.enumerated().map { index, item in
+                    .init(relativePath: item.file.relativePath,
+                          snapshotFilename: originalsPrepared[index].expected.lastPathComponent,
+                          heldFilename: originalsPrepared[index].held.lastPathComponent,
+                          isReplaced: originalsPrepared[index].replaced)
+                },
+                outputs: imports.enumerated().map { index, item in
+                    .init(relativePath: item.file.relativePath,
+                          stagedFilename: outputs[index].staged.lastPathComponent,
+                          snapshotFilename: outputs[index].expected.lastPathComponent,
+                          rollbackFilename: "rollback-output-\(index)")
+                })
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"), options: .atomic)
+            try matchingImportHook(.prepared)
             for (index, original) in originalsPrepared.enumerated() {
                 try Task.checkCancellation()
                 try moveExclusively(from: original.destination, to: original.held)

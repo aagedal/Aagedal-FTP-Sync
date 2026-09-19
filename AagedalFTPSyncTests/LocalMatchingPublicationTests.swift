@@ -53,6 +53,72 @@ final class LocalMatchingPublicationTests: XCTestCase {
         XCTAssertTrue(try recoveryFiles(f).isEmpty)
     }
 
+    func testRecoveryManifestPrecedesMovesAndPreparationFailureLeavesOriginalsIntact() async throws {
+        let f = try fixture()
+        try write("original", "photo.jpg", fixture: f)
+        let original = try staged("photo.jpg", contents: "original", fixture: f, prefix: "old")
+        let output = try staged("photo.jpg", contents: "processed", fixture: f, prefix: "new")
+        let root = f.root
+        let session = try LocalEndpointSession(endpoint: f.endpoint, matchingImportHook: { phase in
+            guard case .prepared = phase else { return }
+            let recovery = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+                .first { $0.lastPathComponent.hasSuffix(".transaction") })
+            let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
+                from: Data(contentsOf: recovery.appendingPathComponent("recovery.json")))
+            XCTAssertEqual(manifest.schemaVersion, 1)
+            XCTAssertEqual(manifest.originals.first?.relativePath, "photo.jpg")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("original-held-0").path))
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("photo.jpg")), Data("original".utf8))
+            throw CancellationError()
+        })
+        do {
+            try await session.importFilesTransactionallyMatching([output], replacing: [original], preserveDate: true, verifySize: true)
+            XCTFail("Preparation cancellation must abort publication")
+        } catch is CancellationError {} catch { XCTFail("Expected cancellation, got \(error)") }
+        XCTAssertEqual(try read("photo.jpg", fixture: f), "original")
+        XCTAssertTrue(try recoveryFiles(f).isEmpty)
+    }
+
+    func testRetainedManifestMapsNestedRawAndSidecarWithoutExposingInputPaths() async throws {
+        let f = try fixture()
+        let directory = "Pictures/Åse's event"
+        try FileManager.default.createDirectory(at: f.root.appendingPathComponent(directory), withIntermediateDirectories: true)
+        let rawPath = directory + "/photo.cr3", sidecarPath = directory + "/photo.xmp"
+        try write("RAW", rawPath, fixture: f)
+        try write("old sidecar", sidecarPath, fixture: f)
+        let originals = try [staged(rawPath, contents: "RAW", fixture: f, prefix: "raw"),
+                             staged(sidecarPath, contents: "old sidecar", fixture: f, prefix: "old")]
+        let output = try staged(sidecarPath, contents: "processed", fixture: f, prefix: "new")
+        let target = f.root.appendingPathComponent(sidecarPath)
+        let session = try LocalEndpointSession(endpoint: f.endpoint, matchingImportHook: { phase in
+            if case .published = phase { try Data("concurrent edit".utf8).write(to: target) }
+        })
+        do {
+            try await session.importFilesTransactionallyMatching([output], replacing: originals, preserveDate: true, verifySize: true)
+            XCTFail("Concurrent edit must retain the original backup")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("Recover retained files")) }
+        let files = try recoveryFiles(f)
+        let manifestURL = try XCTUnwrap(files.first { $0.lastPathComponent == "recovery.json" })
+        let data = try Data(contentsOf: manifestURL)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains(f.inputs.path))
+        let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self, from: data)
+        XCTAssertEqual(manifest.originals.map(\.relativePath), [rawPath, sidecarPath])
+        XCTAssertEqual(manifest.originals.map(\.isReplaced), [false, true])
+        XCTAssertEqual(manifest.outputs.map(\.relativePath), [sidecarPath])
+        let backup = try XCTUnwrap(manifest.originals.last)
+        let recovery = manifestURL.deletingLastPathComponent()
+        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(backup.heldFilename)), Data("old sidecar".utf8))
+        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(backup.snapshotFilename)), Data("old sidecar".utf8))
+        let published = try XCTUnwrap(manifest.outputs.first)
+        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(published.snapshotFilename)), Data("processed".utf8))
+        XCTAssertEqual(published.stagedFilename, "output-stage-0")
+        XCTAssertEqual(published.rollbackFilename, "rollback-output-0")
+        XCTAssertEqual(try read(rawPath, fixture: f), "RAW")
+        XCTAssertEqual(try read(sidecarPath, fixture: f), "concurrent edit")
+        let listing = try await session.listFiles()
+        XCTAssertEqual(Set(listing.keys), Set([rawPath, sidecarPath]))
+    }
+
     func testMatchingEmbeddedReplacementPublishesAndRemovesPrivateHoldings() async throws {
         let f = try fixture()
         try write("original", "photo.jpg", fixture: f)
