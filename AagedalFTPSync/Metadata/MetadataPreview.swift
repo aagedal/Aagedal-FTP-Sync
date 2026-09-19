@@ -344,13 +344,16 @@ enum MetadataPreviewService {
                     clipID: nil, clipName: nil))
                 continue
             }
-            item.existingFields = try? MetadataWriter.existingFields(at: canonical, relativePath: path)
-            item.existingFieldsUnavailable = item.existingFields?.readable != true
-            item.existingPlaces = try? MetadataWriter.existingPlaceFields(at: canonical, relativePath: path)
             var processing: MetadataProcessingResult?
-            let status: MetadataPreviewStatus
+            var status: MetadataPreviewStatus
             var detail: String?
             do {
+                // Resolution can suspend for a provider or model. Bind all displayed
+                // values to one content revision, including companion presence.
+                let inputRevision = try previewInputRevision(at: canonical, relativePath: path)
+                item.existingFields = try? MetadataWriter.existingFields(at: canonical, relativePath: path)
+                item.existingFieldsUnavailable = item.existingFields?.readable != true
+                item.existingPlaces = try? MetadataWriter.existingPlaceFields(at: canonical, relativePath: path)
                 let resolved = try await MetadataProcessingCoordinator.prepare(assignment: assignment,
                     geocoding: perFileGeocoding, service: service, services: services,
                     faceRecognition: perFileFaceRecognition,
@@ -370,8 +373,18 @@ enum MetadataPreviewService {
                 if enabled != nil, scheduled == nil {
                     detail = "Capture time was unavailable for scheduling. Independent location fields were still considered."
                 }
+                guard try previewInputRevision(at: canonical, relativePath: path) == inputRevision else {
+                    throw AppError.invalidConfiguration("The image or its sidecar changed during preview. Refresh the preview to use the updated file.")
+                }
             } catch is CancellationError { throw CancellationError() }
-            catch { status = .previewFailed; detail = "Could not prepare this file: \(error.localizedDescription)" }
+            catch {
+                status = .previewFailed
+                detail = "Could not prepare this file: \(error.localizedDescription)"
+                processing = nil
+                item.existingFields = nil
+                item.existingFieldsUnavailable = true
+                item.existingPlaces = nil
+            }
             items.append(.init(relativePath: path, sourceModifiedAt: modified, scheduledAt: scheduled,
                 status: status, photographerID: item.photographerID, photographerName: item.photographerName,
                 clipID: item.clipID, clipName: item.clipName, processing: processing, detail: detail,
@@ -381,6 +394,20 @@ enum MetadataPreviewService {
         try Task.checkCancellation()
         if let enumerationError { throw AppError.folderPermissionLost("Could not finish reading the preview folder: \(enumerationError.localizedDescription)") }
         return .init(items: items.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending })
+    }
+
+    private static func previewInputRevision(at fileURL: URL, relativePath: String) throws -> String {
+        var artifacts = [MetadataProcessingFingerprint.OutputArtifact(
+            role: "primary", relativePath: relativePath, fileURL: fileURL
+        )]
+        if MetadataWriter.usesXMPSidecar(for: relativePath) {
+            let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                artifacts.append(.init(role: "sidecar",
+                    relativePath: MetadataWriter.sidecarRelativePath(for: relativePath), fileURL: sidecar))
+            }
+        }
+        return try MetadataProcessingFingerprint.outputRevision(artifacts)
     }
 
     private static func matchingPhotographer(

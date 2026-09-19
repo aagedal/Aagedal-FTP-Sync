@@ -1421,7 +1421,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = no.aagedal.AagedalFTPSyncUITests;
 				SDKROOT = macosx;
-				TEST_TARGET_NAME = AagedalFTPSync;
+				TEST_TARGET_NAME = "Aagedal FTP Sync";
 			};
 			name = Release;
 		};
@@ -1439,7 +1439,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = no.aagedal.AagedalFTPSyncTests;
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AagedalFTPSync.app/Contents/MacOS/AagedalFTPSync";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Aagedal FTP Sync.app/Contents/MacOS/Aagedal FTP Sync";
 			};
 			name = Release;
 		};
@@ -1457,7 +1457,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = no.aagedal.AagedalFTPSyncUITests;
 				SDKROOT = macosx;
-				TEST_TARGET_NAME = AagedalFTPSync;
+				TEST_TARGET_NAME = "Aagedal FTP Sync";
 			};
 			name = Debug;
 		};
@@ -1475,7 +1475,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = no.aagedal.AagedalFTPSyncTests;
 				SDKROOT = macosx;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AagedalFTPSync.app/Contents/MacOS/AagedalFTPSync";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Aagedal FTP Sync.app/Contents/MacOS/Aagedal FTP Sync";
 			};
 			name = Debug;
 		};

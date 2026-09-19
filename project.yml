@@ -29,7 +29,7 @@ packages:
     url: https://github.com/aagedal/SwiftMediaMetadata.git
     exactVersion: 3.0.1
 targets:
-  AagedalFTPSync:
+  Aagedal FTP Sync:
     type: application
     platform: macOS
     preBuildScripts:
@@ -77,7 +77,7 @@ targets:
     sources:
       - path: AagedalFTPSyncTests
     dependencies:
-      - target: AagedalFTPSync
+      - target: Aagedal FTP Sync
       - package: SwiftMediaMetadata
       - package: MetadataProcessing
         product: MetadataTemplates
@@ -92,7 +92,7 @@ targets:
     sources:
       - path: AagedalFTPSyncUITests
     dependencies:
-      - target: AagedalFTPSync
+      - target: Aagedal FTP Sync
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSyncUITests
@@ -102,11 +102,11 @@ schemes:
   AagedalFTPSync:
     build:
       targets:
-        AagedalFTPSync: all
+        Aagedal FTP Sync: all
         AagedalFTPSyncTests: [test]
       preActions:
         - name: Reassemble Pinned AuraFace Weights
-          settingsTarget: AagedalFTPSync
+          settingsTarget: Aagedal FTP Sync
           script: python3 "$PROJECT_DIR/Tools/prepare_bundled_auraface.py"
     test:
       targets:
@@ -114,11 +114,11 @@ schemes:
   AagedalFTPSyncUISmokeTests:
     build:
       targets:
-        AagedalFTPSync: all
+        Aagedal FTP Sync: all
         AagedalFTPSyncUITests: [test]
       preActions:
         - name: Reassemble Pinned AuraFace Weights
-          settingsTarget: AagedalFTPSync
+          settingsTarget: Aagedal FTP Sync
           script: python3 "$PROJECT_DIR/Tools/prepare_bundled_auraface.py"
     test:
       targets:

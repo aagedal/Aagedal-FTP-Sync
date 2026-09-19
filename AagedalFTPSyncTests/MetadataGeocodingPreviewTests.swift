@@ -88,6 +88,63 @@ final class MetadataGeocodingPreviewTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: file), before)
     }
 
+    func testImageChangedDuringLookupDiscardsMixedPreviewEvenWithSameSizeAndDate() async throws {
+        let file = try image()
+        let original = try Data(contentsOf: file)
+        let modified = try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let provider = MetadataGeocodingService(identity: .init(provider: "mutation", version: "1", dataset: "test")) { _ in
+            do {
+                // Keep the image decodable and its size/date unchanged. A byte
+                // comparison must detect edits that a listing cannot reveal.
+                var replacement = try ImageMetadata.read(from: file)
+                replacement.setGPS(latitude: 60, longitude: 10)
+                try replacement.write(to: file)
+                if let modified {
+                    try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+                }
+            } catch { XCTFail("Fixture mutation failed: \(error)") }
+            return .found(.init(city: "Oslo", country: "Norway", source: "fixture", distanceMeters: 0))
+        }
+        let result = try await preview(file, service: provider)
+        let item = try XCTUnwrap(result.items.first)
+        XCTAssertEqual(item.status, .previewFailed)
+        XCTAssertNil(item.processing)
+        XCTAssertNil(item.existingFields)
+        XCTAssertNil(item.existingPlaces)
+        XCTAssertTrue(item.existingFieldsUnavailable)
+        XCTAssertTrue(item.detail?.contains("changed during preview") == true)
+        XCTAssertEqual(result.needsAttention, 1)
+        XCTAssertEqual(result.willApply, 0)
+        XCTAssertEqual(try Data(contentsOf: file).count, original.count)
+    }
+
+    func testRawSidecarChangedDuringLookupIsRejectedAndRefreshUsesNewRevision() async throws {
+        let image = try image()
+        let root = image.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: image)
+        let raw = root.appendingPathComponent("fixture.CR3")
+        try Data("opaque RAW fixture".utf8).write(to: raw)
+        let sidecar = root.appendingPathComponent("fixture.xmp")
+        let before = """
+        <?xml version="1.0"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="59,0N" exif:GPSLongitude="10,0E"/></rdf:RDF></x:xmpmeta>
+        """
+        try Data(before.utf8).write(to: sidecar)
+        let provider = MetadataGeocodingService(identity: .init(provider: "mutation", version: "1", dataset: "test")) { _ in
+            do { try Data(before.replacingOccurrences(of: "59,0N", with: "60,0N").utf8).write(to: sidecar) }
+            catch { XCTFail("Fixture mutation failed: \(error)") }
+            return .found(.init(city: "Oslo", country: "Norway", source: "fixture", distanceMeters: 0))
+        }
+        let result = try await preview(raw, service: provider)
+        let item = try XCTUnwrap(result.items.first { $0.relativePath == "fixture.CR3" })
+        XCTAssertEqual(item.status, .previewFailed)
+        XCTAssertNil(item.processing)
+        XCTAssertTrue(item.detail?.contains("changed during preview") == true)
+        let refreshed = try await preview(raw)
+        XCTAssertEqual(refreshed.items.first { $0.relativePath == "fixture.CR3" }?.status, .willApply)
+        XCTAssertEqual(try Data(contentsOf: raw), Data("opaque RAW fixture".utf8))
+        XCTAssertEqual(try String(contentsOf: sidecar, encoding: .utf8), before.replacingOccurrences(of: "59,0N", with: "60,0N"))
+    }
+
     func testMissingGPSAndBadFileStaySeparateIncompleteAndFailedResults() async throws {
         let file = try image(gps: false)
         let bad = file.deletingLastPathComponent().appendingPathComponent("bad.jpg")
