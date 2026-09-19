@@ -893,6 +893,7 @@ struct SyncEngine: Sendable {
         let destination = try localReprocessSessionFactory(
             destinationEndpoint, job.usesManagedFolderStructure ? .syncedFiles : nil
         )
+        try destination.validateMetadataRecoveryIsResolved()
         let destinationFiles = try await destination.listFiles()
         let sourceFiles = try await sourceFilesForReprocessing(
             destination: destination,

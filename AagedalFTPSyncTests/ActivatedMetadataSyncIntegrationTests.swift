@@ -52,6 +52,41 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_704_153_600) })
     }
 
+    func testReprocessingRequiresRecoveryBeforePreflightOrWrites() async throws {
+        for managed in [false, true] {
+            for suffix in ["transaction", "trash"] {
+                let f = try fixture()
+                var job = f.job
+                if managed { job.processedFilesLocation = .processedSubfolder }
+                let root = managed ? f.destination.appendingPathComponent("Synced Files") : f.destination
+                let recovery = root.appendingPathComponent(suffix == "transaction"
+                    ? ".aagedal-sync-test.transaction" : ".aagedal-sync-reset-test.trash")
+                try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+                let retained = recovery.appendingPathComponent("original-held-0")
+                let backup = Data("retained original".utf8)
+                try backup.write(to: retained)
+                let image = try jpeg()
+                try write(image, name: "FX_1.jpg", root: root)
+                try write(image, name: "FX_1.jpg", root: f.source)
+                for preflight in [true, false] {
+                    do {
+                        _ = try await engine(f).reprocessExistingLocalFiles(job: job, isPreflight: preflight)
+                        XCTFail("Unresolved recovery must block reprocessing, managed=\(managed)")
+                    } catch {
+                        XCTAssertTrue(error.localizedDescription.contains("recovery folder"), error.localizedDescription)
+                        XCTAssertTrue(error.localizedDescription.contains(recovery.path), error.localizedDescription)
+                    }
+                    XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("FX_1.jpg")), image)
+                    XCTAssertEqual(try Data(contentsOf: retained), backup)
+                }
+                try FileManager.default.removeItem(at: recovery)
+                let result = try await engine(f).reprocessExistingLocalFiles(job: job)
+                XCTAssertEqual(result.applied, 1)
+                XCTAssertEqual(result.failed, 0)
+            }
+        }
+    }
+
     func testStoppedReprocessingRetainsCompletedReceiptsAndPreservesRemainingImage() async throws {
         let f = try fixture(headline: "Before")
         for name in ["FX_1.jpg", "FX_2.jpg"] { try write(jpeg(), name: name, root: f.source) }

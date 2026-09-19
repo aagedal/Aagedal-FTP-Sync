@@ -53,6 +53,37 @@ final class LocalMatchingPublicationTests: XCTestCase {
         XCTAssertTrue(try recoveryFiles(f).isEmpty)
     }
 
+    func testRecoveryAppearingAfterAdmissionBlocksSnapshotAndPublication() async throws {
+        let f = try fixture()
+        try write("original", "photo.jpg", fixture: f)
+        let original = try staged("photo.jpg", contents: "original", fixture: f, prefix: "old")
+        let output = try staged("photo.jpg", contents: "processed", fixture: f, prefix: "new")
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        try session.validateMetadataRecoveryIsResolved()
+        let recovery = f.root.appendingPathComponent(".aagedal-sync-interrupted.transaction")
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: false)
+        let held = recovery.appendingPathComponent("original-held-0")
+        try Data("retained original".utf8).write(to: held)
+        // Older/incomplete transactions need protection even without a manifest.
+        XCTAssertThrowsError(try session.validateMetadataSnapshot(primary: original,
+            sidecar: nil, absentSidecarPath: nil)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(recovery.path))
+        }
+        do {
+            try await session.importFilesTransactionallyMatching([output], replacing: [original],
+                preserveDate: true, verifySize: true)
+            XCTFail("Recovery appearing during resolution must block publication")
+        } catch { XCTAssertTrue(error.localizedDescription.contains(recovery.path)) }
+        XCTAssertEqual(try read("photo.jpg", fixture: f), "original")
+        XCTAssertEqual(try Data(contentsOf: held), Data("retained original".utf8))
+        XCTAssertEqual(try recoveryFiles(f).map { $0.resolvingSymlinksInPath() }, [held.resolvingSymlinksInPath()])
+        try FileManager.default.removeItem(at: recovery)
+        try await session.importFilesTransactionallyMatching([output], replacing: [original],
+            preserveDate: true, verifySize: true)
+        XCTAssertEqual(try read("photo.jpg", fixture: f), "processed")
+        XCTAssertTrue(try recoveryFiles(f).isEmpty)
+    }
+
     func testRecoveryManifestPrecedesMovesAndPreparationFailureLeavesOriginalsIntact() async throws {
         let f = try fixture()
         try write("original", "photo.jpg", fixture: f)

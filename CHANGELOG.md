@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Require recovery of retained reprocessing/reset folders before metadata preflight
+  or another replacement, with a path-specific error and retry after recovery.
+
 - Block Reset Job while retained reprocessing or reset recovery folders remain,
   preserving backups and download history in managed and ordinary destinations.
 

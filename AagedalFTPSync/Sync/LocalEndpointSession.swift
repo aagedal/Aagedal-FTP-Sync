@@ -242,9 +242,28 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         }
     }
 
+    static func isRecoveryArtifact(named name: String) -> Bool {
+        return (name.hasPrefix(".aagedal-sync-reset-") && name.hasSuffix(".trash"))
+            || (name.hasPrefix(".aagedal-sync-") && name.hasSuffix(".transaction"))
+    }
+
+    /// A retained transaction may contain files absent from the visible listing.
+    /// Require reconciliation before treating that listing as a complete batch.
+    func validateMetadataRecoveryIsResolved() throws {
+        try Task.checkCancellation()
+        let names = try fileManager.contentsOfDirectory(atPath: rootURL.path)
+        if let name = names.first(where: Self.isRecoveryArtifact(named:)) {
+            let recovery = rootURL.appendingPathComponent(name)
+            throw AppError.transferFailed(
+                "A recovery folder from an earlier operation remains at \(recovery.path). Recover the retained files and remove the resolved hidden folder before retrying metadata reprocessing."
+            )
+        }
+    }
+
     /// Check the snapshot used by metadata resolution without changing the destination.
     func validateMetadataSnapshot(primary: EndpointFileImport, sidecar: EndpointFileImport?,
                                   absentSidecarPath: String?) throws {
+        try validateMetadataRecoveryIsResolved()
         for original in [primary, sidecar].compactMap({ $0 }) {
             try Task.checkCancellation()
             let destination = try safeURL(for: original.file.relativePath)
@@ -275,6 +294,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
               Set(originals.map(\.file.relativePath)).count == originals.count else {
             throw AppError.transferFailed("Byte-matched publication requires one image and at most one sidecar, with unique paths.")
         }
+        try validateMetadataRecoveryIsResolved()
         struct Original { let destination: URL; let held: URL; let expected: URL; let replaced: Bool }
         struct Output { let destination: URL; let staged: URL; let expected: URL; let identity: FileIdentity }
         let recovery = rootURL.appendingPathComponent(".aagedal-sync-\(UUID().uuidString).transaction", isDirectory: true)
@@ -882,11 +902,7 @@ actor JobResetService {
         // A managed folder is wholly owned by the job, but retained originals
         // still require recovery. Neither reset mode may delete them or clear
         // their download history before the user resolves the failed operation.
-        if let recovery = children.first(where: {
-            let name = $0.lastPathComponent
-            return (name.hasPrefix(".aagedal-sync-reset-") && name.hasSuffix(".trash"))
-                || (name.hasPrefix(".aagedal-sync-") && name.hasSuffix(".transaction"))
-        }) {
+        if let recovery = children.first(where: { LocalEndpointSession.isRecoveryArtifact(named: $0.lastPathComponent) }) {
             throw AppError.transferFailed(
                 "A recovery folder from an earlier operation remains at \(recovery.path). Recover or remove that hidden folder before retrying Reset Job so retained files and download history are preserved."
             )

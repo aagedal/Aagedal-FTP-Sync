@@ -3,7 +3,11 @@
 When a replacement cannot safely restore its originals, the error identifies a
 hidden `.aagedal-sync-<UUID>.transaction` directory inside the destination folder
 (inside `Synced Files` for managed jobs). Reset Job refuses to clear this recovery
-state. Stop the job and any reprocessing before inspecting the folder. Keep a copy
+state. Reprocessing also refuses to scan or write until retained reprocessing or
+reset recovery folders have been resolved, including older folders without a
+manifest. This avoids approving a partial listing when an original is still held
+in recovery. The error identifies the folder to inspect. Stop the job and any
+reprocessing before inspecting the folder. Keep a copy
 of the complete recovery directory and the affected current destination files
 until recovery is resolved.
 
