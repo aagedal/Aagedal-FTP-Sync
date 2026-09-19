@@ -191,7 +191,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     func isReprocessing(in store: AppStore) -> Bool {
         guard let loadedJobID else { return false }
         switch store.metadataReprocessPhases[loadedJobID] {
-        case .preflighting, .running:
+        case .preflighting, .running, .cancelling:
             return true
         default:
             return false
@@ -220,6 +220,10 @@ final class MetadataProgrammingCoordinator: ObservableObject {
                 + " with errors or incomplete data" + conflicts + "."
         case .running:
             return "Reprocessing the local destination…"
+        case .cancelling:
+            return "Stopping reprocessing…"
+        case .cancelled:
+            return "Reprocessing stopped. Files already completed remain updated."
         case .succeeded(_, let result):
             let conflicts = result.conflicts.isEmpty ? "" : ", \(result.conflicts.count) edit conflicts preserved"
             return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed\(conflicts)."

@@ -16,6 +16,8 @@ enum MetadataReprocessPhase: Equatable, Sendable {
     case preflighting
     case ready(Date, MetadataReprocessScope, MetadataReprocessFilter, MetadataReprocessPreflight)
     case running
+    case cancelling
+    case cancelled
     case succeeded(Date, MetadataReprocessResult)
     case failed(String)
 }
@@ -847,6 +849,7 @@ final class AppStore: ObservableObject {
         conflictPolicy: MetadataReprocessConflictPolicy = .preserveEditedOutputs
     ) {
         guard !isSuspendedForExternalWriter, !isJobBusy(jobID) else { return }
+        metadataReprocessPhases[jobID] = .running
         let task = Task { [weak self] in
             guard let self else { return }
             await self.performMetadataReprocess(
@@ -885,6 +888,14 @@ final class AppStore: ObservableObject {
         guard metadataReprocessPhases[jobID] == .preflighting else { return }
         metadataReprocessTasks[jobID]?.cancel()
         metadataReprocessPhases[jobID] = .idle
+    }
+
+    /// Keep the operation registered until its task and concurrency lease drain.
+    func cancelMetadataReprocess(_ jobID: UUID) {
+        guard metadataReprocessPhases[jobID] == .running,
+              let task = metadataReprocessTasks[jobID] else { return }
+        metadataReprocessPhases[jobID] = .cancelling
+        task.cancel()
     }
 
     func isJobBusy(_ jobID: UUID) -> Bool {
@@ -1315,8 +1326,15 @@ final class AppStore: ObservableObject {
         filter: MetadataReprocessFilter,
         conflictPolicy: MetadataReprocessConflictPolicy
     ) async {
+        if Task.isCancelled {
+            metadataReprocessPhases[jobID] = .cancelled
+            return
+        }
         guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
-              let savedJob = jobs.first(where: { $0.id == jobID }) else { return }
+              let savedJob = jobs.first(where: { $0.id == jobID }) else {
+            metadataReprocessPhases[jobID] = .idle
+            return
+        }
         let job: SyncJob
         do {
             job = try savedJob.resolvingServerProfiles(in: serverProfiles)
@@ -1332,7 +1350,7 @@ final class AppStore: ObservableObject {
                 hosts: SyncRemoteHost.hosts(for: job)
             )
         } catch is CancellationError {
-            metadataReprocessPhases[jobID] = .idle
+            metadataReprocessPhases[jobID] = .cancelled
             return
         } catch {
             let message = error.localizedDescription
@@ -1342,10 +1360,11 @@ final class AppStore: ObservableObject {
         }
         if Task.isCancelled {
             await syncConcurrencyController.release(leaseID)
-            metadataReprocessPhases[jobID] = .idle
+            metadataReprocessPhases[jobID] = .cancelled
             return
         }
         guard scheduler.beginRunning(jobID) else {
+            metadataReprocessPhases[jobID] = .idle
             await syncConcurrencyController.release(leaseID)
             return
         }
@@ -1367,9 +1386,12 @@ final class AppStore: ObservableObject {
                 rightPassword: rightPassword
             )
             recordMetadataAudit(result.metadataReport, jobID: jobID)
-            metadataReprocessPhases[jobID] = .succeeded(Date(), result)
+            metadataReprocessPhases[jobID] = Task.isCancelled ? .cancelled : .succeeded(Date(), result)
+        } catch let cancellation as MetadataReprocessCancellation {
+            recordMetadataAudit(cancellation.metadataReport, jobID: jobID)
+            metadataReprocessPhases[jobID] = .cancelled
         } catch is CancellationError {
-            metadataReprocessPhases[jobID] = .idle
+            metadataReprocessPhases[jobID] = .cancelled
         } catch {
             let message = error.localizedDescription
             metadataReprocessPhases[jobID] = .failed(message)

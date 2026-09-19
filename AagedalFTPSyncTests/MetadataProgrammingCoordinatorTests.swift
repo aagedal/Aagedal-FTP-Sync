@@ -133,6 +133,52 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.confirmReprocessing(in: store))
     }
 
+    func testStopQueuedReprocessingDrainsLeaseAndAllowsAnotherRun() async throws {
+        let controller = SyncConcurrencyController(policy: .init(globalLimit: 1, perHostLimit: nil))
+        let heldLease = try await controller.acquire(hosts: [])
+        let (root, store, _, coordinator, jobID, _) = try switchFixture(
+            realFolders: true, concurrencyController: controller)
+        defer { try? FileManager.default.removeItem(at: root) }
+        store.reprocessExistingLocalFiles(jobID)
+        XCTAssertEqual(store.metadataReprocessPhases[jobID], .running)
+        let admissionDeadline = Date().addingTimeInterval(5)
+        while await controller.snapshot().pendingCount == 0, Date() < admissionDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let queued = await controller.snapshot()
+        XCTAssertEqual(queued.pendingCount, 1)
+        store.cancelMetadataReprocess(jobID)
+        XCTAssertEqual(store.metadataReprocessPhases[jobID], .cancelling)
+        XCTAssertTrue(store.isJobBusy(jobID), "Stopping must retain the job until its task drains")
+        XCTAssertTrue(coordinator.isReprocessing(in: store))
+        XCTAssertFalse(store.preflightMetadataReprocess(jobID))
+        let stopDeadline = Date().addingTimeInterval(5)
+        while store.isJobBusy(jobID), Date() < stopDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(store.isJobBusy(jobID))
+        XCTAssertEqual(store.metadataReprocessPhases[jobID], .cancelled)
+        XCTAssertEqual(coordinator.reprocessStatusText(in: store),
+                       "Reprocessing stopped. Files already completed remain updated.")
+        XCTAssertNil(store.alertMessage)
+        let drained = await controller.snapshot()
+        XCTAssertEqual(drained.pendingCount, 0)
+        XCTAssertEqual(drained.activeCount, 1, "The unrelated lease remains owned")
+        await controller.release(heldLease)
+        XCTAssertTrue(store.preflightMetadataReprocess(jobID))
+        let retryDeadline = Date().addingTimeInterval(5)
+        while store.isJobBusy(jobID), Date() < retryDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard case .ready = store.metadataReprocessPhases[jobID] else {
+            return XCTFail("The stopped job must admit a fresh preflight")
+        }
+        store.cancelMetadataReprocess(jobID)
+        guard case .ready = store.metadataReprocessPhases[jobID] else {
+            return XCTFail("Stop must not discard a finished preflight")
+        }
+    }
+
     func testIndependentReprocessingAdmissionPreservesRuntimeAndTimestampGuards() throws {
         let coordinator = MetadataProgrammingCoordinator()
         var job = previewJob()
@@ -703,7 +749,7 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.playhead)
     }
 
-    private func switchFixture(clipCount: Int = 2, realFolders: Bool = false, beforeSave: @escaping @Sendable () throws -> Void = {}) throws -> (URL, AppStore, JobRepository, MetadataProgrammingCoordinator, UUID, UUID) {
+    private func switchFixture(clipCount: Int = 2, realFolders: Bool = false, concurrencyController: SyncConcurrencyController = SyncConcurrencyController(), beforeSave: @escaping @Sendable () throws -> Void = {}) throws -> (URL, AppStore, JobRepository, MetadataProgrammingCoordinator, UUID, UUID) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("metadata-switch-\(UUID())")
         let photographer = PhotographerProfile(name: "Example", filenamePrefix: "EX", creator: "Example", copyrightNotice: "")
         let start = Date(timeIntervalSince1970: 1_800_000_000)
@@ -738,7 +784,8 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
             metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
             syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
             sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
-            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")))
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+            syncConcurrencyController: concurrencyController)
         let coordinator = MetadataProgrammingCoordinator()
         store.selectedJobID = source.id
         coordinator.loadSelectedJob(from: store)

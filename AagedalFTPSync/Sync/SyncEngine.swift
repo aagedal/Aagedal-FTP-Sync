@@ -79,6 +79,11 @@ struct MetadataReprocessPreflight: Equatable, Sendable {
     }
 }
 
+/// Preserve receipts for files completed before a stopped batch.
+struct MetadataReprocessCancellation: Error {
+    let metadataReport: MetadataRunReport
+}
+
 struct MetadataReprocessResult: Equatable, Sendable {
     let scanned: Int
     let applied: Int
@@ -825,6 +830,7 @@ struct SyncEngine: Sendable {
         rightPassword: String? = nil,
         isPreflight: Bool = false
     ) async throws -> MetadataReprocessResult {
+        try Task.checkCancellation()
         var jobSnapshot = job
         jobSnapshot.filter = jobSnapshot.fileFilterForProgrammedHistory()
         let job = jobSnapshot
@@ -941,9 +947,11 @@ struct SyncEngine: Sendable {
         var metadataReport = MetadataRunReport.empty
         let runID = UUID()
 
+        do {
         for file in files {
             try Task.checkCancellation()
             let processingDate = now()
+            try Task.checkCancellation()
             let temporaryURL = try makeTemporaryURL(for: file)
             let temporarySidecarURL = temporaryURL.deletingPathExtension().appendingPathExtension("xmp")
             defer {
@@ -1079,6 +1087,7 @@ struct SyncEngine: Sendable {
                     scheduledAt: scheduledAt, assignment: assignment, detail: error.localizedDescription))
                 continue
             }
+            try Task.checkCancellation()
             if filter == .staleOrIncomplete,
                let previousFingerprint,
                let currentFingerprint = try makeProcessingFingerprint(
@@ -1149,7 +1158,8 @@ struct SyncEngine: Sendable {
                         processingEvidence: MetadataProcessingAuditEvidence(result: processing),
                         processingFingerprint: fingerprint,
                         recognitionEvidence: processing.recognitionEvidence))
-                } catch {
+                } catch is CancellationError { throw CancellationError() }
+                catch {
                     failed += 1
                     metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
                         relativePath: file.relativePath, status: .failed,
@@ -1218,7 +1228,8 @@ struct SyncEngine: Sendable {
                         processingFingerprint: fingerprint,
                         recognitionEvidence: processing.recognitionEvidence
                     ))
-                } catch {
+                } catch is CancellationError { throw CancellationError() }
+                catch {
                     failed += 1
                     metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
                         relativePath: file.relativePath, status: .failed,
@@ -1289,7 +1300,8 @@ struct SyncEngine: Sendable {
                     processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!,
                     processing: processing, primaryURL: temporaryURL,
                     relativePath: file.relativePath, sidecarURL: outputSidecarURL)
-            } catch {
+            } catch is CancellationError { throw CancellationError() }
+            catch {
                 failed += 1
                 metadataReport.append(MetadataAuditEntry(
                     runID: runID,
@@ -1308,6 +1320,7 @@ struct SyncEngine: Sendable {
             }
 
             do {
+                try Task.checkCancellation()
                 if isPreflight {
                     applied += 1
                     if !processing.resolutionComplete { failed += 1 }
@@ -1388,6 +1401,12 @@ struct SyncEngine: Sendable {
                 processingFingerprint: processingFingerprint,
                 recognitionEvidence: processing.recognitionEvidence
             ))
+        }
+
+        try Task.checkCancellation()
+        } catch is CancellationError {
+            if isPreflight { throw CancellationError() }
+            throw MetadataReprocessCancellation(metadataReport: metadataReport)
         }
 
         return MetadataReprocessResult(

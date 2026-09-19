@@ -52,6 +52,45 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_704_153_600) })
     }
 
+    func testStoppedReprocessingRetainsCompletedReceiptsAndPreservesRemainingImage() async throws {
+        let f = try fixture(headline: "Before")
+        for name in ["FX_1.jpg", "FX_2.jpg"] { try write(jpeg(), name: name, root: f.source) }
+        _ = try await engine(f).run(job: f.job, leftPassword: nil, rightPassword: nil)
+        var job = f.job
+        job.metadataAutomation?.existingFieldPolicy = .overwrite
+        job.metadataAutomation?.clips[0].fields.setHeadline(try .activated("After"))
+        let untouched = try Data(contentsOf: f.destination.appendingPathComponent("FX_2.jpg"))
+        final class CancellationClock: @unchecked Sendable {
+            private let lock = NSLock()
+            private var calls = 0
+            func now() -> Date {
+                lock.lock()
+                calls += 1
+                let shouldStop = calls == 2
+                lock.unlock()
+                if shouldStop { withUnsafeCurrentTask { $0?.cancel() } }
+                return Date(timeIntervalSince1970: 1_704_153_600)
+            }
+        }
+        let clock = CancellationClock()
+        let stoppingEngine = SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")),
+            now: { clock.now() })
+        let operation = Task { try await stoppingEngine.reprocessExistingLocalFiles(job: job) }
+        do {
+            _ = try await operation.value
+            XCTFail("Expected a stopped batch")
+        } catch let cancellation as MetadataReprocessCancellation {
+            let completed = try XCTUnwrap(cancellation.metadataReport.entries.first { $0.relativePath == "FX_1.jpg" })
+            XCTAssertEqual(completed.status, .applied)
+            XCTAssertNotNil(completed.processingFingerprint)
+            XCTAssertFalse(cancellation.metadataReport.entries.contains { $0.relativePath == "FX_2.jpg" && $0.status == .applied })
+        }
+        XCTAssertEqual(try Data(contentsOf: f.destination.appendingPathComponent("FX_2.jpg")), untouched)
+        XCTAssertNotEqual(try Data(contentsOf: f.destination.appendingPathComponent("FX_1.jpg")), untouched)
+    }
+
     func testWriterUpgradeInvalidatesReceiptWithoutAutomaticRetransfer() async throws {
         let f = try fixture()
         let name = "FX_WRITER.jpg"

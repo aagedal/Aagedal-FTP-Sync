@@ -915,6 +915,10 @@ struct MetadataProgrammingView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let jobID = coordinator.loadedJobID, store.metadataReprocessPhases[jobID] == .running {
+                Button("Stop Reprocessing") { store.cancelMetadataReprocess(jobID) }
+                    .accessibilityIdentifier("stop-programming-reprocessing")
+            }
             Picker("Reprocess", selection: $coordinator.reprocessFilter) {
                 ForEach(MetadataReprocessFilter.allCases) { filter in
                     Text(filter.title).tag(filter)

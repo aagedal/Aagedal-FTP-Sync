@@ -239,6 +239,13 @@ struct SavedMetadataProcessingActionsView: View {
                 case .running:
                     Text("Reprocessing the local destination…")
                         .font(.caption).foregroundStyle(.secondary)
+                    Button("Stop Reprocessing") { store.cancelMetadataReprocess(job.id) }
+                        .accessibilityIdentifier("stop-saved-reprocessing")
+                case .cancelling:
+                    Text("Stopping reprocessing…").font(.caption).foregroundStyle(.secondary)
+                case .cancelled:
+                    Text("Reprocessing stopped. Files already completed remain updated.")
+                        .font(.caption).foregroundStyle(.secondary)
                 case .succeeded(_, let result):
                     Text("Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed, \(result.conflicts.count) edit conflicts preserved.")
                         .font(.caption).foregroundStyle(.secondary)
