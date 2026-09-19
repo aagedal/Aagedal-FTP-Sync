@@ -4,6 +4,89 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class LocalMatchingPublicationTests: XCTestCase {
+    func testLocalListingPreservesNestedAndHiddenFilesButNeverFollowsLinks() async throws {
+        let f = try fixture()
+        let directories = ["Nested folder/Åse", ".hidden", ".aagedal-sync-test.transaction", "Fixture.bundle"]
+        for directory in directories {
+            try FileManager.default.createDirectory(at: f.root.appendingPathComponent(directory), withIntermediateDirectories: true)
+        }
+        let expected = ["plain.jpg", "Nested folder/Åse/photo.cr3", "Nested folder/Åse/photo.xmp", ".hidden/photo.jpg"]
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        for name in expected + [".aagedal-sync-test.transaction/held.jpg", ".aagedal-sync-test.part", "Fixture.bundle/ignored.jpg"] {
+            try write("fixture", name, fixture: f)
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: f.root.appendingPathComponent(name).path)
+        }
+        try Data("outside".utf8).write(to: f.inputs.appendingPathComponent("outside.jpg"))
+        for (name, target) in [
+            ("outside-directory", f.inputs),
+            ("inside-directory", f.root.appendingPathComponent("Nested folder")),
+            ("linked.jpg", f.inputs.appendingPathComponent("outside.jpg")),
+            ("dangling.jpg", f.inputs.appendingPathComponent("missing.jpg")),
+        ] {
+            try FileManager.default.createSymbolicLink(at: f.root.appendingPathComponent(name), withDestinationURL: target)
+        }
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        let listing = try await session.listFiles()
+        XCTAssertEqual(Set(listing.keys), Set(expected))
+        for file in listing.values {
+            XCTAssertEqual(file.size, 7)
+            XCTAssertEqual(file.modifiedAt, date)
+        }
+        // Listing evidence never authorizes following a later replacement link.
+        let original = try XCTUnwrap(listing["Nested folder/Åse/photo.cr3"])
+        try FileManager.default.removeItem(at: f.root.appendingPathComponent("Nested folder"))
+        try FileManager.default.createSymbolicLink(at: f.root.appendingPathComponent("Nested folder"), withDestinationURL: f.inputs)
+        do {
+            try await session.exportFile(original, to: f.inputs.appendingPathComponent("exported"))
+            XCTFail("A changed ancestor must not be followed after listing")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("symbolic link")) }
+    }
+
+    func testLocalListingRejectsRemovedRootAndCancelledEmptyScan() async throws {
+        let f = try fixture()
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await session.listFiles()
+        }
+        do {
+            _ = try await cancelled.value
+            XCTFail("An empty listing must still observe cancellation")
+        } catch { XCTAssertTrue(error is CancellationError) }
+        try FileManager.default.removeItem(at: f.root)
+        do {
+            _ = try await session.listFiles()
+            XCTFail("An unavailable root must not appear to be an empty folder")
+        } catch { XCTAssertFalse(error is CancellationError) }
+    }
+
+    func testLocalListingRejectsRootReplacedWithSymlink() async throws {
+        let f = try fixture()
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        try Data("outside".utf8).write(to: f.inputs.appendingPathComponent("outside.jpg"))
+        try FileManager.default.removeItem(at: f.root)
+        try FileManager.default.createSymbolicLink(at: f.root, withDestinationURL: f.inputs)
+        do {
+            _ = try await session.listFiles()
+            XCTFail("A redirected root must not expose another folder's files")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("symbolic link")) }
+    }
+
+    func testLocalListingRejectsUnreadableSubtreeInsteadOfReturningPartialFiles() async throws {
+        let f = try fixture()
+        try write("visible", "photo.jpg", fixture: f)
+        let blocked = f.root.appendingPathComponent("blocked")
+        try FileManager.default.createDirectory(at: blocked, withIntermediateDirectories: false)
+        try Data("hidden by permissions".utf8).write(to: blocked.appendingPathComponent("photo.jpg"))
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: blocked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: blocked.path) }
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        do {
+            _ = try await session.listFiles()
+            XCTFail("An unreadable subtree must fail the complete scan")
+        } catch { XCTAssertFalse(error is CancellationError) }
+    }
+
     func testNativeRecoveryFixtureUsesRealAdmissionAndDoesNotReseedAfterReconciliation() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("native-recovery-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

@@ -60,12 +60,25 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func listFiles() async throws -> [String: SyncFile] {
-        let root = rootURL
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey]
+        try Task.checkCancellation()
+        // Foundation may expose the admitted root as /var while the enumerator
+        // returns /private/var. Resolve that spelling once, not once per file.
+        let rootPath = try rootURL.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath ?? rootURL.path
+        let root = URL(fileURLWithPath: rootPath)
+        guard root.resolvingSymlinksInPath().path == rootURL.path else {
+            throw AppError.folderPermissionLost("The selected folder changed through a symbolic link: \(rootURL.path).")
+        }
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
+        var enumerationError: Error?
         guard let enumerator = fileManager.enumerator(
             at: root,
-            includingPropertiesForKeys: keys,
-            options: [.skipsPackageDescendants]
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsPackageDescendants],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            }
         ) else {
             throw AppError.folderPermissionLost("Could not read \(root.path).")
         }
@@ -73,11 +86,15 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         var files: [String: SyncFile] = [:]
         while let url = enumerator.nextObject() as? URL {
             try Task.checkCancellation()
-            let values = try url.resourceValues(forKeys: Set(keys))
+            let values = try url.resourceValues(forKeys: keys)
             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
-            let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
-            guard canonicalURL.path.hasPrefix(root.path + "/") else { continue }
-            let relative = String(canonicalURL.path.dropFirst(root.path.count + 1))
+            // The root is canonicalized at admission and DirectoryEnumerator does
+            // not descend through symbolic links. Keep its lexical path instead of
+            // resolving every ancestor again for every file in a large folder.
+            // Actual reads/writes still revalidate all ancestors through safeURL.
+            let path = url.path
+            guard path.hasPrefix(rootPrefix) else { continue }
+            let relative = String(path.dropFirst(rootPrefix.count))
             guard !relative.isEmpty, !PathSafety.isInternalStagingPath(relative) else { continue }
             if let existing = files[relative],
                !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
@@ -91,6 +108,8 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                 modifiedAt: values.contentModificationDate ?? .distantPast
             )
         }
+        try Task.checkCancellation()
+        if let enumerationError { throw enumerationError }
         return files
     }
 

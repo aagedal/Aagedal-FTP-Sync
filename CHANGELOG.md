@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Reduce local folder scan overhead while preserving symbolic-link checks at file
+  access. Report inaccessible folders as errors and honor cancellation on empty scans.
+
 - Preserve metadata outcome order when saved timestamps share a second, so a later
   failure cannot be replaced by an earlier success during reprocessing or history retention.
 
