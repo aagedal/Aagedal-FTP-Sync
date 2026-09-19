@@ -566,6 +566,63 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(try ImageMetadata.read(from: target).iptc.headline, "Explicit replacement")
     }
 
+    func testClipReprocessingReviewsOnlySelectedClipAndCountsItsConflicts() async throws {
+        for filter in [MetadataReprocessFilter.all, .staleOrIncomplete] {
+            let f = try fixture(headline: "Before")
+            var job = f.job
+            let selectedClip = try XCTUnwrap(job.metadataAutomation?.clips.first)
+            var otherClip = selectedClip
+            otherClip.id = UUID()
+            otherClip.startsAt = selectedClip.startsAt.addingTimeInterval(3600)
+            otherClip.endsAt = selectedClip.endsAt.addingTimeInterval(3600)
+            job.metadataAutomation?.clips.append(otherClip)
+            let selected = ["FX_SELECTED_EDIT.jpg", "FX_SELECTED_READY.jpg"]
+            let excluded = ["FX_OTHER_CLIP.jpg", "FX_NO_CLIP.jpg"]
+            for name in selected + excluded { try write(jpeg(), name: name, root: f.source) }
+            for (index, name) in excluded.enumerated() {
+                try FileManager.default.setAttributes(
+                    [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000 + Double(index + 1) * 3600)],
+                    ofItemAtPath: f.source.appendingPathComponent(name).path)
+            }
+            let engine = engine(f)
+            let transfer = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+            let latest = Dictionary(uniqueKeysWithValues: transfer.metadataReport.entries.map { ($0.relativePath, $0) })
+            // Both clips have complete receipts; FX_NO_CLIP has no assignment.
+            XCTAssertNotNil(latest[excluded[0]]?.processingFingerprint)
+            for name in [selected[0]] + excluded {
+                try jpeg().write(to: f.destination.appendingPathComponent(name))
+            }
+            let excludedBytes = try excluded.map { try Data(contentsOf: f.destination.appendingPathComponent($0)) }
+            let selectedBefore = try selected.map { try Data(contentsOf: f.destination.appendingPathComponent($0)) }
+            job.metadataAutomation?.existingFieldPolicy = .overwrite
+            job.metadataAutomation?.clips[0].fields.setHeadline(try .activated("Selected update"))
+            let scope = MetadataReprocessScope.clip(selectedClip.id)
+            let review = try await engine.preflightExistingLocalFiles(
+                job: job, scope: scope, filter: filter, latestOutcomes: latest)
+            XCTAssertEqual(review.scanned, 2)
+            XCTAssertEqual(review.ready, 1)
+            XCTAssertEqual(review.skipped, 1)
+            XCTAssertEqual(review.failed, 0)
+            XCTAssertEqual(review.conflicts, [selected[0]])
+            XCTAssertEqual(Set(review.conflictOutputRevisions.keys), [selected[0]])
+            XCTAssertEqual(try selected.map { try Data(contentsOf: f.destination.appendingPathComponent($0)) }, selectedBefore)
+
+            let result = try await engine.reprocessExistingLocalFiles(
+                job: job, scope: scope, filter: filter,
+                conflictPolicy: .processEditedOutputs(review.conflictOutputRevisions), latestOutcomes: latest)
+            XCTAssertEqual(result.scanned, 2)
+            XCTAssertEqual(result.applied, 2)
+            XCTAssertEqual(result.failed, 0)
+            XCTAssertTrue(result.conflicts.isEmpty)
+            XCTAssertEqual(Set(result.metadataReport.entries.map(\.relativePath)), Set(selected))
+            for name in selected {
+                XCTAssertEqual(try ImageMetadata.read(from: f.destination.appendingPathComponent(name)).iptc.headline,
+                               "Selected update")
+            }
+            XCTAssertEqual(try excluded.map { try Data(contentsOf: f.destination.appendingPathComponent($0)) }, excludedBytes)
+        }
+    }
+
     func testConflictApprovalDoesNotIncludeOutputsEditedAfterPreflight() async throws {
         let f = try fixture()
         try write(jpeg(), name: "FX_APPROVED.jpg", root: f.source)

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Limit clip reprocessing conflict review and audit results to the selected clip,
+  and include its edited images in the scanned count.
+
 - Retain audit receipts for completed files when a later input failure interrupts
   metadata reprocessing, while keeping the batch failure visible.
 

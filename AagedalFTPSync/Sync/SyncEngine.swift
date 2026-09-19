@@ -986,6 +986,12 @@ struct SyncEngine: Sendable {
                     localArrivalAt: file.modifiedAt, fileURL: temporaryURL)
             }
             let assignment = scheduledAt.flatMap { automation?.assignment(for: file.relativePath, scheduledAt: $0) }
+            // Resolve clip membership before collecting conflicts or receipts.
+            // Other clips can share this photographer's filename prefix.
+            if scope.isClip {
+                guard let assignment, scope.includes(assignment) else { continue }
+                scanned += 1
+            }
             let savedPrimarySignature = savedSourceSignatures[file.relativePath]
             let liveSourceEvidence = sourceFiles[file.relativePath]
             let sourceEvidence = liveSourceEvidence
@@ -1075,7 +1081,6 @@ struct SyncEngine: Sendable {
                 continue
             }
             guard assignment.map({ scope.includes($0) }) ?? (scope == .all) else { continue }
-            if scope.isClip { scanned += 1 }
 
             let processing: MetadataProcessingResult
             do {
