@@ -88,10 +88,18 @@ final class LocalMatchingPublicationTests: XCTestCase {
     }
 
     func testNativeRecoveryFixtureUsesRealAdmissionAndDoesNotReseedAfterReconciliation() async throws {
+        try await verifyNativeRecoveryFixture(managed: false)
+    }
+
+    func testManagedNativeRecoveryFixtureUsesRealAdmissionAndDoesNotReseedAfterReconciliation() async throws {
+        try await verifyNativeRecoveryFixture(managed: true)
+    }
+
+    private func verifyNativeRecoveryFixture(managed: Bool) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("native-recovery-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         var job = SyncJob(name: "Disposable native recovery")
-        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root, managed: managed)
         let repository = try UITestSupport.recoveryFixtureRepository(job: job, rootURL: root)
         job = try XCTUnwrap(repository.load().first)
         XCTAssertEqual(job.metadataProcessingTimeZoneIdentifier, "Etc/UTC")
@@ -106,8 +114,8 @@ final class LocalMatchingPublicationTests: XCTestCase {
         }
         let source = try LocalEndpointSession(endpoint: job.left)
         XCTAssertNoThrow(try source.validateMetadataRecoveryIsResolved())
-        let destination = try LocalEndpointSession(endpoint: job.right)
-        let folder = root.appendingPathComponent("Destination")
+        let destination = try LocalEndpointSession(endpoint: job.right, managedFolder: managed ? .syncedFiles : nil)
+        let folder = root.appendingPathComponent(managed ? "Destination/Synced Files" : "Destination")
         let recovery = folder.appendingPathComponent(".aagedal-sync-ui-fixture.transaction")
         let original = recovery.appendingPathComponent("original-held-0")
         let visible = folder.appendingPathComponent("preserved.txt")
@@ -122,7 +130,7 @@ final class LocalMatchingPublicationTests: XCTestCase {
         XCTAssertEqual(manifest.outputs.map(\.relativePath), ["preserved.txt"])
         // A repeated launch must preserve any edits made while inspecting recovery.
         try Data("reviewed visible bytes".utf8).write(to: visible)
-        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root, managed: managed)
         XCTAssertEqual(try Data(contentsOf: original), originalBytes)
         XCTAssertNotEqual(try Data(contentsOf: visible), visibleBytes)
         // Reconcile by keeping the current output and moving the retained original
@@ -130,7 +138,7 @@ final class LocalMatchingPublicationTests: XCTestCase {
         let rescued = root.appendingPathComponent("rescued-original.txt")
         try FileManager.default.moveItem(at: original, to: rescued)
         try FileManager.default.removeItem(at: recovery)
-        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root)
+        try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root, managed: managed)
         XCTAssertNoThrow(try destination.validateMetadataRecoveryIsResolved())
         XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
         XCTAssertEqual(try Data(contentsOf: rescued), originalBytes)

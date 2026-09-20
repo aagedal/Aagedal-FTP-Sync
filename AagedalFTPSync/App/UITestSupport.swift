@@ -85,7 +85,7 @@ enum UITestSupport {
         if enabled, ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECOVERY"] == "1" {
             do {
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] == "1" {
-                    try reconcileMetadataRecoveryFixture(rootURL: rootURL)
+                    try reconcileMetadataRecoveryFixture(rootURL: rootURL, managed: managedRecoveryFixture)
                 }
                 jobRepository = try recoveryFixtureRepository(job: fixture, rootURL: rootURL)
             } catch {
@@ -230,7 +230,7 @@ enum UITestSupport {
         job.startsOnAppLaunch = false
         if enabled, ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECOVERY"] == "1" {
             do {
-                try seedMetadataRecoveryFixture(job: &job, rootURL: rootURL)
+                try seedMetadataRecoveryFixture(job: &job, rootURL: rootURL, managed: managedRecoveryFixture)
             } catch {
                 preconditionFailure("Unable to prepare isolated metadata recovery fixture: \(error)")
             }
@@ -266,10 +266,14 @@ enum UITestSupport {
         return job
     }
 
+    private static var managedRecoveryFixture: Bool {
+        enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] == "1"
+    }
+
     /// Real folder permissions let native tests reach recovery admission instead
     /// of failing at placeholder-bookmark resolution. Seed once so relaunch after
     /// manual reconciliation cannot silently recreate the retained backup.
-    static func seedMetadataRecoveryFixture(job: inout SyncJob, rootURL: URL) throws {
+    static func seedMetadataRecoveryFixture(job: inout SyncJob, rootURL: URL, managed: Bool = false) throws {
         let manager = FileManager.default
         for side in ["Source", "Destination"] {
             let folder = rootURL.appendingPathComponent(side, isDirectory: true)
@@ -280,9 +284,10 @@ enum UITestSupport {
         }
         job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty, localeIdentifier: "en_US")
         job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+        if managed { job.processedFilesLocation = .processedSubfolder }
         let marker = rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")
         guard !manager.fileExists(atPath: marker.path) else { return }
-        let destination = rootURL.appendingPathComponent("Destination", isDirectory: true)
+        let destination = recoveryFixtureDestination(rootURL: rootURL, managed: managed)
         let recovery = destination.appendingPathComponent(".aagedal-sync-ui-fixture.transaction", isDirectory: true)
         try manager.createDirectory(at: recovery, withIntermediateDirectories: true)
         try Data("retained original fixture bytes".utf8).write(to: recovery.appendingPathComponent("original-held-0"))
@@ -318,9 +323,9 @@ enum UITestSupport {
 
     /// Explicit test-only relaunch step: the sandboxed UI runner cannot mutate
     /// the app's container. Keep every recovery snapshot outside the destination.
-    static func reconcileMetadataRecoveryFixture(rootURL: URL) throws {
+    static func reconcileMetadataRecoveryFixture(rootURL: URL, managed: Bool = false) throws {
         let manager = FileManager.default
-        let destination = rootURL.appendingPathComponent("Destination")
+        let destination = recoveryFixtureDestination(rootURL: rootURL, managed: managed)
         let recovery = destination.appendingPathComponent(".aagedal-sync-ui-fixture.transaction")
         guard manager.fileExists(atPath: recovery.path) else { return }
         let original = recovery.appendingPathComponent("original-held-0")
@@ -331,6 +336,11 @@ enum UITestSupport {
         try Data("reviewed visible fixture bytes".utf8).write(to: destination.appendingPathComponent("preserved.txt"))
         try manager.moveItem(at: original, to: rootURL.appendingPathComponent("rescued-original.txt"))
         try manager.moveItem(at: recovery, to: rootURL.appendingPathComponent("reconciled-recovery"))
+    }
+
+    private static func recoveryFixtureDestination(rootURL: URL, managed: Bool) -> URL {
+        let destination = rootURL.appendingPathComponent("Destination", isDirectory: true)
+        return managed ? destination.appendingPathComponent("Synced Files", isDirectory: true) : destination
     }
 
     private static func oneShotJobSaveFailure() -> @Sendable () throws -> Void {

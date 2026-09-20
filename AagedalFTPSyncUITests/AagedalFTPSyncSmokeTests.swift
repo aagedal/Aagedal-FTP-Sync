@@ -19,7 +19,15 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     }
 
     func testRetainedMetadataRecoveryExplainsBlockedReprocessingAndAllowsRetry() throws {
-        launch(seedJob: true, recoveryFixture: true)
+        try verifyRetainedMetadataRecovery(managed: false)
+    }
+
+    func testManagedMetadataRecoveryExplainsBlockedReprocessingAndAllowsRetry() throws {
+        try verifyRetainedMetadataRecovery(managed: true)
+    }
+
+    private func verifyRetainedMetadataRecovery(managed: Bool) throws {
+        launch(seedJob: true, recoveryFixture: true, managedRecovery: managed)
         element("Metadata").firstMatch.click()
         let reprocess = element("reprocess-geocoding")
         XCTAssertTrue(reprocess.waitForExistence(timeout: 5))
@@ -49,11 +57,13 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         // chosen visible output and the retained original outside the transaction.
         let recovery = try XCTUnwrap(recoveryURL)
         let destination = recovery.deletingLastPathComponent()
-        let root = destination.deletingLastPathComponent()
+        let endpoint = managed ? destination.deletingLastPathComponent() : destination
+        let root = endpoint.deletingLastPathComponent()
         let session = try XCTUnwrap(app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"])
         guard root.lastPathComponent == session,
               root.deletingLastPathComponent().lastPathComponent == "AagedalFTPSyncUITests",
-              destination.lastPathComponent == "Destination",
+              endpoint.lastPathComponent == "Destination",
+              destination.lastPathComponent == (managed ? "Synced Files" : "Destination"),
               recovery.lastPathComponent == ".aagedal-sync-ui-fixture.transaction" else {
             XCTFail("Refusing to reconcile a folder outside this isolated fixture")
             return
@@ -99,7 +109,15 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     }
 
     func testProgrammingRecoveryReviewShowsFailureForAllAndClipScopesThenRetries() {
-        launch(seedJob: true, seedMap: true, recoveryFixture: true)
+        verifyProgrammingRecoveryReview(managed: false)
+    }
+
+    func testManagedProgrammingRecoveryReviewShowsFailureForAllAndClipScopesThenRetries() {
+        verifyProgrammingRecoveryReview(managed: true)
+    }
+
+    private func verifyProgrammingRecoveryReview(managed: Bool) {
+        launch(seedJob: true, seedMap: true, recoveryFixture: true, managedRecovery: managed)
         element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let window = app.windows["Metadata Programming"]
@@ -559,7 +577,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         seedServer: Bool = false,
         failFirstJobSave: Bool = false,
         accessibilityText: Bool = false,
-        recoveryFixture: Bool = false
+        recoveryFixture: Bool = false,
+        managedRecovery: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -573,6 +592,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if failFirstJobSave { app.launchEnvironment["AAGEDAL_UI_TEST_FAIL_FIRST_JOB_SAVE"] = "1" }
         if accessibilityText { app.launchEnvironment["AAGEDAL_UI_TEST_ACCESSIBILITY_TEXT"] = "1" }
         if recoveryFixture { app.launchEnvironment["AAGEDAL_UI_TEST_RECOVERY"] = "1" }
+        if managedRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 
