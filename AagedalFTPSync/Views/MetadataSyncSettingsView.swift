@@ -14,17 +14,20 @@ struct MetadataSyncSettingsView: View {
         VStack(spacing: 0) {
             Picker("Metadata sync section", selection: $store.metadataSyncSettingsTab) {
                 Text("Calendar Sync").tag(MetadataSyncSettingsTab.calendars)
+                Text("Members & Invitations").tag(MetadataSyncSettingsTab.members)
                 Text("Hosting Checks").tag(MetadataSyncSettingsTab.hostingChecks)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(maxWidth: 360)
+            .frame(maxWidth: 560)
             .padding()
             .accessibilityIdentifier("metadata-sync-section")
 
             switch store.metadataSyncSettingsTab {
             case .calendars:
                 MetadataCalendarSettingsView()
+            case .members:
+                MetadataCalendarSettingsView(managingMembers: true)
             case .hostingChecks:
                 hostingForm
             }
@@ -81,6 +84,8 @@ struct MetadataSyncSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .controlSize(.large)
+        .textFieldStyle(.roundedBorder)
         .frame(minWidth: 600, minHeight: 440)
         .onAppear { address = savedAddress }
         .onDisappear { cancel(); setupKey = "" }

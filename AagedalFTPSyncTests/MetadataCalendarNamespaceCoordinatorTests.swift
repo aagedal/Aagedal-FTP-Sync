@@ -109,6 +109,49 @@ final class MetadataCalendarNamespaceCoordinatorTests: XCTestCase {
         return .init(store: store, sync: sync, repository: repository, server: server, job: job, calendar: calendar)
     }
 
+    func testJoinStringConnectsSelectedJobUsingTemplatesAndReviewsExistingProgramming() async throws {
+        for hasProgramming in [false, true] {
+            let f = try fixture()
+            f.sync.stop()
+            var state = try f.repository.load()
+            state.bindings = []
+            try f.repository.save(state)
+            if !hasProgramming {
+                XCTAssertTrue(f.store.saveMetadataAutomation(MetadataAutomation(), for: f.job.id))
+            }
+            let before = f.store.jobs.first?.metadataAutomation
+            let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) },
+                passwordWriter: { _, _ in XCTFail("Reuse this server's saved identity") }, passwordRemover: { _ in })
+            let sync = MetadataCalendarCoordinator(repository: f.repository, keychain: keychain,
+                transport: { body, _, _, _, _ in
+                    if body.action == "acceptInvite" {
+                        XCTAssertEqual(body.routingProtocol, .templates)
+                        return .init(service: "aagedal-metadata-sync", protocolVersion: 3,
+                            capabilities: ["metadata-templates-v1"])
+                    }
+                    return try await f.server.send(body)
+                })
+            sync.start(store: f.store, polling: false, observingChanges: false)
+            defer { sync.stop() }
+            let joinString = MetadataSyncInvitation.copyText(token: String(repeating: "b", count: 64),
+                address: "https://fixture.invalid/", protocolVersion: .templates)
+            sync.register(address: "", deviceName: "Joining Mac", setupKey: nil, invite: joinString,
+                protocolVersion: .templates, connectingJobID: f.job.id)
+            let deadline = Date().addingTimeInterval(5)
+            while sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            XCTAssertFalse(sync.busy)
+            if hasProgramming {
+                XCTAssertEqual(sync.receiveProposal?.source.id, f.job.id, sync.message)
+                XCTAssertEqual(f.store.jobs.first?.metadataAutomation, before)
+                XCTAssertNil(sync.binding(for: f.job.id))
+            } else {
+                XCTAssertEqual(sync.binding(for: f.job.id)?.snapshot.id, f.calendar.id, sync.message)
+                XCTAssertEqual(sync.binding(for: f.job.id)?.snapshot.compatibility, .templates)
+                XCTAssertNil(sync.receiveProposal)
+            }
+        }
+    }
+
     func testActivatedConflictResolvesAndPersistsWithoutLosingMarkers() async throws {
         let f = try fixture(localHeadline: .activated("Local {photographer}"))
         var remote = f.calendar.document
@@ -207,7 +250,11 @@ final class MetadataCalendarNamespaceCoordinatorTests: XCTestCase {
 
     func testDiscoverySelectionDoesNotChangeExistingBindingNamespace() async throws {
         let f = try fixture()
+        XCTAssertEqual(f.sync.discoveryProtocol, .templates)
+        f.sync.selectProtocol(.legacy)
         await f.sync.refresh()
+        let selectionDeadline = Date().addingTimeInterval(5)
+        while f.sync.busy && Date() < selectionDeadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(f.sync.discoveryProtocol, .legacy)
         XCTAssertEqual(f.sync.calendars.first?.compatibility, .legacy)
         XCTAssertEqual(f.sync.binding(for: f.job.id)?.snapshot.compatibility, .templates)

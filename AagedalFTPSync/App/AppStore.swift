@@ -8,7 +8,7 @@ enum AppSettingsTab: Hashable {
 }
 
 enum MetadataSyncSettingsTab: Hashable {
-    case calendars, hostingChecks
+    case calendars, members, hostingChecks
 }
 
 enum MetadataReprocessPhase: Equatable, Sendable {

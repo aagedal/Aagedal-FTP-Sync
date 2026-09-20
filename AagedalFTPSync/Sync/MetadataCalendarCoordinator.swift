@@ -63,6 +63,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
         self.waitForChangeDebounce = waitForChangeDebounce
         self.now = now
         self.repository = repository
+        self.discoveryProtocol = repository.storageFormat == .version3 ? .templates : .legacy
         self.eventRepository = MetadataSyncEventRepository(url: repository.eventsURL, storageFormat: repository.storageFormat)
         self.keychain = keychain
         if repository.storageFormat == .legacy {
@@ -102,6 +103,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
                  keychain: KeychainStore, changeDebounce: Duration, now: @escaping () -> Date,
                  transport: @escaping Transport, state: MetadataCalendarState, events: [MetadataSyncEvent]) {
         self.repository = repository
+        self.discoveryProtocol = repository.storageFormat == .version3 ? .templates : .legacy
         self.eventRepository = eventRepository
         self.keychain = keychain
         self.changeDebounce = changeDebounce
@@ -450,14 +452,22 @@ final class MetadataCalendarCoordinator: ObservableObject {
         }
     }
 
-    func register(address: String, deviceName: String, setupKey: String?, invite: String?, protocolVersion: MetadataCalendarProtocol = .legacy) {
+    func register(address: String, deviceName: String, setupKey: String?, invite: String?, protocolVersion: MetadataCalendarProtocol = .legacy, connectingJobID: UUID? = nil) {
         perform {
             try self.validateBindings()
             let parsed = try invite.map(MetadataSyncInvitation.init)
             let selectedProtocol = parsed?.protocolVersion ?? protocolVersion
             try self.requireNamespace(selectedProtocol)
+            let previousAccountID = self.account?.id
             let account = try self.prepareAccount(address: parsed?.address ?? address)
-            let previousIDs = Set(self.calendars.map(\.id))
+            // Compare against this account and namespace, not the server previously shown in settings.
+            var previousIDs = Set<UUID>()
+            if connectingJobID != nil, account.registered {
+                let existing = try await self.request(MetadataCalendarRequest(action: "listCalendars"), account: account, protocolVersion: selectedProtocol)
+                previousIDs = Set((existing.calendars ?? []).map(\.id))
+            } else if previousAccountID == account.id, self.discoveryProtocol == selectedProtocol {
+                previousIDs = Set(self.calendars.map(\.id))
+            }
             var request = MetadataCalendarRequest(action: invite == nil ? "bootstrap" : "acceptInvite")
             request.deviceName = deviceName
             request.inviteToken = parsed?.token
@@ -469,18 +479,24 @@ final class MetadataCalendarCoordinator: ObservableObject {
             try await self.loadCalendars()
             let newCalendars = self.calendars.filter { !previousIDs.contains($0.id) }
             self.suggestedCalendarID = newCalendars.count == 1 ? newCalendars[0].id : (self.calendars.count == 1 ? self.calendars[0].id : nil)
+            if let connectingJobID, invite != nil, let calendarID = self.suggestedCalendarID {
+                try await self.attachCalendar(calendarID: calendarID, jobID: connectingJobID, protocolVersion: selectedProtocol)
+                if self.receiveProposal == nil { self.message = "Job connected. Metadata syncs automatically." }
+                return
+            }
             self.message = invite == nil ? "Server connected. Choose a local job and activate sync." : "Invitation accepted. Choose a local job and activate sync with the shared calendar."
 
         }
     }
 
     func selectAccount(_ id: UUID) {
-        guard !busy, !isPaused else { return }
+        guard !busy, !isPaused, state.accounts.contains(where: { $0.id == id }) else { return }
         do {
             var next = state; next.activeAccountID = id
             try persist(next)
             calendars = []; members = []; invitation = ""; suggestedCalendarID = nil
             lastCalendarList[id] = nil
+            Task { await refresh() }
         } catch { message = error.localizedDescription }
     }
 
@@ -727,55 +743,59 @@ final class MetadataCalendarCoordinator: ObservableObject {
 
     func attach(calendarID: UUID, jobID: UUID, protocolVersion: MetadataCalendarProtocol = .legacy) {
         perform {
-            self.message = ""
-            guard self.state.pendingReceive == nil else {
-                throw MetadataSyncFailure(message: "Finish or cancel the pending receive before linking another calendar.")
-            }
-            guard let account = self.account, account.registered,
-                  !self.state.bindings.contains(where: { $0.id == calendarID && $0.accountID == account.id }) else {
-                throw MetadataSyncFailure(message: "Choose a connected server and a calendar that is not already linked on this Mac.")
-            }
-            try self.requireNamespace(protocolVersion)
-            if let automation = self.store?.jobs.first(where: { $0.id == jobID })?.metadataAutomation {
-                try MetadataCalendarNamespaceGate.validate(automation, for: protocolVersion)
-            }
-            guard let remote = try await self.request(MetadataCalendarRequest(action: "getCalendar", calendarID: calendarID), account: account, protocolVersion: protocolVersion).calendar,
-                  let store = self.store, let job = store.jobs.first(where: { $0.id == jobID }) else {
-                throw MetadataSyncServerError.invalidResponse
-            }
-            guard !store.metadataDraftsBeingEdited.contains(jobID) else {
-                throw MetadataSyncFailure(message: "Save or close this job's open metadata draft before receiving a calendar.")
-            }
-            try MetadataCalendarNamespaceGate.validate(job.metadataAutomation ?? MetadataAutomation(), for: protocolVersion)
-            let alreadyLinked = self.state.bindings.contains { $0.jobID == jobID }
-            if job.hasMetadataProgramming || alreadyLinked {
-                var copy = job
-                copy.id = UUID()
-                let baseName = job.name + " (Shared)"
-                var name = baseName, suffix = 2
-                while store.jobs.contains(where: { $0.name == name }) {
-                    name = "\(baseName) \(suffix)"; suffix += 1
-                }
-                copy.name = name
-                copy.isEnabled = false
-                copy.startsOnAppLaunch = false
-                copy.metadataAutomation = try remote.document.applying(to: job.metadataAutomation ?? MetadataAutomation(),
-                    replacing: SharedMetadataDocument(job.metadataAutomation ?? MetadataAutomation()), range: nil, timeZone: remote.timeZone)
-                if copy.metadataAutomation?.hasActivatedTemplates == true, copy.metadataProcessingTimeZoneIdentifier == nil {
-                    copy.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
-                }
-                try copy.validateMetadataTemplateActivationContext()
-                self.receiveProposal = MetadataCalendarReceiveProposal(accountID: account.id, source: job, duplicate: copy, calendar: remote)
-                return
-            }
-            // A blank baseline makes the first pull recoverable if persistence or the app is interrupted.
-            var baseline = remote; baseline.document = SharedMetadataDocument(MetadataAutomation())
-            let binding = MetadataCalendarBinding(accountID: account.id, jobID: jobID, snapshot: baseline)
-            try self.replace(binding)
-            try await self.sync(binding, account: account)
-            self.receivedJobID = jobID
-            store.selectedJobID = jobID
+            try await self.attachCalendar(calendarID: calendarID, jobID: jobID, protocolVersion: protocolVersion)
         }
+    }
+
+    private func attachCalendar(calendarID: UUID, jobID: UUID, protocolVersion: MetadataCalendarProtocol) async throws {
+        self.message = ""
+        guard self.state.pendingReceive == nil else {
+            throw MetadataSyncFailure(message: "Finish or cancel the pending receive before linking another calendar.")
+        }
+        guard let account = self.account, account.registered,
+              !self.state.bindings.contains(where: { $0.id == calendarID && $0.accountID == account.id }) else {
+            throw MetadataSyncFailure(message: "Choose a connected server and a calendar that is not already linked on this Mac.")
+        }
+        try self.requireNamespace(protocolVersion)
+        if let automation = self.store?.jobs.first(where: { $0.id == jobID })?.metadataAutomation {
+            try MetadataCalendarNamespaceGate.validate(automation, for: protocolVersion)
+        }
+        guard let remote = try await self.request(MetadataCalendarRequest(action: "getCalendar", calendarID: calendarID), account: account, protocolVersion: protocolVersion).calendar,
+              let store = self.store, let job = store.jobs.first(where: { $0.id == jobID }) else {
+            throw MetadataSyncServerError.invalidResponse
+        }
+        guard !store.metadataDraftsBeingEdited.contains(jobID) else {
+            throw MetadataSyncFailure(message: "Save or close this job's open metadata draft before receiving a calendar.")
+        }
+        try MetadataCalendarNamespaceGate.validate(job.metadataAutomation ?? MetadataAutomation(), for: protocolVersion)
+        let alreadyLinked = self.state.bindings.contains { $0.jobID == jobID }
+        if job.hasMetadataProgramming || alreadyLinked {
+            var copy = job
+            copy.id = UUID()
+            let baseName = job.name + " (Shared)"
+            var name = baseName, suffix = 2
+            while store.jobs.contains(where: { $0.name == name }) {
+                name = "\(baseName) \(suffix)"; suffix += 1
+            }
+            copy.name = name
+            copy.isEnabled = false
+            copy.startsOnAppLaunch = false
+            copy.metadataAutomation = try remote.document.applying(to: job.metadataAutomation ?? MetadataAutomation(),
+                replacing: SharedMetadataDocument(job.metadataAutomation ?? MetadataAutomation()), range: nil, timeZone: remote.timeZone)
+            if copy.metadataAutomation?.hasActivatedTemplates == true, copy.metadataProcessingTimeZoneIdentifier == nil {
+                copy.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+            }
+            try copy.validateMetadataTemplateActivationContext()
+            self.receiveProposal = MetadataCalendarReceiveProposal(accountID: account.id, source: job, duplicate: copy, calendar: remote)
+            return
+        }
+        // A blank baseline makes the first pull recoverable if persistence or the app is interrupted.
+        var baseline = remote; baseline.document = SharedMetadataDocument(MetadataAutomation())
+        let binding = MetadataCalendarBinding(accountID: account.id, jobID: jobID, snapshot: baseline)
+        try self.replace(binding)
+        try await self.sync(binding, account: account)
+        self.receivedJobID = jobID
+        store.selectedJobID = jobID
     }
 
     func confirmReceive(_ proposal: MetadataCalendarReceiveProposal) {

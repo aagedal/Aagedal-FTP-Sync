@@ -101,6 +101,12 @@ struct MetadataSyncInvitation {
     let token: String
     let protocolVersion: MetadataCalendarProtocol?
 
+    /// Preserve the calendar namespace even when the server address is omitted.
+    static func copyText(token: String, address: String?, protocolVersion: MetadataCalendarProtocol) -> String {
+        let prefix = protocolVersion == .templates ? "Aagedal template calendar invitation\n" : ""
+        return prefix + (address.map { "Server: \($0)\nInvitation: " } ?? "") + token
+    }
+
     /// Accept either the token alone or the complete text produced by Copy Invitation.
     init(_ text: String) throws {
         var address: String?

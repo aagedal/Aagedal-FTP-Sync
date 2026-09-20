@@ -173,6 +173,57 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         return (root, store, sync, repository, calendar)
     }
 
+    func testSeveralJobsAcrossServersSyncIndependentlyOfSelectedServerAndSurviveRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try makeStore(root: root, job: SyncJob(name: "First"))
+        _ = store.addJob()
+        _ = store.addJob()
+        let accounts = [
+            MetadataSyncAccount(id: UUID(), address: "https://one.example.org/", registered: true),
+            MetadataSyncAccount(id: UUID(), address: "https://two.example.org/", registered: true)
+        ]
+        let bindings = store.jobs.enumerated().map { index, job in
+            MetadataCalendarBinding(accountID: accounts[index == 2 ? 1 : 0].id, jobID: job.id,
+                snapshot: SharedMetadataCalendar(id: UUID(), name: job.name, timeZone: "Etc/UTC", revision: 1,
+                    role: "editor", document: SharedMetadataDocument(MetadataAutomation())))
+        }
+        let servers = Dictionary(uniqueKeysWithValues: bindings.map { ($0.id, CalendarTransportFixture(calendar: $0.snapshot)) })
+        let repository = MetadataCalendarRepository(url: root.appendingPathComponent("sync.json"))
+        try repository.save(MetadataCalendarState(accounts: accounts, activeAccountID: accounts[0].id, bindings: bindings))
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let transport: MetadataCalendarCoordinator.Transport = { body, address, id, _, _ in
+            XCTAssertEqual(address, accounts.first { $0.id == id }?.address)
+            if body.action == "listCalendars" {
+                return MetadataCalendarResponse(service: "aagedal-metadata-sync", protocolVersion: 2, calendars: [])
+            }
+            let binding = try XCTUnwrap(bindings.first { $0.id == body.calendarID })
+            XCTAssertEqual(id, binding.accountID)
+            return try await servers[binding.id]!.send(body)
+        }
+        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: transport)
+        sync.start(store: store, polling: false, observingChanges: false)
+        await sync.refresh()
+        for job in store.jobs { XCTAssertEqual(sync.activity(for: job.id).phase, .current) }
+        sync.selectAccount(accounts[1].id)
+        await Task.yield()
+        try await finishOperation(sync)
+        XCTAssertEqual(sync.account?.id, accounts[1].id)
+        XCTAssertEqual(sync.state.bindings.count, 3)
+        sync.stop()
+        let restarted = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: transport)
+        restarted.start(store: store, polling: false, observingChanges: false)
+        await restarted.refresh()
+        XCTAssertEqual(restarted.state.accounts.count, 2)
+        for binding in bindings {
+            XCTAssertEqual(restarted.binding(for: binding.jobID)?.accountID, binding.accountID)
+            XCTAssertEqual(restarted.activity(for: binding.jobID).phase, .current)
+            let requests = await servers[binding.id]!.requests
+            XCTAssertGreaterThanOrEqual(requests.filter { $0 == "getCalendar" }.count, 2)
+        }
+        restarted.stop()
+    }
+
     private func finishOperation(_ sync: MetadataCalendarCoordinator) async throws {
         let deadline = Date().addingTimeInterval(5)
         while sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
@@ -955,6 +1006,19 @@ private final class ReceiveSaveGate: @unchecked Sendable {
 }
 
 final class MetadataSyncFeedbackTests: XCTestCase {
+    func testCopiedInvitationRoundTripsWithAndWithoutServerURL() throws {
+        let token = String(repeating: "b", count: 64)
+        for version in [MetadataCalendarProtocol.legacy, .templates] {
+            for address in [nil, "https://sync.example.org/calendar/"] as [String?] {
+                let text = MetadataSyncInvitation.copyText(token: token, address: address, protocolVersion: version)
+                let parsed = try MetadataSyncInvitation(text)
+                XCTAssertEqual(parsed.token, token)
+                XCTAssertEqual(parsed.address, address)
+                XCTAssertEqual(parsed.protocolVersion, version == .templates ? .templates : nil)
+            }
+        }
+    }
+
     func testInvitationAcceptsCopiedTextAndWhitespaceWithoutRelaxingServerValidation() throws {
         let token = String(repeating: "a", count: 64)
         let parsed = try MetadataSyncInvitation("Server: https://SYNC.example.org/calendar/\r\nInvitation: \(token)\r\n")
