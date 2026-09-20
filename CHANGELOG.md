@@ -2,6 +2,10 @@
 
 ## Unreleased (3.0.0)
 
+- Reopen committed libraries with valid SQLite write-ahead logs after interrupted
+  runs. Validate a complete temporary snapshot without changing original files,
+  while keeping damaged logs and unsupported database formats in recovery.
+
 - Offer a confirmed Backup and Reset App Data action when startup cannot open a
   saved library, with a Finder shortcut to the backup and readable storage errors.
   Preserve existing data before resetting and block startup after an interrupted reset.

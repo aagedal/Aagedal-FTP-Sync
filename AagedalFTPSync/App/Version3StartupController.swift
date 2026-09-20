@@ -421,6 +421,20 @@ final class Version3StartupController: ObservableObject {
     /// No decoder debugDescription, payload value, calendar content or credential
     /// is shown. Our admission enum labels contain only fixed categories/paths.
     private static func safeReason(_ error: Error) -> String {
+        if let failure = error as? LegacySignatureSQLiteAcquisition.Failure {
+            switch failure {
+            case .invalidWAL, .integrityFailure:
+                return "The saved database or its recovery log failed validation. Your original files have been kept for recovery."
+            case .wrongApplicationID, .unsupportedVersion, .incompatibleSchema:
+                return "The saved database uses an unsupported format. Your original files have been kept."
+            case .sourceChanged:
+                return "The saved database changed during startup. Close other copies of the app before trying again."
+            case .byteLimit, .recordLimit, .deadlineExceeded:
+                return "The saved database could not be checked within the supported size or time limits."
+            default:
+                return "The saved database could not be safely read. Your original files have been kept for recovery."
+            }
+        }
         if let failure = error as? VersionedAppStorage.Failure {
             switch failure {
             case .invalidManifest: return "The saved library’s recovery information is missing or damaged. You can keep the files for manual recovery, or back up and reset app data to open a fresh library."

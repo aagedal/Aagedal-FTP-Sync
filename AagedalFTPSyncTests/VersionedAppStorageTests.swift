@@ -11,7 +11,7 @@ final class VersionedAppStorageTests: XCTestCase {
     private func fixture(_ action: (URL, VersionedAppStorage) throws -> Void) throws {
         // Foundation normalizes the standard /private/var temp alias back to
         // /var on this host. Use an explicit non-symlink root for this contract.
-        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true).appendingPathComponent(UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try legacy.write(to: root.appendingPathComponent("jobs-v2.json"))

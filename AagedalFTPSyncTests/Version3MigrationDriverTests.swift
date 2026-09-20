@@ -7,7 +7,7 @@ final class Version3MigrationDriverTests: XCTestCase {
     private typealias Driver = Version3MigrationDriver
     private enum Injected: Error { case interrupted }
     private func fixture() throws -> (URL, Driver) {
-        let base = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("selected-migration-\(UUID())")
+        let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("selected-migration-\(UUID())")
         let root = base.appendingPathComponent("profile")
         let temporary = base.appendingPathComponent("temporary")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -129,6 +129,48 @@ final class Version3MigrationDriverTests: XCTestCase {
         future["schemaVersion"] = 99
         try JSONSerialization.data(withJSONObject: future).write(to: result.storage.jobs)
         do { _ = try await driver.openCommitted(); XCTFail("Future current data cannot fall back") } catch {}
+    }
+
+    func testCommittedReopenIncludesWALAfterInterruptedRunWithoutChangingEvidence() async throws {
+        let (_, driver) = try fixture()
+        let admission = try driver.migrateSelectedSources(plan())
+        let url = admission.storage.sourceSignatures
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &connection), SQLITE_OK)
+        let db = try XCTUnwrap(connection)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0", nil, nil, nil), SQLITE_OK)
+        let id = UUID().uuidString
+        let key = ["local", "/source", "", "0", "", ""].map { "\($0.utf8.count):\($0)" }.joined()
+        XCTAssertEqual(sqlite3_exec(db, "INSERT INTO source_signatures VALUES ('\(id)', '\(key)', 'photo.jpg', 10, 123.25, 124.5)", nil, nil, nil), SQLITE_OK)
+        let originals = try Dictionary(uniqueKeysWithValues: ["", "-wal", "-shm"].map {
+            ($0, try Data(contentsOf: URL(fileURLWithPath: url.path + $0)))
+        })
+        XCTAssertEqual(sqlite3_close(db), SQLITE_OK)
+        // Restore the exact on-disk state from before close/checkpoint, as left by
+        // an interrupted process, with no live SQLite connection during admission.
+        for (suffix, bytes) in originals { try bytes.write(to: URL(fileURLWithPath: url.path + suffix)) }
+        let mainOnly = try Version3SignatureConversion.validateVersion3Snapshot(
+            try XCTUnwrap(originals[""]), temporaryDirectory: driver.temporaryDirectory)
+        XCTAssertEqual(mainOnly.recordCount, 0, "The new record must exist only in WAL for this regression")
+        let reopened = try await driver.openCommitted()
+        XCTAssertEqual(reopened.storage, admission.storage)
+        let snapshot = try LegacySignatureSQLiteAcquisition.acquire(
+            sourceURL: url, temporaryDirectory: driver.temporaryDirectory, version3: true)
+        let validated = try Version3SignatureConversion.validateVersion3Snapshot(
+            snapshot.data, temporaryDirectory: driver.temporaryDirectory)
+        XCTAssertEqual(validated.recordCount, 1)
+        XCTAssertEqual(validated.referencedJobIDs, [try XCTUnwrap(UUID(uuidString: id))])
+        for (suffix, bytes) in originals {
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: url.path + suffix)), bytes)
+        }
+        // Damaged logs remain a recovery error, never silently ignored.
+        let walURL = URL(fileURLWithPath: url.path + "-wal")
+        var damaged = try XCTUnwrap(originals["-wal"])
+        damaged[damaged.count - 1] ^= 1
+        try damaged.write(to: walURL)
+        do { _ = try await driver.openCommitted(); XCTFail("Corrupt WAL must block startup") }
+        catch { XCTAssertEqual(error as? LegacySignatureSQLiteAcquisition.Failure, .invalidWAL) }
+        XCTAssertEqual(try Data(contentsOf: walURL), damaged)
     }
 
     func testWALAcquisitionAndMigrationRetainAllOriginalEvidence() async throws {

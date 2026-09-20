@@ -102,6 +102,17 @@ struct VersionedAppStorage {
         return SQLiteAcquisition(output: output, sourcePath: source.path)
     }
 
+    /// Acquires a complete current database without opening or changing originals.
+    /// Only committed validation may substitute this snapshot for the main file.
+    func acquireCurrentSQLite(relativePath: String, temporaryDirectory: URL) throws -> SQLiteAcquisition {
+        try validatePaths([relativePath], maximum: 1)
+        guard isSQLitePrimary(relativePath) else { throw Failure.invalidSQLiteAcquisition(relativePath) }
+        let source = root.appendingPathComponent(relativePath)
+        let output = try LegacySignatureSQLiteAcquisition.acquire(
+            sourceURL: source, temporaryDirectory: temporaryDirectory, version3: true)
+        return SQLiteAcquisition(output: output, sourcePath: source.path)
+    }
+
     /// Returns the v3 root after migration, or validates and opens an existing v3.
     /// `convert` receives original bytes, never file URLs. It must emit explicit
     /// versioned store envelopes. `validate` must enforce schema versions and all
@@ -115,7 +126,10 @@ struct VersionedAppStorage {
     /// root/path. Plan includes primary and all three companion paths, including
     /// absent ones. Raw original bytes go to convert and the retained archive;
     /// callers explicitly use the receipt's standalone output for SQL conversion.
-    /// Receipts are admission-only; PREPARED recovery uses the frozen archive.
+    /// Legacy receipts are admission-only; PREPARED recovery uses the frozen archive.
+    /// currentSQLite acquires a current database snapshot including committed WAL
+    /// records. It is used only for COMMITTED storage; original main/companion
+    /// identities and bytes are rechecked before validating the complete store set.
     /// immutableStorePaths identifies initial stores whose exact initial hashes
     /// remain mandatory even after COMMITTED (for example source-selection
     /// provenance). Every requested path must occur in the initial manifest;
@@ -128,12 +142,13 @@ struct VersionedAppStorage {
         currentStorePaths: CurrentStorePaths? = nil,
         sqliteAcquisitions: [String: SQLiteAcquisition] = [:],
         immutableStorePaths: Set<String> = [],
+        currentSQLite: ((String) throws -> SQLiteAcquisition)? = nil,
         checkpoint: (Checkpoint) throws -> Void = { _ in }
     ) throws -> URL {
         try withLock {
             if try exists(boundaryName) {
                 return try openCommitted(validate: validate, maximumFiles: plan.maximumFiles, maximumBytes: plan.maximumBytes,
-                                         currentStorePaths: currentStorePaths, immutableStorePaths: immutableStorePaths)
+                                         currentStorePaths: currentStorePaths, immutableStorePaths: immutableStorePaths, currentSQLite: currentSQLite)
             }
             // A v3 directory without its boundary is damage, never a reason to
             // overwrite it or load older settings.
@@ -223,14 +238,14 @@ struct VersionedAppStorage {
     }
 
     private func openCommitted(validate: Validator, maximumFiles: Int, maximumBytes: Int,
-                               currentStorePaths: CurrentStorePaths?, immutableStorePaths: Set<String>) throws -> URL {
+                               currentStorePaths: CurrentStorePaths?, immutableStorePaths: Set<String>, currentSQLite: ((String) throws -> SQLiteAcquisition)? = nil) throws -> URL {
         let boundary = try readBoundary()
         guard try exists("v3") else {
             throw boundary.state == .committed ? Failure.committedStorageMissing : Failure.recoveryRequired
         }
         _ = try validateInstallation(boundary, installed: true, initial: boundary.state == .prepared,
                                      maximumFiles: maximumFiles, maximumBytes: maximumBytes, validate: validate,
-                                     currentStorePaths: currentStorePaths, immutableStorePaths: immutableStorePaths)
+                                     currentStorePaths: currentStorePaths, immutableStorePaths: immutableStorePaths, currentSQLite: currentSQLite)
         if boundary.state == .prepared { try commitBoundary(boundary) }
         return root.appendingPathComponent("v3", isDirectory: true)
     }
@@ -238,7 +253,8 @@ struct VersionedAppStorage {
     private func validateInstallation(
         _ boundary: Boundary, installed: Bool, initial: Bool,
         maximumFiles: Int, maximumBytes: Int, validate: Validator,
-        currentStorePaths: CurrentStorePaths? = nil, immutableStorePaths: Set<String> = []
+        currentStorePaths: CurrentStorePaths? = nil, immutableStorePaths: Set<String> = [],
+        currentSQLite: ((String) throws -> SQLiteAcquisition)? = nil
     ) throws -> Manifest {
         guard maximumFiles > 0, maximumBytes > 0 else { throw Failure.limitExceeded }
         let archive = archiveName(boundary.migrationID)
@@ -266,7 +282,18 @@ struct VersionedAppStorage {
         // Data validators may use SQLite immutable mode. Prove every captured
         // database is standalone on initial staging and PREPARED recovery too;
         // otherwise an unlisted WAL could be silently omitted from validation.
-        try rejectSQLiteCompanions(initialStorePaths)
+        var acquisitions: [String: SQLiteAcquisition] = [:]
+        if !initial, let currentSQLite {
+            for path in initialStorePaths where isSQLitePrimary(path) {
+                let receipt = try currentSQLite(path)
+                guard receipt.sourcePath == root.appendingPathComponent(path).path else {
+                    throw Failure.invalidSQLiteAcquisition(path)
+                }
+                acquisitions[path] = receipt
+            }
+        }
+        let acquiredPaths = Set(acquisitions.keys)
+        try rejectSQLiteCompanions(initialStorePaths, allowing: acquiredPaths)
         var stores: Files = [:]
         var capturedStores: [String: Captured] = [:]
         for expected in manifest.stores {
@@ -276,7 +303,10 @@ struct VersionedAppStorage {
             if initial || immutableStorePaths.contains(expected.path), entry(expected.path, data: data) != expected { throw Failure.invalidManifest }
             total += data.count
             guard total <= maximumBytes else { throw Failure.limitExceeded }
-            stores[expected.path] = data
+            let snapshot = acquisitions[directory + "/" + expected.path]?.output.data ?? data
+            guard snapshot.count <= maximumBytes - total + data.count else { throw Failure.limitExceeded }
+            total += snapshot.count - data.count
+            stores[expected.path] = snapshot
             capturedStores[expected.path] = captured
         }
         if !initial, let currentStorePaths {
@@ -285,7 +315,7 @@ struct VersionedAppStorage {
             guard !declared.contains(manifestName) else { throw Failure.invalidManifest }
             let combined = Set(stores.keys).union(declared).sorted()
             try validatePaths(combined, maximum: maximumFiles)
-            try rejectSQLiteCompanions(combined.map { directory + "/" + $0 })
+            try rejectSQLiteCompanions(combined.map { directory + "/" + $0 }, allowing: acquiredPaths)
             for path in combined where stores[path] == nil {
                 guard let captured = try read(directory + "/" + path, maximumBytes: maximumBytes, allowMissing: false) else {
                     throw Failure.unsafeFile(path)
@@ -303,9 +333,16 @@ struct VersionedAppStorage {
                 guard current?.identity == capturedStores[path]?.identity,
                       current?.data == capturedStores[path]?.data else { throw Failure.inputChanged(path) }
             }
-            try rejectSQLiteCompanions(combined.map { directory + "/" + $0 })
+            try rejectSQLiteCompanions(combined.map { directory + "/" + $0 }, allowing: acquiredPaths)
         }
-        try rejectSQLiteCompanions(initialStorePaths)
+        try rejectSQLiteCompanions(initialStorePaths, allowing: acquiredPaths)
+        var sqliteCaptures: [String: Captured] = [:]
+        for path in acquiredPaths {
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                sqliteCaptures[path + suffix] = try read(path + suffix, maximumBytes: maximumBytes, allowMissing: true)
+            }
+        }
+        try validateSQLiteCaptures(acquisitions, captured: sqliteCaptures)
         try validate(stores)
         return manifest
     }

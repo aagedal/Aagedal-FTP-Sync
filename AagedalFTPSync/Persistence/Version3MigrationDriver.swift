@@ -182,7 +182,11 @@ struct Version3MigrationDriver: Sendable {
                 let current = try Self.validateCurrentSet(files, temporaryDirectory: temporary)
                 result = Admission(storage: layout, selection: current.selection, currentCredentialIDs: current.credentials)
             }, currentStorePaths: DownloadNameMappingRegistry.currentStorePaths,
-               immutableStorePaths: [Self.selectionFilename])
+               immutableStorePaths: [Self.selectionFilename], currentSQLite: { path in
+                   guard path == "v3/" + Self.signaturesName else { throw Failure.invalidStoreSet }
+                   return try VersionedAppStorage(root: root).acquireCurrentSQLite(
+                       relativePath: path, temporaryDirectory: temporary)
+               })
             guard let result else { throw Failure.invalidStoreSet }
             return result
         }

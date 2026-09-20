@@ -96,11 +96,13 @@ enum LegacySignatureSQLiteAcquisition {
     /// checkpointed or written; every original byte and companion presence is
     /// rechecked. Any rollback journal is rejected without recovery. Captured
     /// original bytes are returned for retention, separately from the standalone
-    /// v2 snapshot. The caller must retain them under its migration protocol.
+    /// snapshot. By default this admits legacy v2; version3 requires the current
+    /// application ID and schema without converting any records. The caller must
+    /// retain originals under its migration or committed-storage protocol.
     /// Deadlines bound user-space hashing/SQLite work, not blocked kernel IO calls.
     /// Schema/integrity-checked output still requires converter row validation.
     /// Only our uniquely created private temporary stage is removed.
-    static func acquire(sourceURL: URL, temporaryDirectory: URL, limits: Limits = Limits()) throws -> Output {
+    static func acquire(sourceURL: URL, temporaryDirectory: URL, limits: Limits = Limits(), version3: Bool = false) throws -> Output {
         guard (4096...1_073_741_824).contains(limits.maximumBytes), (0...10_000_000).contains(limits.maximumRecords),
               limits.timeout.isFinite, limits.timeout > 0, limits.timeout <= 60 else { throw Failure.invalidLimits }
         let deadline = Deadline(limits.timeout)
@@ -128,7 +130,7 @@ enum LegacySignatureSQLiteAcquisition {
             var transaction = true
             defer { if transaction { try? execute("ROLLBACK", in: source.pointer) } }
             // First read pins the logical source, including all committed WAL pages.
-            try schema(source.pointer)
+            try schema(source.pointer, version3: version3)
             let pageSize = try integer("PRAGMA page_size", in: source.pointer)
             let pages = try integer("PRAGMA page_count", in: source.pointer)
             guard pageSize > 0, pages > 0, pages <= Int64(limits.maximumBytes) / pageSize else { throw Failure.byteLimit }
@@ -163,7 +165,7 @@ enum LegacySignatureSQLiteAcquisition {
             try source.close()
             // All mutations below apply solely to the disposable destination.
             try execute("PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL", in: destination.pointer)
-            try schema(destination.pointer)
+            try schema(destination.pointer, version3: version3)
             try integrity(destination.pointer)
             guard try integer("SELECT count(*) FROM source_signatures", in: destination.pointer) == count else { throw Failure.integrityFailure }
             try destination.close()
@@ -304,11 +306,11 @@ enum LegacySignatureSQLiteAcquisition {
             current.deleteLastPathComponent()
         }
     }
-    private static func schema(_ database: OpaquePointer) throws {
+    private static func schema(_ database: OpaquePointer, version3: Bool) throws {
         let id = try integer("PRAGMA application_id", in: database)
-        guard id == 0 else { throw Failure.wrongApplicationID(id) }
+        guard id == (version3 ? SourceSignatureRepository.version3ApplicationID : 0) else { throw Failure.wrongApplicationID(id) }
         let version = try integer("PRAGMA user_version", in: database)
-        guard version == 2 else { throw Failure.unsupportedVersion(version) }
+        guard version == (version3 ? 3 : 2) else { throw Failure.unsupportedVersion(version) }
         let statement = try prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY name LIMIT 4", in: database)
         defer { sqlite3_finalize(statement) }
         let expected = [["table", "source_signatures", "source_signatures", SourceSignatureRepository.version3TableSQL],
