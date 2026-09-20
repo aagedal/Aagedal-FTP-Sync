@@ -414,15 +414,18 @@ final class MetadataCalendarCoordinator: ObservableObject {
         }
     }
 
-    private func prepareAccount(address: String) throws -> MetadataSyncAccount {
+    private func prepareAccount(address: String, name: String? = nil) throws -> MetadataSyncAccount {
         let address = try MetadataSyncServer(address: address).baseURL.absoluteString
         var next = state
-        if let existing = next.accounts.first(where: { $0.address == address }) {
+        let name = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let index = next.accounts.firstIndex(where: { $0.address == address }) {
+            if let name, !name.isEmpty { next.accounts[index].name = name }
+            let existing = next.accounts[index]
             next.activeAccountID = existing.id
             try persist(next)
             return existing
         }
-        let account = MetadataSyncAccount(id: UUID(), address: address)
+        let account = MetadataSyncAccount(id: UUID(), address: address, name: name)
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             throw MetadataSyncFailure(message: "A secure device credential could not be generated.")
@@ -452,14 +455,14 @@ final class MetadataCalendarCoordinator: ObservableObject {
         }
     }
 
-    func register(address: String, deviceName: String, setupKey: String?, invite: String?, protocolVersion: MetadataCalendarProtocol = .legacy, connectingJobID: UUID? = nil) {
+    func register(address: String, deviceName: String, setupKey: String?, invite: String?, protocolVersion: MetadataCalendarProtocol = .legacy, connectingJobID: UUID? = nil, serverName: String? = nil) {
         perform {
             try self.validateBindings()
             let parsed = try invite.map(MetadataSyncInvitation.init)
             let selectedProtocol = parsed?.protocolVersion ?? protocolVersion
             try self.requireNamespace(selectedProtocol)
             let previousAccountID = self.account?.id
-            let account = try self.prepareAccount(address: parsed?.address ?? address)
+            let account = try self.prepareAccount(address: parsed?.address ?? address, name: serverName)
             // Compare against this account and namespace, not the server previously shown in settings.
             var previousIDs = Set<UUID>()
             if connectingJobID != nil, account.registered {
@@ -484,8 +487,57 @@ final class MetadataCalendarCoordinator: ObservableObject {
                 if self.receiveProposal == nil { self.message = "Job connected. Metadata syncs automatically." }
                 return
             }
-            self.message = invite == nil ? "Server connected. Choose a local job and activate sync." : "Invitation accepted. Choose a local job and activate sync with the shared calendar."
+            self.message = "Server saved. Open a job’s Metadata Sync settings to attach its calendar."
 
+        }
+    }
+
+    /// One durable change removes the account and its links; job metadata is untouched.
+    func removeAccount(_ id: UUID) {
+        guard !busy, !isPaused, let account = state.accounts.first(where: { $0.id == id }) else { return }
+        do {
+            guard !state.pendingMigrations.contains(where: { $0.source.accountID == id && $0.isPending }) else {
+                throw MetadataSyncFailure(message: "Finish or cancel this server’s pending calendar migration before removing it.")
+            }
+            var next = state
+            let detached = next.bindings.filter { $0.accountID == id }
+            next.bindings.removeAll { $0.accountID == id }
+            next.accounts.removeAll { $0.id == id }
+            if next.pendingReceive?.accountID == id { next.pendingReceive = nil }
+            for index in next.pendingMigrations.indices where next.pendingMigrations[index].source.accountID == id {
+                let journal = next.pendingMigrations[index]
+                if journal.phase == .bindingCommitted {
+                    next.pendingMigrations[index] = try journal.markBindingDetached()
+                }
+            }
+            let wasSelected = next.activeAccountID == id
+            if wasSelected { next.activeAccountID = next.accounts.first?.id }
+            try persistMigration(next, replacing: state.pendingMigrations)
+            for binding in detached {
+                activities.removeValue(forKey: binding.jobID)
+                bindingMessages.removeValue(forKey: binding.id)
+                queuedJobIDs.remove(binding.jobID)
+                queuedManualJobIDs.remove(binding.jobID)
+            }
+            connectionRetries[id] = nil
+            lastCalendarList[id] = nil
+            if receiveProposal?.accountID == id { receiveProposal = nil }
+            if migrationProposal?.source.accountID == id { migrationProposal = nil }
+            if wasSelected { calendars = []; clearSharingDetails(); suggestedCalendarID = nil }
+            message = "Server removed and jobs detached. Local metadata and files are retained."
+            do { try keychain.removePassword(for: account.credentialID) }
+            catch { message += " The saved device key could not be removed from Keychain." }
+        } catch { message = error.localizedDescription }
+    }
+
+    func renameAccount(_ id: UUID, name: String) {
+        perform {
+            guard let index = self.state.accounts.firstIndex(where: { $0.id == id }) else { return }
+            var next = self.state
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            next.accounts[index].name = trimmed.isEmpty ? nil : trimmed
+            try self.persist(next)
+            self.message = "Server name saved."
         }
     }
 
@@ -1137,6 +1189,20 @@ final class MetadataCalendarCoordinator: ObservableObject {
     func clearSharingDetails() {
         invitation = ""
         members = []
+    }
+
+    /// Explicit account routing keeps access panels independent across calendars.
+    func calendarAccessRequest(_ body: MetadataCalendarRequest, accountID: UUID,
+                               protocolVersion: MetadataCalendarProtocol) async throws -> MetadataCalendarResponse {
+        guard !busy, !isPaused, !storageFailed,
+              ["listMembers", "createInvite", "revokeMember", "revokeInvites"].contains(body.action),
+              let account = state.accounts.first(where: { $0.id == accountID && $0.registered }) else {
+            throw MetadataSyncFailure(message: "Calendar access is unavailable. Retry when sync is active and idle.")
+        }
+        try Task.checkCancellation()
+        busy = true
+        defer { finishBusyOperation() }
+        return try await request(body, account: account, protocolVersion: protocolVersion)
     }
 
     func manageMembers(calendarID: UUID, revoke: UUID? = nil, revokeInvites: Bool = false) {

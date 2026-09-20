@@ -20,7 +20,7 @@ struct JobDetailEditor: View {
     @State private var selectedSettingsTab: SettingsTab = .serverAndSync
 
     private enum SettingsTab: Hashable {
-        case serverAndSync, metadata, files
+        case serverAndSync, metadata, metadataSync, files
     }
 
     private var draft: SyncJob {
@@ -33,6 +33,7 @@ struct JobDetailEditor: View {
             Picker("Job settings", selection: $selectedSettingsTab) {
                 Text("Server & Sync").tag(SettingsTab.serverAndSync)
                 Text("Metadata").tag(SettingsTab.metadata)
+                Text("Metadata Sync").tag(SettingsTab.metadataSync)
                 Text("File Filtering & Deletion").tag(SettingsTab.files)
             }
             .pickerStyle(.segmented)
@@ -45,6 +46,17 @@ struct JobDetailEditor: View {
                 switch selectedSettingsTab {
                 case .serverAndSync: serverAndSyncSettings
                 case .metadata: metadataSettings
+                case .metadataSync:
+                    if session.isNewJob {
+                        VStack(spacing: 16) {
+                            Text("Save this job before attaching a metadata sync server.")
+                            Button("Save Job") { save() }
+                                .disabled(draft.validationMessage != nil || session.credentialLoadError != nil)
+                        }
+                    } else {
+                        MetadataCalendarSettingsView(fixedJobID: draft.id, beforeAttachment: { save() })
+                            .id(draft.id)
+                    }
                 case .files: fileSettings
                 }
             }
@@ -90,7 +102,10 @@ struct JobDetailEditor: View {
             .padding(14)
         }
         .navigationTitle(draft.name)
+        .onChange(of: store.metadataSyncSettingsJobID) { _, _ in openRequestedMetadataSyncSettings() }
+        .onChange(of: session.jobID) { _, _ in openRequestedMetadataSyncSettings() }
         .onAppear {
+            openRequestedMetadataSyncSettings()
             session.loadCredentials(using: store)
             if session.credentialLoadError != nil {
                 showCredentialLoadError = true
@@ -159,6 +174,12 @@ struct JobDetailEditor: View {
         } message: {
             Text(resetConfirmationMessage)
         }
+    }
+
+    private func openRequestedMetadataSyncSettings() {
+        guard store.metadataSyncSettingsJobID == draft.id else { return }
+        selectedSettingsTab = .metadataSync
+        store.metadataSyncSettingsJobID = nil
     }
 
     private var serverAndSyncSettings: some View {

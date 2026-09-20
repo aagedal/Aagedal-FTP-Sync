@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @MainActor
@@ -497,16 +498,65 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(element("startup.open").exists)
     }
 
-    func testVersion3CalendarStartIsAvailableInSettingsWithoutRecoveryShortcut() {
+    func testVersion3SyncServerCanBeAddedWithoutSelectingAJob() {
         launchVersion3(session: UUID().uuidString, expectsStartupWindow: false)
         openStatusMenu()
         XCTAssertFalse(element("startup.open").exists)
         app.buttons["Settings"].click()
-        app.buttons["Metadata Sync"].click()
+        app.buttons["Sync Servers"].click()
         XCTAssertTrue(element("metadata-sync-section").waitForExistence(timeout: 5))
-        let start = element("metadata-calendar-start")
-        XCTAssertTrue(start.waitForExistence(timeout: 5))
-        XCTAssertFalse(start.isEnabled) // Isolated UI sessions never activate the network.
+        XCTAssertTrue(app.buttons["FTP Servers"].exists)
+        XCTAssertFalse(element("Sync Job").exists)
+        let sidebar = element("metadata-sync-server-list")
+        XCTAssertTrue(sidebar.exists)
+        XCTAssertLessThan(sidebar.frame.midX, element("metadata-sync-server-name").frame.midX)
+        let remove = element("metadata-sync-server-remove")
+        XCTAssertGreaterThanOrEqual(remove.frame.width, 36)
+        XCTAssertGreaterThanOrEqual(remove.frame.height, 36)
+        XCTAssertFalse(remove.isEnabled)
+        element("metadata-sync-server-name").click()
+        element("metadata-sync-server-name").typeText("Newsroom")
+        let invitation = element("metadata-sync-invitation")
+        XCTAssertTrue(invitation.waitForExistence(timeout: 5))
+        XCTAssertTrue(invitation.isEnabled)
+        let connect = element("metadata-sync-server-connect")
+        XCTAssertFalse(connect.isEnabled)
+        XCTAssertFalse(app.buttons["Start Calendar Sync"].exists)
+        invitation.click()
+        let joinString = "Server: https://fixture.invalid/\nInvitation: " + String(repeating: "b", count: 64)
+        let pasteboard = NSPasteboard.general
+        let savedItems = (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        defer {
+            pasteboard.clearContents()
+            pasteboard.writeObjects(savedItems)
+        }
+        pasteboard.clearContents()
+        pasteboard.setString(joinString, forType: .string)
+        invitation.typeKey("v", modifierFlags: .command)
+        XCTAssertTrue(connect.isEnabled)
+        connect.click()
+        // Isolated sessions reject startup; connecting must preserve the input for retry.
+        XCTAssertTrue(app.staticTexts["Calendar network activity stays disabled in isolated test sessions."].waitForExistence(timeout: 5))
+        XCTAssertEqual(invitation.value as? String, joinString)
+        element("Members & Invitations").firstMatch.click()
+        XCTAssertTrue(app.staticTexts["Select a connected sync server from the list."].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Show Members"].exists)
+        XCTAssertFalse(app.buttons["Load Calendars"].exists)
+        XCTAssertFalse(app.staticTexts["Server and calendar"].exists)
+    }
+
+    func testJobMetadataSyncSettingsManageAttachmentSeparatelyFromServers() {
+        launch(seedJob: true)
+        element("Metadata Sync").firstMatch.click()
+        XCTAssertTrue(app.buttons["Manage Sync Servers…"].waitForExistence(timeout: 5))
+        XCTAssertFalse(element("metadata-sync-invitation").exists)
+        XCTAssertFalse(element("Sync Job").exists)
     }
 
     func testServerSettingsDeleteControlHasLargeTargetAndDeletesSelectedFixture() {

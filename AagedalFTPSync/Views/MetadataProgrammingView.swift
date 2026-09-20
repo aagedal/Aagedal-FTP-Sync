@@ -85,10 +85,8 @@ struct MetadataProgrammingView: View {
             windowHeader
             MetadataSyncStatusView(jobID: selectedJob?.id, beforeSync: { flushAutosave() }) {
                 flushAutosave()
-                store.settingsTab = .metadataSync
-                store.metadataSyncSettingsTab = .calendars
-                RegularWindowController.shared.prepareForOpening()
-                openSettings()
+                store.metadataSyncSettingsJobID = selectedJob?.id
+                openJobSettings(for: selectedJob)
             }
             Divider()
 

@@ -76,6 +76,21 @@ final class SharedMetadataCalendarTests: XCTestCase {
         XCTAssertTrue(result.clips.contains(remote.clips[0]))
     }
 
+    func testUnnamedSyncAccountRemainsReadableAndNamedAccountRoundTrips() throws {
+        let id = UUID()
+        let data = try JSONSerialization.data(withJSONObject: ["id": id.uuidString,
+            "address": "https://sync.example.org/", "registered": true])
+        var account = try JSONDecoder().decode(MetadataSyncAccount.self, from: data)
+        XCTAssertEqual(account.displayName, account.address)
+        let credentialID = account.credentialID
+        account.name = "Newsroom"
+        let reopened = try JSONDecoder().decode(MetadataSyncAccount.self, from: JSONEncoder().encode(account))
+        XCTAssertEqual(reopened.displayName, "Newsroom")
+        XCTAssertEqual(reopened.id, id)
+        XCTAssertEqual(reopened.credentialID, credentialID)
+        XCTAssertEqual(reopened.address, account.address)
+    }
+
     func testCorruptSyncStateIsNotSilentlyReplaced() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

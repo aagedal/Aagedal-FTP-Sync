@@ -109,6 +109,128 @@ final class MetadataCalendarNamespaceCoordinatorTests: XCTestCase {
         return .init(store: store, sync: sync, repository: repository, server: server, job: job, calendar: calendar)
     }
 
+    func testCalendarAccessPanelsRouteByAccountAndKeepResultsIndependent() async throws {
+        let f = try fixture()
+        f.sync.stop()
+        var state = try f.repository.load()
+        let first = try XCTUnwrap(state.accounts.first)
+        let second = MetadataSyncAccount(id: UUID(), address: "https://second.invalid/", registered: true)
+        state.accounts.append(second)
+        state.activeAccountID = second.id
+        try f.repository.save(state)
+        let otherCalendarID = UUID()
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) },
+            passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let sync = MetadataCalendarCoordinator(repository: f.repository, keychain: keychain,
+            transport: { body, address, accountID, _, _ in
+                XCTAssertEqual(body.routingProtocol, .templates)
+                XCTAssertEqual(address, accountID == first.id ? first.address : second.address)
+                XCTAssertEqual(body.calendarID, accountID == first.id ? f.calendar.id : otherCalendarID)
+                return .init(service: "aagedal-metadata-sync", protocolVersion: 3,
+                    members: [.init(id: accountID, name: address, role: "owner")],
+                    capabilities: ["metadata-templates-v1"])
+            })
+        sync.start(store: f.store, polling: false, observingChanges: false)
+        defer { sync.stop() }
+        let firstResult = try await sync.calendarAccessRequest(.init(action: "listMembers", calendarID: f.calendar.id),
+            accountID: first.id, protocolVersion: .templates)
+        let secondResult = try await sync.calendarAccessRequest(.init(action: "listMembers", calendarID: otherCalendarID),
+            accountID: second.id, protocolVersion: .templates)
+        XCTAssertEqual(firstResult.members?.first?.id, first.id)
+        XCTAssertEqual(secondResult.members?.first?.id, second.id)
+        XCTAssertTrue(sync.members.isEmpty, "Panel results must not overwrite global member state")
+        XCTAssertFalse(sync.busy)
+        XCTAssertEqual(sync.account?.id, second.id)
+    }
+
+    func testRemoveServerDetachesItsJobsAndPreservesOtherServersAndLocalMetadata() throws {
+        let f = try fixture()
+        f.sync.stop()
+        var state = try f.repository.load()
+        let removed = try XCTUnwrap(state.accounts.first)
+        let other = MetadataSyncAccount(id: UUID(), address: "https://other.invalid/", registered: true, name: "Other")
+        state.accounts.append(other)
+        try f.repository.save(state)
+        let originalJobs = f.store.jobs
+        let keychain = KeychainStore(passwordReader: { _ in XCTFail("Removal must not read credentials"); return nil },
+            passwordWriter: { _, _ in XCTFail("Removal must not replace credentials") },
+            passwordRemover: { XCTAssertEqual($0, removed.credentialID) })
+        let sync = MetadataCalendarCoordinator(repository: f.repository, keychain: keychain,
+            transport: { _, _, _, _, _ in XCTFail("Removal must not contact a server"); throw URLError(.cancelled) })
+        sync.start(store: f.store, polling: false, observingChanges: false)
+        defer { sync.stop() }
+        sync.removeAccount(removed.id)
+        let reopened = try f.repository.load()
+        XCTAssertEqual(reopened.accounts.map(\.id), [other.id])
+        XCTAssertEqual(reopened.activeAccountID, other.id)
+        XCTAssertTrue(reopened.bindings.isEmpty)
+        XCTAssertEqual(f.store.jobs, originalJobs)
+        XCTAssertEqual(sync.state.accounts.map(\.id), [other.id])
+    }
+
+    func testFailedServerRemovalPreservesBindingsAndCredentials() throws {
+        let f = try fixture()
+        f.sync.stop()
+        let before = try Data(contentsOf: f.repository.url)
+        let original = try f.repository.load()
+        let repository = MetadataCalendarRepository(url: f.repository.url,
+            storage: AppStorageLayout(root: f.repository.url.deletingLastPathComponent(), storageFormat: .version3),
+            beforeSave: { throw MetadataSyncFailure(message: "Save refused") })
+        let keychain = KeychainStore(passwordReader: { _ in nil }, passwordWriter: { _, _ in },
+            passwordRemover: { _ in XCTFail("Keep the credential when persistence fails") })
+        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain)
+        sync.start(store: f.store, polling: false, observingChanges: false)
+        defer { sync.stop() }
+        sync.removeAccount(try XCTUnwrap(original.accounts.first?.id))
+        XCTAssertEqual(try Data(contentsOf: f.repository.url), before)
+        XCTAssertEqual(sync.state.bindings, original.bindings)
+        XCTAssertEqual(sync.state.accounts.map(\.id), original.accounts.map(\.id))
+        XCTAssertTrue(sync.message.contains("Save refused"))
+    }
+
+    func testNamedServerRegistrationDoesNotAttachJobsAndRenamePreservesIdentity() async throws {
+        let f = try fixture()
+        f.sync.stop()
+        var original = try f.repository.load()
+        original.bindings = []
+        try f.repository.save(original)
+        let originalJobs = f.store.jobs
+        let account = try XCTUnwrap(original.accounts.first)
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) },
+            passwordWriter: { _, _ in XCTFail("Reuse existing credentials") },
+            passwordRemover: { _ in XCTFail("Preserve existing credentials") })
+        let sync = MetadataCalendarCoordinator(repository: f.repository, keychain: keychain,
+            transport: { body, _, _, _, _ in
+                if body.action == "acceptInvite" {
+                    return .init(service: "aagedal-metadata-sync", protocolVersion: 3,
+                        capabilities: ["metadata-templates-v1"])
+                }
+                return try await f.server.send(body)
+            })
+        sync.start(store: f.store, polling: false, observingChanges: false)
+        defer { sync.stop() }
+        let invitation = MetadataSyncInvitation.copyText(token: String(repeating: "b", count: 64),
+            address: account.address, protocolVersion: .templates)
+        sync.register(address: "", deviceName: "Mac", setupKey: nil, invite: invitation,
+            protocolVersion: .templates, serverName: "  Newsroom  ")
+        var deadline = Date().addingTimeInterval(5)
+        while sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(sync.busy)
+        XCTAssertEqual(sync.state.accounts.count, 1)
+        XCTAssertEqual(sync.account?.displayName, "Newsroom")
+        XCTAssertTrue(sync.state.bindings.isEmpty)
+        XCTAssertNil(sync.receiveProposal)
+        XCTAssertEqual(f.store.jobs, originalJobs)
+        sync.renameAccount(account.id, name: "Sports desk")
+        deadline = Date().addingTimeInterval(5)
+        while sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        let reopened = try f.repository.load()
+        XCTAssertEqual(reopened.accounts.first?.displayName, "Sports desk")
+        XCTAssertEqual(reopened.accounts.first?.credentialID, account.credentialID)
+        XCTAssertEqual(reopened.accounts.first?.address, account.address)
+        XCTAssertTrue(reopened.bindings.isEmpty)
+    }
+
     func testJoinStringConnectsSelectedJobUsingTemplatesAndReviewsExistingProgramming() async throws {
         for hasProgramming in [false, true] {
             let f = try fixture()

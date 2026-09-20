@@ -3,27 +3,28 @@ import SwiftUI
 
 struct MetadataCalendarSettingsView: View {
     var managingMembers = false
+    var addingServer = true
+    var fixedJobID: UUID? = nil
+    var beforeAttachment: () -> Bool = { true }
+    @Environment(\.openSettings) private var openSettings
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var sync: MetadataCalendarCoordinator
     @EnvironmentObject private var startup: Version3StartupController
     @AppStorage("metadataSync.serverURL") private var savedAddress = ""
     @State private var address = ""
+    @State private var serverName = ""
+    @State private var editedServerName = ""
     @State private var firstTimeSetup = false
-    @State private var includeServerAddress = true
     @State private var deviceName = Host.current().localizedName ?? "My Mac"
     @State private var setupKey = ""
     @State private var invite = ""
     @State private var calendarName = "Shared calendar"
     @State private var jobID: UUID?
     @State private var calendarID: UUID?
-    @State private var role = "editor"
     @State private var resolution: MetadataCalendarConflictReview?
     @State private var reviewError: String?
     @State private var hasChosenCalendar = false
     @State private var showDiagnostics = false
-    @State private var inviteLimited = false
-    @State private var inviteStart = Calendar.current.startOfDay(for: Date())
-    @State private var inviteEnd = Calendar.current.startOfDay(for: Date())
     @State private var migrationToAbandon: MetadataCalendarMigrationJournal?
     @State private var activationMessage: String?
 
@@ -37,76 +38,54 @@ struct MetadataCalendarSettingsView: View {
         }
     }
     private var selectedCalendar: MetadataCalendarSummary? { sync.calendars.first { $0.id == calendarID } }
-    private var invitationRange: MetadataSharingRange? {
-        dateRange(limited: inviteLimited, start: inviteStart, end: inviteEnd,
-                  zone: selectedBinding?.snapshot.timeZone ?? TimeZone.current.identifier)
-    }
-    private func dateRange(limited: Bool, start: Date, end: Date, zone: String) -> MetadataSharingRange? {
-        guard limited else { return nil }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: zone) ?? .current
-        let first = calendar.date(from: Calendar.current.dateComponents([.year, .month, .day], from: start)) ?? start
-        let last = calendar.date(from: Calendar.current.dateComponents([.year, .month, .day], from: end)) ?? end
-        return MetadataSharingRange(start: first, end: calendar.date(byAdding: .day, value: 1, to: last) ?? last)
-    }
-
     var body: some View {
         Form {
             if managingMembers {
-                Section("Members & Invitations") {
-                    jobPicker
-                    if let binding = selectedBinding {
-                        LabeledContent("Calendar", value: binding.snapshot.name)
-                        LabeledContent("Server", value: sync.state.accounts.first { $0.id == binding.accountID }?.address ?? "Unavailable")
-                    } else {
-                        Text("Connect this job to a server in Calendar Sync first.")
+                if let account = sync.account, account.registered {
+                    if sync.calendars.isEmpty {
+                        Section("Members & Invitations") {
+                            Text(sync.busy ? "Loading invitations and members…" : "This server has no shared calendars yet. Attach a job to create one.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    ForEach(sync.calendars) { calendar in
+                        MetadataCalendarAccessView(accountID: account.id, calendar: calendar,
+                            showsCalendarName: sync.calendars.count > 1)
+                            .id(account.id.uuidString + calendar.id.uuidString)
+                    }
+                } else {
+                    Section("Members & Invitations") {
+                        Text("Select a connected sync server from the list.")
                             .foregroundStyle(.secondary)
                     }
                 }
-                if let binding = selectedBinding, binding.accountID == sync.account?.id {
-                    if binding.snapshot.role == "owner" {
-                        invitationSection(binding)
-                    } else {
-                        Section {
-                            Text("Only the calendar owner can invite people or manage members.")
-                        }
-                    }
-                }
-            } else {
-                Section {
+            } else if fixedJobID == nil {
+                if !addingServer { savedServers }
+                else {
+                Section("Add a sync server") {
                     Picker("Connection method", selection: $firstTimeSetup) {
-                        Text("Connect job to server").tag(false)
+                        Text("Join existing server").tag(false)
                         Text("Initialize Sync server").tag(true)
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("metadata-sync-connection-method")
                     .disabled(sync.busy)
-                    jobPicker
+                    TextField("Server name", text: $serverName, prompt: Text("e.g. Newsroom"))
+                        .accessibilityIdentifier("metadata-sync-server-name")
+                        .disabled(sync.busy)
                     connectionFields
                 }
-                if sync.isPaused {
-                    Section("Calendar sync") {
-                        Text("Calendar sync is paused. Start it when you are ready to share saved metadata changes.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("Start Calendar Sync") {
-                            do { try startup.activateCalendarSync() }
-                            catch { /* The controller keeps the precise failure message. */ }
-                            activationMessage = startup.userFacingMessage
-                        }
-                        .disabled(startup.isTestSession || startup.requiresRelaunchAfterConflict
-                                  || !startup.otherRunningCopies.isEmpty)
-                        .accessibilityIdentifier("metadata-calendar-start")
-                        if let activationMessage {
-                            Text(activationMessage).textSelection(.enabled)
-                        }
-                    }
                 }
+            } else {
                 Section("Calendar on this Mac") {
                     if let binding = selectedBinding {
+                        if sync.isPaused {
+                            Button("Resume Calendar Sync") { _ = startCalendarSyncIfNeeded() }
+                        }
                         let activity = sync.activity(for: binding.jobID)
                         Label(activity.phase.title, systemImage: activity.phase.symbol)
                         Text("Linked to “\(binding.snapshot.name)”").font(.headline)
-                        LabeledContent("Sync server", value: sync.state.accounts.first { $0.id == binding.accountID }?.address ?? "Unavailable")
+                        LabeledContent("Sync server", value: sync.state.accounts.first { $0.id == binding.accountID }?.displayName ?? "Unavailable")
                             .textSelection(.enabled)
                         Text(binding.snapshot.compatibility == .templates ? "Template-enabled calendar" : "Classic calendar")
                             .font(.caption).foregroundStyle(.secondary)
@@ -142,20 +121,32 @@ struct MetadataCalendarSettingsView: View {
                         }
                     }
                 }
-                if sync.account?.registered == true, selectedBinding == nil {
-                    Section("Use a saved server") {
-                        serverPicker
-                        calendarSetup
+                if selectedBinding == nil {
+                    Section("Attach to a sync server") {
+                        if sync.state.accounts.contains(where: \.registered) {
+                            serverPicker
+                            if sync.isPaused {
+                                Button("Load Server Calendars") {
+                                    guard startCalendarSyncIfNeeded() else { return }
+                                    Task { await sync.refresh() }
+                                }
+                            } else if sync.account?.registered == true {
+                                calendarSetup
+                            }
+                        } else {
+                            Text("Add a sync server in Settings → Sync Servers first.")
+                        }
+                        Button("Manage Sync Servers…", action: openServerSettings)
                     }
                 }
-                if let pending = sync.state.pendingReceive {
+                if let pending = sync.state.pendingReceive, pending.source.id == fixedJobID {
                     Section("Sync activation pending") {
                         Text("Finish linking “\(pending.duplicate.name)” to its downloaded calendar. Any saved copy stays paused until you enable it.")
                         Button("Finish Activating Sync") { sync.retryPendingReceive() }
                         Button("Cancel Pending Link") { sync.cancelPendingReceive() }
                     }
                 }
-                ForEach(sync.state.pendingMigrations.filter(\.isPending)) { journal in
+                ForEach(sync.state.pendingMigrations.filter { $0.isPending && $0.source.jobID == fixedJobID }) { journal in
                     Section("Calendar migration pending") {
                         Text("“\(journal.source.snapshot.name)” still uses its classic calendar on this Mac.")
                         LabeledContent("Local job", value: store.jobs.first(where: { $0.id == journal.source.jobID })?.name ?? journal.source.jobID.uuidString)
@@ -171,6 +162,7 @@ struct MetadataCalendarSettingsView: View {
                     }
                 }
             }
+            if let activationMessage { Text(activationMessage).textSelection(.enabled) }
             if !sync.message.isEmpty { Text(sync.message).textSelection(.enabled) }
         }
         .formStyle(.grouped)
@@ -184,8 +176,10 @@ struct MetadataCalendarSettingsView: View {
         }
         .onAppear {
             address = sync.account?.address ?? savedAddress
-            jobID = store.selectedJobID ?? store.jobs.first?.id
+            jobID = fixedJobID
+            editedServerName = sync.account?.name ?? ""
             if let job = store.jobs.first(where: { $0.id == jobID }) { calendarName = job.name }
+            if managingMembers, sync.account?.registered == true { _ = startCalendarSyncIfNeeded() }
             sync.selectProtocol(.templates)
             selectJobServer()
             selectSuggestedCalendar()
@@ -193,7 +187,6 @@ struct MetadataCalendarSettingsView: View {
         .onDisappear { setupKey = ""; invite = ""; sync.invitation = ""; sync.migrationProposal = nil }
         .onChange(of: calendarID) { _, _ in sync.clearSharingDetails() }
         .onChange(of: jobID) { _, id in
-            store.selectedJobID = id
             sync.clearSharingDetails()
             hasChosenCalendar = false
             if let job = store.jobs.first(where: { $0.id == id }) { calendarName = job.name }
@@ -209,17 +202,21 @@ struct MetadataCalendarSettingsView: View {
             hasChosenCalendar = false
             sync.clearSharingDetails()
         }
+        .onChange(of: sync.account?.name) { _, name in editedServerName = name ?? "" }
         .onChange(of: sync.state.activeAccountID) { _, _ in
             address = sync.account?.address ?? savedAddress
+            editedServerName = sync.account?.name ?? ""
             calendarID = nil
             hasChosenCalendar = false
             selectSuggestedCalendar()
         }
         .sheet(isPresented: $showDiagnostics) { MetadataSyncDiagnosticsView(jobID: jobID) }
         .onChange(of: sync.receivedJobID) { _, id in
-            if let id { jobID = id }
+            if let id { store.selectedJobID = id }
         }
-        .sheet(item: $sync.receiveProposal) { proposal in
+        .sheet(item: Binding(get: {
+            sync.receiveProposal?.source.id == fixedJobID ? sync.receiveProposal : nil
+        }, set: { sync.receiveProposal = $0 })) { proposal in
             VStack(alignment: .leading, spacing: 16) {
                 Text("Activate sync in a copy?").font(.headline)
                 Text("“\(proposal.source.name)” already has metadata programming or a calendar link.")
@@ -240,7 +237,9 @@ struct MetadataCalendarSettingsView: View {
         .sheet(item: $resolution) { review in
             MetadataCalendarConflictView(review: review)
         }
-        .sheet(item: $sync.migrationProposal) { journal in
+        .sheet(item: Binding(get: {
+            sync.migrationProposal?.source.jobID == fixedJobID ? sync.migrationProposal : nil
+        }, set: { sync.migrationProposal = $0 })) { journal in
             VStack(alignment: .leading, spacing: 16) {
                 Text("Create a template-enabled calendar?").font(.headline)
                 Text("Create a new calendar from “\(journal.source.snapshot.name)” at revision \(journal.source.snapshot.revision), then link the local job “\(store.jobs.first(where: { $0.id == journal.source.jobID })?.name ?? "Unavailable job")” to it.")
@@ -267,33 +266,49 @@ struct MetadataCalendarSettingsView: View {
     }
 
     private var serverPicker: some View {
-        Picker("Saved server", selection: Binding(get: { sync.state.activeAccountID }, set: { if let id = $0 { sync.selectAccount(id) } })) {
+        Picker("Saved server", selection: Binding(get: { sync.state.activeAccountID }, set: { if let id = $0, startCalendarSyncIfNeeded() { sync.selectAccount(id) } })) {
             ForEach(sync.state.accounts) { account in
-                Text(account.address + (account.registered ? " · \(sync.state.bindings.filter { $0.accountID == account.id }.count) jobs" : " (setup pending)")).tag(Optional(account.id))
+                Text(account.displayName + (account.registered ? " · \(sync.state.bindings.filter { $0.accountID == account.id }.count) jobs" : " (setup pending)")).tag(Optional(account.id))
             }
         }.disabled(sync.busy)
     }
 
-    private var jobPicker: some View {
-        Picker("Sync Job", selection: $jobID) {
-            Text("Select a job").tag(nil as UUID?)
-            ForEach(store.jobs) { job in Text(job.name).tag(Optional(job.id)) }
-        }.disabled(sync.busy)
+    private var savedServers: some View {
+        Section("Sync Servers") {
+            if let account = sync.account {
+                LabeledContent("Server URL", value: account.address).textSelection(.enabled)
+                TextField("Server name", text: $editedServerName)
+                Button("Save Name") {
+                    guard startCalendarSyncIfNeeded() else { return }
+                    sync.renameAccount(account.id, name: editedServerName)
+                }.disabled(sync.busy || editedServerName == (account.name ?? ""))
+            }
+            Text("Add and name servers here. Attach each job in Job settings → Metadata Sync.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func openServerSettings() {
+        store.settingsTab = .metadataSync
+        store.metadataSyncSettingsTab = .calendars
+        RegularWindowController.shared.prepareForOpening()
+        openSettings()
     }
 
     private var connectionFields: some View {
         VStack(alignment: .leading, spacing: 16) {
             if firstTimeSetup {
-                Text("Initialize a newly installed 3.0 sync server, then create a calendar for this job.")
+                Text("Initialize a newly installed 3.0 sync server. Attach jobs from their settings afterwards.")
                     .foregroundStyle(.secondary)
                 serverAddressField
                 SecureField("Temporary setup key", text: $setupKey)
                 Text("Enable first-device setup in the private server configuration, then enter its setup key.")
                     .foregroundStyle(.secondary)
                 Button("Initialize Server") {
+                    guard startCalendarSyncIfNeeded() else { return }
                     calendarID = nil
                     hasChosenCalendar = true
-                    sync.register(address: address, deviceName: deviceName, setupKey: setupKey, invite: nil, protocolVersion: .templates)
+                    sync.register(address: address, deviceName: deviceName, setupKey: setupKey, invite: nil, protocolVersion: .templates, serverName: serverName)
                     setupKey = ""
                 }
                 .buttonStyle(.borderedProminent)
@@ -314,17 +329,44 @@ struct MetadataCalendarSettingsView: View {
                     Text("This code needs a server URL. You can also paste a complete join string that includes it.")
                         .foregroundStyle(.secondary)
                 }
-                Button("Connect Job") {
-                    sync.register(address: address, deviceName: deviceName, setupKey: nil, invite: invite, protocolVersion: .templates, connectingJobID: jobID)
+                Button("Add Sync Server") {
+                    do {
+                        let invitation = try MetadataSyncInvitation(invite)
+                        _ = try MetadataSyncServer(address: invitation.address ?? address)
+                    } catch {
+                        activationMessage = error.localizedDescription
+                        return
+                    }
+                    guard startCalendarSyncIfNeeded() else { return }
+                    sync.register(address: address, deviceName: deviceName, setupKey: nil, invite: invite, protocolVersion: .templates, serverName: serverName)
                     invite = ""
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(jobID == nil || invite.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || deviceName.isEmpty)
+                .disabled(invite.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || deviceName.isEmpty)
+                .accessibilityIdentifier("metadata-sync-server-connect")
             }
         }
-        .disabled(sync.busy || sync.isPaused)
+        .disabled(sync.busy)
         .padding(.vertical, 8)
         .onChange(of: firstTimeSetup) { _, _ in setupKey = ""; invite = "" }
+    }
+
+    /// Connecting is the user's explicit consent to start the paused sync runtime.
+    /// Keep the input intact when startup admission fails so the user can retry.
+    private func startCalendarSyncIfNeeded() -> Bool {
+        activationMessage = nil
+        guard sync.isPaused else { return true }
+        do {
+            try startup.activateCalendarSync()
+            guard !sync.isPaused else {
+                activationMessage = startup.userFacingMessage
+                return false
+            }
+            return true
+        } catch {
+            activationMessage = startup.userFacingMessage
+            return false
+        }
     }
 
     private var serverAddressField: some View {
@@ -354,14 +396,14 @@ struct MetadataCalendarSettingsView: View {
                 Text("Creates a shared calendar using this job’s programming. Once another Mac joins and activates sync, saved changes sync both ways.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Button("Activate Sync") {
-                guard let jobID else { return }
+            Button("Attach Job") {
+                guard let jobID, beforeAttachment(), startCalendarSyncIfNeeded() else { return }
                 if let calendarID { sync.attach(calendarID: calendarID, jobID: jobID, protocolVersion: .templates) }
                 else { sync.publish(jobID: jobID, name: calendarName, range: nil, protocolVersion: .templates) }
             }
             .buttonStyle(.borderedProminent)
             .disabled(sync.busy || jobID == nil || activationUnavailable)
-            Text("Saved edits sync shortly after editing; updates from other Macs are checked about every 10 seconds while the app is open. Only calendar metadata is shared; file transfer settings, passwords and work hours stay on this Mac.")
+            Text("Attaching saves this job’s settings. Metadata syncs automatically; file transfers remain independent.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -373,51 +415,18 @@ struct MetadataCalendarSettingsView: View {
         return selectedBinding != nil || calendarName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    @ViewBuilder
-    private func invitationSection(_ binding: MetadataCalendarBinding) -> some View {
-        Section("Invite another Mac") {
-            Picker("Permission", selection: $role) {
-                Text("Can edit").tag("editor")
-                Text("Read only").tag("reader")
-            }
-            dateRangeControls(limited: $inviteLimited, start: $inviteStart, end: $inviteEnd)
-            Button("Create Invitation") { sync.createInvite(calendarID: binding.id, role: role, range: invitationRange) }
-                .disabled(sync.busy || invitationRange.map { $0.end <= $0.start } == true)
-            if !sync.invitation.isEmpty {
-                Toggle("Include server URL (recommended)", isOn: $includeServerAddress)
-                Button(includeServerAddress ? "Copy Invitation & Server URL" : "Copy Invitation Code") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(MetadataSyncInvitation.copyText(
-                        token: sync.invitation, address: includeServerAddress ? sync.account?.address : nil,
-                        protocolVersion: binding.snapshot.compatibility.protocolVersion), forType: .string)
-                }
-                Text("Send this invitation privately. It works for one Mac and expires after 24 hours.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        Section("Members") {
-            Button("Show Members") { sync.manageMembers(calendarID: binding.id) }.disabled(sync.busy)
-            ForEach(sync.members) { member in
-                HStack {
-                    Text("\(member.name) · \(member.role)")
-                    Spacer()
-                    if member.role != "owner" {
-                        Button("Revoke Access", role: .destructive) { sync.manageMembers(calendarID: binding.id, revoke: member.id) }.disabled(sync.busy)
-                    }
-                }
-            }
-            Button("Revoke All Invitations", role: .destructive) { sync.manageMembers(calendarID: binding.id, revokeInvites: true) }.disabled(sync.busy)
-            Text("Revocation stops future sync. Previously downloaded metadata remains on the recipient’s device.")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
     private func selectJobServer() {
         guard let binding = selectedBinding else { return }
         if sync.account?.id != binding.accountID { sync.selectAccount(binding.accountID) }
     }
 
     private func selectSuggestedCalendar() {
+        if managingMembers {
+            if calendarID == nil || !sync.calendars.contains(where: { $0.id == calendarID }) {
+                calendarID = sync.calendars.first?.id
+            }
+            return
+        }
         if let binding = selectedBinding, binding.accountID == sync.account?.id,
            binding.snapshot.compatibility.protocolVersion == sync.discoveryProtocol { calendarID = binding.id }
         else if !hasChosenCalendar {
@@ -426,6 +435,136 @@ struct MetadataCalendarSettingsView: View {
         } else if let calendarID, !sync.calendars.contains(where: { $0.id == calendarID }) {
             self.calendarID = nil
         }
+    }
+
+}
+
+/// Each calendar owns its invitation and member state, so a server with several
+/// calendars can show every member list without a calendar selector.
+private struct MetadataCalendarAccessView: View {
+    @EnvironmentObject private var sync: MetadataCalendarCoordinator
+    let accountID: UUID
+    let calendar: MetadataCalendarSummary
+    let showsCalendarName: Bool
+    @State private var members: [MetadataCalendarMember] = []
+    @State private var invitation = ""
+    @State private var includeServerAddress = true
+    @State private var role = "editor"
+    @State private var inviteLimited = false
+    @State private var inviteStart = Calendar.current.startOfDay(for: Date())
+    @State private var inviteEnd = Calendar.current.startOfDay(for: Date())
+    @State private var loading = true
+    @State private var errorMessage: String?
+    @State private var operation: Task<Void, Never>?
+
+    private var invitationRange: MetadataSharingRange? {
+        dateRange(limited: inviteLimited, start: inviteStart, end: inviteEnd,
+                  zone: calendar.timeZone)
+    }
+    private func dateRange(limited: Bool, start: Date, end: Date, zone: String) -> MetadataSharingRange? {
+        guard limited else { return nil }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: zone) ?? .current
+        let first = calendar.date(from: Calendar.current.dateComponents([.year, .month, .day], from: start)) ?? start
+        let last = calendar.date(from: Calendar.current.dateComponents([.year, .month, .day], from: end)) ?? end
+        return MetadataSharingRange(start: first, end: calendar.date(byAdding: .day, value: 1, to: last) ?? last)
+    }
+
+    var body: some View {
+        Group {
+            if calendar.role == "owner" {
+                Section(showsCalendarName ? "Invite to “\(calendar.name)”" : "Invite another Mac") {
+                    Picker("Permission", selection: $role) {
+                        Text("Can edit").tag("editor")
+                        Text("Read only").tag("reader")
+                    }
+                    dateRangeControls(limited: $inviteLimited, start: $inviteStart, end: $inviteEnd)
+                    Button("Create Invitation") {
+                        run(.init(action: "createInvite", calendarID: calendar.id, role: role,
+                            rangeStart: invitationRange?.start, rangeEnd: invitationRange?.end))
+                    }.disabled(sync.busy || loading || invitationRange.map { $0.end <= $0.start } == true)
+                    if !invitation.isEmpty {
+                        Toggle("Include server URL (recommended)", isOn: $includeServerAddress)
+                        Button(includeServerAddress ? "Copy Invitation & Server URL" : "Copy Invitation Code") {
+                            let address = sync.state.accounts.first { $0.id == accountID }?.address
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(MetadataSyncInvitation.copyText(token: invitation,
+                                address: includeServerAddress ? address : nil,
+                                protocolVersion: calendar.compatibility.protocolVersion), forType: .string)
+                        }
+                        Text("Send this invitation privately. It works for one Mac and expires after 24 hours.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Section(showsCalendarName ? "Members · \(calendar.name)" : "Members") {
+                if calendar.role != "owner" {
+                    Text("Only the calendar owner can view members and manage access.")
+                        .foregroundStyle(.secondary)
+                } else if loading {
+                    ProgressView("Loading members…")
+                } else if members.isEmpty && errorMessage == nil {
+                    Text("No members found.").foregroundStyle(.secondary)
+                }
+                ForEach(members) { member in
+                    HStack {
+                        Text("\(member.name) · \(member.role)")
+                        Spacer()
+                        if calendar.role == "owner", member.role != "owner" {
+                            Button("Revoke Access", role: .destructive) {
+                                run(.init(action: "revokeMember", calendarID: calendar.id, deviceID: member.id))
+                            }.disabled(sync.busy || loading)
+                        }
+                    }
+                }
+                if let errorMessage {
+                    Text(errorMessage).textSelection(.enabled)
+                    Button("Retry") { run(.init(action: "listMembers", calendarID: calendar.id)) }
+                        .disabled(sync.busy || loading)
+                }
+                if calendar.role == "owner" {
+                    Button("Revoke All Invitations", role: .destructive) {
+                        run(.init(action: "revokeInvites", calendarID: calendar.id))
+                    }.disabled(sync.busy || loading)
+                    Text("Revocation stops future sync. Previously downloaded metadata remains on the recipient’s device.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .task {
+            guard calendar.role == "owner" else { loading = false; return }
+            await perform(.init(action: "listMembers", calendarID: calendar.id))
+        }
+        .onDisappear { operation?.cancel(); invitation = "" }
+    }
+
+    private func run(_ request: MetadataCalendarRequest) {
+        operation?.cancel()
+        operation = Task { await perform(request) }
+    }
+
+    private func perform(_ request: MetadataCalendarRequest) async {
+        loading = true
+        errorMessage = nil
+        defer { loading = false }
+        do {
+            // Calendar discovery or another panel may already be using the coordinator.
+            while sync.busy { try await Task.sleep(for: .milliseconds(100)) }
+            try Task.checkCancellation()
+            let response = try await sync.calendarAccessRequest(request, accountID: accountID,
+                protocolVersion: calendar.compatibility.protocolVersion)
+            try Task.checkCancellation()
+            if request.action == "createInvite" { invitation = response.inviteToken ?? "" }
+            else if request.action == "listMembers" { members = response.members ?? [] }
+            else {
+                if request.action == "revokeInvites" { invitation = "" }
+                let refreshed = try await sync.calendarAccessRequest(.init(action: "listMembers", calendarID: calendar.id),
+                    accountID: accountID, protocolVersion: calendar.compatibility.protocolVersion)
+                try Task.checkCancellation()
+                members = refreshed.members ?? []
+            }
+        } catch is CancellationError { }
+        catch { if !Task.isCancelled { errorMessage = error.localizedDescription } }
     }
 
     private func dateRangeControls(limited: Binding<Bool>, start: Binding<Date>, end: Binding<Date>) -> some View {

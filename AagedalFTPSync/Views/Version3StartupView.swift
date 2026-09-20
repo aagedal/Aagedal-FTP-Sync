@@ -100,13 +100,13 @@ struct RuntimeSettingsView: View {
     var body: some View {
         TabView(selection: $store.settingsTab) {
             ServerSettingsView()
-                .tabItem { Label("Servers", systemImage: "server.rack") }
+                .tabItem { Label("FTP Servers", systemImage: "server.rack") }
                 .tag(AppSettingsTab.servers)
             PhotographerSettingsView()
                 .tabItem { Label("Photographers", systemImage: "person.2") }
                 .tag(AppSettingsTab.photographers)
             MetadataSyncSettingsView()
-                .tabItem { Label("Metadata Sync", systemImage: "arrow.triangle.2.circlepath") }
+                .tabItem { Label("Sync Servers", systemImage: "arrow.triangle.2.circlepath") }
                 .tag(AppSettingsTab.metadataSync)
             VoiceMemoSettingsView()
                 .tabItem { Label("Voice Memos", systemImage: "waveform") }

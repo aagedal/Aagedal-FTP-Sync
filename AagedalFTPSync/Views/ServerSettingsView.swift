@@ -13,7 +13,7 @@ struct ServerSettingsView: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 HStack(spacing: 2) {
-                    Text("Known Servers")
+                    Text("FTP Servers")
                         .font(.headline)
                     Spacer()
                     Button(action: addProfile) {

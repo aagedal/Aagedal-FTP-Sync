@@ -5,6 +5,12 @@ struct MetadataSyncAccount: Codable, Identifiable {
     var id: UUID
     var address: String
     var registered = false
+    /// Optional so existing saved accounts decode without a migration.
+    var name: String? = nil
+    var displayName: String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? address : trimmed
+    }
     var credentialID: String { "metadata-sync-device-" + id.uuidString }
 }
 
