@@ -22,7 +22,7 @@ The vendored copies retain their original license and attribution files. See `Ve
 
 Run the security baseline guard and all test suites before shipping:
 
-The release-identity guard derives the current values from `project.yml`. During a release cut, pass the intended marketing version and build number explicitly (for example, `Scripts/check-release-identity.sh 2.9.0 35`) so an incomplete version bump fails the check.
+The release-identity guard derives the current values from `project.yml`. A matching `Unreleased (X.Y.Z)` changelog heading identifies a development build; the security policy continues to track the latest dated shipping release. During a release cut, pass the intended marketing version and build number explicitly (for example, `Scripts/check-release-identity.sh 2.9.0 35`) so an incomplete version bump fails the check.
 
 ```sh
 Scripts/check-release-identity.sh

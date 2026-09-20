@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Unreleased (3.0.0)
 
 - Add a Docker server image and Compose deployment with persistent MariaDB, optional
   HTTPS, private setup credentials, health checks, and backup/restore helpers.
