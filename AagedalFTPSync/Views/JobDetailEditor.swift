@@ -25,354 +25,14 @@ struct JobDetailEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Form {
-                Section("Job") {
-                    TextField("Name", text: $session.draft.name)
-                        .accessibilityIdentifier("job-name")
-                    Toggle("Two-way sync", isOn: twoWayBinding)
-                }
-
-                Section("Automatic syncing") {
-                    Toggle("Automatic syncing enabled", isOn: $session.draft.isEnabled)
-                        .help("Repeatedly sync this job while the app is open.")
-                    LabeledContent("Check every") {
-                        HStack {
-                            Slider(value: intervalSecondsBinding, in: 5...300)
-                                .frame(width: 220)
-                            Text(intervalLabel).monospacedDigit().frame(width: 72, alignment: .trailing)
-                        }
-                    }
-                    .disabled(!session.draft.isEnabled)
-                    .help("Wait this long after a sync finishes before checking again.")
-                    Toggle("Enable automatically on app launch", isOn: startOnAppLaunchBinding)
-                        .help("Enable automatic syncing for this job each time the app opens.")
-                }
-
-                Section("Display") {
-                    Toggle("Show latest sync session count only", isOn: latestSessionTransferCountBinding)
-                        .help("A sync session is one scheduled check or a manual Sync Now run.")
-                }
-
-                if shouldShowSyncStatus {
-                    syncStatusSection
-                }
-
-                Section("Locations") {
-                    HStack(alignment: .top, spacing: 12) {
-                        EndpointSummaryCard(
-                            title: draft.direction == .bidirectional ? "Location A" : "Source",
-                            endpoint: firstEndpointBinding,
-                            password: firstPasswordBinding,
-                            serverProfiles: store.serverProfiles
-                        )
-
-                        directionControl
-
-                        EndpointSummaryCard(
-                            title: destinationLocationTitle,
-                            endpoint: secondEndpointBinding,
-                            password: secondPasswordBinding,
-                            serverProfiles: store.serverProfiles
-                        )
-                    }
-                    .padding(.vertical, 4)
-                }
-
-                Section("File filter") {
-                    Picker("Quick filter", selection: $session.draft.filter.preset) {
-                        ForEach(FilterPreset.allCases) { Text($0.title).tag($0) }
-                    }
-                    if draft.filter.preset == .custom {
-                        TextField("Extensions", text: $session.draft.filter.customExtensions, prompt: Text("jpg, jpeg, cr3, nef"))
-                        Text("Separate extensions with commas or spaces.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Toggle("Use Metadata Programming photographers", isOn: Binding(
-                        get: { session.draft.filter.usesMetadataProgrammingPhotographers },
-                        set: { session.draft.filter.usesMetadataProgrammingPhotographers = $0 }
-                    ))
-                    .accessibilityIdentifier("use-metadata-programming-filter")
-                    .help("For server-to-local jobs, use the camera filename initials of photographers on today's Metadata Programming track. An empty day downloads no files.")
-                    if draft.filter.usesMetadataProgrammingPhotographers {
-                        Text("Only server filenames matching photographers on today's programmed day are downloaded. An overlapping clip also counts. Changes to Metadata Programming take effect on the next sync; an empty day selects no files.")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("metadata-programming-filter-explanation")
-                    } else {
-                        TextField("Photographer initials", text: filenameFilterBinding(\.photographerInitials), prompt: Text("JAD, TA"))
-                        Text("Only sync filenames starting with these initials, using the same matching rule as the photographer library. Separate initials with commas; leave blank for all photographers. Matching ignores capitalization.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    TextField("Ignore filename prefixes", text: filenameFilterBinding(\.excludedFilenamePrefixes), prompt: Text("EDITED_"))
-                    TextField("Ignore filename suffixes", text: filenameFilterBinding(\.excludedFilenameSuffixes), prompt: Text("_EDITED, _SENT"))
-                    Text("Separate exclusions with commas. Suffixes match before the extension, for example _EDITED excludes TA_001_EDITED.JPG. Exclusions take priority over photographer matching and also apply to local cleanup.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Toggle("Ignore _aftpsync uploads", isOn: Binding(
-                        get: { session.draft.filter.ignoresAFTPSyncUploads },
-                        set: { session.draft.filter.ignoresAFTPSyncUploads = $0 }
-                    ))
-                    Text("Skips files ending in _aftpsync before the extension, including uploads from other app users. Off by default.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Toggle("Include hidden files", isOn: $session.draft.filter.includeHiddenFiles)
-                    Picker("File age", selection: recentHoursBinding) {
-                        Text("Any age").tag(0)
-                        Text("Last hour").tag(1)
-                        Text("Last 3 hours").tag(3)
-                        Text("Last 6 hours").tag(6)
-                        Text("Last 12 hours").tag(12)
-                        Text("Last 24 hours").tag(24)
-                        Text("Last 48 hours").tag(48)
-                        Text("Last 7 days").tag(168)
-                    }
-                }
-
-                if draft.supportsUploadNaming || draft.uploadNaming?.isEnabled == true {
-                    Section("Upload filenames") {
-                        Toggle("Add standard _aftpsync suffix", isOn: uploadStandardSuffixBinding)
-                        Text("Adds _aftpsync after any custom suffix and before the extension. Enable “Ignore _aftpsync uploads” on download jobs to exclude marked uploads from all users. Off by default.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        TextField("Upload prefix", text: uploadNamingBinding(\.prefix), prompt: Text("EDITED_"))
-                        TextField("Upload suffix", text: uploadNamingBinding(\.suffix), prompt: Text("_EDITED"))
-                        if let example = try? (draft.uploadNaming ?? UploadNaming()).relativePath(for: "TA_001.JPG") {
-                            LabeledContent("Example", value: "TA_001.JPG → \(example)")
-                        }
-                        Text("Adds text to the server copy, with the suffix before the extension. Local filenames stay unchanged. RAW files and their XMP companions receive the same prefix and suffix. Leave both fields blank and the standard suffix off to keep original names.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text("When uploading back to the download server, add the same prefix or suffix to the download job’s filename exclusions to prevent return copies from downloading again. Use separate one-way jobs.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-
-                Section("Metadata") {
-                    LabeledContent("Automatic metadata") {
-                        Label(
-                            metadataStatus,
-                            systemImage: currentMetadataAutomation?.isEnabled == true
-                                ? "checkmark.circle.fill"
-                                : "pause.circle"
-                        )
-                        .labelStyle(AccessibleStatusLabelStyle(
-                            symbolColor: currentMetadataAutomation?.isEnabled == true ? .green : .secondary
-                        ))
-                    }
-                    Button("Open Metadata Programming…") {
-                        store.selectedJobID = draft.id
-                        RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
-                        openWindow(id: "metadata-programming")
-                    }
-                    .accessibilityIdentifier("open-metadata-programming")
-                    .disabled(session.isNewJob)
-                    .help(session.isNewJob ? "Save this job before programming metadata." : "Open metadata programming for this job.")
-                    if session.isNewJob {
-                        Text("Save this job first, then open Metadata Programming to add photographers and their schedules. You can choose processed-folder and sorting preferences now.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("Assign permanent photographer profiles to filename initials, then program Headline, Description, and Keywords on a day timeline.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    MetadataProcessingTimeZonePicker(
-                        selectedIdentifier: draft.metadataProcessingTimeZoneIdentifier,
-                        savedIdentifier: savedJob?.metadataProcessingTimeZoneIdentifier,
-                        hasActivatedTemplates: currentMetadataAutomation?.hasActivatedTemplates == true || draft.metadataGeocoding?.isEnabled == true,
-                        onSelect: session.selectMetadataProcessingTimeZone
-                    )
-
-                    DisclosureGroup("Metadata audit trail", isExpanded: $showMetadataAudit) {
-                        MetadataAuditTrailView(entries: store.metadataAuditTrail(for: draft.id))
-                            .frame(minHeight: 220, idealHeight: 300)
-                            .padding(.top, 6)
-                    }
-                }
-
-                Section("Saved metadata processing") {
-                    SavedMetadataProcessingActionsView(store: store, savedJob: savedJob,
-                        hasUnsavedChanges: session.hasUnsavedChanges)
-                }
-
-                Section("Geocoding") {
-                    MetadataGeocodingSettingsView(settings: $session.draft.metadataGeocoding,
-                        savedJob: savedJob)
-                }
-
-                Section("Face recognition") {
-                    Toggle("Recognize people locally", isOn: faceRecognitionEnabledBinding)
-                        .accessibilityIdentifier("face-recognition-enabled")
-
-                    Toggle("Add recognized names to Keywords", isOn: faceRecognitionKeywordsBinding)
-                        .disabled(draft.metadataFaceRecognition == nil)
-                        .accessibilityIdentifier("face-recognition-keywords")
-
-                    Text("Accepted names are appended to existing Person Shown values. When available, recognition runs locally and never enrolls new reference faces.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let blocker = store.metadataFaceRecognitionRuntimeBlocker(for: draft) {
-                        Label(blocker, systemImage: "exclamationmark.triangle.fill")
-                            .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("face-recognition-status")
-                            .accessibilityLabel("Face recognition status")
-                            .accessibilityValue(blocker)
-                    } else if draft.metadataFaceRecognition != nil {
-                        Label("Face recognition is ready.", systemImage: "checkmark.circle.fill")
-                            .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
-                            .accessibilityIdentifier("face-recognition-status")
-                            .accessibilityLabel("Face recognition status")
-                            .accessibilityValue("Ready")
-                    } else {
-                        Label("Face recognition is off.", systemImage: "pause.circle")
-                            .labelStyle(AccessibleStatusLabelStyle(symbolColor: .secondary))
-                            .accessibilityIdentifier("face-recognition-status")
-                            .accessibilityLabel("Face recognition status")
-                            .accessibilityValue("Off")
-                    }
-
-                    if let schedulingBlocker = store.metadataFaceRecognitionSchedulingBlocker(for: draft) {
-                        Text(schedulingBlocker)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier("face-recognition-scheduling-status")
-                    }
-
-                    Button("Manage People Library…") {
-                        store.settingsTab = .peopleLibrary
-                        RegularWindowController.shared.prepareForOpening()
-                        openSettings()
-                    }
-                    .disabled(store.peopleLibraryController == nil)
-                    .help(store.peopleLibraryController == nil
-                        ? "People Library becomes available after version 3 storage is admitted."
-                        : "Open People Library settings.")
-                    .accessibilityIdentifier("open-people-library-settings")
-                }
-
-                Section("After metadata") {
-                    Toggle(
-                        "Move successfully tagged source files to a processed folder",
-                        isOn: processedFolderEnabledBinding
-                    )
-
-                    if draft.movesProcessedFiles {
-                        Picker("Processed files location", selection: processedFilesLocationBinding) {
-                            ForEach(ProcessedFilesLocation.allCases) { location in
-                                Text(location.title).tag(location)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-
-                        switch draft.effectiveProcessedFilesLocation {
-                        case .customFolder:
-                            LabeledContent("Processed folder") {
-                                HStack {
-                                    Text(customProcessedFolderPath)
-                                        .foregroundStyle(draft.processedFolder?.localPath.isEmpty == false ? .primary : .secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                    Button("Choose…") { showProcessedFolderPicker = true }
-                                }
-                            }
-                        case .processedSubfolder:
-                            LabeledContent("Main folder") {
-                                Text(draft.destinationEndpoint?.localPath.isEmpty == false
-                                    ? draft.destinationEndpoint?.localPath ?? "Not selected"
-                                    : "Not selected")
-                                    .foregroundStyle(draft.destinationEndpoint?.localPath.isEmpty == false ? .primary : .secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            VStack(alignment: .leading, spacing: 3) {
-                                Label("Downloads: Synced Files", systemImage: "folder")
-                                Label("Processed copies: Processed Files", systemImage: "folder")
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-
-                        Toggle(
-                            "Sort pictures into per Photographer sub-folders",
-                            isOn: sortProcessedFilesByPhotographerBinding
-                        )
-
-                        if currentMetadataAutomation?.isEnabled != true {
-                            Text("These folder preferences will be saved. Files will sync normally and stay at their source until automatic metadata is configured and enabled. Photographer sorting applies only to successfully tagged files.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Text("After the synced and processed copies are verified, the original is removed from its source. Metadata skips, failures, and processed-file collisions leave the source untouched.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        LabeledContent("Post-processing") {
-                            Text("Keep source files in place").foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Section("Safety") {
-                    if draft.supportsCaseVariantDownloads {
-                        Toggle("Overwrite repeated filenames with different capitalization", isOn: Binding(
-                            get: { session.draft.overwritesCaseVariantDownloads },
-                            set: { session.draft.overwritesCaseVariantDownloads = $0 }
-                        ))
-                        Text("Uses the newest server file for names such as PHOTO.JPG and PHOTO.jpg, keeping one local filename. Equal timestamps use a consistent filename order. When off, both files are kept. Existing renamed copies are not removed. RAW/XMP companion conflicts still require manual renaming.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-
-                    if hasLocalOneWayTarget {
-                        Picker("File modification time", selection: $session.draft.preserveModificationDates) {
-                            Text("Source modification time").tag(true)
-                            Text("Download time").tag(false)
-                        }
-                        Text("Download time uses the time each file is saved locally, including processed copies, so date-modified sorting follows arrivals. Existing files without saved source history may be downloaded once.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Toggle("Preserve modification dates", isOn: $session.draft.preserveModificationDates)
-                    }
-                    Toggle("Verify file sizes", isOn: $session.draft.verifyFileSizes)
-                    Toggle(
-                        "Compare contents when size and date match",
-                        isOn: matchingContentVerificationBinding
-                    )
-                    .help("Downloads matching files and compares SHA-256 checksums. This is slower, especially for remote folders.")
-
-                    Toggle("Automatically delete old files from the local target", isOn: targetCleanupBinding)
-                        .disabled(draft.targetCleanup == nil && !hasLocalOneWayTarget)
-
-                    if draft.targetCleanup != nil {
-                        LabeledContent("Delete target files older than") {
-                            HStack {
-                                Slider(value: targetCleanupSliderBinding, in: Double(targetCleanupHoursRange.lowerBound)...Double(targetCleanupHoursRange.upperBound))
-                                    .frame(width: 220)
-                                    .accessibilityLabel("Target cleanup age")
-                                TextField("Hours", value: targetCleanupHoursBinding, format: .number.grouping(.never))
-                                    .textFieldStyle(.roundedBorder)
-                                    .multilineTextAlignment(.trailing)
-                                    .frame(width: 64)
-                                    .accessibilityLabel("Target cleanup age in hours")
-                                Text("hours")
-                            }
-                        }
-                        Text("\(targetCleanupLabel). Choose \(targetCleanupHoursRange.lowerBound)–\(targetCleanupHoursRange.upperBound) hours.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text("Cleanup removes only matching file types from the local target and never touches the source. RAW files and their XMP sidecars are removed together. The deletion age must be greater than the source file-age window.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else if !hasLocalOneWayTarget {
-                        Text("Automatic cleanup is available for one-way jobs whose target is a local folder.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        LabeledContent("Deletion policy") {
-                            Text("Never delete files").foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Text("Transfers are written to a temporary file first. Two-way sync keeps the newest copy and never deletes files.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+            TabView {
+                serverAndSyncSettings
+                    .tabItem { Label("Server & Sync", systemImage: "arrow.triangle.2.circlepath") }
+                metadataSettings
+                    .tabItem { Label("Metadata", systemImage: "tag") }
+                fileSettings
+                    .tabItem { Label("File Filtering & Deletion", systemImage: "line.3.horizontal.decrease.circle") }
             }
-            .formStyle(.grouped)
 
             Divider()
             HStack {
@@ -483,6 +143,370 @@ struct JobDetailEditor: View {
         } message: {
             Text(resetConfirmationMessage)
         }
+    }
+
+    private var serverAndSyncSettings: some View {
+        Form {
+            Section("Job") {
+                TextField("Name", text: $session.draft.name)
+                    .accessibilityIdentifier("job-name")
+                Toggle("Two-way sync", isOn: twoWayBinding)
+            }
+
+            Section("Automatic syncing") {
+                Toggle("Automatic syncing enabled", isOn: $session.draft.isEnabled)
+                    .help("Repeatedly sync this job while the app is open.")
+                LabeledContent("Check every") {
+                    HStack {
+                        Slider(value: intervalSecondsBinding, in: 5...300)
+                            .frame(width: 220)
+                        Text(intervalLabel).monospacedDigit().frame(width: 72, alignment: .trailing)
+                    }
+                }
+                .disabled(!session.draft.isEnabled)
+                .help("Wait this long after a sync finishes before checking again.")
+                Toggle("Enable automatically on app launch", isOn: startOnAppLaunchBinding)
+                    .help("Enable automatic syncing for this job each time the app opens.")
+            }
+
+            Section("Display") {
+                Toggle("Show latest sync session count only", isOn: latestSessionTransferCountBinding)
+                    .help("A sync session is one scheduled check or a manual Sync Now run.")
+            }
+
+            if shouldShowSyncStatus {
+                syncStatusSection
+            }
+
+            Section("Locations") {
+                HStack(alignment: .top, spacing: 12) {
+                    EndpointSummaryCard(
+                        title: draft.direction == .bidirectional ? "Location A" : "Source",
+                        endpoint: firstEndpointBinding,
+                        password: firstPasswordBinding,
+                        serverProfiles: store.serverProfiles
+                    )
+
+                    directionControl
+
+                    EndpointSummaryCard(
+                        title: destinationLocationTitle,
+                        endpoint: secondEndpointBinding,
+                        password: secondPasswordBinding,
+                        serverProfiles: store.serverProfiles
+                    )
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section("Safety") {
+                if draft.supportsCaseVariantDownloads {
+                    Toggle("Overwrite repeated filenames with different capitalization", isOn: Binding(
+                        get: { session.draft.overwritesCaseVariantDownloads },
+                        set: { session.draft.overwritesCaseVariantDownloads = $0 }
+                    ))
+                    Text("Uses the newest server file for names such as PHOTO.JPG and PHOTO.jpg, keeping one local filename. Equal timestamps use a consistent filename order. When off, both files are kept. Existing renamed copies are not removed. RAW/XMP companion conflicts still require manual renaming.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                if hasLocalOneWayTarget {
+                    Picker("File modification time", selection: $session.draft.preserveModificationDates) {
+                        Text("Source modification time").tag(true)
+                        Text("Download time").tag(false)
+                    }
+                    Text("Download time uses the time each file is saved locally, including processed copies, so date-modified sorting follows arrivals. Existing files without saved source history may be downloaded once.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Toggle("Preserve modification dates", isOn: $session.draft.preserveModificationDates)
+                }
+                Toggle("Verify file sizes", isOn: $session.draft.verifyFileSizes)
+                Toggle(
+                    "Compare contents when size and date match",
+                    isOn: matchingContentVerificationBinding
+                )
+                .help("Downloads matching files and compares SHA-256 checksums. This is slower, especially for remote folders.")
+
+                Text("Transfers are written to a temporary file first. Two-way sync keeps the newest copy and never deletes files.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var metadataSettings: some View {
+        Form {
+            Section("Metadata") {
+                LabeledContent("Automatic metadata") {
+                    Label(
+                        metadataStatus,
+                        systemImage: currentMetadataAutomation?.isEnabled == true
+                            ? "checkmark.circle.fill"
+                            : "pause.circle"
+                    )
+                    .labelStyle(AccessibleStatusLabelStyle(
+                        symbolColor: currentMetadataAutomation?.isEnabled == true ? .green : .secondary
+                    ))
+                }
+                Button("Open Metadata Programming…") {
+                    store.selectedJobID = draft.id
+                    RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
+                    openWindow(id: "metadata-programming")
+                }
+                .accessibilityIdentifier("open-metadata-programming")
+                .disabled(session.isNewJob)
+                .help(session.isNewJob ? "Save this job before programming metadata." : "Open metadata programming for this job.")
+                if session.isNewJob {
+                    Text("Save this job first, then open Metadata Programming to add photographers and their schedules. You can choose processed-folder and sorting preferences now.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text("Assign permanent photographer profiles to filename initials, then program Headline, Description, and Keywords on a day timeline.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                MetadataProcessingTimeZonePicker(
+                    selectedIdentifier: draft.metadataProcessingTimeZoneIdentifier,
+                    savedIdentifier: savedJob?.metadataProcessingTimeZoneIdentifier,
+                    hasActivatedTemplates: currentMetadataAutomation?.hasActivatedTemplates == true || draft.metadataGeocoding?.isEnabled == true,
+                    onSelect: session.selectMetadataProcessingTimeZone
+                )
+
+                DisclosureGroup("Metadata audit trail", isExpanded: $showMetadataAudit) {
+                    MetadataAuditTrailView(entries: store.metadataAuditTrail(for: draft.id))
+                        .frame(minHeight: 220, idealHeight: 300)
+                        .padding(.top, 6)
+                }
+            }
+
+            Section("Saved metadata processing") {
+                SavedMetadataProcessingActionsView(store: store, savedJob: savedJob,
+                    hasUnsavedChanges: session.hasUnsavedChanges)
+            }
+
+            Section("Geocoding") {
+                MetadataGeocodingSettingsView(settings: $session.draft.metadataGeocoding,
+                    savedJob: savedJob)
+            }
+
+            Section("Face recognition") {
+                Toggle("Recognize people locally", isOn: faceRecognitionEnabledBinding)
+                    .accessibilityIdentifier("face-recognition-enabled")
+
+                Toggle("Add recognized names to Keywords", isOn: faceRecognitionKeywordsBinding)
+                    .disabled(draft.metadataFaceRecognition == nil)
+                    .accessibilityIdentifier("face-recognition-keywords")
+
+                Text("Accepted names are appended to existing Person Shown values. When available, recognition runs locally and never enrolls new reference faces.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let blocker = store.metadataFaceRecognitionRuntimeBlocker(for: draft) {
+                    Label(blocker, systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("face-recognition-status")
+                        .accessibilityLabel("Face recognition status")
+                        .accessibilityValue(blocker)
+                } else if draft.metadataFaceRecognition != nil {
+                    Label("Face recognition is ready.", systemImage: "checkmark.circle.fill")
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
+                        .accessibilityIdentifier("face-recognition-status")
+                        .accessibilityLabel("Face recognition status")
+                        .accessibilityValue("Ready")
+                } else {
+                    Label("Face recognition is off.", systemImage: "pause.circle")
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .secondary))
+                        .accessibilityIdentifier("face-recognition-status")
+                        .accessibilityLabel("Face recognition status")
+                        .accessibilityValue("Off")
+                }
+
+                if let schedulingBlocker = store.metadataFaceRecognitionSchedulingBlocker(for: draft) {
+                    Text(schedulingBlocker)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("face-recognition-scheduling-status")
+                }
+
+                Button("Manage People Library…") {
+                    store.settingsTab = .peopleLibrary
+                    RegularWindowController.shared.prepareForOpening()
+                    openSettings()
+                }
+                .disabled(store.peopleLibraryController == nil)
+                .help(store.peopleLibraryController == nil
+                    ? "People Library becomes available after version 3 storage is admitted."
+                    : "Open People Library settings.")
+                .accessibilityIdentifier("open-people-library-settings")
+            }
+
+            Section("After metadata") {
+                Toggle(
+                    "Move successfully tagged source files to a processed folder",
+                    isOn: processedFolderEnabledBinding
+                )
+
+                if draft.movesProcessedFiles {
+                    Picker("Processed files location", selection: processedFilesLocationBinding) {
+                        ForEach(ProcessedFilesLocation.allCases) { location in
+                            Text(location.title).tag(location)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    switch draft.effectiveProcessedFilesLocation {
+                    case .customFolder:
+                        LabeledContent("Processed folder") {
+                            HStack {
+                                Text(customProcessedFolderPath)
+                                    .foregroundStyle(draft.processedFolder?.localPath.isEmpty == false ? .primary : .secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Button("Choose…") { showProcessedFolderPicker = true }
+                            }
+                        }
+                    case .processedSubfolder:
+                        LabeledContent("Main folder") {
+                            Text(draft.destinationEndpoint?.localPath.isEmpty == false
+                                ? draft.destinationEndpoint?.localPath ?? "Not selected"
+                                : "Not selected")
+                                .foregroundStyle(draft.destinationEndpoint?.localPath.isEmpty == false ? .primary : .secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Label("Downloads: Synced Files", systemImage: "folder")
+                            Label("Processed copies: Processed Files", systemImage: "folder")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    Toggle(
+                        "Sort pictures into per Photographer sub-folders",
+                        isOn: sortProcessedFilesByPhotographerBinding
+                    )
+
+                    if currentMetadataAutomation?.isEnabled != true {
+                        Text("These folder preferences will be saved. Files will sync normally and stay at their source until automatic metadata is configured and enabled. Photographer sorting applies only to successfully tagged files.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Text("After the synced and processed copies are verified, the original is removed from its source. Metadata skips, failures, and processed-file collisions leave the source untouched.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("Post-processing") {
+                        Text("Keep source files in place").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var fileSettings: some View {
+        Form {
+            Section("File filter") {
+                Picker("Quick filter", selection: $session.draft.filter.preset) {
+                    ForEach(FilterPreset.allCases) { Text($0.title).tag($0) }
+                }
+                if draft.filter.preset == .custom {
+                    TextField("Extensions", text: $session.draft.filter.customExtensions, prompt: Text("jpg, jpeg, cr3, nef"))
+                    Text("Separate extensions with commas or spaces.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Toggle("Use Metadata Programming photographers", isOn: Binding(
+                    get: { session.draft.filter.usesMetadataProgrammingPhotographers },
+                    set: { session.draft.filter.usesMetadataProgrammingPhotographers = $0 }
+                ))
+                .accessibilityIdentifier("use-metadata-programming-filter")
+                .help("For server-to-local jobs, use the camera filename initials of photographers on today's Metadata Programming track. An empty day downloads no files.")
+                if draft.filter.usesMetadataProgrammingPhotographers {
+                    Text("Only server filenames matching photographers on today's programmed day are downloaded. An overlapping clip also counts. Changes to Metadata Programming take effect on the next sync; an empty day selects no files.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("metadata-programming-filter-explanation")
+                } else {
+                    TextField("Photographer initials", text: filenameFilterBinding(\.photographerInitials), prompt: Text("JAD, TA"))
+                    Text("Only sync filenames starting with these initials, using the same matching rule as the photographer library. Separate initials with commas; leave blank for all photographers. Matching ignores capitalization.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                TextField("Ignore filename prefixes", text: filenameFilterBinding(\.excludedFilenamePrefixes), prompt: Text("EDITED_"))
+                TextField("Ignore filename suffixes", text: filenameFilterBinding(\.excludedFilenameSuffixes), prompt: Text("_EDITED, _SENT"))
+                Text("Separate exclusions with commas. Suffixes match before the extension, for example _EDITED excludes TA_001_EDITED.JPG. Exclusions take priority over photographer matching and also apply to local cleanup.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Ignore _aftpsync uploads", isOn: Binding(
+                    get: { session.draft.filter.ignoresAFTPSyncUploads },
+                    set: { session.draft.filter.ignoresAFTPSyncUploads = $0 }
+                ))
+                Text("Skips files ending in _aftpsync before the extension, including uploads from other app users. Off by default.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Include hidden files", isOn: $session.draft.filter.includeHiddenFiles)
+                Picker("File age", selection: recentHoursBinding) {
+                    Text("Any age").tag(0)
+                    Text("Last hour").tag(1)
+                    Text("Last 3 hours").tag(3)
+                    Text("Last 6 hours").tag(6)
+                    Text("Last 12 hours").tag(12)
+                    Text("Last 24 hours").tag(24)
+                    Text("Last 48 hours").tag(48)
+                    Text("Last 7 days").tag(168)
+                }
+            }
+
+            if draft.supportsUploadNaming || draft.uploadNaming?.isEnabled == true {
+                Section("Upload filenames") {
+                    Toggle("Add standard _aftpsync suffix", isOn: uploadStandardSuffixBinding)
+                    Text("Adds _aftpsync after any custom suffix and before the extension. Enable “Ignore _aftpsync uploads” on download jobs to exclude marked uploads from all users. Off by default.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    TextField("Upload prefix", text: uploadNamingBinding(\.prefix), prompt: Text("EDITED_"))
+                    TextField("Upload suffix", text: uploadNamingBinding(\.suffix), prompt: Text("_EDITED"))
+                    if let example = try? (draft.uploadNaming ?? UploadNaming()).relativePath(for: "TA_001.JPG") {
+                        LabeledContent("Example", value: "TA_001.JPG → \(example)")
+                    }
+                    Text("Adds text to the server copy, with the suffix before the extension. Local filenames stay unchanged. RAW files and their XMP companions receive the same prefix and suffix. Leave both fields blank and the standard suffix off to keep original names.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("When uploading back to the download server, add the same prefix or suffix to the download job’s filename exclusions to prevent return copies from downloading again. Use separate one-way jobs.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Deletion") {
+                Toggle("Automatically delete old files from the local target", isOn: targetCleanupBinding)
+                    .disabled(draft.targetCleanup == nil && !hasLocalOneWayTarget)
+
+                if draft.targetCleanup != nil {
+                    LabeledContent("Delete target files older than") {
+                        HStack {
+                            Slider(value: targetCleanupSliderBinding, in: Double(targetCleanupHoursRange.lowerBound)...Double(targetCleanupHoursRange.upperBound))
+                                .frame(width: 220)
+                                .accessibilityLabel("Target cleanup age")
+                            TextField("Hours", value: targetCleanupHoursBinding, format: .number.grouping(.never))
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 64)
+                                .accessibilityLabel("Target cleanup age in hours")
+                            Text("hours")
+                        }
+                    }
+                    Text("\(targetCleanupLabel). Choose \(targetCleanupHoursRange.lowerBound)–\(targetCleanupHoursRange.upperBound) hours.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Cleanup removes only matching file types from the local target and never touches the source. RAW files and their XMP sidecars are removed together. The deletion age must be greater than the source file-age window.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if !hasLocalOneWayTarget {
+                    Text("Automatic cleanup is available for one-way jobs whose target is a local folder.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    LabeledContent("Deletion policy") {
+                        Text("Never delete files").foregroundStyle(.secondary)
+                    }
+                }
+
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var matchingContentVerificationBinding: Binding<Bool> {

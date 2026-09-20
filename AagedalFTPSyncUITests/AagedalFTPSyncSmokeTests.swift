@@ -6,6 +6,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     func testRetainedMetadataRecoveryExplainsBlockedReprocessingAndAllowsRetry() throws {
         launch(seedJob: true, recoveryFixture: true)
+        element("Metadata").firstMatch.click()
         let reprocess = element("reprocess-geocoding")
         XCTAssertTrue(reprocess.waitForExistence(timeout: 5))
         XCTAssertTrue(reprocess.isEnabled)
@@ -63,6 +64,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
                 app.launch()
                 waitForJobsWindow(seedJob: true)
             }
+            element("Metadata").firstMatch.click()
             element("reprocess-geocoding").click()
             let sheet = app.sheets.firstMatch
             XCTAssertTrue(sheet.waitForExistence(timeout: 8))
@@ -84,6 +86,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     func testProgrammingRecoveryReviewShowsFailureForAllAndClipScopesThenRetries() {
         launch(seedJob: true, seedMap: true, recoveryFixture: true)
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let window = app.windows["Metadata Programming"]
         XCTAssertTrue(window.waitForExistence(timeout: 5))
@@ -117,6 +120,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] = "1"
         app.launch()
         waitForJobsWindow(seedJob: true)
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         XCTAssertTrue(window.waitForExistence(timeout: 5))
         window.buttons["Reprocess Existing Files…"].click()
@@ -169,6 +173,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             element("open-jobs-window").click()
         }
         XCTAssertTrue(element("job-name").waitForExistence(timeout: 8))
+        element("File Filtering & Deletion").firstMatch.click()
         let toggle = element("use-metadata-programming-filter")
         XCTAssertTrue(toggle.waitForExistence(timeout: 5))
         XCTAssertFalse(element("metadata-programming-filter-explanation").exists)
@@ -220,6 +225,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testMetadataProgrammingMakesImportDiscoverable() {
         launch(seedJob: true)
 
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let metadataWindow = app.windows["Metadata Programming"]
         XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
@@ -235,6 +241,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testTimelineKeyboardNavigationOpensClipMetadata() {
         launch(seedJob: true, seedMap: true)
 
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let metadataWindow = app.windows["Metadata Programming"]
         XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
@@ -300,6 +307,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testPeopleLibrarySettingsShowsUnavailableModelConfiguration() {
         launch(seedJob: true)
 
+        element("Metadata").firstMatch.click()
         let openSettings = element("open-people-library-settings")
         XCTAssertTrue(openSettings.waitForExistence(timeout: 3))
         XCTAssertTrue(openSettings.isEnabled)
@@ -313,6 +321,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     private func openSeededClipEditor() {
         launch(seedJob: true, seedMap: true)
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let window = app.windows["Metadata Programming"]
         XCTAssertTrue(window.waitForExistence(timeout: 5))
@@ -357,6 +366,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testPhotographerMapTimelineSupportsKeyboardAdjustment() {
         launch(seedJob: true, seedMap: true)
 
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let metadataWindow = app.windows["Metadata Programming"]
         XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
@@ -379,6 +389,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testPhotographerMapTimelineRepeatedScrubbingKeepsWindowResponsive() {
         launch(seedJob: true, seedMap: true)
 
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let metadataWindow = app.windows["Metadata Programming"]
         XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
@@ -409,6 +420,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(element("job-name").isHittable)
         XCTAssertTrue(element("save-job").exists)
 
+        element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let metadataWindow = app.windows["Metadata Programming"]
         XCTAssertTrue(metadataWindow.waitForExistence(timeout: 5))
