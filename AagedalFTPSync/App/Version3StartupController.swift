@@ -149,6 +149,46 @@ final class Version3StartupController: ObservableObject {
         }
     }
 
+    @Published private(set) var recoveryBackupURL: URL?
+    var canBackupAndReset: Bool {
+        paths != nil && session == nil && attempt == nil && !busy
+            && !requiresRelaunchAfterConflict && otherRunningCopies.isEmpty
+            && (bootstrapOwner == nil || bootstrapOwner?.canResetSavedData == true)
+            && [.recovery, .existing, .selection].contains(phase)
+    }
+
+    /// Called only after the recovery view's explicit destructive confirmation.
+    func backupAndResetAppData() async {
+        refreshRunningCopies()
+        guard canBackupAndReset, let paths else { return }
+        userConfirmedOtherCopiesClosed = true
+        do {
+            try validateWriterPrerequisite()
+            var lease: Version3StorageLease? = try bootstrapOwner?.leaseForReset()
+                ?? Version3StorageLease.acquire(root: paths.root)
+            phase = .loading
+            userFacingMessage = "Backing up saved app data…"
+            let held = lease!
+            recoveryBackupURL = try await Task.detached(priority: .userInitiated) {
+                try AppDataRecoveryReset.perform(root: paths.root, lease: held)
+            }.value
+            bootstrapOwner = nil
+            lease = nil
+        } catch {
+            phase = .recovery
+            userFacingMessage = "The reset could not finish. Any backup already created has been kept. Your app will not open partially reset data."
+            recoveryDetail = Self.safeReason(error)
+            return
+        }
+        // Leave the lease scope before ordinary startup acquires a new lease.
+        loaded = false
+        catalog = nil
+        await load()
+        if session != nil {
+            userFacingMessage = "Your app data was backed up and a fresh library is open. Jobs and calendar sync are paused. You can find your previous data using Show Backup in Finder."
+        }
+    }
+
     /// Idempotent startup orchestration. Routine cases admit storage immediately;
     /// only upgrades and recovery conditions remain visible for user action.
     func load() async {
@@ -162,6 +202,11 @@ final class Version3StartupController: ObservableObject {
             paths = prepared
             rootURL = prepared.root
             let root = prepared.root
+            if try Self.exists(root.appendingPathComponent(AppDataRecoveryReset.markerName)) {
+                phase = .recovery
+                userFacingMessage = "A previous reset was interrupted. Your original backup is beside the saved data folder. Choose Backup and Reset App Data to finish starting fresh."
+                return
+            }
             let storagePresence = try await Task.detached(priority: .userInitiated) {
                 (
                     boundary: try Self.exists(root.appendingPathComponent(".v3-storage-boundary.json")),
@@ -359,7 +404,7 @@ final class Version3StartupController: ObservableObject {
         } catch {
             attempt = nil
             phase = .recovery
-            userFacingMessage = "Startup could not complete safely. Saved data remains available for recovery. Quit and reopen the app before trying Open or Recover; no default configuration was loaded."
+            userFacingMessage = "The app could not open your saved data. " + Self.safeReason(error)
             let stage: String
             if case .recoveryRequired(let recovery) = owner.state { stage = String(describing: recovery.stage) }
             else { stage = "publication" }
@@ -376,6 +421,19 @@ final class Version3StartupController: ObservableObject {
     /// No decoder debugDescription, payload value, calendar content or credential
     /// is shown. Our admission enum labels contain only fixed categories/paths.
     private static func safeReason(_ error: Error) -> String {
+        if let failure = error as? VersionedAppStorage.Failure {
+            switch failure {
+            case .invalidManifest: return "The saved library’s recovery information is missing or damaged. You can keep the files for manual recovery, or back up and reset app data to open a fresh library."
+            case .limitExceeded: return "The saved library exceeds the supported storage limits."
+            case .migrationInProgress: return "Another migration is using the saved data. Close other copies of the app and try again."
+            case .recoveryRequired: return "An interrupted upgrade needs recovery before this library can open."
+            case .committedStorageMissing: return "The saved library is missing. Restore a backup or back up and reset app data."
+            case .invalidPath, .unsafeFile: return "A saved data file has an unsupported location or file type."
+            case .inputChanged: return "Saved data changed while it was being checked. Close other copies of the app before trying again."
+            case .sqliteNotQuiescent, .invalidSQLiteAcquisition: return "The saved database could not be safely read. Close other copies of the app before trying again."
+            case .systemCall: return "A saved data file could not be accessed. Check available disk space and file permissions."
+            }
+        }
         if error is CancellationError { return "The startup attempt was cancelled; writer exclusion may have changed." }
         if error is MetadataTemplateRecordError { return "A saved activated template has an unsupported marker or invalid source. The original store was retained." }
         if error is DecodingError { return "A saved JSON store has an invalid structure or value type." }

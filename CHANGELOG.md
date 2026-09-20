@@ -2,6 +2,10 @@
 
 ## Unreleased (3.0.0)
 
+- Offer a confirmed Backup and Reset App Data action when startup cannot open a
+  saved library, with a Finder shortcut to the backup and readable storage errors.
+  Preserve existing data before resetting and block startup after an interrupted reset.
+
 - Add a Docker server image and Compose deployment with persistent MariaDB, optional
   HTTPS, private setup credentials, health checks, and backup/restore helpers.
   Document Docker and manual PHP/SQL installation, upgrades, and recovery.

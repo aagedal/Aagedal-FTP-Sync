@@ -236,6 +236,20 @@ final class Version3BootstrapCoordinator: ObservableObject {
         }
     }
 
+    /// Only completed failures before store construction may release their owner.
+    var canResetSavedData: Bool {
+        guard case .recoveryRequired(let recovery) = state else { return false }
+        return retainedAppStore == nil && retainedCalendar == nil
+            && [.writerExclusion, .lease, .admission, .faceRecognition].contains(recovery.stage)
+    }
+
+    func leaseForReset() throws -> Version3StorageLease {
+        guard canResetSavedData else { throw Failure.alreadyStarted }
+        let held = try lease ?? Version3StorageLease.acquire(root: driver.root)
+        try held.validate()
+        return held
+    }
+
     private nonisolated static func admit(_ operation: Operation, driver: Version3MigrationDriver) async throws -> Version3MigrationDriver.Admission {
         try Task.checkCancellation()
         switch operation {

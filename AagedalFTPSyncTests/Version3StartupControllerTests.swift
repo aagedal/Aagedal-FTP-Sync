@@ -9,7 +9,7 @@ final class Version3StartupControllerTests: XCTestCase {
     private enum Injected: Error { case failed }
 
     private func base() throws -> URL {
-        let base = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("startup-controller-\(UUID())")
+        let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("startup-controller-\(UUID())")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false)
         addTeardownBlock { try? FileManager.default.removeItem(at: base) }
         return base
@@ -36,6 +36,53 @@ final class Version3StartupControllerTests: XCTestCase {
         }, runningCopies: peers, ownProcessID: 100, factories: factories,
             calendar: { var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt; return calendar },
             now: { Date(timeIntervalSince1970: 1_800_000_000) })
+    }
+
+    func testBackupResetPreservesDamagedLibraryAndOpensFreshSession() async throws {
+        let base = try base()
+        let root = base.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("v3"), withIntermediateDirectories: true)
+        let bytes = Data("damaged boundary".utf8)
+        try bytes.write(to: root.appendingPathComponent(".v3-storage-boundary.json"))
+        let controller = Controller(dependencies: dependencies(base))
+        await controller.load()
+        XCTAssertEqual(controller.phase, .recovery)
+        XCTAssertTrue(controller.canBackupAndReset)
+        await controller.backupAndResetAppData()
+        XCTAssertEqual(controller.phase, .ready, controller.recoveryDetail)
+        let backup = try XCTUnwrap(controller.recoveryBackupURL)
+        XCTAssertEqual(try Data(contentsOf: backup.appendingPathComponent(".v3-storage-boundary.json")), bytes)
+        XCTAssertTrue(try XCTUnwrap(controller.session).store.jobs.isEmpty)
+        XCTAssertFalse(controller.canBackupAndReset)
+    }
+
+    func testInterruptedResetBlocksAdmissionAndCanBeCompleted() async throws {
+        let base = try base()
+        let root = base.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try Data("previous backup".utf8).write(to: root.appendingPathComponent(AppDataRecoveryReset.markerName))
+        let controller = Controller(dependencies: dependencies(base))
+        await controller.load()
+        XCTAssertEqual(controller.phase, .recovery)
+        XCTAssertNil(controller.session)
+        await controller.backupAndResetAppData()
+        XCTAssertEqual(controller.phase, .ready, controller.recoveryDetail)
+    }
+
+    func testResetRefusesCompetingLeaseWithoutChangingSavedData() async throws {
+        let base = try base()
+        let root = base.appendingPathComponent("profile")
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("v3"), withIntermediateDirectories: true)
+        let bytes = Data("invalid".utf8)
+        try bytes.write(to: root.appendingPathComponent(".v3-storage-boundary.json"))
+        let lease = try Version3StorageLease.acquire(root: root)
+        let controller = Controller(dependencies: dependencies(base))
+        await controller.load()
+        await controller.backupAndResetAppData()
+        XCTAssertEqual(controller.phase, .recovery)
+        XCTAssertNil(controller.recoveryBackupURL)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(".v3-storage-boundary.json")), bytes)
+        try lease.validate()
     }
 
     func testFreshInstallCreatesEmptyVersion3StorageWithoutPresentingStartupChoice() async throws {

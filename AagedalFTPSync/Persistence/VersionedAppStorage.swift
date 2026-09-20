@@ -527,3 +527,31 @@ struct VersionedAppStorage {
         return encoder
     }
 }
+
+/// Explicit recovery only. The caller excludes older processes and retains the
+/// runtime lease. Copying must finish before any original entry is removed.
+/// The marker prevents a partial reset from being mistaken for a fresh install.
+enum AppDataRecoveryReset {
+    static let markerName = ".app-data-reset-in-progress"
+
+    static func perform(root: URL, lease: Version3StorageLease) throws -> URL {
+        try lease.validate()
+        let manager = FileManager.default
+        let backup = root.deletingLastPathComponent().appendingPathComponent(
+            "AagedalFTPSync-backup-\(UUID().uuidString)", isDirectory: true)
+        // copyItem includes hidden files and SQLite companions; it preserves
+        // symlinks rather than traversing their targets.
+        try manager.copyItem(at: root, to: backup)
+        try lease.validate()
+        try Data(backup.path.utf8).write(to: root.appendingPathComponent(markerName), options: .atomic)
+        for entry in try manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+            guard entry.lastPathComponent != Version3StorageLease.lockName,
+                  entry.lastPathComponent != markerName else { continue }
+            try lease.validate()
+            try manager.removeItem(at: entry)
+        }
+        try lease.validate()
+        try manager.removeItem(at: root.appendingPathComponent(markerName))
+        return backup
+    }
+}

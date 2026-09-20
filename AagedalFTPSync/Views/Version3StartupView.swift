@@ -110,6 +110,7 @@ struct RuntimeSettingsView: View {
 }
 
 struct Version3StartupView: View {
+    @State private var confirmReset = false
     @ObservedObject var startup: Version3StartupController
 
     var body: some View {
@@ -191,12 +192,27 @@ struct Version3StartupView: View {
                                 .accessibilityIdentifier("startup.recover")
                         }
                     } else if startup.phase == .recovery {
-                        Text("Saved data has been left in place. Resolve the reported problem before trying again. A failed startup never opens empty replacement libraries.")
+                        Text("Your saved data has been kept. You can preserve it for manual recovery or back it up and start with a fresh library.")
                         if startup.canRetryInspection {
                             Button("Inspect Again") { Task { await startup.retryInspection() } }
-                        } else {
+                        } else if !startup.canBackupAndReset {
                             Text("Quit and reopen the app after resolving the problem.").font(.callout.bold())
                         }
+                    }
+                }
+                if startup.canBackupAndReset {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Start fresh with a backup")
+                            .font(.headline)
+                        Text("Keep a complete copy of your saved app data, then open the app with an empty library. You will need to set up your jobs and calendar connections again. Your original media files and server data are not changed.")
+                        Button("Backup and Reset App Data…") { confirmReset = true }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("startup.backupAndReset")
+                    }
+                }
+                if let backup = startup.recoveryBackupURL {
+                    Button("Show Backup in Finder") {
+                        NSWorkspace.shared.selectFile(backup.path, inFileViewerRootedAtPath: "")
                     }
                 }
                 if !startup.recoveryDetail.isEmpty {
@@ -217,6 +233,14 @@ struct Version3StartupView: View {
             }
             .padding(24)
             .frame(maxWidth: 760, alignment: .leading)
+        }
+        .confirmationDialog("Back up and reset app data?", isPresented: $confirmReset, titleVisibility: .visible) {
+            Button("Back Up and Reset", role: .destructive) {
+                Task { await startup.backupAndResetAppData() }
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("A complete backup will be saved before resetting your local settings, jobs, calendars, templates and history. The app will then open with a fresh library. Saved passwords, original media files and server data will be kept.")
         }
         .task { await startup.load() }
     }
