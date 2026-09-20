@@ -268,6 +268,18 @@ final class MetadataCalendarCoordinator: ObservableObject {
         catch { eventStorageError = "Sync diagnostics could not be saved. Current-session entries are still available here." }
     }
 
+    func clearActivityHistory() {
+        guard !isPaused, !storageFailed else { return }
+        do {
+            // Save first so a failed write keeps the visible history available.
+            try eventRepository.save([])
+            events = []
+            eventStorageError = ""
+        } catch {
+            eventStorageError = "Sync activity history could not be cleared. The entries have been kept. Try again."
+        }
+    }
+
     func diagnosticText(jobID: UUID? = nil) -> String {
         let formatter = ISO8601DateFormatter()
         let selected = events.filter { jobID == nil || $0.jobID == jobID || $0.jobID == nil }

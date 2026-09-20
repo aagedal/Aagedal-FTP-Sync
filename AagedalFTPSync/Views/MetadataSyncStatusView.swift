@@ -115,6 +115,10 @@ struct MetadataSyncDiagnosticsView: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(sync.diagnosticText(jobID: jobID), forType: .string)
                 }
+                Button("Clear History") { sync.clearActivityHistory() }
+                    .disabled(sync.events.isEmpty || sync.isPaused)
+                    .help("Clear all saved calendar sync activity on this Mac, including entries hidden by filters. New activity will continue to appear.")
+                    .accessibilityIdentifier("metadata-sync-clear-history")
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
