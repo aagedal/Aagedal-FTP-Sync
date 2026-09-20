@@ -11,18 +11,16 @@ struct MetadataGeofenceEditorView: View {
     @State private var editingID: UUID?
     @State private var name = ""
     @State private var vertices: [MetadataGeofence.Vertex] = []
-    @State private var entryLatitude = 59.9139
-    @State private var entryLongitude = 10.7522
+    @GestureState private var isDraggingCorner = false
+
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @State private var message: String?
 
+    private let mapCoordinateSpaceName = "geofence-map"
+
     private var draft: MetadataGeofence {
         MetadataGeofence(id: editingID ?? UUID(), name: name, vertices: vertices)
-    }
-    private var canAddCoordinateCorner: Bool {
-        let corner = MetadataGeofence.Vertex(latitude: entryLatitude, longitude: entryLongitude)
-        return corner.isValid && !vertices.contains(corner)
     }
 
     var body: some View {
@@ -73,37 +71,7 @@ struct MetadataGeofenceEditorView: View {
                     Button("Clear Outline") { vertices = []; message = nil }
                         .disabled(vertices.isEmpty)
                 }
-                if !vertices.isEmpty {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 5) {
-                            ForEach(vertices.indices, id: \.self) { index in
-                                HStack {
-                                    Text("Corner \(index + 1)")
-                                        .frame(width: 70, alignment: .leading)
-                                    TextField("Latitude", value: $vertices[index].latitude, format: .number)
-                                        .accessibilityLabel("Corner \(index + 1) latitude")
-                                        .accessibilityIdentifier("geofence-corner-\(index + 1)-latitude")
-                                    TextField("Longitude", value: $vertices[index].longitude, format: .number)
-                                        .accessibilityLabel("Corner \(index + 1) longitude")
-                                        .accessibilityIdentifier("geofence-corner-\(index + 1)-longitude")
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 155)
-                }
-                HStack {
-                    TextField("Latitude", value: $entryLatitude, format: .number)
-                        .accessibilityLabel("New corner latitude")
-                        .accessibilityIdentifier("geofence-new-latitude")
-                    TextField("Longitude", value: $entryLongitude, format: .number)
-                        .accessibilityLabel("New corner longitude")
-                        .accessibilityIdentifier("geofence-new-longitude")
-                    Button("Add Corner", action: addCoordinateCorner)
-                        .disabled(vertices.count >= 200 || !canAddCoordinateCorner)
-                        .accessibilityIdentifier("geofence-add-corner")
-                }
-                Text("Enter latitude and longitude or click the map to add corners in order. Drag to pan or scroll to zoom. Use Undo Corner to correct an outline.")
+                Text("Click the map to add corners in order. Drag a corner to move it, drag the map to pan, or scroll to zoom. Use Undo Corner to remove the last corner.")
                     .font(.caption).foregroundStyle(.secondary)
                 if let message { Text(message).font(.caption).foregroundStyle(.red) }
                 HStack {
@@ -126,10 +94,10 @@ struct MetadataGeofenceEditorView: View {
                 }
                 .padding(10)
                 MapReader { proxy in
-                    Map(position: $camera) {
-                        ForEach(geofences) { area in
+                    Map(position: $camera, interactionModes: isDraggingCorner ? [] : .all) {
+                        ForEach(geofences.filter { $0.id != editingID }) { area in
                             MapPolygon(coordinates: coordinates(area.vertices))
-                                .foregroundStyle(Color.accentColor.opacity(area.id == editingID ? 0.12 : 0.2))
+                                .foregroundStyle(Color.accentColor.opacity(0.2))
                                 .stroke(Color.accentColor, lineWidth: 2)
                         }
                         if vertices.count >= 3 {
@@ -145,14 +113,24 @@ struct MetadataGeofenceEditorView: View {
                                        coordinate: coordinate(vertices[index]), anchor: .center) {
                                 Circle().fill(.orange).frame(width: 11, height: 11)
                                     .overlay(Circle().stroke(.white, lineWidth: 2))
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Circle())
+                                    .accessibilityLabel("Corner \(index + 1)")
+                                    .help("Drag to move this corner")
+                                    .highPriorityGesture(cornerDragGesture(at: index, proxy: proxy))
                             }
                         }
                     }
+                    .coordinateSpace(name: mapCoordinateSpaceName)
                     .mapStyle(.standard(elevation: .flat))
                     .mapControls { MapCompass(); MapScaleView() }
-                    .simultaneousGesture(SpatialTapGesture().onEnded { value in
-                        guard vertices.count < 200,
-                              let point = proxy.convert(value.location, from: .local),
+                    .simultaneousGesture(SpatialTapGesture(coordinateSpace: .named(mapCoordinateSpaceName)).onEnded { value in
+                        guard !isDraggingCorner, vertices.count < 200,
+                              !vertices.contains(where: { vertex in
+                                  guard let location = proxy.convert(coordinate(vertex), to: .named(mapCoordinateSpaceName)) else { return false }
+                                  return hypot(location.x - value.location.x, location.y - value.location.y) <= 14
+                              }),
+                              let point = proxy.convert(value.location, from: .named(mapCoordinateSpaceName)),
                               CLLocationCoordinate2DIsValid(point) else { return }
                         vertices.append(.init(latitude: point.latitude, longitude: point.longitude))
                         message = nil
@@ -179,10 +157,6 @@ struct MetadataGeofenceEditorView: View {
         editingID = area.id
         name = area.name
         vertices = area.vertices
-        if let last = vertices.last {
-            entryLatitude = last.latitude
-            entryLongitude = last.longitude
-        }
         message = nil
         let latitudes = vertices.map(\.latitude), longitudes = vertices.map(\.longitude)
         if let minLat = latitudes.min(), let maxLat = latitudes.max(),
@@ -201,9 +175,26 @@ struct MetadataGeofenceEditorView: View {
         message = nil
     }
 
-    private func addCoordinateCorner() {
-        guard vertices.count < 200, canAddCoordinateCorner else { return }
-        vertices.append(.init(latitude: entryLatitude, longitude: entryLongitude))
+    private func cornerDragGesture(at index: Int, proxy: MapProxy) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(mapCoordinateSpaceName))
+            .updating($isDraggingCorner) { _, isDragging, _ in
+                isDragging = true
+            }
+            .onChanged { value in
+                guard hypot(value.translation.width, value.translation.height) >= 3 else { return }
+                moveCorner(at: index, to: value.location, proxy: proxy)
+            }
+            .onEnded { value in
+                guard hypot(value.translation.width, value.translation.height) >= 3 else { return }
+                moveCorner(at: index, to: value.location, proxy: proxy)
+            }
+    }
+
+    private func moveCorner(at index: Int, to location: CGPoint, proxy: MapProxy) {
+        guard vertices.indices.contains(index),
+              let point = proxy.convert(location, from: .named(mapCoordinateSpaceName)),
+              CLLocationCoordinate2DIsValid(point) else { return }
+        vertices[index] = .init(latitude: point.latitude, longitude: point.longitude)
         message = nil
     }
 

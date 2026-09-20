@@ -462,6 +462,7 @@ struct JobDetailEditor: View {
                 Toggle("Include hidden files", isOn: $session.draft.filter.includeHiddenFiles)
                 Picker("File age", selection: recentHoursBinding) {
                     Text("Any age").tag(0)
+                        .disabled(draft.targetCleanup != nil)
                     Text("Last hour").tag(1)
                     Text("Last 3 hours").tag(3)
                     Text("Last 6 hours").tag(6)
@@ -494,21 +495,21 @@ struct JobDetailEditor: View {
                     .disabled(draft.targetCleanup == nil && !hasLocalOneWayTarget)
 
                 if draft.targetCleanup != nil {
-                    LabeledContent("Delete target files older than") {
-                        HStack {
-                            Slider(value: targetCleanupSliderBinding, in: Double(targetCleanupHoursRange.lowerBound)...Double(targetCleanupHoursRange.upperBound))
-                                .frame(width: 220)
-                                .accessibilityLabel("Target cleanup age")
-                            TextField("Hours", value: targetCleanupHoursBinding, format: .number.grouping(.never))
-                                .textFieldStyle(.roundedBorder)
-                                .multilineTextAlignment(.trailing)
-                                .frame(width: 64)
-                                .accessibilityLabel("Target cleanup age in hours")
-                            Text("hours")
+                    Picker("Delete target files older than", selection: targetCleanupHoursBinding) {
+                        ForEach(Self.targetCleanupPresets, id: \.self) { hours in
+                            targetCleanupLabel(hours: hours)
+                                .tag(hours)
+                                .disabled(hours <= (draft.filter.recentHours ?? 0))
+                        }
+                        if let hours = draft.targetCleanup?.olderThanHours,
+                           !Self.targetCleanupPresets.contains(hours) {
+                            targetCleanupLabel(hours: hours)
+                                .tag(hours)
+                                .disabled(hours <= (draft.filter.recentHours ?? 0))
                         }
                     }
-                    Text("\(targetCleanupLabel). Choose \(targetCleanupHoursRange.lowerBound)–\(targetCleanupHoursRange.upperBound) hours.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    .pickerStyle(.menu)
+                    .accessibilityLabel("Target cleanup age")
                     Text("Cleanup removes only matching file types from the local target and never touches the source. RAW files and their XMP sidecars are removed together. The deletion age must be greater than the source file-age window.")
                         .font(.caption).foregroundStyle(.secondary)
                 } else if !hasLocalOneWayTarget {
@@ -776,9 +777,10 @@ struct JobDetailEditor: View {
         Binding(
             get: { draft.filter.recentHours ?? 0 },
             set: { value in
+                guard value > 0 || draft.targetCleanup == nil else { return }
                 draft.filter.recentHours = value == 0 ? nil : value
                 if value > 0, let cleanup = draft.targetCleanup, cleanup.olderThanHours <= value {
-                    draft.targetCleanup?.olderThanHours = value + 1
+                    draft.targetCleanup?.olderThanHours = preferredCleanupHours(after: value)
                 }
             }
         )
@@ -934,7 +936,7 @@ struct JobDetailEditor: View {
                 if enabled {
                     let sourceHours = draft.filter.recentHours ?? 1
                     draft.filter.recentHours = sourceHours
-                    draft.targetCleanup = TargetCleanup(olderThanHours: sourceHours + 1)
+                    draft.targetCleanup = TargetCleanup(olderThanHours: preferredCleanupHours(after: sourceHours))
                 } else {
                     draft.targetCleanup = nil
                 }
@@ -942,33 +944,28 @@ struct JobDetailEditor: View {
         )
     }
 
+    private static let targetCleanupPresets = [3, 10, 24, 72, 336, 720]
+
+    private func preferredCleanupHours(after sourceHours: Int) -> Int {
+        Self.targetCleanupPresets.first { $0 > sourceHours } ?? (sourceHours + 1)
+    }
+
     private var targetCleanupHoursBinding: Binding<Int> {
         Binding(
-            get: { draft.targetCleanup?.olderThanHours ?? 2 },
-            set: { draft.targetCleanup?.olderThanHours = min(max($0, targetCleanupHoursRange.lowerBound), targetCleanupHoursRange.upperBound) }
+            get: { draft.targetCleanup?.olderThanHours ?? 3 },
+            set: { hours in
+                guard hours > (draft.filter.recentHours ?? 0) else { return }
+                draft.targetCleanup?.olderThanHours = hours
+            }
         )
     }
 
-    private var targetCleanupHoursRange: ClosedRange<Int> {
-        let minimum = max(1, (draft.filter.recentHours ?? 0) + 1)
-        return minimum...max(720, minimum + 1)
-    }
-
-    private var targetCleanupSliderBinding: Binding<Double> {
-        Binding(
-            get: { Double(targetCleanupHoursBinding.wrappedValue) },
-            set: { targetCleanupHoursBinding.wrappedValue = Int($0.rounded()) }
-        )
-    }
-
-    private var targetCleanupLabel: String {
-        let hours = draft.targetCleanup?.olderThanHours ?? 2
-        if hours == 1 { return "1 hour" }
-        if hours.isMultiple(of: 24) {
-            let days = hours / 24
-            return days == 1 ? "1 day" : "\(days) days"
+    private func targetCleanupLabel(hours: Int) -> Text {
+        if hours == 1 { return Text("1 hour") }
+        if hours > 24, hours.isMultiple(of: 24) {
+            return Text("\(hours / 24) days")
         }
-        return "\(hours) hours"
+        return Text("\(hours) hours")
     }
 
     @discardableResult
