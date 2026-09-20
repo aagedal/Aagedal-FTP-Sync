@@ -4,6 +4,20 @@ import XCTest
 final class AagedalFTPSyncSmokeTests: XCTestCase {
     private var app: XCUIApplication!
 
+    func testJobsWindowReopensFromStatusMenuAfterClosing() {
+        launch(seedJob: true)
+        let jobsWindow = app.windows["jobs"]
+        for _ in 0..<2 {
+            jobsWindow.buttons[XCUIIdentifierCloseWindow].click()
+            XCTAssertTrue(jobsWindow.waitForNonExistence(timeout: 5))
+            openStatusMenu()
+            element("open-jobs-window").click()
+            XCTAssertTrue(jobsWindow.waitForExistence(timeout: 5))
+            dismissStatusPanelIfNeeded()
+            XCTAssertTrue(element("job-name").waitForExistence(timeout: 5))
+        }
+    }
+
     func testRetainedMetadataRecoveryExplainsBlockedReprocessingAndAllowsRetry() throws {
         launch(seedJob: true, recoveryFixture: true)
         element("Metadata").firstMatch.click()
@@ -551,6 +565,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         cleanApp.terminate()
         app = cleanApp
         app.launchEnvironment["AAGEDAL_UI_TESTING"] = "1"
+        app.launchEnvironment["AAGEDAL_UI_TEST_OPEN_JOBS"] = "1"
         app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"] = UUID().uuidString
         if seedJob { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_JOB"] = "1" }
         if seedMap { app.launchEnvironment["AAGEDAL_UI_TEST_SEED_MAP"] = "1" }
@@ -566,21 +581,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     private func waitForJobsWindow(seedJob: Bool) {
         let jobsWindow = app.windows["jobs"]
-        if !jobsWindow.waitForExistence(timeout: 5) {
-            // SwiftUI occasionally restores only the menu-bar scene during a
-            // rapid sequence of signed UI-test launches. Retry this isolated
-            // process once before exercising the menu-bar recovery path.
-            app.terminate()
-            app.launch()
-            if !jobsWindow.waitForExistence(timeout: 5) {
-                openStatusMenu()
-                let openJobs = element("open-jobs-window")
-                XCTAssertTrue(openJobs.waitForExistence(timeout: 3))
-                openJobs.click()
-                XCTAssertTrue(jobsWindow.waitForExistence(timeout: 5))
-                dismissStatusPanelIfNeeded()
-            }
-        }
+        XCTAssertTrue(jobsWindow.waitForExistence(timeout: 8))
         let expectedContent = seedJob ? element("job-name") : element("add-sync-job-empty-state")
         XCTAssertTrue(expectedContent.waitForExistence(timeout: 8))
     }

@@ -48,6 +48,7 @@ struct StartupMenuLabel: View {
     @Environment(\.openWindow) private var openWindow
     @State private var openedAttention = false
     @State private var openedConflict = false
+    @State private var openedTestJobs = false
 
     var body: some View {
         Group {
@@ -69,6 +70,16 @@ struct StartupMenuLabel: View {
     }
 
     private func showAttentionIfNeeded() {
+        // Editor smoke tests need a window even when macOS restores only the
+        // menu-bar scene. Request it from a live scene after store admission;
+        // raising an existing NSWindow cannot create a missing SwiftUI scene.
+        if UITestSupport.enabled,
+           ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_OPEN_JOBS"] == "1",
+           startup.session != nil, !openedTestJobs {
+            openedTestJobs = true
+            openWindow(id: "jobs")
+            RegularWindowController.shared.prepareForOpening(windowID: "jobs")
+        }
         if startup.requiresRelaunchAfterConflict, !openedConflict, !startup.isTestSession {
             openedConflict = true
             RegularWindowController.shared.prepareForOpening(windowID: "startup")
