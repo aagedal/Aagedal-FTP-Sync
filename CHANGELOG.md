@@ -9,6 +9,8 @@
 
 ## Unreleased (3.0.0)
 
+- Remove the extra frame around job settings while retaining the three-section selector.
+
 - Reopen committed libraries with valid SQLite write-ahead logs after interrupted
   runs. Validate a complete temporary snapshot without changing original files,
   while keeping damaged logs and unsupported database formats in recovery.

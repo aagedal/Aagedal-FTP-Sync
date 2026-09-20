@@ -17,6 +17,11 @@ struct JobDetailEditor: View {
     @State private var showProcessedFolderPicker = false
     @State private var processedFolderError: String?
     @State private var showCredentialLoadError = false
+    @State private var selectedSettingsTab: SettingsTab = .serverAndSync
+
+    private enum SettingsTab: Hashable {
+        case serverAndSync, metadata, files
+    }
 
     private var draft: SyncJob {
         get { session.draft }
@@ -25,14 +30,25 @@ struct JobDetailEditor: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView {
-                serverAndSyncSettings
-                    .tabItem { Label("Server & Sync", systemImage: "arrow.triangle.2.circlepath") }
-                metadataSettings
-                    .tabItem { Label("Metadata", systemImage: "tag") }
-                fileSettings
-                    .tabItem { Label("File Filtering & Deletion", systemImage: "line.3.horizontal.decrease.circle") }
+            Picker("Job settings", selection: $selectedSettingsTab) {
+                Text("Server & Sync").tag(SettingsTab.serverAndSync)
+                Text("Metadata").tag(SettingsTab.metadata)
+                Text("File Filtering & Deletion").tag(SettingsTab.files)
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            Group {
+                switch selectedSettingsTab {
+                case .serverAndSync: serverAndSyncSettings
+                case .metadata: metadataSettings
+                case .files: fileSettings
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             Divider()
             HStack {
