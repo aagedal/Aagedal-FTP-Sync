@@ -52,6 +52,28 @@ targets:
           - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights/weight.bin
     sources:
       - path: AagedalFTPSync
+        excludes:
+          - Resources/WhisperRuntime
+      - path: AagedalFTPSync/Resources/WhisperRuntime
+        type: folder
+        buildPhase: resources
+    postBuildScripts:
+      - name: Sign Whisper Runtime
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ]; then
+            timestamp_option="--timestamp=none"
+            case "${EXPANDED_CODE_SIGN_IDENTITY_NAME:-}" in
+              "Developer ID Application"*) timestamp_option="--timestamp" ;;
+            esac
+            /usr/bin/codesign --force --options runtime "$timestamp_option" --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" --entitlements "$SRCROOT/Configuration/WhisperRuntime.entitlements" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/WhisperRuntime/ffmpeg"
+          fi
+        inputFiles:
+          - $(SRCROOT)/Configuration/WhisperRuntime.entitlements
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WhisperRuntime/ffmpeg
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WhisperRuntime/ffmpeg.cstemp
     dependencies:
       - package: Citadel
       - package: SwiftMediaMetadata

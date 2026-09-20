@@ -100,6 +100,7 @@ struct MetadataFolderPreviewView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.relativePath).font(.headline)
                 if let detail = item.detail { Text(detail).foregroundStyle(.secondary) }
+                if let note = item.processing?.voiceMemoNote { Text(note).foregroundStyle(.secondary) }
                 if let processing = item.processing {
                     if let context = processing.context {
                         Text("Frozen processing time: \(context.processingDate.formatted(Date.FormatStyle(date: .abbreviated, time: .standard, timeZone: context.processingTimeZone))) · \(context.processingTimeZone.identifier)")

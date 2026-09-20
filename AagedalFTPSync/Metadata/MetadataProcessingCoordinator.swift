@@ -99,6 +99,8 @@ struct MetadataProcessingResult: Equatable, Sendable {
     let places: [MetadataPlaceField: MetadataProcessingPlaceOutcome]
     let recognitionEvidence: FaceRecognitionAuditEvidence?
     let recognitionDependencyRevisions: [String: String]
+    var voiceMemoNote: String? = nil
+    var voiceMemoDependencyRevisions: [String: String] = [:]
 
     init(changes: ResolvedMetadataChanges, context: MetadataTemplateContext?,
          fields: [MetadataWritableField: MetadataProcessingFieldOutcome],
@@ -158,7 +160,7 @@ struct MetadataProcessingResult: Equatable, Sendable {
                 gpsPosition: changes.gpsPosition,
                 existingFieldPolicy: changes.existingFieldPolicy,
                 places: changes.places,
-                faceNames: faceNames
+                faceNames: faceNames, descriptionBaseline: changes.descriptionBaseline
             ),
             context: context,
             fields: fields,
@@ -195,7 +197,8 @@ enum MetadataProcessingCoordinator {
     static func preparePerImage(assignment: MetadataAssignment, fileURL: URL,
                                 relativePath: String, processingDate: Date,
                                 processingTimeZone: TimeZone,
-                                persons: [String] = []) throws -> MetadataProcessingResult {
+                                persons: [String] = [],
+                                voiceMemoTranscript: String? = nil) throws -> MetadataProcessingResult {
         guard assignment.clip.fields.hasActivatedTemplates || assignment.photographer.hasActivatedTemplates else {
             return try prepareLiteral(assignment)
         }
@@ -236,7 +239,9 @@ enum MetadataProcessingCoordinator {
         }
         let context = MetadataTemplateContext(processingDate: processingDate,
             processingTimeZone: processingTimeZone, captureDate: capture,
-            photographer: request.photographer, persons: persons)
+            photographer: request.photographer, persons: persons,
+            voiceMemoTranscript: voiceMemoTranscript,
+            existingDescription: try existingDescription(required: required, fileURL: fileURL, relativePath: relativePath))
         return resolve(request, context: context, writableFields: writable,
                        coordinateResolution: coordinateResolution)
     }
@@ -248,6 +253,7 @@ enum MetadataProcessingCoordinator {
         service: MetadataGeocodingService? = nil, services: MetadataProcessingServices = .shared,
         faceRecognition: MetadataFaceRecognitionSettings? = nil,
         faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
+        voiceMemoURL: URL? = nil, voiceMemoIssue: String? = nil,
         fileURL: URL, relativePath: String,
         processingDate: Date, processingTimeZone: TimeZone
     ) async throws -> MetadataProcessingResult {
@@ -262,6 +268,24 @@ enum MetadataProcessingCoordinator {
                 throw AppError.invalidConfiguration(
                     "Face recognition cannot run until its model, people library, and calibrated policy are admitted."
                 )
+            }
+        }
+        var memo: VoiceMemoTranscript?
+        var memoNote: String?
+        if let assignment, assignment.clip.fields.hasActivatedTemplates || assignment.photographer.hasActivatedTemplates {
+            let request = try MetadataProcessingRequest(assignment: assignment)
+            let writable = try MetadataWriter.writableFields(at: fileURL, relativePath: relativePath,
+                                                             policy: request.existingFieldPolicy)
+            if request.requiredVariables(for: writable).contains(.voiceMemoTranscript) {
+                do {
+                    if let voiceMemoIssue { throw VoiceMemoError.unavailable(voiceMemoIssue) }
+                    guard let audio = try voiceMemoURL ?? VoiceMemoCompanion.localURL(for: fileURL) else {
+                        throw VoiceMemoError.unavailable("No matching WAV was found for this image.")
+                    }
+                    memo = try await services.transcribeVoiceMemo(audio)
+                    memoNote = memo?.note
+                } catch is CancellationError { throw CancellationError() }
+                catch { memoNote = "Voice memo unavailable: " + error.localizedDescription }
             }
         }
         let templateNeedsPersons: Bool
@@ -315,14 +339,19 @@ enum MetadataProcessingCoordinator {
             relativePath: relativePath,
             processingDate: processingDate,
             processingTimeZone: processingTimeZone,
-            persons: persons
+            persons: persons, voiceMemoTranscript: memo?.text
         )
-        guard let recognitionEvidence else { return base }
-        return base.addingRecognition(
-            faceNames: recognizedNames,
-            evidence: recognitionEvidence,
-            dependencyRevisions: recognitionDependencies
-        )
+        var result = base
+        if let recognitionEvidence {
+            result = base.addingRecognition(
+                faceNames: recognizedNames,
+                evidence: recognitionEvidence,
+                dependencyRevisions: recognitionDependencies
+            )
+        }
+        result.voiceMemoNote = memoNote
+        if let memo { result.voiceMemoDependencyRevisions = ["voice-memo": memo.revision] }
+        return result
     }
 
     private static func prepareWithoutRecognition(
@@ -330,13 +359,13 @@ enum MetadataProcessingCoordinator {
         service: MetadataGeocodingService?, services: MetadataProcessingServices,
         fileURL: URL, relativePath: String,
         processingDate: Date, processingTimeZone: TimeZone,
-        persons: [String]
+        persons: [String], voiceMemoTranscript: String?
     ) async throws -> MetadataProcessingResult {
         guard let settings = geocoding, settings.isEnabled else {
             if let assignment {
                 return try preparePerImage(assignment: assignment, fileURL: fileURL,
                     relativePath: relativePath, processingDate: processingDate,
-                    processingTimeZone: processingTimeZone, persons: persons)
+                    processingTimeZone: processingTimeZone, persons: persons, voiceMemoTranscript: voiceMemoTranscript)
             }
             return MetadataProcessingResult(changes: .init(), context: nil, fields: [:])
         }
@@ -419,7 +448,9 @@ enum MetadataProcessingCoordinator {
         let context = MetadataTemplateContext(processingDate: processingDate,
             processingTimeZone: processingTimeZone, captureDate: capture,
             photographer: request.photographer, city: settings.resolveVariables ? place?.city : nil,
-            country: settings.resolveVariables ? place?.country : nil, persons: persons)
+            country: settings.resolveVariables ? place?.country : nil, persons: persons,
+            voiceMemoTranscript: voiceMemoTranscript,
+            existingDescription: try existingDescription(required: required, fileURL: fileURL, relativePath: relativePath))
         let base = resolve(request, context: context, writableFields: writable,
                            coordinateResolution: coordinates)
         var outcomes: [MetadataPlaceField: MetadataProcessingPlaceOutcome] = [:]
@@ -445,12 +476,19 @@ enum MetadataProcessingCoordinator {
             copyright: changes.copyright, gpsPosition: changes.gpsPosition,
             existingFieldPolicy: changes.existingFieldPolicy,
             places: city == nil && country == nil ? nil : .init(city: city, country: country,
-                cityPolicy: settings.cityPolicy, countryPolicy: settings.countryPolicy)),
+                cityPolicy: settings.cityPolicy, countryPolicy: settings.countryPolicy),
+            descriptionBaseline: changes.descriptionBaseline),
             context: context, fields: base.fields, coordinateResolution: coordinates,
             geocoding: stage, geocodingLocaleIdentifier: needsLookup ? settings.localeIdentifier : nil,
             geocodingProviderIdentity: providerIdentity,
             geofenceMatched: geofenceMatched,
             places: outcomes)
+    }
+
+    private static func existingDescription(required: Set<MetadataTemplateVariable>, fileURL: URL,
+                                            relativePath: String) throws -> String? {
+        guard required.contains(.existingDescription) else { return nil }
+        return try MetadataWriter.descriptionForTemplate(at: fileURL, relativePath: relativePath)
     }
 
     /// Pure resolution against one supplied context; never reads or writes images.
@@ -470,7 +508,9 @@ enum MetadataProcessingCoordinator {
             captureDate: suppliedContext.captureDate,
             photographer: request.photographer,
             city: suppliedContext.city, country: suppliedContext.country,
-            persons: suppliedContext.persons
+            persons: suppliedContext.persons,
+            voiceMemoTranscript: suppliedContext.voiceMemoTranscript,
+            existingDescription: suppliedContext.existingDescription
         )
         var outcomes: [MetadataWritableField: MetadataProcessingFieldOutcome] = [:]
         func text(_ source: MetadataTemplateText, field: MetadataWritableField, tag: IPTCTag) -> String {
@@ -531,7 +571,9 @@ enum MetadataProcessingCoordinator {
         return MetadataProcessingResult(
             changes: ResolvedMetadataChanges(headline: headline, description: description,
                 keywords: keywords, creator: creator, copyright: copyright,
-                gpsPosition: gps, existingFieldPolicy: resolvedPolicy),
+                gpsPosition: gps, existingFieldPolicy: resolvedPolicy,
+                descriptionBaseline: request.description.requiredVariables.contains(.existingDescription)
+                    ? context.existingDescription : nil),
             context: context, fields: outcomes, coordinateResolution: coordinateResolution
         )
     }

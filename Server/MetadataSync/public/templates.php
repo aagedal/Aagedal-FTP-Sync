@@ -4,7 +4,7 @@ declare(strict_types=1);
 // Version-one syntax only; source is never expanded or normalized by the server.
 function liveTemplateSource(string $source): void {
     if (strlen($source) > 16384) { failLive(422, 'invalid_template'); }
-    $tokens = ['photographer', 'gps:city', 'gps:country', 'persons',
+    $tokens = ['photographer', 'gps:city', 'gps:country', 'persons', 'voiceMemoTranscript', 'existingDescription',
         'date:YYYY-MM-DD', 'date:yyyy-MM-dd', 'dateCaptured:YYYY-MM-DD', 'dateCaptured:yyyy-MM-dd'];
     for ($i = 0, $length = strlen($source); $i < $length; $i++) {
         $ch = $source[$i];

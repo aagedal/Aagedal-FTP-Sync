@@ -4,7 +4,7 @@ import Foundation
 import ServiceManagement
 
 enum AppSettingsTab: Hashable {
-    case servers, photographers, metadataSync, peopleLibrary
+    case servers, photographers, metadataSync, peopleLibrary, voiceMemos
 }
 
 enum MetadataSyncSettingsTab: Hashable {

@@ -42,6 +42,7 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
     let existingFieldPolicy: MetadataExistingFieldPolicy
     let places: ResolvedMetadataPlaceChanges?
     let faceNames: ResolvedFaceNameChanges?
+    let descriptionBaseline: String?
 
     /// Keywords have already been normalized by the resolver. Preserve their
     /// entry boundaries and order, including commas inside an expanded value.
@@ -51,7 +52,8 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
         gpsPosition: ScheduledGPSPosition? = nil,
         existingFieldPolicy: MetadataExistingFieldPolicy = .standard,
         places: ResolvedMetadataPlaceChanges? = nil,
-        faceNames: ResolvedFaceNameChanges? = nil
+        faceNames: ResolvedFaceNameChanges? = nil,
+        descriptionBaseline: String? = nil
     ) {
         self.headline = headline.trimmingCharacters(in: .whitespacesAndNewlines)
         self.description = description.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -62,6 +64,7 @@ struct ResolvedMetadataChanges: Equatable, Sendable {
         self.existingFieldPolicy = existingFieldPolicy
         self.places = places
         self.faceNames = faceNames
+        self.descriptionBaseline = descriptionBaseline
     }
 
     /// Compatibility boundary: legacy source remains literal, including braces.

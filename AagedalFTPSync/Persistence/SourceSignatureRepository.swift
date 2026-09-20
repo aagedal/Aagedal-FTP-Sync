@@ -17,7 +17,10 @@ struct SourceFileSignature: Codable, Equatable, Sendable {
 
     func matches(_ file: SyncFile, timestampTolerance: TimeInterval = 1.5) -> Bool {
         size == file.size
-            && abs(modifiedAt.timeIntervalSince(file.modifiedAt)) <= timestampTolerance
+            // SQLite persists Unix-epoch doubles. Compare in that same representation:
+            // converting back to Date's 2001 epoch can round sub-microsecond values and
+            // otherwise make an unchanged source fail a zero-tolerance receipt check.
+            && abs(modifiedAt.timeIntervalSince1970 - file.modifiedAt.timeIntervalSince1970) <= timestampTolerance
     }
 }
 

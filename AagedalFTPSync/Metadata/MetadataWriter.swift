@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import SwiftMediaMetadata
 
 enum MetadataWriter {
@@ -113,6 +114,43 @@ enum MetadataWriter {
         }
         if let gps = MetadataCoordinateReader.embeddedPosition(in: metadata) { carriers.append(.init(name: "Embedded EXIF", fields: [.gpsPosition: .position(gps)])) }
         return ExistingFieldsSnapshot(carriers: carriers, readable: true)
+    }
+
+    private static let descriptionNamespace = "https://aagedal.no/ftp-sync/description/1.0/"
+
+    /// Retain the original caption with a digest of the exact generated caption. Reprocessing
+    /// then expands from the original instead of appending a second memo. External edits break
+    /// the digest match and become the new baseline. This travels with embedded XMP/RAW sidecars.
+    static func descriptionForTemplate(at fileURL: URL, relativePath: String) throws -> String? {
+        let snapshot = try existingFields(at: fileURL, relativePath: relativePath)
+        guard snapshot.readable else { return nil }
+        let values = Set(snapshot.carriers.compactMap { carrier -> String? in
+            if case .text(let value) = carrier.fields[.description] { return value }
+            return nil
+        })
+        guard values.count <= 1 else { return nil }
+        let current = values.first ?? ""
+        let xmp = usesXMPSidecar(for: relativePath)
+            ? try rawPolicyMetadata(at: fileURL).xmp : try ImageMetadata.read(from: fileURL).xmp
+        if xmp?.simpleValue(namespace: descriptionNamespace, property: "outputSHA256") == descriptionDigest(current),
+           let baseline = xmp?.simpleValue(namespace: descriptionNamespace, property: "original") {
+            return baseline
+        }
+        return current
+    }
+
+    private static func descriptionDigest(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func recordDescriptionBaseline(_ baseline: String?, output: String, in xmp: inout XMPData) {
+        if let baseline {
+            xmp.setValue(.simple(baseline), namespace: descriptionNamespace, property: "original")
+            xmp.setValue(.simple(descriptionDigest(output)), namespace: descriptionNamespace, property: "outputSHA256")
+        } else {
+            xmp.removeValue(namespace: descriptionNamespace, property: "original")
+            xmp.removeValue(namespace: descriptionNamespace, property: "outputSHA256")
+        }
     }
 
     /// Existing Person Shown values participate in `{persons}` expansion even
@@ -419,6 +457,7 @@ enum MetadataWriter {
            changes.existingFieldPolicy.overwrites(.description) || (isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)) {
             try metadata.iptc.setValue(description, for: .captionAbstract)
             xmp.description = description
+            recordDescriptionBaseline(changes.descriptionBaseline, output: description, in: &xmp)
         }
         if !keywords.isEmpty,
            changes.existingFieldPolicy.overwrites(.keywords) || (metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)) {
@@ -526,6 +565,7 @@ enum MetadataWriter {
         }
         if !description.isEmpty, changes.existingFieldPolicy.overwrites(.description) || isEmpty(xmp.description) {
             xmp.description = description
+            recordDescriptionBaseline(changes.descriptionBaseline, output: description, in: &xmp)
         }
         if !keywords.isEmpty, changes.existingFieldPolicy.overwrites(.keywords) || xmp.subject.isEmpty {
             xmp.subject = keywords

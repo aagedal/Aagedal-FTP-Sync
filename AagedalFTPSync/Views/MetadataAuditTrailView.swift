@@ -82,6 +82,7 @@ private struct MetadataAuditRow: View {
                             if let decision = evidence.coordinateDecision {
                                 Text(MetadataAuditEvidencePresentation.coordinateDecision(decision))
                             }
+                            if let note = evidence.voiceMemoNote { Text(note) }
                             if let decision = evidence.geocodingDecision {
                                 Text(MetadataAuditEvidencePresentation.geocodingDecision(decision))
                             }
@@ -301,6 +302,8 @@ enum MetadataAuditEvidencePresentation {
                 case "city": return "city"
                 case "country": return "country"
                 case "persons": return "people shown"
+                case "voiceMemoTranscript": return "voice memo transcript"
+                case "existingDescription": return "existing description (unreadable or conflicting)"
                 default: return variable
                 }
             }.joined(separator: ", ")

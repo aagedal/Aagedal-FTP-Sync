@@ -105,6 +105,8 @@ private struct MetadataTemplateTextDraft: View {
                     insert("City", token: "{gps:city}")
                     insert("Country", token: "{gps:country}")
                     insert("Persons", token: "{persons}")
+                    insert("Voice memo transcript", token: "{voiceMemoTranscript}")
+                    insert("Existing description", token: "{existingDescription}")
                 }.help("Appends to the end of the source. Enable Resolve Variables to activate it.")
             }
             TextEditor(text: $source)
@@ -122,7 +124,7 @@ private struct MetadataTemplateTextDraft: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("City and Country require a usable geocoding result. Persons requires usable Person Shown names from image metadata or recognition. Missing dependencies preserve the existing field.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("City, Country and Persons are unavailable in this sample; no location or recognition lookup is performed.")
+            Text("Voice memos use the first 30 seconds of a matching WAV and the model selected in Settings → Voice Memos. Use Existing description to keep embedded caption text; enable description overwrite to apply the combined result. The complete description must fit within 2,000 UTF-8 bytes. These image variables are unavailable in this sample.")
                 .font(.caption).foregroundStyle(.secondary)
             ScrollView {
                 Text(sample).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)

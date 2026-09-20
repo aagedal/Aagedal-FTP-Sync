@@ -35,7 +35,7 @@ App storage migration, per-field marker adapters, package/calendar compatibility
 and UI activation remain unimplemented; using these value types alone does not
 establish those compatibility guarantees.
 
-Supported tokens are `{photographer}`, `{gps:city}`, `{gps:country}`, `{persons}`,
+Supported tokens are `{photographer}`, `{gps:city}`, `{gps:country}`, `{persons}`, `{voiceMemoTranscript}`, `{existingDescription}`,
 `{date:YYYY-MM-DD}`, and `{dateCaptured:YYYY-MM-DD}`. The only date-format alias is
 `yyyy-MM-dd`; unformatted date tokens and every other format are invalid. `{{` and
 `}}` each produce a literal brace. Unknown tokens, nested/unmatched braces and
@@ -115,3 +115,5 @@ those requests. App-level literal keyword overrides use the existing normalizati
 policy; the package literal codec itself remains exact. See the
 [processing/storage checkpoint](../../Documentation/Testing/2026-09-10-M1-Processing-Storage-Integration.md)
 for verification and the remaining context, encoding and completion gates.
+
+`{voiceMemoTranscript}` uses caller-supplied transcription text; the package never opens audio or runs inference. `{existingDescription}` accepts an empty string as a valid existing caption, but nil preserves the field. Inserted text is never parsed again as template syntax.

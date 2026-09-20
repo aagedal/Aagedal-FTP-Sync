@@ -373,7 +373,9 @@ enum MetadataPreviewService {
             do {
                 // Resolution can suspend for a provider or model. Bind all displayed
                 // values to one content revision, including companion presence.
-                let inputRevision = try previewInputRevision(at: canonical, relativePath: path)
+                let needsMemo = try MetadataProcessingRequest(assignment: assignment)
+                    .requiredVariables(for: Set(MetadataWritableField.allCases)).contains(.voiceMemoTranscript)
+                let inputRevision = try previewInputRevision(at: canonical, relativePath: path, includeVoiceMemo: needsMemo)
                 item.existingFields = try? MetadataWriter.existingFields(at: canonical, relativePath: path)
                 item.existingFieldsUnavailable = item.existingFields?.readable != true
                 item.existingPlaces = try? MetadataWriter.existingPlaceFields(at: canonical, relativePath: path)
@@ -396,7 +398,7 @@ enum MetadataPreviewService {
                 if enabled != nil, scheduled == nil {
                     detail = "Capture time was unavailable for scheduling. Independent location fields were still considered."
                 }
-                guard try previewInputRevision(at: canonical, relativePath: path) == inputRevision else {
+                guard try previewInputRevision(at: canonical, relativePath: path, includeVoiceMemo: needsMemo) == inputRevision else {
                     throw AppError.invalidConfiguration("The image or its sidecar changed during preview. Refresh the preview to use the updated file.")
                 }
             } catch is CancellationError { throw CancellationError() }
@@ -419,7 +421,7 @@ enum MetadataPreviewService {
         return .init(items: items.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending })
     }
 
-    private static func previewInputRevision(at fileURL: URL, relativePath: String) throws -> String {
+    private static func previewInputRevision(at fileURL: URL, relativePath: String, includeVoiceMemo: Bool = false) throws -> String {
         var artifacts = [MetadataProcessingFingerprint.OutputArtifact(
             role: "primary", relativePath: relativePath, fileURL: fileURL
         )]
@@ -428,6 +430,13 @@ enum MetadataPreviewService {
             if FileManager.default.fileExists(atPath: sidecar.path) {
                 artifacts.append(.init(role: "sidecar",
                     relativePath: MetadataWriter.sidecarRelativePath(for: relativePath), fileURL: sidecar))
+            }
+        }
+        if includeVoiceMemo, let memo = try VoiceMemoCompanion.localURL(for: fileURL) {
+            let values = try memo.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey, .isRegularFileKey])
+            if values.isRegularFile == true, values.isSymbolicLink != true,
+               let size = values.fileSize, size > 0, size <= VoiceMemoCompanion.maximumBytes {
+                artifacts.append(.init(role: "voice-memo", relativePath: memo.lastPathComponent, fileURL: memo))
             }
         }
         return try MetadataProcessingFingerprint.outputRevision(artifacts)

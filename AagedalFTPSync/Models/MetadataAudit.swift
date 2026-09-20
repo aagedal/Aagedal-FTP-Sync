@@ -153,10 +153,12 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
     let coordinateDecision: CoordinateDecision?
     let geocodingDecision: GeocodingDecision?
     let placeFields: [String: FieldOutcome]?
+    let voiceMemoNote: String?
 
     /// Literal processing has no frozen template context and keeps its old audit shape.
     init?(result: MetadataProcessingResult) {
         guard let context = result.context else { return nil }
+        voiceMemoNote = result.voiceMemoNote
         processingDate = context.processingDate
         processingTimeZoneIdentifier = context.processingTimeZone.identifier
         if let capture = context.captureDate {

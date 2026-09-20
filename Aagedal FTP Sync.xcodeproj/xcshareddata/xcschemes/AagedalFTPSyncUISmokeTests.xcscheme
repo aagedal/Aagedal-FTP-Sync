@@ -4,7 +4,8 @@
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
-      buildImplicitDependencies = "YES">
+      buildImplicitDependencies = "YES"
+      runPostActionsOnFailure = "NO">
       <PreActions>
          <ExecutionAction
             ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
@@ -14,7 +15,7 @@
                <EnvironmentBuildable>
                   <BuildableReference
                      BuildableIdentifier = "primary"
-                     BlueprintIdentifier = "1C493DABAD34DF55272221B5"
+                     BlueprintIdentifier = "4FE974EC87357819456A941D"
                      BuildableName = "Aagedal FTP Sync.app"
                      BlueprintName = "Aagedal FTP Sync"
                      ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
@@ -32,7 +33,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "1C493DABAD34DF55272221B5"
+               BlueprintIdentifier = "4FE974EC87357819456A941D"
                BuildableName = "Aagedal FTP Sync.app"
                BlueprintName = "Aagedal FTP Sync"
                ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
@@ -58,11 +59,12 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES">
+      shouldUseLaunchSchemeArgsEnv = "YES"
+      onlyGenerateCoverageForSpecifiedTargets = "NO">
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1C493DABAD34DF55272221B5"
+            BlueprintIdentifier = "4FE974EC87357819456A941D"
             BuildableName = "Aagedal FTP Sync.app"
             BlueprintName = "Aagedal FTP Sync"
             ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
@@ -70,7 +72,8 @@
       </MacroExpansion>
       <Testables>
          <TestableReference
-            skipped = "NO">
+            skipped = "NO"
+            parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "BFF1E9759FD31558E5CD83CF"
@@ -80,6 +83,8 @@
             </BuildableReference>
          </TestableReference>
       </Testables>
+      <CommandLineArguments>
+      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -95,7 +100,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1C493DABAD34DF55272221B5"
+            BlueprintIdentifier = "4FE974EC87357819456A941D"
             BuildableName = "Aagedal FTP Sync.app"
             BlueprintName = "Aagedal FTP Sync"
             ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
@@ -112,7 +117,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1C493DABAD34DF55272221B5"
+            BlueprintIdentifier = "4FE974EC87357819456A941D"
             BuildableName = "Aagedal FTP Sync.app"
             BlueprintName = "Aagedal FTP Sync"
             ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">

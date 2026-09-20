@@ -40,6 +40,8 @@ public struct MetadataTemplateContext: Equatable, Sendable {
     public let city: String?
     public let country: String?
     public let persons: [String]?
+    public let voiceMemoTranscript: String?
+    public let existingDescription: String?
 
     public init(
         processingDate: Date,
@@ -48,7 +50,9 @@ public struct MetadataTemplateContext: Equatable, Sendable {
         photographer: String? = nil,
         city: String? = nil,
         country: String? = nil,
-        persons: [String]? = nil
+        persons: [String]? = nil,
+        voiceMemoTranscript: String? = nil,
+        existingDescription: String? = nil
     ) {
         self.processingDate = processingDate
         // Snapshot even if a caller accidentally supplies .autoupdatingCurrent.
@@ -58,5 +62,7 @@ public struct MetadataTemplateContext: Equatable, Sendable {
         self.city = city
         self.country = country
         self.persons = persons
+        self.voiceMemoTranscript = voiceMemoTranscript
+        self.existingDescription = existingDescription
     }
 }

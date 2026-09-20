@@ -5,11 +5,16 @@ import Foundation
 /// separate services so fixture outcomes cannot enter the application's cache.
 struct MetadataProcessingServices: Sendable {
     static let shared = MetadataProcessingServices()
+    let transcribeVoiceMemo: @Sendable (URL) async throws -> VoiceMemoTranscript
     let offlineGeocoding: MetadataGeocodingService
     private let appleGeocoding: MetadataGeocodingService?
 
-    init(offlineGeocoding: MetadataGeocodingService = OfflineMetadataGeocodingProvider.makeService(),
+    init(transcribeVoiceMemo: @escaping @Sendable (URL) async throws -> VoiceMemoTranscript = {
+             try await VoiceMemoTranscriptionService.shared.transcribe($0)
+         },
+         offlineGeocoding: MetadataGeocodingService = OfflineMetadataGeocodingProvider.makeService(),
          appleGeocoding: MetadataGeocodingService? = AppleMetadataGeocodingProvider.makeService(allowSendingCoordinatesToApple: true)) {
+        self.transcribeVoiceMemo = transcribeVoiceMemo
         self.offlineGeocoding = offlineGeocoding
         // Both factories are inert. Constructing the shared queue is not consent:
         // every operation must pass the persisted selection check below before use.

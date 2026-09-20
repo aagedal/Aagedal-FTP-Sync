@@ -190,3 +190,13 @@ func invalidDatesAreUnavailable(value: Double) throws {
     let template = try MetadataTemplate.parse("{{gps:city}} {date:YYYY-MM-DD}{date:yyyy-MM-dd}{photographer}")
     #expect(template.requiredVariables == [.processingDate, .photographer])
 }
+
+@Test func voiceMemoAndOriginalDescriptionAreSinglePassAndEmptyOriginalIsValid() throws {
+    let template = try MetadataTemplate.parse("{existingDescription} / {voiceMemoTranscript}")
+    let values = MetadataTemplateContext(processingDate: Date(), processingTimeZone: utc,
+        voiceMemoTranscript: "Ærlig {photographer}", existingDescription: "")
+    #expect(template.requiredVariables == [.existingDescription, .voiceMemoTranscript])
+    #expect(template.resolve(using: values) == .resolved(" / Ærlig {photographer}"))
+    let missing = MetadataTemplateContext(processingDate: Date(), processingTimeZone: utc, existingDescription: "Keep me")
+    #expect(template.resolve(using: missing) == .preserveExisting(.missingValues([.voiceMemoTranscript])))
+}

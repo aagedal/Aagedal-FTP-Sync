@@ -668,14 +668,14 @@ struct SyncEngine: Sendable {
                     try await sourceSignatureRepository.reconcile(
                         jobID: job.id,
                         sourceEndpoint: job.left,
-                        sourceRelativePaths: leftFiles.keys,
+                        sourceRelativePaths: Array(leftFiles.keys) + (Self.usesVoiceMemos(job.metadataAutomation) ? VoiceMemoCompanion.receipts(in: leftFiles).map(\.relativePath) : []),
                         destinationRelativePaths: rightFiles.keys
                     )
                 case .rightToLeft:
                     try await sourceSignatureRepository.reconcile(
                         jobID: job.id,
                         sourceEndpoint: job.right,
-                        sourceRelativePaths: rightFiles.keys,
+                        sourceRelativePaths: Array(rightFiles.keys) + (Self.usesVoiceMemos(job.metadataAutomation) ? VoiceMemoCompanion.receipts(in: rightFiles).map(\.relativePath) : []),
                         destinationRelativePaths: leftFiles.keys
                     )
                 case .bidirectional:
@@ -971,6 +971,10 @@ struct SyncEngine: Sendable {
         let runID = UUID()
 
         do {
+        var memoSource: (session: any EndpointSession, files: [String: SyncFile])?
+        defer {
+            if let session = memoSource?.session { Task { await session.close() } }
+        }
         for file in files {
             try Task.checkCancellation()
             let processingDate = now()
@@ -1098,12 +1102,34 @@ struct SyncEngine: Sendable {
             guard assignment.map({ scope.includes($0) }) ?? (scope == .all) else { continue }
 
             let processing: MetadataProcessingResult
+            let temporaryMemoURL = temporaryURL.deletingPathExtension().appendingPathExtension("wav")
+            defer { try? FileManager.default.removeItem(at: temporaryMemoURL) }
             do {
+                var memoURL: URL?
+                var memoIssue: String?
+                if try Self.needsVoiceMemo(assignment, at: temporaryURL, path: file.relativePath) {
+                    do {
+                        memoURL = try await stageVoiceMemo(for: file.relativePath, files: destinationFiles,
+                                                          from: destination, to: temporaryMemoURL)
+                        if memoURL == nil {
+                            if memoSource == nil {
+                                memoSource = try await voiceMemoSource(job: job, destination: destination,
+                                    leftPassword: leftPassword, rightPassword: rightPassword)
+                            }
+                            if let memoSource {
+                                memoURL = try await stageVoiceMemo(for: file.relativePath, files: memoSource.files,
+                                    from: memoSource.session, to: temporaryMemoURL)
+                            }
+                        }
+                    } catch is CancellationError { throw CancellationError() }
+                    catch { memoIssue = error.localizedDescription }
+                }
                 processing = try await MetadataProcessingCoordinator.prepare(
                     assignment: assignment, geocoding: job.metadataGeocoding,
                     service: geocodingService, services: metadataServices,
                     faceRecognition: job.metadataFaceRecognition,
                     faceRecognitionContext: faceRecognitionContext,
+                    voiceMemoURL: memoURL, voiceMemoIssue: memoIssue,
                     fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate,
                     processingTimeZone: try job.metadataOperationTimeZone ?? TimeZone(secondsFromGMT: 0)!)
@@ -1684,7 +1710,8 @@ struct SyncEngine: Sendable {
     }
 
     private func supportsEarlyDelivery(job: SyncJob, source: any EndpointSession) -> Bool {
-        guard !job.movesProcessedFiles, source.supportsCompletedDirectoryListings else { return false }
+        guard !job.movesProcessedFiles, !Self.usesVoiceMemos(job.metadataAutomation),
+              source.supportsCompletedDirectoryListings else { return false }
         switch job.direction {
         case .leftToRight:
             return job.left.kind.isRemote && job.right.kind == .local
@@ -1777,6 +1804,7 @@ struct SyncEngine: Sendable {
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? directoryFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
                         : nil,
+                    voiceMemoSourceFiles: directoryFiles,
                     sourceRole: job.direction == .leftToRight ? .left : .right,
                     sourceKind: sourceEndpoint.kind,
                     destinationRole: job.direction == .leftToRight ? .right : .left,
@@ -1839,10 +1867,12 @@ struct SyncEngine: Sendable {
         runID: UUID,
         earlySnapshot: EarlyTransferSnapshot = .empty
     ) async throws -> (transferred: Int, processed: Int, metadataReport: MetadataRunReport, pendingSourceFiles: [String]) {
+        let memoIndex = Self.usesVoiceMemos(job.metadataAutomation) ? VoiceMemoCompanion.index(sourceFiles) : [:]
+        let memoReceipts = memoIndex.isEmpty ? [] : VoiceMemoCompanion.receipts(in: sourceFiles)
         let savedSignatures = try await sourceSignatureRepository.signatures(
             jobID: job.id,
             sourceEndpoint: sourceEndpoint,
-            relativePaths: sourceFiles.keys
+            relativePaths: Array(sourceFiles.keys) + memoReceipts.map(\.relativePath)
         )
         let effectiveDestinationFiles = destinationFiles.merging(earlySnapshot.destinationFiles) {
             _, earlyFile in earlyFile
@@ -1898,6 +1928,12 @@ struct SyncEngine: Sendable {
                 } else {
                     destinationNeedsTransfer = needsTransfer(sourceSidecar, destinationSidecar, verifySize: job.verifyFileSizes)
                 }
+            }
+            if !destinationNeedsTransfer, Self.usesVoiceMemos(job.metadataAutomation),
+               job.metadataAutomation?.matchesPhotographer(relativePath: file.relativePath) == true,
+               let memo = try? VoiceMemoCompanion.file(for: file, index: memoIndex) {
+                let receipt = VoiceMemoCompanion.receipt(image: file, memo: memo)
+                destinationNeedsTransfer = !(savedSignatures[receipt.relativePath]?.matches(receipt, timestampTolerance: 0) ?? false)
             }
             if !destinationNeedsTransfer,
                job.verifiesMatchingFileContents,
@@ -2048,6 +2084,7 @@ struct SyncEngine: Sendable {
                     sourceSidecar: MetadataWriter.usesXMPSidecar(for: file.relativePath)
                         ? sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)]
                         : nil,
+                    voiceMemoSourceFiles: sourceFiles,
                     sourceRole: job.direction == .leftToRight ? .left : .right,
                     sourceKind: sourceEndpoint.kind,
                     destinationRole: job.direction == .leftToRight ? .right : .left,
@@ -2128,6 +2165,11 @@ struct SyncEngine: Sendable {
                MetadataWriter.usesXMPSidecar(for: file.relativePath),
                let sidecar = sourceFiles[MetadataWriter.sidecarRelativePath(for: file.relativePath)] {
                 pendingSourceSignatures.append(sidecar)
+            }
+            if outcome.auditEntry?.status != .failed,
+               outcome.auditEntry?.processingEvidence?.resolutionComplete != false,
+               let memo = try? VoiceMemoCompanion.file(for: file, index: memoIndex) {
+                pendingSourceSignatures.append(VoiceMemoCompanion.receipt(image: file, memo: memo))
             }
             if let deferredFailureDescription {
                 do {
@@ -2438,6 +2480,7 @@ struct SyncEngine: Sendable {
             dependencies["geocoder-dataset"] = identity.dataset
         }
         dependencies.merge(processing.recognitionDependencyRevisions) { _, newest in newest }
+        dependencies.merge(processing.voiceMemoDependencyRevisions) { _, newest in newest }
         var outputs = [MetadataProcessingFingerprint.OutputArtifact(
             role: "primary",
             relativePath: relativePath,
@@ -2463,6 +2506,52 @@ struct SyncEngine: Sendable {
         )
     }
 
+    private static func usesVoiceMemos(_ automation: MetadataAutomation?) -> Bool {
+        guard let automation, automation.isEnabled else { return false }
+        return automation.clips.contains { clip in
+            (try? clip.fields.validatedDescription.requiredVariables.contains(.voiceMemoTranscript)) == true
+                || (try? clip.fields.validatedHeadline.requiredVariables.contains(.voiceMemoTranscript)) == true
+                || (try? clip.fields.validatedKeywords.requiredVariables.contains(.voiceMemoTranscript)) == true
+        } || automation.photographers.contains {
+            (try? $0.validatedCopyright.requiredVariables.contains(.voiceMemoTranscript)) == true
+        }
+    }
+
+    private static func needsVoiceMemo(_ assignment: MetadataAssignment?, at url: URL, path: String) throws -> Bool {
+        guard let assignment else { return false }
+        let request = try MetadataProcessingRequest(assignment: assignment)
+        guard request.requiredVariables(for: Set(MetadataWritableField.allCases)).contains(.voiceMemoTranscript) else { return false }
+        let writable = try MetadataWriter.writableFields(at: url, relativePath: path, policy: request.existingFieldPolicy)
+        return request.requiredVariables(for: writable).contains(.voiceMemoTranscript)
+    }
+
+    private func voiceMemoSource(job: SyncJob, destination: any EndpointSession,
+                                 leftPassword: String?, rightPassword: String?) async throws
+        -> (session: any EndpointSession, files: [String: SyncFile])? {
+        guard let endpoint = job.sourceEndpoint else { return nil }
+        let naming = try await prepareDownloadNaming(job: job)
+        let rawSource = try sessionFactory(endpoint, job.direction == .leftToRight ? leftPassword : rightPassword, nil)
+        let source: any EndpointSession
+        if let naming {
+            source = downloadNamingSession(source: rawSource, destination: destination, job: job, configuration: naming)
+        } else { source = rawSource }
+        do { return (source, try await source.listFiles()) }
+        catch { await source.close(); throw error }
+    }
+
+    private func stageVoiceMemo(for imagePath: String, files: [String: SyncFile],
+                                from session: any EndpointSession, to destination: URL) async throws -> URL? {
+        let image = files[imagePath] ?? SyncFile(relativePath: imagePath, size: 0, modifiedAt: .distantPast)
+        guard let memo = try VoiceMemoCompanion.file(for: image, in: files) else { return nil }
+        try VoiceMemoCompanion.validateSize(memo.size)
+        try await session.exportFile(memo, to: destination, maximumSize: memo.size)
+        let size = try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        guard size == Int(memo.size) else {
+            throw VoiceMemoError.unavailable("The WAV changed during transfer. Retry after recording has finished.")
+        }
+        return destination
+    }
+
     private func transfer(
         _ file: SyncFile,
         from source: any EndpointSession,
@@ -2480,6 +2569,7 @@ struct SyncEngine: Sendable {
         processingTimeZone: TimeZone? = nil,
         sortProcessedFilesByPhotographer: Bool,
         sourceSidecar: SyncFile?,
+        voiceMemoSourceFiles: [String: SyncFile] = [:],
         sourceRole: SyncLogEndpointRole,
         sourceKind: EndpointKind,
         destinationRole: SyncLogEndpointRole,
@@ -2490,6 +2580,8 @@ struct SyncEngine: Sendable {
     ) async throws -> TransferMetadataOutcome {
         let temporaryURL = try makeTemporaryURL(for: file)
         let temporarySidecarURL = temporaryURL.deletingPathExtension().appendingPathExtension("xmp")
+        let temporaryMemoURL = temporaryURL.deletingPathExtension().appendingPathExtension("wav")
+        defer { try? FileManager.default.removeItem(at: temporaryMemoURL) }
         var metadataTemporaryURL: URL?
         var metadataTemporarySidecarURL: URL?
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
@@ -2586,11 +2678,21 @@ struct SyncEngine: Sendable {
             var processingResult: MetadataProcessingResult?
             do {
                 let effectiveProcessingTimeZone = processingTimeZone ?? TimeZone(secondsFromGMT: 0)!
+                var memoURL: URL?
+                var memoIssue: String?
+                if try Self.needsVoiceMemo(metadataAssignment, at: temporaryURL, path: file.relativePath) {
+                    do {
+                        memoURL = try await stageVoiceMemo(for: file.relativePath, files: voiceMemoSourceFiles,
+                                                          from: source, to: temporaryMemoURL)
+                    } catch is CancellationError { throw CancellationError() }
+                    catch { memoIssue = error.localizedDescription }
+                }
                 let processing = try await MetadataProcessingCoordinator.prepare(
                     assignment: metadataAssignment, geocoding: metadataGeocoding,
                     service: geocodingService, services: metadataServices,
                     faceRecognition: metadataFaceRecognition,
                     faceRecognitionContext: faceRecognitionContext,
+                    voiceMemoURL: memoURL, voiceMemoIssue: memoIssue,
                     fileURL: temporaryURL, relativePath: file.relativePath,
                     processingDate: processingDate, processingTimeZone: effectiveProcessingTimeZone)
                 processingResult = processing

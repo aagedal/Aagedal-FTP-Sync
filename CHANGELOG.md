@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — Voice memos
+
+- Add downloadable Norwegian and multilingual Whisper models in Settings → Voice Memos.
+- Resolve `{voiceMemoTranscript}` from a matching WAV, using only its first 30 seconds.
+- Add `{existingDescription}` with repeat-safe caption composition and the existing 2,000-byte caption limit.
+- Retry images when their voice memo arrives later; report incomplete transcription in metadata details.
+
 ## Unreleased (3.0.0)
 
 - Reopen committed libraries with valid SQLite write-ahead logs after interrupted

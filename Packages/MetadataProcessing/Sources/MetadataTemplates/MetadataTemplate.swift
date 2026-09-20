@@ -1,7 +1,7 @@
 import Foundation
 
 public enum MetadataTemplateVariable: String, CaseIterable, Hashable, Sendable {
-    case processingDate, captureDate, photographer, city, country, persons
+    case processingDate, captureDate, photographer, city, country, persons, voiceMemoTranscript, existingDescription
 }
 
 public enum MetadataTemplateParseError: Error, Equatable, Sendable {
@@ -98,6 +98,8 @@ public struct MetadataTemplate: Equatable, Sendable {
         case "gps:city": return .city
         case "gps:country": return .country
         case "persons": return .persons
+        case "voiceMemoTranscript": return .voiceMemoTranscript
+        case "existingDescription": return .existingDescription
         case "date:YYYY-MM-DD", "date:yyyy-MM-dd": return .processingDate
         case "dateCaptured:YYYY-MM-DD", "dateCaptured:yyyy-MM-dd": return .captureDate
         default:
@@ -130,6 +132,8 @@ public struct MetadataTemplate: Equatable, Sendable {
             case .photographer: value = context.photographer
             case .city: value = context.city
             case .country: value = context.country
+            case .voiceMemoTranscript: value = context.voiceMemoTranscript
+            case .existingDescription: value = context.existingDescription
             case .persons:
                 // Bound before joining; the context is external data, not template syntax.
                 let names = context.persons ?? []
@@ -147,7 +151,7 @@ public struct MetadataTemplate: Equatable, Sendable {
                 }
                 value = nonempty.isEmpty ? nil : nonempty.joined(separator: ", ")
             }
-            if let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let value, variable == .existingDescription || !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 guard value.utf8.count <= Self.maximumOutputUTF8Bytes else {
                     return .preserveExisting(.outputLimitExceeded(maxUTF8Bytes: Self.maximumOutputUTF8Bytes))
                 }

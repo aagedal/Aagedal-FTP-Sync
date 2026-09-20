@@ -24,7 +24,7 @@ $v3id = uuid(301);
 $v3doc = $doc;
 $v3doc['photographers'][0]['copyrightNotice'] = 'TEMPLATE_PRIVATE_SOURCE © {date:YYYY-MM-DD} {photographer}';
 $v3doc['photographers'][0]['copyrightTemplateVersion'] = 1;
-$v3doc['clips'][0]['fields']['description'] = 'TEMPLATE_PRIVATE_SOURCE {gps:city} {{literal}}';
+$v3doc['clips'][0]['fields']['description'] = 'TEMPLATE_PRIVATE_SOURCE {gps:city} {{literal}} {existingDescription} {voiceMemoTranscript}';
 $v3doc['clips'][0]['fields']['keywords'] = ['one,two', ' {persons} '];
 $v3doc['clips'][0]['fields']['templateVersions'] = ['description' => 1, 'keywords' => 1];
 $make3 = ['action' => 'createCalendar', 'calendarID' => $v3id, 'name' => 'Private v3 calendar',

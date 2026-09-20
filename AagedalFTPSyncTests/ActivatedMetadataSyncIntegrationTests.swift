@@ -52,6 +52,56 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
             now: { Date(timeIntervalSince1970: 1_704_153_600) })
     }
 
+    func testVoiceMemoArrivingLaterIsAppliedOnceAndCanBeReprocessed() async throws {
+        let f = try fixture()
+        var job = f.job
+        job.metadataAutomation?.existingFieldPolicy = .overwrite
+        job.metadataAutomation?.clips[0].fields.setDescription(try .activated("{existingDescription}\n{voiceMemoTranscript}"))
+        try write(jpeg(), name: "FX_MEMO.jpg", root: f.source)
+        let source = f.source.appendingPathComponent("FX_MEMO.jpg")
+        try MetadataWriter.apply(ResolvedMetadataChanges(description: "Original", existingFieldPolicy: .overwrite), to: source)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: source.path)
+        let service = MetadataProcessingServices(transcribeVoiceMemo: { url in
+            XCTAssertEqual(try Data(contentsOf: url), Data("memo".utf8))
+            return VoiceMemoTranscript(text: "Norsk notat", limitedToThirtySeconds: true, revision: "test-memo")
+        })
+        let engine = SyncEngine(metadataServices: service,
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")))
+        _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        let target = f.destination.appendingPathComponent("FX_MEMO.jpg")
+        XCTAssertEqual(try ImageMetadata.read(from: target).iptc.caption, "Original")
+        try write(Data("memo".utf8), name: "FX_MEMO.WAV", root: f.source)
+        let applied = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(applied.transferred, 1)
+        XCTAssertEqual(try ImageMetadata.read(from: target).iptc.caption, "Original\nNorsk notat")
+        XCTAssertTrue(applied.metadataReport.entries.first?.processingEvidence?.voiceMemoNote?.contains("first 30 seconds") == true)
+        let repeated = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(repeated.transferred, 0)
+        let reprocessed = try await engine.reprocessExistingLocalFiles(job: job)
+        XCTAssertEqual(reprocessed.failed, 0)
+        XCTAssertEqual(try ImageMetadata.read(from: target).iptc.caption, "Original\nNorsk notat")
+    }
+
+    func testVoiceMemoWithPreservedCaptionDoesNotRetransferForever() async throws {
+        let f = try fixture()
+        var job = f.job
+        job.metadataAutomation?.clips[0].fields.setDescription(try .activated("{voiceMemoTranscript}"))
+        try write(jpeg(), name: "FX_KEEP.jpg", root: f.source)
+        let source = f.source.appendingPathComponent("FX_KEEP.jpg")
+        try MetadataWriter.apply(ResolvedMetadataChanges(description: "Keep", existingFieldPolicy: .overwrite), to: source)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: source.path)
+        try write(Data("memo".utf8), name: "FX_KEEP.wav", root: f.source)
+        let engine = SyncEngine(metadataServices: .init(transcribeVoiceMemo: { _ in
+                XCTFail("Fill-empty must not transcribe an existing caption"); throw CancellationError()
+            }), sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
+            downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")))
+        _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        let repeatRun = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+        XCTAssertEqual(repeatRun.transferred, 0)
+        XCTAssertEqual(try ImageMetadata.read(from: f.destination.appendingPathComponent("FX_KEEP.jpg")).iptc.caption, "Keep")
+    }
+
     /// Measures the complete local path with real JPEG/XMP writes and deterministic
     /// place resolution. This does not measure a production provider or face model.
     func testLargeFolderEnrichedReprocessingBenchmark() async throws {

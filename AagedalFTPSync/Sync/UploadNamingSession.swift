@@ -21,8 +21,14 @@ actor UploadNamingSession: EndpointSession {
         // Keep companions even when XMP is not selected by the extension filter.
         let selected = files.values.filter { filter.includes(path: $0.relativePath, modifiedAt: $0.modifiedAt) }
         let selectedPaths = Set(selected.map(\.relativePath))
-        let companions = Set(selected.filter { MetadataWriter.usesXMPSidecar(for: $0.relativePath) }
+        var companions = Set(selected.filter { MetadataWriter.usesXMPSidecar(for: $0.relativePath) }
             .map { MetadataWriter.sidecarRelativePath(for: $0.relativePath) })
+        // Keep matching audio available to metadata preparation even for photo-only filters.
+        let selectedStems = Set(selected.map { ($0.relativePath as NSString).deletingPathExtension })
+        for file in files.values where (file.relativePath as NSString).pathExtension.lowercased() == "wav"
+            && selectedStems.contains((file.relativePath as NSString).deletingPathExtension) {
+            companions.insert(file.relativePath)
+        }
         for file in files.values where selectedPaths.contains(file.relativePath) || companions.contains(file.relativePath) {
             let path = try naming.relativePath(for: file.relativePath)
             guard mappedOriginals.updateValue(file, forKey: path) == nil else {

@@ -174,6 +174,11 @@ test target until the corresponding fixes are implemented.
 
 ## Deployment follow-up
 
+Update (2026-09-20): **Mac-to-Mac sync confirmed passing by the user**; the
+general manual Mac-to-Mac sync acceptance item is complete. Reconnect/restart and
+backup-recovery coverage were not separately reported, so the specific checks
+below remain follow-up items where not already exercised.
+
 Obtain the current HTTPS base address and observed failure, then verify public
 discovery/TLS and compare deployed PHP files and database migrations. Use a
 dedicated disposable calendar and explicitly available test identities for any

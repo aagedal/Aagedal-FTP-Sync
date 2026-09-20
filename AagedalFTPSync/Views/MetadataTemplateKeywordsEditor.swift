@@ -178,6 +178,8 @@ private struct MetadataTemplateKeywordsSheet: View {
                         case .city: return "city"
                         case .country: return "country"
                         case .persons: return "people shown"
+                        case .voiceMemoTranscript: return "voice memo transcript"
+                        case .existingDescription: return "existing description"
                         }
                     }.sorted().joined(separator: ", ")
                     sample = "Existing keyword list would be preserved. Missing sample values: " + names
