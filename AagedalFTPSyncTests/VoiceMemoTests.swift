@@ -2,6 +2,7 @@ import AppKit
 import AVFAudio
 import CryptoKit
 import MetadataTemplates
+import Network
 import SwiftMediaMetadata
 import XCTest
 @testable import AagedalFTPSync
@@ -144,6 +145,88 @@ final class VoiceMemoTests: XCTestCase {
                                          to: image, relativePath: image.lastPathComponent)
             XCTAssertEqual(try MetadataWriter.descriptionForTemplate(at: image, relativePath: image.lastPathComponent), "Edited caption")
         }
+    }
+
+    func testDownloadProgressSamplesRateAndShowsWaitingInsteadOfStaleSpeed() {
+        var sampler = WhisperDownloadProgressSampler(expectedBytes: 1_000, now: 0)
+        XCTAssertNil(sampler.sample(bytes: 50, now: 0.1))
+        let first = sampler.sample(bytes: 200, now: 0.5)!
+        XCTAssertEqual(first.bytesPerSecond, 400)
+        let second = sampler.sample(bytes: 500, now: 1)!
+        XCTAssertEqual(second.bytesPerSecond, 600)
+        XCTAssertEqual(second.fraction, 0.5)
+        XCTAssertEqual(second.speed(at: second.updatedAt.addingTimeInterval(4)), 0)
+        XCTAssertTrue(second.isWaiting(at: second.updatedAt.addingTimeInterval(11)))
+        let verifying = WhisperDownloadProgress(receivedBytes: 1_000, expectedBytes: 1_000, phase: .verifying)
+        XCTAssertFalse(verifying.isWaiting(at: verifying.updatedAt.addingTimeInterval(60)))
+    }
+
+    @MainActor
+    func testRealDownloadReportsBytesAndVerificationBeforeInstalling() async throws {
+        let payload = Data(repeating: 42, count: 262_144)
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = expectation(description: "Model fixture listening")
+        let queue = DispatchQueue(label: "whisper-download-fixture")
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { _, _, _, _ in
+                let headers = Data("HTTP/1.1 200 OK\r\nContent-Length: \(payload.count)\r\nConnection: close\r\n\r\n".utf8)
+                connection.send(content: headers + payload, completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        listener.start(queue: queue)
+        defer { listener.cancel() }
+        await fulfillment(of: [ready], timeout: 3)
+        let port = try XCTUnwrap(listener.port)
+        let model = WhisperModel(id: "fixture", name: "Fixture", bytes: Int64(payload.count),
+            sha256: SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined(),
+            source: "http://127.0.0.1:\(port.rawValue)/model")
+        let bytes = expectation(description: "Download delegate reports bytes")
+        bytes.assertForOverFulfill = false
+        let verifying = expectation(description: "Verification phase")
+        let installed = expectation(description: "Installed phase")
+        let store = WhisperModelStore(directory: try folder())
+        try await store.download(model) { progress in
+            if progress.phase == .downloading && progress.receivedBytes > 0 { bytes.fulfill() }
+            if progress.phase == .verifying { verifying.fulfill() }
+            if progress.phase == .complete { installed.fulfill() }
+        }
+        await fulfillment(of: [bytes, verifying, installed], timeout: 3, enforceOrder: true)
+        let path = try await store.verifiedURL(for: model)
+        XCTAssertEqual(try Data(contentsOf: path), payload)
+    }
+
+    @MainActor
+    func testCancellingAStalledModelDownloadDoesNotInstallAPartialFile() async throws {
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = expectation(description: "Listening")
+        let requested = expectation(description: "Download requested")
+        let queue = DispatchQueue(label: "whisper-cancel-fixture")
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { _, _, _, _ in
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n".utf8), completion: .contentProcessed { _ in
+                    requested.fulfill()
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, _, _ in connection.cancel() }
+                })
+            }
+        }
+        listener.start(queue: queue)
+        defer { listener.cancel() }
+        await fulfillment(of: [ready], timeout: 3)
+        let port = try XCTUnwrap(listener.port)
+        let model = WhisperModel(id: "cancelled", name: "Cancelled", bytes: 1000,
+            sha256: String(repeating: "0", count: 64), source: "http://127.0.0.1:\(port.rawValue)/model")
+        let store = WhisperModelStore(directory: try folder())
+        let task = Task { try await store.download(model) { _ in } }
+        await fulfillment(of: [requested], timeout: 3)
+        task.cancel()
+        do { try await task.value; XCTFail("Expected cancellation") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let path = await store.path(for: model)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path.path))
     }
 
     func testModelVerificationRejectsCorruptionWithSameSize() throws {

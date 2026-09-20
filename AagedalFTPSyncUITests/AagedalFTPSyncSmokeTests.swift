@@ -570,13 +570,15 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(delete.frame.width, 36)
         XCTAssertGreaterThanOrEqual(delete.frame.height, 36)
 
+        app.buttons["Photographers"].click()
+        app.buttons["FTP Servers"].click()
         let screenshot = XCTAttachment(screenshot: app.screenshot())
-        screenshot.name = "Servers settings before deletion"
+        screenshot.name = "Servers settings after switching from Photographers"
         screenshot.lifetime = .keepAlways
         add(screenshot)
 
         delete.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.8)).click()
-        let confirm = app.windows["Servers"].sheets.firstMatch.buttons["Delete Disposable UI Server"]
+        let confirm = app.sheets.firstMatch.buttons["Delete Disposable UI Server"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.click()
         XCTAssertFalse(app.staticTexts["Disposable UI Server"].waitForExistence(timeout: 2))

@@ -5,7 +5,7 @@ struct VoiceMemoSettingsView: View {
     @AppStorage(VoiceMemoSettings.languageKey) private var language = "no"
     @State private var installed: Set<String> = []
     @State private var downloading: String?
-    @State private var progress = 0.0
+    @State private var progress: WhisperDownloadProgress?
     @State private var downloadTask: Task<Void, Never>?
     @State private var error: String?
 
@@ -29,29 +29,33 @@ struct VoiceMemoSettingsView: View {
                 Text("Norwegian Small is selected initially. Download a model to enable transcription. Larger models need more memory and processing time; the estimates below are approximate.")
                     .font(.caption).foregroundStyle(.secondary)
                 ForEach(WhisperModel.catalogue) { model in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(model.name)
-                            Text("\(model.sizeLabel) download · \(model.memoryLabel)")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if downloading == model.id {
-                            ProgressView(value: progress).frame(width: 80)
-                            Button("Cancel") { downloadTask?.cancel() }
-                        } else {
-                            if installed.contains(model.id) {
-                                Button(selectedModel == model.id ? "Selected" : "Use") { selectedModel = model.id }
-                                    .disabled(selectedModel == model.id)
-                                Button("Delete", role: .destructive) {
-                                    Task {
-                                        do { try await WhisperModelStore.shared.delete(model); await refresh() }
-                                        catch { self.error = error.localizedDescription }
-                                    }
-                                }
-                            } else {
-                                Button("Download") { download(model) }.disabled(downloading != nil)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(model.name)
+                                Text("\(model.sizeLabel) download · \(model.memoryLabel)")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
+                            Spacer()
+                            if downloading == model.id {
+                                Button("Cancel") { downloadTask?.cancel() }
+                            } else {
+                                if installed.contains(model.id) {
+                                    Button(selectedModel == model.id ? "Selected" : "Use") { selectedModel = model.id }
+                                        .disabled(selectedModel == model.id)
+                                    Button("Delete", role: .destructive) {
+                                        Task {
+                                            do { try await WhisperModelStore.shared.delete(model); await refresh() }
+                                            catch { self.error = error.localizedDescription }
+                                        }
+                                    }
+                                } else {
+                                    Button("Download") { download(model) }.disabled(downloading != nil)
+                                }
+                            }
+                        }
+                        if downloading == model.id, let progress {
+                            downloadProgress(progress)
                         }
                     }
                     .accessibilityElement(children: .contain)
@@ -70,11 +74,43 @@ struct VoiceMemoSettingsView: View {
         .onDisappear { downloadTask?.cancel() }
     }
 
+    private func downloadProgress(_ progress: WhisperDownloadProgress) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 6) {
+                ProgressView(value: progress.fraction)
+                    .frame(maxWidth: .infinity)
+                HStack {
+                    Text("\(ByteCountFormatter.string(fromByteCount: progress.receivedBytes, countStyle: .file)) of \(ByteCountFormatter.string(fromByteCount: progress.expectedBytes, countStyle: .file))")
+                    Spacer()
+                    Text(progress.fraction, format: .percent.precision(.fractionLength(1)))
+                    Text("·")
+                    Text("\(ByteCountFormatter.string(fromByteCount: Int64(progress.speed(at: context.date)), countStyle: .file))/s")
+                }
+                .monospacedDigit()
+                Text(downloadStatus(progress, at: context.date))
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("whisper-download-progress")
+        }
+    }
+
+    private func downloadStatus(_ progress: WhisperDownloadProgress, at date: Date) -> String {
+        if progress.isWaiting(at: date) { return "Waiting for download data… You can cancel and retry if this continues." }
+        switch progress.phase {
+        case .connecting: return "Connecting to model server…"
+        case .downloading: return "Downloading…"
+        case .verifying: return "Verifying downloaded model…"
+        case .installing: return "Installing model…"
+        case .complete: return "Download complete."
+        }
+    }
+
     private func refresh() async { installed = await WhisperModelStore.shared.installedIDs() }
 
     private func download(_ model: WhisperModel) {
         downloading = model.id
-        progress = 0
+        progress = .init(receivedBytes: 0, expectedBytes: model.bytes, phase: .connecting)
         error = nil
         downloadTask = Task {
             defer { downloading = nil; downloadTask = nil }
