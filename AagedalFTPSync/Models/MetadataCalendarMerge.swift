@@ -30,9 +30,12 @@ struct MetadataCalendarConflictReview: Identifiable {
     let remote: SharedMetadataCalendar
 
     func plan(choices: [String: MetadataConflictChoice] = [:]) throws -> MetadataCalendarMergePlan {
-        try LegacyMetadataCalendarGate.validate(binding.snapshot.document)
-        try LegacyMetadataCalendarGate.validate(local)
-        try LegacyMetadataCalendarGate.validate(remote.document)
+        guard remote.compatibility == binding.snapshot.compatibility else {
+            throw MetadataSyncServerError.unsupportedProtocol
+        }
+        try MetadataCalendarNamespaceGate.validate(binding)
+        try MetadataCalendarNamespaceGate.validate(remote)
+        try MetadataCalendarNamespaceGate.validate(local.automation, for: binding.snapshot.compatibility.protocolVersion)
         return try MetadataCalendarMerge.plan(base: binding.snapshot.document, local: local, remote: remote.document,
                                       choices: choices, readOnly: remote.role == "reader")
     }

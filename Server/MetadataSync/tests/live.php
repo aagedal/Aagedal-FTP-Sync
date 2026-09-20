@@ -102,8 +102,8 @@ echo "All live sync integration checks passed.\n";
 $installation = sys_get_temp_dir() . '/metadata-install-' . bin2hex(random_bytes(8));
 mkdir($installation . '/public', 0700, true);
 copy('/srv/public/index.php', $installation . '/public/index.php');
-function installationProbe(string $installation): array {
-    $script = '$_SERVER["REQUEST_METHOD"] = "POST"; $_SERVER["HTTP_X_AAGEDAL_PROTOCOL"] = "2"; require '
+function installationProbe(string $installation, int $protocol = 2): array {
+    $script = '$_SERVER["REQUEST_METHOD"] = "POST"; $_SERVER["HTTP_X_AAGEDAL_PROTOCOL"] = "' . $protocol . '"; require '
         . var_export($installation . '/public/index.php', true) . ';';
     $output = []; $status = 0;
     exec(escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($script), $output, $status);
@@ -113,10 +113,17 @@ function installationProbe(string $installation): array {
 try {
     $missingConfig = installationProbe($installation);
     verify($missingConfig['protocolVersion'] === 2 && $missingConfig['error'] === 'not_configured', 'Missing private config uses requested calendar protocol');
+    verify(installationProbe($installation, 3)['error'] === 'not_configured', 'V3 missing config remains an installation error');
     copy('/srv/tests/config.php', $installation . '/config.php');
     $missingAPI = installationProbe($installation);
     verify($missingAPI['protocolVersion'] === 2 && $missingAPI['error'] === 'live_api_missing', 'Missing live.php returns specific installation error');
+    copy('/srv/public/live.php', $installation . '/public/live.php');
+    foreach ([2, 3] as $protocol) {
+        $missingTemplate = installationProbe($installation, $protocol);
+        verify($missingTemplate['protocolVersion'] === $protocol && $missingTemplate['error'] === 'template_api_missing', 'Missing templates.php is actionable in each protocol');
+    }
 } finally {
+    @unlink($installation . '/public/live.php');
     @unlink($installation . '/config.php');
     unlink($installation . '/public/index.php');
     rmdir($installation . '/public');

@@ -55,6 +55,9 @@ try {
         if (!is_file(__DIR__ . '/live.php')) {
             respond(503, [], 'live_api_missing');
         }
+        if (!is_file(__DIR__ . '/templates.php')) {
+            respond(503, [], 'template_api_missing');
+        }
         require __DIR__ . '/live.php';
         liveRun($config);
     }

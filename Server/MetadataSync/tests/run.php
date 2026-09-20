@@ -68,3 +68,5 @@ echo "All hosting integration checks passed.\n";
 require __DIR__ . '/live.php';
 
 require __DIR__ . '/templates.php';
+
+require __DIR__ . '/document-limits.php';

@@ -1,0 +1,13 @@
+# Allowlist: private configuration, keys, tests and local backups never enter this image.
+**
+!Dockerfile
+!public/
+!public/index.php
+!public/live.php
+!public/templates.php
+!docker/
+!docker/apache.conf
+!docker/php.ini
+!docker/configure.php
+!docker/healthcheck.php
+!docker/entrypoint.sh

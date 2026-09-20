@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add a Docker server image and Compose deployment with persistent MariaDB, optional
+  HTTPS, private setup credentials, health checks, and backup/restore helpers.
+  Document Docker and manual PHP/SQL installation, upgrades, and recovery.
+
+- Resolve conflicts in template-enabled shared calendars without rejecting active
+  variables, while preserving independent edits and activation markers.
+
+- Explain missing sync configuration and API files for both calendar protocols,
+  and back off on HTTP rate limits and server outages while honoring Retry-After.
+
+- Apply the same calendar document size limit when publishing and updating, and
+  explain how to recover when a calendar exceeds that limit.
+
 - Keep metadata reprocessing review open and up to date as asynchronous preflight
   completes, including recovery errors, file counts and available actions.
 

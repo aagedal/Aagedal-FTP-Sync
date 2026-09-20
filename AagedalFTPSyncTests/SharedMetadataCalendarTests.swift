@@ -93,10 +93,12 @@ private actor CalendarTransportFixture {
     var writes = 0
     var requests: [String] = []
     var offline = false
+    var serviceFailure: MetadataSyncFailure?
     private var suspendedAction: String?
     private var suspendedRequest: CheckedContinuation<Void, Never>?
     init(calendar: SharedMetadataCalendar) { self.calendar = calendar }
     func loseNextResponse() { failAfterCommit = true }
+    func setServiceFailure(_ value: MetadataSyncFailure?) { serviceFailure = value }
     func setOffline(_ value: Bool) { offline = value }
     func suspendNextRequest(_ action: String) { suspendedAction = action }
     var isSuspended: Bool { suspendedRequest != nil }
@@ -108,6 +110,7 @@ private actor CalendarTransportFixture {
             await withCheckedContinuation { suspendedRequest = $0 }
         }
         if offline { throw URLError(.notConnectedToInternet) }
+        if let serviceFailure { throw serviceFailure }
         if body.action == "listCalendars" {
             return MetadataCalendarResponse(service: "aagedal-metadata-sync", protocolVersion: 2, calendars: [])
         }
@@ -419,6 +422,30 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         await sync.refresh(automatic: true)
         requests = await server.requests
         XCTAssertEqual(Array(requests.suffix(2)), ["listCalendars", "getCalendar"], "Success restores normal automatic polling")
+    }
+
+    func testHTTPServiceFailureCoalescesAndHonorsRetryAfterWithManualOverride() async throws {
+        var time = Date(timeIntervalSince1970: 1_800_000_000)
+        let (root, store, sync, server) = try liveFixture(now: { time })
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        await server.setServiceFailure(.init(message: "Unavailable", httpStatus: 503, retryAfter: 90))
+        await sync.refresh(automatic: true)
+        var requests = await server.requests
+        XCTAssertEqual(requests, ["listCalendars"])
+        time = time.addingTimeInterval(89)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 1)
+        time = time.addingTimeInterval(1)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 2)
+        await server.setServiceFailure(nil)
+        await sync.refresh(jobID: store.jobs[0].id)
+        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .current)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(Array(requests.suffix(2)), ["listCalendars", "getCalendar"])
     }
 
     func testHealthyPollingFetchesUpdatesWithoutListingEveryTenSeconds() async throws {

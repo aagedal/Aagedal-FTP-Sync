@@ -1,5 +1,14 @@
 # Metadata calendar sync server
 
+## Choose an installation method
+
+- [Docker setup](DOCKER.md): build the Apache/PHP image, run MariaDB with persistent
+  storage, optionally enable automatic HTTPS, and use backup/restore helpers.
+- [Manual PHP/SQL setup](MANUAL-SETUP.md): step-by-step shared-hosting or custom
+  server installation, first-Mac setup, upgrades, and recovery.
+
+The remaining reference describes shared data, protocol rules, and app workflows.
+
 An optional, provider-independent PHP/MySQL service for Aagedal FTP Sync. Users enter their own HTTPS server address in **Settings → Metadata Sync**. Subdomains and subdirectories are supported; the app calls `index.php` below the selected URL. There is no default sync domain.
 
 The first implementation shares whole calendars or a date range, supports multiple editors and read-only invitations, and polls approximately every ten seconds while the Mac app is running. It needs no daemon, cron job, URL rewriting, Composer installation, WebSocket, or external login provider.
@@ -67,7 +76,7 @@ Independent edits to different clips or different fields of one clip merge autom
 
 The local job is the durable queue for saved edits; a separate persisted baseline supports three-way merging after reconnect/restart. Receiving into a duplicate saves an approved local receipt journal first, then saves the paused original and populated copy together in one jobs-file write. An interrupted link resumes using the same copy identifier, preserving later edits. Storage failures remain visible and a pending link can be retried or cancelled; cancelling a pending link retains any jobs already saved. Successful writes and lost responses are reconciled against server snapshots, so a retry cannot silently overwrite newer edits. Explicit deletion is represented by absence from the complete scoped document with a matching revision; it is not an unversioned omission.
 
-This is polling sync, not instant push. One request carries at most 1 MiB; one calendar supports up to 500 photographers, 2,000 clips and 5,000 day rows, with bounded text fields. Dates are milliseconds since Unix epoch, from 1970 through 2099. The server limits a device to 100 owned calendars and a calendar to 100 unexpired invitations. The app displays server rejections and retains local edits. Large calendars, archival cleanup, owner recovery, key rotation, member scope changes and end-to-end encryption remain future work. To change a member's scope, revoke it and issue a new invitation. If the received date range or calendar time zone changes, the app pauses the existing link and keeps local programming. Detach and receive again to review the new scope; populated jobs use the duplicate-and-receive flow.
+This is polling sync, not instant push. One request carries at most 1 MiB. The stored JSON document is limited to 1,000,000 bytes on both creation and updates (including the full document after a date-range edit); one calendar supports up to 500 photographers, 2,000 clips and 5,000 day rows, with bounded text fields. Dates are milliseconds since Unix epoch, from 1970 through 2099. The server limits a device to 100 owned calendars and a calendar to 100 unexpired invitations. The app displays server rejections and retains local edits. Large calendars, archival cleanup, owner recovery, key rotation, member scope changes and end-to-end encryption remain future work. To change a member's scope, revoke it and issue a new invitation. If the received date range or calendar time zone changes, the app pauses the existing link and keeps local programming. Detach and receive again to review the new scope; populated jobs use the duplicate-and-receive flow.
 
 A server revision older than the saved local baseline also pauses sync, including conflict resolution. Restore a current server backup, or detach and publish the retained local programming as a new calendar. This protects against silently rolling a Mac back to an older database snapshot.
 
@@ -85,7 +94,8 @@ Test this implementation with disposable programming before using it to drive li
 | 403 | Role/range restriction, revoked membership or invalid invitation. |
 | 409 | The app merges a newer revision or shows a conflict. |
 | 422 | Invalid/overlapping schedule, duplicate initials or a server limit. |
-| 503 | PHP driver, private configuration, database permissions, InnoDB tables and server logs. |
+| 413 | Reduce calendar content: stored documents are limited to 1,000,000 bytes and complete requests to 1 MiB. Local edits remain saved. |
+| 429 / 5xx | Automatic sync backs off with jitter and respects Retry-After; Sync Now can retry immediately. For 503, check PHP, private configuration, all three API files, database permissions and schemas. |
 
 Responses and logs deliberately omit database credentials, hostnames, filesystem paths and raw PHP/PDO exceptions. Do not post credentials or `phpinfo()` publicly.
 

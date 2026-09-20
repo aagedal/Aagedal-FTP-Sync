@@ -238,6 +238,10 @@ final class MetadataCalendarCoordinator: ObservableObject {
         if let binding = binding(for: jobID) { bindingMessages[binding.id] = detail }
     }
 
+    private static func isRetryableFailure(_ error: Error) -> Bool {
+        isConnectionError(error) || (error as? MetadataSyncFailure)?.isRetryable == true
+    }
+
     private static func isConnectionError(_ error: Error) -> Bool {
         (error as? URLError).map {
             [URLError.notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed].contains($0.code)
@@ -508,7 +512,11 @@ final class MetadataCalendarCoordinator: ObservableObject {
             for id in attemptedAccounts {
                 if connectionFailures[id] != nil {
                     let failures = min((connectionRetries[id]?.failures ?? 0) + 1, 6)
-                    let delay = min(10 * pow(2, Double(failures - 1)), 300)
+                    let baseDelay = min(10 * pow(2, Double(failures - 1)), 300)
+                    let failure = connectionFailures[id] as? MetadataSyncFailure
+                    // Jitter service failures to avoid synchronized retries; never retry before Retry-After.
+                    let delay = max(baseDelay + (failure?.isRetryable == true ? Double.random(in: 0...baseDelay * 0.2) : 0),
+                                    failure?.retryAfter ?? 0)
                     connectionRetries[id] = ConnectionRetry(failures: failures, retryAfter: now().addingTimeInterval(delay))
                 } else {
                     connectionRetries[id] = nil
@@ -529,7 +537,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             } catch {
                 calendarListError = error.localizedDescription
                 message = error.localizedDescription
-                if Self.isConnectionError(error) { connectionFailures[account.id] = error }
+                if Self.isRetryableFailure(error) { connectionFailures[account.id] = error }
             }
         }
         for binding in state.bindings where jobID == nil || binding.jobID == jobID {
@@ -544,7 +552,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             do { try await sync(binding, account: account) }
             catch {
                 bindingMessages[binding.id] = error.localizedDescription
-                if Self.isConnectionError(error) { connectionFailures[account.id] = error }
+                if Self.isRetryableFailure(error) { connectionFailures[account.id] = error }
             }
         }
     }
@@ -617,7 +625,7 @@ final class MetadataCalendarCoordinator: ObservableObject {
             setFailureActivity(error, jobID: original.jobID)
             // The request already recorded this network failure. A second event
             // both exaggerates the incident and prevents repeated-event coalescing.
-            if !Self.isConnectionError(error) {
+            if !Self.isRetryableFailure(error) {
                 record(MetadataSyncEvent(jobID: original.jobID, operation: "Calendar sync", detail: MetadataSyncEvent.errorDetail(error), isError: true))
             }
             throw error

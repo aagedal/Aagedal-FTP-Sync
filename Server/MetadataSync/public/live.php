@@ -127,6 +127,11 @@ function liveDocument(mixed $input): array {
     ksort($photos); ksort($clips);
     return ['photographers' => array_values($photos), 'photographerTracks' => $tracks, 'clips' => array_values($clips)];
 }
+function liveEncodeDocument(array $document): string {
+    $encoded = json_encode($document, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+    if (strlen($encoded) > 1000000) { failLive(413, 'calendar_too_large'); }
+    return $encoded;
+}
 function trackVisible(array $t, array $member, string $zone): bool {
     if ($member['range_start'] === null) { return true; }
     $d = $t['date'];
@@ -248,6 +253,7 @@ function liveRun(array $config): never {
             if (liveProtocol() === 3 && !liveCapable($r)) { failLive(426, 'client_upgrade_required'); }
             if (liveProtocol() === 3 && ($r['documentSchemaVersion'] ?? null) !== 3) { failLive(422, 'invalid_document_schema'); }
             $doc = liveDocument($r['document'] ?? null);
+            $encoded = liveEncodeDocument($doc);
             $name = liveText($r['name'] ?? null, 100, true); $zone = liveText($r['timeZone'] ?? null, 100, true);
             if (!in_array($zone, DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC), true)) { failLive(400, 'invalid_time_zone'); }
             $pdo->beginTransaction();
@@ -263,7 +269,7 @@ function liveRun(array $config): never {
             if ($existing !== 'owner') {
                 if ($existing || liveQuery($pdo, 'SELECT id FROM aftpsync_calendars WHERE id = ?', [$cid])->fetchColumn()) { failLive(409, 'id_in_use'); }
                 if ((int) liveQuery($pdo, "SELECT COUNT(*) FROM aftpsync_members WHERE device_id = ? AND role = 'owner'", [$id])->fetchColumn() >= 100) { failLive(422, 'calendar_limit'); }
-                liveQuery($pdo, 'INSERT INTO aftpsync_calendars (id, name, time_zone, document) VALUES (?, ?, ?, ?)', [$cid, $name, $zone, json_encode($doc, JSON_THROW_ON_ERROR)]);
+                liveQuery($pdo, 'INSERT INTO aftpsync_calendars (id, name, time_zone, document) VALUES (?, ?, ?, ?)', [$cid, $name, $zone, $encoded]);
                 liveQuery($pdo, "INSERT INTO aftpsync_members VALUES (?, ?, 'owner', NULL, NULL)", [$cid, $id]);
             }
             $pdo->commit();
@@ -300,8 +306,7 @@ function liveRun(array $config): never {
             if (liveProtocol() === 3) {
                 liveTemplateTransitions(json_decode($calendar['document'], true, 32, JSON_THROW_ON_ERROR), $next, array_key_exists('templateDeactivations', $r) ? $r['templateDeactivations'] : []);
             }
-            $encoded = json_encode($next, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-            if (strlen($encoded) > 1000000) { failLive(413, 'calendar_too_large'); }
+            $encoded = liveEncodeDocument($next);
             liveQuery($pdo, 'UPDATE aftpsync_calendars SET document = ?, revision = revision + 1 WHERE id = ?', [$encoded, $cid]);
             $calendar['document'] = $encoded; $calendar['revision']++;
             $pdo->commit(); liveReply(200, ['calendar' => snapshot($calendar, $member)]);

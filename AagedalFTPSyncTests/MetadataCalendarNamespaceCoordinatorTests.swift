@@ -11,6 +11,7 @@ private actor NamespaceCalendarServer {
     var offline = false
     var wrongNamespace = false
     init(_ calendar: SharedMetadataCalendar) { self.calendar = calendar }
+    func replaceRemote(_ document: SharedMetadataDocument) { calendar.document = document; calendar.revision += 1 }
     func setOffline() { offline = true }
     func setWrongNamespace() { wrongNamespace = true }
     func captured() -> [MetadataCalendarRequest] { requests }
@@ -106,6 +107,44 @@ final class MetadataCalendarNamespaceCoordinatorTests: XCTestCase {
         sync.start(store: store, polling: false, observingChanges: false)
         addTeardownBlock { await MainActor.run { sync.stop() } }
         return .init(store: store, sync: sync, repository: repository, server: server, job: job, calendar: calendar)
+    }
+
+    func testActivatedConflictResolvesAndPersistsWithoutLosingMarkers() async throws {
+        let f = try fixture(localHeadline: .activated("Local {photographer}"))
+        var remote = f.calendar.document
+        remote.clips[0].fields.setHeadline(try .activated("Remote {photographer}"))
+        remote.clips[0].fields.description = "Independent remote edit"
+        await f.server.replaceRemote(remote)
+        await f.sync.refresh(jobID: f.job.id)
+        let binding = try XCTUnwrap(f.sync.binding(for: f.job.id))
+        XCTAssertNotNil(binding.conflict)
+        let review = try f.sync.conflictReview(binding)
+        let plan = try review.plan()
+        XCTAssertEqual(plan.conflicts.count, 1)
+        f.sync.resolve(review, choices: Dictionary(uniqueKeysWithValues: plan.conflicts.map { ($0.id, .local) }))
+        let deadline = Date().addingTimeInterval(5)
+        while f.sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(f.sync.busy)
+        XCTAssertEqual(f.sync.activity(for: f.job.id).phase, .current, f.sync.message)
+        let saved = try XCTUnwrap(f.repository.load().bindings.first)
+        XCTAssertNil(saved.conflict)
+        XCTAssertEqual(saved.snapshot.document.clips[0].fields.headline, "Local {photographer}")
+        XCTAssertEqual(saved.snapshot.document.clips[0].fields.templateVersions["headline"], 1)
+        XCTAssertEqual(saved.snapshot.document.clips[0].fields.description, "Independent remote edit")
+        let requests = await f.server.captured()
+        XCTAssertTrue(requests.contains { $0.action == "putCalendar" && $0.routingProtocol == .templates })
+        // A fresh coordinator can reopen the persisted result and sync without another write.
+        f.sync.stop()
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) },
+            passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let restarted = MetadataCalendarCoordinator(repository: f.repository, keychain: keychain,
+            transport: { body, _, _, _, _ in try await f.server.send(body) })
+        restarted.start(store: f.store, polling: false, observingChanges: false)
+        defer { restarted.stop() }
+        await restarted.refresh(jobID: f.job.id)
+        XCTAssertEqual(restarted.activity(for: f.job.id).phase, .current)
+        let after = await f.server.captured()
+        XCTAssertEqual(after.filter { $0.action == "putCalendar" }.count, 1)
     }
 
     func testOfflineTemplateBindingRetainsActiveLocalEditAndBaseline() async throws {

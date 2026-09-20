@@ -41,6 +41,24 @@ struct MetadataCalendarResponse: Decodable, Sendable {
 struct MetadataCalendarClient: Sendable {
     /// Test transport never receives production credentials unless explicitly supplied.
     var transport: (@Sendable (URLRequest) async throws -> (Data, Int))? = nil
+    static func retryDelay(_ header: String?, now: Date = Date()) -> TimeInterval? {
+        guard let header else { return nil }
+        let value = header.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
+           let seconds = Double(value), seconds.isFinite { return seconds }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        guard let date = formatter.date(from: value) else { return nil }
+        return max(0, date.timeIntervalSince(now))
+    }
+
+    private static func serviceFailure(_ status: Int, retryAfter: TimeInterval?) -> MetadataSyncFailure {
+        MetadataSyncFailure(message: "The sync server is temporarily unavailable (HTTP \(status)). Saved edits are retained; sync will retry automatically.",
+            diagnosticCode: "HTTP \(status): service_unavailable", httpStatus: status, retryAfter: retryAfter)
+    }
+
     static func encoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .custom { date, encoder in
@@ -118,14 +136,21 @@ struct MetadataCalendarClient: Sendable {
         request.setValue(key, forHTTPHeaderField: "X-Aagedal-Device-Key")
         if let setupKey { request.setValue(setupKey, forHTTPHeaderField: "X-Aagedal-Setup-Key") }
         request.httpBody = try Self.encoder().encode(body)
-        guard (request.httpBody?.count ?? 0) <= 1_048_576 else { throw MetadataSyncFailure(message: "The calendar is too large for this server (1 MB limit).") }
+        guard (request.httpBody?.count ?? 0) <= 1_048_576 else { throw MetadataSyncFailure(message: "The sync request exceeds the server’s 1 MiB limit. Reduce the calendar content before syncing again.") }
         if let transport {
             let (data, status) = try await transport(request)
             return try Self.decodeResponse(data, statusCode: status, calendarID: body.calendarID, protocolVersion: protocolVersion)
         }
         let (bytes, response) = try await session.bytes(for: request)
-        guard let response = response as? HTTPURLResponse, response.mimeType == "application/json" else { throw MetadataSyncServerError.invalidResponse }
+        guard let response = response as? HTTPURLResponse else { throw MetadataSyncServerError.invalidResponse }
+        let retryAfter = Self.retryDelay(response.value(forHTTPHeaderField: "Retry-After"))
         guard !(300...399).contains(response.statusCode) else { throw MetadataSyncServerError.redirect }
+        guard response.mimeType == "application/json" else {
+            if response.statusCode == 429 || (500...599).contains(response.statusCode) {
+                throw Self.serviceFailure(response.statusCode, retryAfter: retryAfter)
+            }
+            throw MetadataSyncServerError.invalidResponse
+        }
         guard response.expectedContentLength <= 4_194_304 else { throw MetadataSyncServerError.responseTooLarge }
         var data = Data()
         for try await byte in bytes {
@@ -133,19 +158,50 @@ struct MetadataCalendarClient: Sendable {
             guard data.count < 4_194_304 else { throw MetadataSyncServerError.responseTooLarge }
             data.append(byte)
         }
-        return try Self.decodeResponse(data, statusCode: response.statusCode, calendarID: body.calendarID, protocolVersion: protocolVersion)
+        return try Self.decodeResponse(data, statusCode: response.statusCode, calendarID: body.calendarID, protocolVersion: protocolVersion, retryAfter: retryAfter)
     }
 
     static func decodeResponse(_ data: Data, statusCode: Int, calendarID: UUID?,
-                               protocolVersion: MetadataCalendarProtocol = .legacy) throws -> MetadataCalendarResponse {
+                               protocolVersion: MetadataCalendarProtocol = .legacy, retryAfter: TimeInterval? = nil) throws -> MetadataCalendarResponse {
         guard data.count <= 4_194_304 else { throw MetadataSyncServerError.responseTooLarge }
         // Establish the wire contract before decoding any template-bearing domain record.
         struct Envelope: Decodable { let service: String; let protocolVersion: Int; let capabilities: [String]?; let error: String? }
-        let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+        let envelope: Envelope
+        do { envelope = try JSONDecoder().decode(Envelope.self, from: data) }
+        catch {
+            if statusCode == 429 || (500...599).contains(statusCode) {
+                throw Self.serviceFailure(statusCode, retryAfter: retryAfter)
+            }
+            throw error
+        }
         guard envelope.service == "aagedal-metadata-sync" else { throw MetadataSyncServerError.invalidResponse }
+        // Only document-free, known installation failures may precede capability validation.
+        if statusCode >= 400, [1, 2, 3].contains(envelope.protocolVersion),
+           let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           Set(object.keys).isSubset(of: ["service", "protocolVersion", "stage", "checks", "error", "capabilities"]) {
+            let message: String?
+            switch envelope.error {
+            case "not_configured": message = "The server cannot find its private config.php. Check the $configPath setting in the uploaded index.php, and confirm that the private configuration is uploaded as config.php and readable by PHP."
+            case "runtime_unavailable": message = "The server needs PHP 8.2 or newer with the pdo_mysql extension enabled."
+            case "invalid_configuration": message = "The private server configuration contains invalid database settings. Check it on the host."
+            case "live_api_missing": message = "The calendar API file is missing. Upload live.php beside index.php in the endpoint's public directory."
+            case "template_api_missing": message = "The template API file is missing. Upload templates.php beside index.php and live.php."
+            default: message = nil
+            }
+            if let message {
+                throw MetadataSyncFailure(message: message, diagnosticCode: "HTTP \(statusCode): \(envelope.error!)",
+                    httpStatus: statusCode, retryAfter: retryAfter)
+            }
+        }
         if envelope.error == "client_upgrade_required" || envelope.error == "namespace_collision" {
             throw MetadataSyncFailure(message: "This calendar requires a compatible version 3 app and server. Local edits are retained.",
                 diagnosticCode: "HTTP \(statusCode): \(envelope.error!)")
+        }
+        // Failed HTTP requests never yield documents, even if a proxy or server
+        // supplies a malformed or incomplete calendar envelope.
+        if statusCode == 429 || (500...599).contains(statusCode) {
+            guard [1, 2, 3].contains(envelope.protocolVersion) else { throw MetadataSyncServerError.unsupportedProtocol }
+            throw Self.serviceFailure(statusCode, retryAfter: retryAfter)
         }
         if protocolVersion == .templates {
             guard envelope.protocolVersion == 3, envelope.capabilities == ["metadata-templates-v1"] else {
@@ -156,21 +212,6 @@ struct MetadataCalendarClient: Sendable {
         }
         var result = try Self.decoder().decode(MetadataCalendarResponse.self, from: data)
         guard result.service == "aagedal-metadata-sync" else { throw MetadataSyncServerError.invalidResponse }
-        // Older deployments report configuration failures in a protocol-1 envelope.
-        // Explain those known installation errors before rejecting the protocol version.
-        if [1, 2].contains(result.protocolVersion), statusCode != 200 {
-            switch result.error {
-            case "not_configured":
-                throw MetadataSyncFailure(message: "The server cannot find its private config.php. Check the $configPath setting in the uploaded index.php, and confirm that the private configuration is uploaded as config.php and readable by PHP.")
-            case "runtime_unavailable":
-                throw MetadataSyncFailure(message: "The server needs PHP 8.2 or newer with the pdo_mysql extension enabled.")
-            case "invalid_configuration":
-                throw MetadataSyncFailure(message: "The private server configuration contains invalid database settings. Check it on the host.")
-            case "live_api_missing":
-                throw MetadataSyncFailure(message: "The calendar API file is missing. Upload live.php beside index.php in the endpoint's public directory.")
-            default: break
-            }
-        }
         if result.protocolVersion == 1 {
             throw MetadataSyncFailure(message: "This request reached the hosting-check API instead of calendar sync. Upload the current index.php and live.php to this endpoint, preserving the private $configPath setting in index.php.")
         }
@@ -189,6 +230,9 @@ struct MetadataCalendarClient: Sendable {
             case "overlapping_clips": message = "The merged calendar has overlapping clips. Resolve the overlap before syncing."
             case "already_member": message = "This device already has access to that calendar."
             case "template_activation_lost": message = "The calendar edit would remove variable activation without an explicit conversion. Local edits are retained."
+            case "calendar_too_large": message = "The calendar exceeds the server's 1,000,000-byte document limit. Reduce its content before syncing again. Local edits are retained."
+            case "request_too_large": message = "The sync request exceeds the server's 1 MiB limit. Reduce the calendar content before syncing again. Local edits are retained."
+            case "sync_unavailable": message = "The sync service is unavailable. Check the server configuration and database schema. Saved edits are retained; sync retries automatically."
             case "invalid_template": message = "The calendar contains an unsupported or malformed variable template. Local edits are retained."
             default: message = "Calendar sync failed (HTTP \(statusCode)). Check the server installation and calendar limits. Local edits are retained."
             }
@@ -198,7 +242,7 @@ struct MetadataCalendarClient: Sendable {
                 "request_too_large", "owner_required", "sync_unavailable", "invalid_time_zone", "unknown_fields",
                 "template_activation_lost", "invalid_template", "client_upgrade_required", "namespace_collision"]
             let code = result.error.flatMap { knownCodes.contains($0) ? $0 : nil } ?? "unexpected_response"
-            throw MetadataSyncFailure(message: message, diagnosticCode: "HTTP \(statusCode): \(code)")
+            throw MetadataSyncFailure(message: message, diagnosticCode: "HTTP \(statusCode): \(code)", httpStatus: statusCode, retryAfter: retryAfter)
         }
         if var calendar = result.calendar {
             guard calendar.id == calendarID, calendar.revision > 0,

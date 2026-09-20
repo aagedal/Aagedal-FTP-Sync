@@ -3,6 +3,9 @@ import Foundation
 struct MetadataSyncFailure: LocalizedError {
     let message: String
     var diagnosticCode: String? = nil
+    var httpStatus: Int? = nil
+    var retryAfter: TimeInterval? = nil
+    var isRetryable: Bool { httpStatus.map { $0 == 429 || (500...599).contains($0) } ?? false }
     var errorDescription: String? { message }
 }
 

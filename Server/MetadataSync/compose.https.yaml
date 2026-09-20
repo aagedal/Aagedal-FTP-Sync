@@ -1,0 +1,24 @@
+services:
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      SYNC_DOMAIN: ${SYNC_DOMAIN:?Set SYNC_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  caddy_data:
+  caddy_config:

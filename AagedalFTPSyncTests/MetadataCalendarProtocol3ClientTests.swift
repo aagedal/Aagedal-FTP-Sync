@@ -172,3 +172,92 @@ final class MetadataCalendarProtocol3ClientTests: XCTestCase {
         XCTAssertEqual(captured.first?.value(forHTTPHeaderField: "X-Aagedal-Protocol"), "2")
     }
 }
+
+// Regression coverage for the sync evaluation findings.
+extension MetadataCalendarProtocol3ClientTests {
+    func testActivatedCalendarConflictReviewCanBuildPlan() throws {
+        let base = try document()
+        var local = base
+        var remoteDocument = base
+        local.photographers[0].name = "Local edit"
+        remoteDocument.photographers[0].name = "Remote edit"
+        let snapshot = SharedMetadataCalendar(id: calendarID, name: "Audit", timeZone: "Etc/UTC", revision: 1,
+            role: "owner", document: base, compatibility: .templates)
+        var remote = snapshot
+        remote.revision = 2
+        remote.document = remoteDocument
+        let binding = MetadataCalendarBinding(accountID: deviceID, jobID: UUID(), snapshot: snapshot, conflict: remote)
+        let review = MetadataCalendarConflictReview(binding: binding, local: local, remote: remote)
+        XCTAssertEqual(try MetadataCalendarMerge.plan(base: base, local: local, remote: remoteDocument).conflicts.count, 1)
+        XCTAssertNoThrow(try review.plan())
+    }
+
+    func testProtocol3MissingConfigurationRemainsActionable() throws {
+        let body = try bytes(["service": "aagedal-metadata-sync", "protocolVersion": 3,
+                              "stage": "calendar-sync", "checks": [], "error": "not_configured"])
+        XCTAssertThrowsError(try MetadataCalendarClient.decodeResponse(body, statusCode: 503,
+            calendarID: nil, protocolVersion: .templates)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("config.php"), error.localizedDescription)
+        }
+    }
+}
+
+extension MetadataCalendarProtocol3ClientTests {
+    func testAllInstallationErrorsRemainActionableInBothNamespaces() throws {
+        for protocolVersion in [MetadataCalendarProtocol.legacy, .templates] {
+            for version in [1, 2, 3] {
+                for (code, detail) in [("not_configured", "config.php"), ("runtime_unavailable", "PHP 8.2"),
+                    ("invalid_configuration", "database settings"), ("live_api_missing", "Upload live.php"),
+                    ("template_api_missing", "Upload templates.php")] {
+                    let body = try bytes(["service": "aagedal-metadata-sync", "protocolVersion": version, "error": code])
+                    XCTAssertThrowsError(try MetadataCalendarClient.decodeResponse(body, statusCode: 503,
+                        calendarID: nil, protocolVersion: protocolVersion)) { error in
+                        XCTAssertTrue(error.localizedDescription.contains(detail), error.localizedDescription)
+                        XCTAssertEqual((error as? MetadataSyncFailure)?.isRetryable, true)
+                    }
+                }
+            }
+        }
+    }
+
+    func testInstallationErrorCannotBypassCalendarCapabilityGate() throws {
+        for status in [200, 503] {
+            let body = try bytes(["service": "aagedal-metadata-sync", "protocolVersion": 3,
+                "error": "not_configured", "calendar": ["malformed": true]])
+            XCTAssertThrowsError(try MetadataCalendarClient.decodeResponse(body, statusCode: status,
+                calendarID: calendarID, protocolVersion: .templates)) { error in
+                if status == 200 { XCTAssertEqual(error as? MetadataSyncServerError, .unsupportedProtocol) }
+                else {
+                    XCTAssertEqual((error as? MetadataSyncFailure)?.httpStatus, 503)
+                    XCTAssertFalse(error.localizedDescription.contains("config.php"))
+                }
+            }
+        }
+    }
+
+    func testServiceErrorsPreserveRetryInformationWithoutLeakingBodies() throws {
+        for status in [429, 500, 502, 503, 504] {
+            for body in [Data("<html>private proxy details</html>".utf8),
+                         try bytes(["service": "aagedal-metadata-sync", "protocolVersion": 3,
+                                    "capabilities": ["metadata-templates-v1"], "error": "sync_unavailable"])] {
+                XCTAssertThrowsError(try MetadataCalendarClient.decodeResponse(body, statusCode: status,
+                    calendarID: nil, protocolVersion: .templates, retryAfter: 90)) { error in
+                    let failure = error as? MetadataSyncFailure
+                    XCTAssertEqual(failure?.httpStatus, status)
+                    XCTAssertEqual(failure?.retryAfter, 90)
+                    XCTAssertEqual(failure?.isRetryable, true)
+                    XCTAssertFalse(error.localizedDescription.contains("private proxy details"))
+                }
+            }
+        }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(MetadataCalendarClient.retryDelay("90", now: now), 90)
+        XCTAssertEqual(MetadataCalendarClient.retryDelay("Fri, 15 Jan 2027 08:01:30 GMT", now: now), 90)
+        for value in ["-1", "nan", "infinity", "junk"] {
+            XCTAssertNil(MetadataCalendarClient.retryDelay(value, now: now))
+        }
+        XCTAssertEqual(MetadataCalendarClient.retryDelay("Wed, 01 Jan 2020 00:00:00 GMT", now: now), 0)
+        XCTAssertFalse(MetadataSyncFailure(message: "Validation", httpStatus: 422).isRetryable)
+        XCTAssertFalse(MetadataSyncFailure(message: "Unauthorized", httpStatus: 401).isRetryable)
+    }
+}
