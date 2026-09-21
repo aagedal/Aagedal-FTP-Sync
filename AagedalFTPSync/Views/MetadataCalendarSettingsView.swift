@@ -485,7 +485,7 @@ private struct MetadataCalendarAccessView: View {
     @State private var operation: Task<Void, Never>?
 
     private var invitationRange: MetadataSharingRange? {
-        dateRange(limited: inviteLimited, start: inviteStart, end: inviteEnd,
+        dateRange(limited: role != "owner" && inviteLimited, start: inviteStart, end: inviteEnd,
                   zone: calendar.timeZone)
     }
     private func dateRange(limited: Bool, start: Date, end: Date, zone: String) -> MetadataSharingRange? {
@@ -502,13 +502,20 @@ private struct MetadataCalendarAccessView: View {
             if calendar.role == "owner" {
                 Section(showsCalendarName ? "Invite to “\(calendar.name)”" : "Invite another Mac") {
                     Picker("Permission", selection: $role) {
+                        Text("Can manage").tag("owner")
                         Text("Can edit").tag("editor")
                         Text("Read only").tag("reader")
                     }
-                    dateRangeControls(limited: $inviteLimited, start: $inviteStart, end: $inviteEnd)
+                    if role == "owner" {
+                        Text("Owners can edit the calendar, invite or revoke other Macs, and manage calendar access. Owner invitations always include the entire calendar.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        dateRangeControls(limited: $inviteLimited, start: $inviteStart, end: $inviteEnd)
+                    }
                     Button("Create Invitation") {
                         run(.init(action: "createInvite", calendarID: calendar.id, role: role,
-                            rangeStart: invitationRange?.start, rangeEnd: invitationRange?.end))
+                            rangeStart: role == "owner" ? nil : invitationRange?.start,
+                            rangeEnd: role == "owner" ? nil : invitationRange?.end))
                     }.disabled(sync.busy || loading || invitationRange.map { $0.end <= $0.start } == true)
                     if !invitation.isEmpty {
                         Toggle("Include server URL (recommended)", isOn: $includeServerAddress)

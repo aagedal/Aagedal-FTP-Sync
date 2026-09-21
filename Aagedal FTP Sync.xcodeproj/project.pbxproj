@@ -419,7 +419,7 @@
 		96BEB9DB3BA25A81D2C50D52 /* MetadataProgrammingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinatorTests.swift; sourceTree = "<group>"; };
 		97C0C816A4FB1006374B4D23 /* PhotographerMapTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerMapTimelineTests.swift; sourceTree = "<group>"; };
 		97F55ED30B4C3721009803C5 /* MetadataSyncServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncServerClient.swift; sourceTree = "<group>"; };
-		9C35572797947764BD999107 /* AuraFaceR100.mlpackage */ = {isa = PBXFileReference; path = AuraFaceR100.mlpackage; sourceTree = "<group>"; };
+		9C35572797947764BD999107 /* AuraFaceR100.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = AuraFaceR100.mlpackage; sourceTree = "<group>"; };
 		9C550265145C1840CA4CAF18 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9C7B57A47D6AE4FF9FA83D5B /* ConfigurationTransferActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferActivationTests.swift; sourceTree = "<group>"; };
 		9C80FA23E6C80A52EE89914F /* MetadataCalendarActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarActivationTests.swift; sourceTree = "<group>"; };
@@ -1396,6 +1396,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AagedalFTPSync/Resources/AagedalFTPSync.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 42;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1529,6 +1530,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AagedalFTPSync/Resources/AagedalFTPSync.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 42;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;

@@ -243,10 +243,11 @@ function liveRun(array $config): never {
         if ($member['role'] !== 'owner') { failLive(403, 'owner_required'); }
         if ($r['action'] === 'createInvite') {
             $role = $r['role'] ?? '';
-            if (!in_array($role, ['editor', 'reader'], true)) { failLive(400, 'invalid_role'); }
+            if (!in_array($role, ['owner', 'editor', 'reader'], true)) { failLive(400, 'invalid_role'); }
             $start = isset($r['rangeStart']) ? liveDate($r['rangeStart']) : null;
             $end = isset($r['rangeEnd']) ? liveDate($r['rangeEnd']) : null;
             if (($start === null) !== ($end === null) || ($start !== null && $end <= $start)) { failLive(400, 'invalid_range'); }
+            if ($role === 'owner' && ($start !== null || $end !== null)) { failLive(400, 'invalid_range'); }
             liveQuery($pdo, 'DELETE FROM aftpsync_invites WHERE calendar_id = ? AND expires_at < ?', [$cid, time()]);
             if ((int) liveQuery($pdo, 'SELECT COUNT(*) FROM aftpsync_invites WHERE calendar_id = ?', [$cid])->fetchColumn() >= 100) { failLive(422, 'invite_limit'); }
             $invite = bin2hex(random_bytes(32));
