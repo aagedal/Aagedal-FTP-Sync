@@ -116,33 +116,35 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         }
         final class Measurements: @unchecked Sendable {
             private let lock = NSLock()
-            private var listingSeconds = 0.0
-            private var recoverySeconds = 0.0
-            private var listingCount = 0
-            private var recoveryCount = 0
+            private var secondsByOperation: [LocalEndpointSession.MeasuredOperation: Double] = [:]
+            private var counts: [LocalEndpointSession.MeasuredOperation: Int] = [:]
 
             func record(_ operation: LocalEndpointSession.MeasuredOperation, _ duration: Duration) {
                 let parts = duration.components
                 let seconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
                 lock.lock()
                 defer { lock.unlock() }
-                switch operation {
-                case .listing: listingSeconds += seconds; listingCount += 1
-                case .recoveryAdmission: recoverySeconds += seconds; recoveryCount += 1
-                }
+                secondsByOperation[operation, default: 0] += seconds
+                counts[operation, default: 0] += 1
             }
 
             func finish(phase: String, total: Double, sample: Int, backgroundCount: Int) {
                 lock.lock()
                 defer { lock.unlock() }
-                // The measured operations do not nest. The remainder includes all
-                // other engine work (and audit persistence in the publication phase).
-                print("ENRICHED_REPROCESS_PROFILE phase=\(phase) sample=\(sample) backgroundFiles=\(backgroundCount) totalSeconds=\(total) listingCount=\(listingCount) listingSeconds=\(listingSeconds) recoveryCount=\(recoveryCount) recoverySeconds=\(recoverySeconds) otherSeconds=\(total - listingSeconds - recoverySeconds)")
-                XCTAssertEqual(listingCount, 1)
-                XCTAssertGreaterThan(recoveryCount, 0)
-                XCTAssertGreaterThanOrEqual(total, listingSeconds + recoverySeconds)
-                listingSeconds = 0; recoverySeconds = 0
-                listingCount = 0; recoveryCount = 0
+                // Snapshot and publication timing starts after recovery admission,
+                // so measured intervals do not nest. The remainder includes engine
+                // filtering, resolution, metadata I/O, hashing and audit persistence.
+                let measured = secondsByOperation.values.reduce(0, +)
+                let details = LocalEndpointSession.MeasuredOperation.allCases.map { operation in
+                    "\(operation.rawValue)Count=\(counts[operation, default: 0]) \(operation.rawValue)Seconds=\(secondsByOperation[operation, default: 0])"
+                }.joined(separator: " ")
+                print("ENRICHED_REPROCESS_PROFILE phase=\(phase) sample=\(sample) backgroundFiles=\(backgroundCount) totalSeconds=\(total) \(details) otherSeconds=\(total - measured)")
+                XCTAssertEqual(counts[.listing], 1)
+                XCTAssertGreaterThan(counts[.recoveryAdmission, default: 0], 0)
+                XCTAssertEqual(counts[.matchingPublication, default: 0], phase == "publicationAndAudit" ? 50 : 0)
+                XCTAssertGreaterThanOrEqual(total, measured)
+                secondsByOperation.removeAll(keepingCapacity: true)
+                counts.removeAll(keepingCapacity: true)
             }
         }
         for backgroundCount in [0, 100_000] {

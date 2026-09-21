@@ -11,7 +11,9 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     enum MatchingImportPhase: Sendable { case prepared, originalsHeld, published(Int), beforeCommit }
     private let matchingImportHook: @Sendable (MatchingImportPhase) throws -> Void
 
-    enum MeasuredOperation: Sendable { case listing, recoveryAdmission }
+    enum MeasuredOperation: String, CaseIterable, Sendable {
+        case listing, recoveryAdmission, fileLookup, snapshotExport, snapshotValidation, matchingPublication
+    }
     /// Opt-in diagnostics for the benchmark harness. No filenames or file contents
     /// are reported, and ordinary sessions do not read the measurement clock.
     private let operationMeasurement: (@Sendable (MeasuredOperation, Duration) -> Void)?
@@ -127,6 +129,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func fileInfo(relativePath: String) async throws -> SyncFile? {
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.fileLookup, measurementStart.duration(to: .now))
+            }
+        }
         guard PathSafety.isSafeRelativePath(relativePath) else {
             throw AppError.transferFailed("A file contained an unsafe relative path and was skipped.")
         }
@@ -169,6 +177,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.snapshotExport, measurementStart.duration(to: .now))
+            }
+        }
         let source = try safeURL(for: file.relativePath)
         try fileManager.copyItem(at: source, to: temporaryURL)
     }
@@ -335,6 +349,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     func validateMetadataSnapshot(primary: EndpointFileImport, sidecar: EndpointFileImport?,
                                   absentSidecarPath: String?) throws {
         try validateMetadataRecoveryIsResolved()
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.snapshotValidation, measurementStart.duration(to: .now))
+            }
+        }
         for original in [primary, sidecar].compactMap({ $0 }) {
             try Task.checkCancellation()
             let destination = try safeURL(for: original.file.relativePath)
@@ -366,6 +386,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             throw AppError.transferFailed("Byte-matched publication requires one image and at most one sidecar, with unique paths.")
         }
         try validateMetadataRecoveryIsResolved()
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.matchingPublication, measurementStart.duration(to: .now))
+            }
+        }
         struct Original { let destination: URL; let held: URL; let expected: URL; let replaced: Bool }
         struct Output { let destination: URL; let staged: URL; let expected: URL; let identity: FileIdentity }
         let recovery = rootURL.appendingPathComponent(".aagedal-sync-\(UUID().uuidString).transaction", isDirectory: true)
