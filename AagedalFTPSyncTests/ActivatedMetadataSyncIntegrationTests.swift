@@ -114,6 +114,37 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
             XCTFail("Benchmark sample count must be between 1 and 20")
             return
         }
+        final class Measurements: @unchecked Sendable {
+            private let lock = NSLock()
+            private var listingSeconds = 0.0
+            private var recoverySeconds = 0.0
+            private var listingCount = 0
+            private var recoveryCount = 0
+
+            func record(_ operation: LocalEndpointSession.MeasuredOperation, _ duration: Duration) {
+                let parts = duration.components
+                let seconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+                lock.lock()
+                defer { lock.unlock() }
+                switch operation {
+                case .listing: listingSeconds += seconds; listingCount += 1
+                case .recoveryAdmission: recoverySeconds += seconds; recoveryCount += 1
+                }
+            }
+
+            func finish(phase: String, total: Double, sample: Int, backgroundCount: Int) {
+                lock.lock()
+                defer { lock.unlock() }
+                // The measured operations do not nest. The remainder includes all
+                // other engine work (and audit persistence in the publication phase).
+                print("ENRICHED_REPROCESS_PROFILE phase=\(phase) sample=\(sample) backgroundFiles=\(backgroundCount) totalSeconds=\(total) listingCount=\(listingCount) listingSeconds=\(listingSeconds) recoveryCount=\(recoveryCount) recoverySeconds=\(recoverySeconds) otherSeconds=\(total - listingSeconds - recoverySeconds)")
+                XCTAssertEqual(listingCount, 1)
+                XCTAssertGreaterThan(recoveryCount, 0)
+                XCTAssertGreaterThanOrEqual(total, listingSeconds + recoverySeconds)
+                listingSeconds = 0; recoverySeconds = 0
+                listingCount = 0; recoveryCount = 0
+            }
+        }
         for backgroundCount in [0, 100_000] {
             let f = try fixture()
             let image = try jpeg()
@@ -143,10 +174,15 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                 let provider = MetadataGeocodingService(identity: .init(provider: "injected", version: "1", dataset: "benchmark")) { _ in
                     .found(.init(city: "Oslo", country: "Norway", source: "local fixture", distanceMeters: 25))
                 }
+                let measurements = Measurements()
                 let processingEngine = SyncEngine(geocodingService: provider,
                     sourceSignatureRepository: SourceSignatureRepository(fileURL: f.root.appendingPathComponent("signatures.sqlite")),
                     downloadManifestRepository: DownloadManifestRepository(fileURL: f.root.appendingPathComponent("manifest.json")),
-                    now: { Date(timeIntervalSince1970: 1_704_153_600) })
+                    now: { Date(timeIntervalSince1970: 1_704_153_600) },
+                    localReprocessSessionFactory: { endpoint, managed in
+                        try LocalEndpointSession(endpoint: endpoint, managedFolder: managed,
+                            operationMeasurement: { measurements.record($0, $1) })
+                    })
                 let latest = try audit.latestEntries(jobID: job.id)
                 func snapshots() throws -> [String: Data] {
                     try Dictionary(uniqueKeysWithValues: names.flatMap { name -> [String] in
@@ -163,6 +199,7 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                 let preflight = try await processingEngine.reprocessExistingLocalFiles(
                     job: job, filter: .staleOrIncomplete, latestOutcomes: latest, isPreflight: true)
                 let preflightSeconds = seconds(since: preflightStart)
+                measurements.finish(phase: "preflight", total: preflightSeconds, sample: sample, backgroundCount: backgroundCount)
                 XCTAssertEqual(preflight.applied, 50)
                 XCTAssertEqual(preflight.failed, 0)
                 XCTAssertEqual(try snapshots(), before, "Preflight must leave every primary and sidecar unchanged")
@@ -171,6 +208,7 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                     job: job, filter: .staleOrIncomplete, latestOutcomes: latest)
                 try audit.append(result.metadataReport)
                 let publicationSeconds = seconds(since: publicationStart)
+                measurements.finish(phase: "publicationAndAudit", total: publicationSeconds, sample: sample, backgroundCount: backgroundCount)
                 XCTAssertEqual(result.scanned, 50)
                 XCTAssertEqual(result.applied, 50)
                 XCTAssertEqual(result.failed, 0)
@@ -199,6 +237,7 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
                 let repeated = try await processingEngine.reprocessExistingLocalFiles(
                     job: job, filter: .staleOrIncomplete, latestOutcomes: receipts)
                 let repeatSeconds = seconds(since: repeatStart)
+                measurements.finish(phase: "currentReceiptRepeat", total: repeatSeconds, sample: sample, backgroundCount: backgroundCount)
                 XCTAssertEqual(repeated.applied, 0)
                 XCTAssertEqual(repeated.skipped, 50)
                 XCTAssertEqual(repeated.failed, 0)

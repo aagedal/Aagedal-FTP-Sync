@@ -11,6 +11,11 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     enum MatchingImportPhase: Sendable { case prepared, originalsHeld, published(Int), beforeCommit }
     private let matchingImportHook: @Sendable (MatchingImportPhase) throws -> Void
 
+    enum MeasuredOperation: Sendable { case listing, recoveryAdmission }
+    /// Opt-in diagnostics for the benchmark harness. No filenames or file contents
+    /// are reported, and ordinary sessions do not read the measurement clock.
+    private let operationMeasurement: (@Sendable (MeasuredOperation, Duration) -> Void)?
+
     /// Immutable path map, written before moving originals. File presence must be
     /// inspected during recovery: this is not a commit marker or an automatic replay log.
     struct MatchingRecoveryManifest: Codable {
@@ -45,13 +50,15 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         matchingRecoveryRemoval: @escaping @Sendable (URL) throws -> Void = {
             try FileManager.default.removeItem(at: $0)
         },
-        matchingImportHook: @escaping @Sendable (MatchingImportPhase) throws -> Void = { _ in }
+        matchingImportHook: @escaping @Sendable (MatchingImportPhase) throws -> Void = { _ in },
+        operationMeasurement: (@Sendable (MeasuredOperation, Duration) -> Void)? = nil
     ) throws {
         access = try BookmarkAccess(endpoint: endpoint)
         self.holdingURLFactory = holdingURLFactory
         self.holdingRemoval = holdingRemoval
         self.matchingImportHook = matchingImportHook
         self.matchingRecoveryRemoval = matchingRecoveryRemoval
+        self.operationMeasurement = operationMeasurement
         if let managedFolder {
             rootURL = try managedFolder.url(inside: access.url, createIfNeeded: true)
         } else {
@@ -60,6 +67,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func listFiles() async throws -> [String: SyncFile] {
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.listing, measurementStart.duration(to: .now))
+            }
+        }
         try Task.checkCancellation()
         // Foundation may expose the admitted root as /var while the enumerator
         // returns /private/var. Resolve that spelling once, not once per file.
@@ -274,6 +287,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     /// A retained transaction may contain files absent from the visible listing.
     /// Require reconciliation before treating that listing as a complete batch.
     func validateMetadataRecoveryIsResolved() throws {
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.recoveryAdmission, measurementStart.duration(to: .now))
+            }
+        }
         try Task.checkCancellation()
         // Recheck every boundary without retaining an array of every child name.
         // Do not cache this result: another operation can leave recovery behind
