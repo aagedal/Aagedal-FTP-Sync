@@ -17,10 +17,18 @@ final class AuraFaceRecognitionRuntimeTests: XCTestCase {
     func testProductionInputPackingUsesRGBNCHWNormalization() throws {
         let width = 112
         let height = 112
-        let rgb = Data((0..<(width * height)).flatMap { pixel -> [UInt8] in
+        let pixelCount = width * height
+        var rgb = Data()
+        rgb.reserveCapacity(pixelCount * 3)
+        for pixel in 0..<pixelCount {
             // Spatially asymmetric values also catch accidental plane overlap.
-            [UInt8(pixel % 251), UInt8((pixel * 3 + 17) % 251), UInt8((pixel * 7 + 41) % 251)]
-        })
+            let red = UInt8(pixel % 251)
+            let green = UInt8((pixel * 3 + 17) % 251)
+            let blue = UInt8((pixel * 7 + 41) % 251)
+            rgb.append(red)
+            rgb.append(green)
+            rgb.append(blue)
+        }
         let provider = try XCTUnwrap(CGDataProvider(data: rgb as CFData))
         let colorSpace = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
         let image = try XCTUnwrap(CGImage(
@@ -37,8 +45,9 @@ final class AuraFaceRecognitionRuntimeTests: XCTestCase {
             intent: .defaultIntent
         ))
 
-        let input = try AuraFaceRecognitionRuntime.makeInput(from: image)
-        XCTAssertEqual(input.shape.map(\.intValue), [1, 3, 112, 112])
+        let input: MLMultiArray = try AuraFaceRecognitionRuntime.makeInput(from: image)
+        let shape: [Int] = input.shape.map { dimension in dimension.intValue }
+        XCTAssertEqual(shape, [1, 3, 112, 112])
         let plane = width * height
         for pixel in [0, 1, 173, plane - 1] {
             for channel in 0..<3 {
