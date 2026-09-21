@@ -65,7 +65,7 @@ struct PeopleLibrarySettingsView: View {
                         Text("The model and selected People Library were admitted at startup. Recognition is ready for configured jobs.")
                             .font(.callout).foregroundStyle(.secondary)
                     } else {
-                        Text("Recognition needs a compatible selected People Library and calibrated acceptance settings. Relaunch after those are available.")
+                        Text("Recognition is not ready. Select a compatible People Library and relaunch to validate the model and library.")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                 } else {

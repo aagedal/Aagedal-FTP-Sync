@@ -9,6 +9,10 @@
 
 ## Unreleased (3.0.0)
 
+- Enable local face recognition with the user-approved Photo Agent matching defaults
+  when a compatible People Library is selected and recognition is enabled for a job.
+  Preserve conservative ambiguity checks and reject unavailable face quality.
+
 - Remove the extra frame around job settings while retaining the three-section selector.
 
 - Reopen committed libraries with valid SQLite write-ahead logs after interrupted

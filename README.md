@@ -5,8 +5,8 @@ A native macOS menu-bar utility for getting newsroom files where they need to go
 Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
 This branch contains the in-development 3.0 implementation. It is not a beta or a
-shipping release: the bundle identifies itself as 3.0.0 (build 38), production
-face-recognition calibration is intentionally absent, and the remaining
+shipping release: the bundle identifies itself as 3.0.0 (build 38). Face recognition
+uses Photo Agent defaults; the remaining
 native, supported-macOS, performance and release gates are tracked in the
 [3.0 readiness report](Documentation/3.0-Readiness.md). Use the latest tagged 2.9.x
 release for production work until a 3.0 candidate is published.
@@ -42,7 +42,13 @@ The 3.0 source currently adds these guarded workflows:
   source parts, with compiled-weight verification and its separate Apache-2.0
   notice. Recognition takes one immutable
   runtime snapshot at startup. Metadata name tagging remains fail-closed until a
-  compatible People Library and calibrated acceptance policy are available.
+  compatible People Library is selected. Relaunch after importing the library,
+  then enable recognition for the intended job. The policy uses Photo Agent defaults:
+  minimum similarity 0.32 (maximum cosine distance 0.68), runner-up gap 0.04 and
+  face quality 0.15. Detection uses one pass, confidence 0.70 and minimum face width
+  50 pixels. Missing quality and ambiguous matches are rejected; the runner-up
+  check also includes people outside the acceptance cutoff. These scores are not
+  identity probabilities or a guarantee against false matches.
 - Receipt-driven local reprocessing. The default scans stale or incomplete files,
   previews counts without writing, skips current receipts and preserves destination
   files edited since their last complete receipt. Replacing those edits requires a

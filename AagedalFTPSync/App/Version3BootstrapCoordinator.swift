@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-/// Codesigned bundle configuration holds the calibrated publication policy.
+/// Bundle configuration holds the user-approved Photo Agent default policy.
 /// The reviewed AuraFace payload is shipped in the app and admitted locally.
 enum ProductionFaceRecognitionAdmission {
     struct Configuration: Sendable {

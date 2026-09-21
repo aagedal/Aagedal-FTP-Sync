@@ -3,6 +3,41 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class FaceRecognitionMatcherTests: XCTestCase {
+    func testShippedPhotoAgentPolicyAcceptsClearMatchAndRejectsWeakAmbiguousOrPoorFaces() throws {
+        let configuration = try XCTUnwrap(ProductionFaceRecognitionAdmission.Configuration.load(
+            from: try XCTUnwrap(Bundle.main.infoDictionary)))
+        let policy = configuration.policy
+        XCTAssertEqual(policy.maximumCosineDistance, 0.68)
+        XCTAssertEqual(policy.minimumRunnerUpGap, 0.04)
+        XCTAssertEqual(policy.minimumCaptureQuality, 0.15)
+        XCTAssertEqual(policy.unavailableQualityPolicy, .reject)
+        XCTAssertEqual(AuraFaceRecognitionRuntime.minimumDetectionConfidence, 0.70)
+        XCTAssertEqual(AuraFaceRecognitionRuntime.minimumOriginalFaceWidth, 50)
+
+        let query = try vector()
+        let clear = try FaceRecognitionGallery(people: [
+            person(1, similarity: 0.40), person(2, similarity: 0.20),
+        ])
+        guard case .accepted = FaceRecognitionMatcher.match(embedding: query, quality: 0.15,
+            gallery: clear, policy: policy) else { return XCTFail("Clear match should be accepted") }
+
+        let weak = try FaceRecognitionGallery(people: [person(1, similarity: 0.31)])
+        guard case .noMatch = FaceRecognitionMatcher.match(embedding: query, quality: 1,
+            gallery: weak, policy: policy) else { return XCTFail("Weak match must stay unnamed") }
+
+        // Even a runner-up outside the acceptance cutoff must prevent a weak lead
+        // from becoming an automatic identity assignment.
+        let ambiguous = try FaceRecognitionGallery(people: [
+            person(1, similarity: 0.33), person(2, similarity: 0.31),
+        ])
+        guard case .ambiguous = FaceRecognitionMatcher.match(embedding: query, quality: 1,
+            gallery: ambiguous, policy: policy) else { return XCTFail("Close identities must stay unnamed") }
+        XCTAssertEqual(FaceRecognitionMatcher.match(embedding: query, quality: 0.149,
+            gallery: clear, policy: policy), .insufficientQuality(actual: 0.149, minimum: 0.15))
+        XCTAssertEqual(FaceRecognitionMatcher.match(embedding: query, quality: nil,
+            gallery: clear, policy: policy), .qualityUnavailable)
+    }
+
     private func vector(similarity: Double = 1) throws -> FaceRecognitionEmbedding {
         var values = [Float](repeating: 0, count: 512)
         values[0] = Float(similarity)

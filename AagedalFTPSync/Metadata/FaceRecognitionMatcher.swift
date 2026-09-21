@@ -64,9 +64,9 @@ struct FaceRecognitionGallery: Equatable, Sendable {
     }
 }
 
-/// There is deliberately no production default. Thresholds must be supplied by
-/// a separately calibrated policy for unattended publication, not copied from
-/// grouping or display settings in another application.
+/// Callers supply an explicit policy. Production uses the user-approved Photo
+/// Agent auto-naming defaults from the app bundle, preserving the full-gallery
+/// ambiguity check below. These are similarity cutoffs, not identity probabilities.
 struct FaceRecognitionAcceptancePolicy: Equatable, Sendable {
     enum UnavailableQualityPolicy: Equatable, Sendable { case reject, allow }
     /// Acceptance is strictly below this cosine distance, in (0, 2].
