@@ -1,4 +1,6 @@
 import Darwin
+import AppKit
+import ImageIO
 import Foundation
 import XCTest
 import SwiftMediaMetadata
@@ -276,24 +278,86 @@ final class LocalMatchingPublicationTests: XCTestCase {
         guard base.lastPathComponent.hasPrefix("aagedal-interruption-") else {
             throw AppError.transferFailed("Interruption fixtures must use a disposable harness directory.")
         }
-        let root = base.appendingPathComponent("destination")
+        let destination = base.appendingPathComponent("destination")
+        let root = interruptionManaged ? destination.appendingPathComponent("Synced Files") : destination
         let inputs = base.appendingPathComponent("inputs")
         try FileManager.default.createDirectory(at: root.appendingPathComponent("nested"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: inputs, withIntermediateDirectories: true)
-        let bookmark = try FolderBookmark.create(for: root)
+        let bookmark = try FolderBookmark.create(for: destination)
         return (Fixture(root: root, inputs: inputs, endpoint: Endpoint(kind: .local,
             localPath: bookmark.resolvedURL.path, bookmark: bookmark.data)), phase)
     }
 
+    private var interruptionManaged: Bool {
+        ProcessInfo.processInfo.environment["AAGEDAL_INTERRUPTION_MANAGED"] == "1"
+    }
+
+    private let interruptionDate = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private func interruptionXMP(_ headline: String) -> Data {
+        Data("""
+        <x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" photoshop:Headline="\(headline)"/></rdf:RDF></x:xmpmeta>
+        """.utf8)
+    }
+
+    private func interruptionImport(_ path: String, bytes: Data, fixture: Fixture) throws -> EndpointFileImport {
+        let url = fixture.inputs.appendingPathComponent(UUID().uuidString)
+        try bytes.write(to: url)
+        return EndpointFileImport(localURL: url, file: SyncFile(relativePath: path,
+            size: Int64(bytes.count), modifiedAt: interruptionDate))
+    }
+
+    private func interruptionJPEG(fixture: Fixture) throws -> (Data, Data) {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let pixels = try XCTUnwrap(bitmap.bitmapData)
+        for index in 0..<(bitmap.bytesPerRow * bitmap.pixelsHigh) { pixels[index] = UInt8(index % 251) }
+        let url = fixture.inputs.appendingPathComponent("source.jpg")
+        try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:])).write(to: url)
+        _ = try MetadataWriter.apply(ResolvedMetadataChanges(headline: "Original JPEG"), to: url)
+        let original = try Data(contentsOf: url)
+        _ = try MetadataWriter.apply(ResolvedMetadataChanges(headline: "Processed JPEG",
+            existingFieldPolicy: .overwrite), to: url)
+        let processed = try Data(contentsOf: url)
+        XCTAssertEqual(try JPEGParser.parse(original).scanData, try JPEGParser.parse(processed).scanData)
+        try original.write(to: fixture.inputs.appendingPathComponent("original.jpg"))
+        try processed.write(to: fixture.inputs.appendingPathComponent("processed.jpg"))
+        return (original, processed)
+    }
+
+    private var interruptionIsJPEG: Bool {
+        ProcessInfo.processInfo.environment["AAGEDAL_INTERRUPTION_MEDIA"] == "jpeg"
+    }
+
+    private var interruptionPaths: [String] {
+        interruptionIsJPEG ? ["nested/image.jpg"] : ["nested/photo.cr3", "nested/photo.xmp"]
+    }
+
     func testProcessInterruptionWorker() async throws {
         let (f, requestedPhase) = try interruptionFixture()
-        try write("original RAW", "nested/photo.cr3", fixture: f)
-        try write("original XMP", "nested/photo.xmp", fixture: f)
-        let raw = try staged("nested/photo.cr3", contents: "original RAW", fixture: f, prefix: "raw")
-        let xmp = try staged("nested/photo.xmp", contents: "original XMP", fixture: f, prefix: "xmp")
-        let output = try staged("nested/photo.xmp", contents: "processed XMP", fixture: f, prefix: "output")
+        let paths = interruptionPaths
+        let bytes: [Data]
+        let outputBytes: Data
+        if interruptionIsJPEG {
+            let (original, processed) = try interruptionJPEG(fixture: f)
+            bytes = [original]
+            outputBytes = processed
+        } else {
+            bytes = [Data("synthetic RAW payload".utf8), interruptionXMP("Original XMP")]
+            outputBytes = interruptionXMP("Processed XMP")
+        }
+        var originals: [EndpointFileImport] = []
+        for (path, data) in zip(paths, bytes) {
+            let destination = f.root.appendingPathComponent(path)
+            try data.write(to: destination)
+            try FileManager.default.setAttributes([.modificationDate: interruptionDate], ofItemAtPath: destination.path)
+            originals.append(try interruptionImport(path, bytes: data, fixture: f))
+        }
+        let output = try interruptionImport(try XCTUnwrap(paths.last), bytes: outputBytes, fixture: f)
         let marker = f.inputs.appendingPathComponent("interrupted-phase")
-        let session = try LocalEndpointSession(endpoint: f.endpoint, matchingImportHook: { phase in
+        let session = try LocalEndpointSession(endpoint: f.endpoint,
+            managedFolder: interruptionManaged ? .syncedFiles : nil, matchingImportHook: { phase in
             let name: String
             switch phase {
             case .prepared: name = "prepared"
@@ -304,11 +368,10 @@ final class LocalMatchingPublicationTests: XCTestCase {
             guard name == requestedPhase else { return }
             try Data(name.utf8).write(to: marker, options: .atomic)
             guard kill(getpid(), SIGKILL) == 0 else { _exit(99) }
-            // Signal delivery can follow the syscall return. Do not race it with
-            // exit(), which would obscure whether SIGKILL actually killed us.
+            // Wait for signal delivery instead of racing it with ordinary exit.
             while true { pause() }
         })
-        try await session.importFilesTransactionallyMatching([output], replacing: [raw, xmp],
+        try await session.importFilesTransactionallyMatching([output], replacing: originals,
             preserveDate: true, verifySize: true)
         XCTFail("The requested interruption phase was never reached")
     }
@@ -320,48 +383,88 @@ final class LocalMatchingPublicationTests: XCTestCase {
         let recovery = manifestURL.deletingLastPathComponent()
         let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
             from: Data(contentsOf: manifestURL))
-        XCTAssertEqual(manifest.schemaVersion, 1)
-        XCTAssertEqual(manifest.originals.map(\.relativePath), ["nested/photo.cr3", "nested/photo.xmp"])
-        XCTAssertEqual(manifest.originals.map(\.isReplaced), [false, true])
-        XCTAssertEqual(manifest.outputs.map(\.relativePath), ["nested/photo.xmp"])
+        let paths = interruptionPaths
+        let originals: [Data]
+        let processed: Data
+        if interruptionIsJPEG {
+            originals = [try Data(contentsOf: f.inputs.appendingPathComponent("original.jpg"))]
+            processed = try Data(contentsOf: f.inputs.appendingPathComponent("processed.jpg"))
+            XCTAssertEqual(try JPEGParser.parse(originals[0]).scanData, try JPEGParser.parse(processed).scanData)
+        } else {
+            originals = [Data("synthetic RAW payload".utf8), interruptionXMP("Original XMP")]
+            processed = interruptionXMP("Processed XMP")
+        }
         let held = phase != "prepared"
         let published = phase == "published-0" || phase == "beforeCommit"
+        var expected = originals
+        if published { expected[expected.count - 1] = processed }
+        XCTAssertEqual(manifest.schemaVersion, 1)
+        XCTAssertEqual(manifest.originals.map(\.relativePath), paths)
+        XCTAssertEqual(manifest.originals.map(\.isReplaced), interruptionIsJPEG ? [true] : [false, true])
+        XCTAssertEqual(manifest.outputs.map(\.relativePath), [try XCTUnwrap(paths.last)])
         for (index, original) in manifest.originals.enumerated() {
-            let expected = Data((index == 0 ? "original RAW" : "original XMP").utf8)
-            XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(original.snapshotFilename)), expected)
-            XCTAssertEqual(FileManager.default.fileExists(atPath: recovery.appendingPathComponent(original.heldFilename).path), held)
-            if held {
-                XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(original.heldFilename)), expected)
-            }
-            let exists = FileManager.default.fileExists(atPath: f.root.appendingPathComponent(original.relativePath).path)
-            XCTAssertEqual(exists, !held || (index == 1 && published))
+            XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(original.snapshotFilename)), originals[index])
+            let holding = recovery.appendingPathComponent(original.heldFilename)
+            XCTAssertEqual(FileManager.default.fileExists(atPath: holding.path), held)
+            if held { XCTAssertEqual(try Data(contentsOf: holding), originals[index]) }
+            let destination = f.root.appendingPathComponent(original.relativePath)
+            let exists = !held || (index == paths.count - 1 && published)
+            XCTAssertEqual(FileManager.default.fileExists(atPath: destination.path), exists)
+            if exists { XCTAssertEqual(try Data(contentsOf: destination), expected[index]) }
         }
-        if published { XCTAssertEqual(try read("nested/photo.xmp", fixture: f), "processed XMP") }
-        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        let output = try XCTUnwrap(manifest.outputs.first)
+        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(output.snapshotFilename)), processed)
+        let session = try LocalEndpointSession(endpoint: f.endpoint,
+            managedFolder: interruptionManaged ? .syncedFiles : nil)
         XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved()) { error in
             XCTAssertTrue(error.localizedDescription.contains(recovery.path))
         }
-        // Follow the documented manual choice: retain the published XMP if present,
-        // otherwise restore the originals. Guard-only RAW must always be restored.
+        // Explicitly retain published outputs, restore missing originals, then
+        // remove the resolved recovery directory. This is not automatic replay.
         for original in manifest.originals {
             let destination = f.root.appendingPathComponent(original.relativePath)
             if !FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.moveItem(at: recovery.appendingPathComponent(original.heldFilename), to: destination)
             }
         }
-        XCTAssertEqual(try read("nested/photo.cr3", fixture: f), "original RAW")
-        XCTAssertEqual(try read("nested/photo.xmp", fixture: f), published ? "processed XMP" : "original XMP")
+        for (path, bytes) in zip(paths, expected) {
+            let destination = f.root.appendingPathComponent(path)
+            XCTAssertEqual(try Data(contentsOf: destination), bytes)
+            XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: destination.path)[.modificationDate] as? Date,
+                           interruptionDate)
+        }
+        if interruptionIsJPEG {
+            try verifyInterruptionJPEG(at: f.root.appendingPathComponent(paths[0]),
+                headline: published ? "Processed JPEG" : "Original JPEG")
+        } else {
+            XCTAssertEqual(try MetadataWriter.readExistingGeocodingSidecar(at: f.root.appendingPathComponent(paths[0]))?.headline,
+                           published ? "Processed XMP" : "Original XMP")
+        }
         try FileManager.default.removeItem(at: recovery)
         try session.validateMetadataRecoveryIsResolved()
-        let raw = try staged("nested/photo.cr3", contents: "original RAW", fixture: f, prefix: "retry-raw")
-        let xmp = try staged("nested/photo.xmp", contents: published ? "processed XMP" : "original XMP", fixture: f, prefix: "retry-xmp")
-        let output = try staged("nested/photo.xmp", contents: "retried XMP", fixture: f, prefix: "retry-output")
-        try await session.importFilesTransactionallyMatching([output], replacing: [raw, xmp],
+        let snapshots = try zip(paths, expected).map { try interruptionImport($0.0, bytes: $0.1, fixture: f) }
+        let retryBytes = interruptionIsJPEG ? processed : interruptionXMP("Retried XMP")
+        let retry = try interruptionImport(try XCTUnwrap(paths.last), bytes: retryBytes, fixture: f)
+        try await session.importFilesTransactionallyMatching([retry], replacing: snapshots,
             preserveDate: true, verifySize: true)
-        XCTAssertEqual(try read("nested/photo.cr3", fixture: f), "original RAW")
-        XCTAssertEqual(try read("nested/photo.xmp", fixture: f), "retried XMP")
+        XCTAssertEqual(try Data(contentsOf: f.root.appendingPathComponent(try XCTUnwrap(paths.last))), retryBytes)
+        if interruptionIsJPEG {
+            try verifyInterruptionJPEG(at: f.root.appendingPathComponent(paths[0]), headline: "Processed JPEG")
+        } else {
+            XCTAssertEqual(try Data(contentsOf: f.root.appendingPathComponent(paths[0])), originals[0])
+            XCTAssertEqual(try MetadataWriter.readExistingGeocodingSidecar(at: f.root.appendingPathComponent(paths[0]))?.headline,
+                           "Retried XMP")
+        }
         XCTAssertTrue(try recoveryFiles(f).isEmpty)
         try Data(phase.utf8).write(to: f.inputs.appendingPathComponent("recovery-verified"), options: .atomic)
+    }
+
+    private func verifyInterruptionJPEG(at url: URL, headline: String) throws {
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        XCTAssertNotNil(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any])
+        let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
+        XCTAssertEqual(iptc[kCGImagePropertyIPTCHeadline as String] as? String, headline)
     }
 
     func testReadOnlySnapshotValidationDetectsNewCompanionAndPrimaryEdits() throws {
