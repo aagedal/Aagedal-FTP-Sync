@@ -9,9 +9,9 @@ final class VersionedAppStorageTests: XCTestCase {
     private let validStore = Data("{\"version\":3,\"headline\":\"{gps:city}\",\"activated\":false}".utf8)
 
     private func fixture(_ action: (URL, VersionedAppStorage) throws -> Void) throws {
-        // Foundation normalizes the standard /private/var temp alias back to
-        // /var on this host. Use an explicit non-symlink root for this contract.
-        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+        // Use the physical spelling of the trusted system temporary parent.
+        // Foundation symlink resolution may retain /var on macOS.
+        let root = (try Version3StartupPaths.canonicalDirectory(FileManager.default.temporaryDirectory)).appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try legacy.write(to: root.appendingPathComponent("jobs-v2.json"))

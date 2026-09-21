@@ -19,7 +19,7 @@ final class LegacySignatureSQLiteAcquisitionTests: XCTestCase {
         }
     }
     private func root() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("signature-acquisition-test-\(UUID().uuidString)")
+        let url = (try Version3StartupPaths.canonicalDirectory(FileManager.default.temporaryDirectory)).appendingPathComponent("signature-acquisition-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
     }

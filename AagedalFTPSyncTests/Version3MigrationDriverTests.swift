@@ -7,7 +7,7 @@ final class Version3MigrationDriverTests: XCTestCase {
     private typealias Driver = Version3MigrationDriver
     private enum Injected: Error { case interrupted }
     private func fixture() throws -> (URL, Driver) {
-        let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("selected-migration-\(UUID())")
+        let base = (try Version3StartupPaths.canonicalDirectory(FileManager.default.temporaryDirectory)).appendingPathComponent("selected-migration-\(UUID())")
         let root = base.appendingPathComponent("profile")
         let temporary = base.appendingPathComponent("temporary")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

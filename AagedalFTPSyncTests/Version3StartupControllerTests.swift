@@ -9,7 +9,7 @@ final class Version3StartupControllerTests: XCTestCase {
     private enum Injected: Error { case failed }
 
     private func base() throws -> URL {
-        let base = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("startup-controller-\(UUID())")
+        let base = (try Version3StartupPaths.canonicalDirectory(FileManager.default.temporaryDirectory)).appendingPathComponent("startup-controller-\(UUID())")
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: false)
         addTeardownBlock { try? FileManager.default.removeItem(at: base) }
         return base
