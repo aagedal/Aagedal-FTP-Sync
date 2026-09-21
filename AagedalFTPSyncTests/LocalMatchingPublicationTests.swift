@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import XCTest
+import SwiftMediaMetadata
 @testable import AagedalFTPSync
 
 final class LocalMatchingPublicationTests: XCTestCase {
@@ -177,6 +178,58 @@ final class LocalMatchingPublicationTests: XCTestCase {
         try UITestSupport.reconcileMetadataRecoveryFixture(rootURL: root)
         XCTAssertEqual(try Data(contentsOf: visible), Data("later review edit".utf8))
         XCTAssertNoThrow(try LocalEndpointSession(endpoint: job.right).validateMetadataRecoveryIsResolved())
+    }
+
+    func testNativeImageRecoveryFixturePublishesAfterReconciliationAndRetainsReceipts() async throws {
+        for managed in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("native-image-recovery-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            var job = SyncJob(name: "Disposable image recovery")
+            try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root, managed: managed, images: true)
+            let repository = try UITestSupport.recoveryFixtureRepository(job: job, rootURL: root)
+            job = try XCTUnwrap(repository.load().first)
+            let destination = root.appendingPathComponent(managed ? "Destination/Synced Files" : "Destination")
+            let image = destination.appendingPathComponent("nested/recovery.jpg")
+            let before = try Data(contentsOf: image)
+            let date = try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            let engine = SyncEngine(
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")))
+            do {
+                _ = try await engine.preflightExistingLocalFiles(job: job)
+                XCTFail("Retained recovery must prevent image admission")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("Recover the retained files")) }
+            XCTAssertEqual(try Data(contentsOf: image), before)
+            try UITestSupport.reconcileMetadataRecoveryFixture(rootURL: root, managed: managed)
+            let preflight = try await engine.preflightExistingLocalFiles(job: job)
+            XCTAssertEqual(preflight.scanned, 1)
+            XCTAssertEqual(preflight.ready, 1)
+            XCTAssertEqual(preflight.failed, 0)
+            XCTAssertEqual(try Data(contentsOf: image), before)
+            let result = try await engine.reprocessExistingLocalFiles(job: job)
+            XCTAssertEqual(result.applied, 1)
+            XCTAssertEqual(result.failed, 0)
+            XCTAssertEqual(try ImageMetadata.read(from: image).iptc.city, "Recovery Venue")
+            XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("Source/recovery.jpg")), before)
+            let published = try Data(contentsOf: image)
+            let auditURL = root.appendingPathComponent("audit.json")
+            try MetadataAuditRepository(fileURL: auditURL).append(result.metadataReport)
+            // A fresh launch must retain both the published image and its receipt.
+            try UITestSupport.seedMetadataRecoveryFixture(job: &job, rootURL: root, managed: managed, images: true)
+            try UITestSupport.reconcileMetadataRecoveryFixture(rootURL: root, managed: managed)
+            let receipts = try MetadataAuditRepository(fileURL: auditURL).latestEntries(jobID: job.id)
+            XCTAssertEqual(receipts.count, 1)
+            XCTAssertNotNil(receipts["nested/recovery.jpg"]?.processingFingerprint)
+            let repeated = try await engine.reprocessExistingLocalFiles(job: job,
+                filter: .staleOrIncomplete, latestOutcomes: receipts)
+            XCTAssertEqual(repeated.applied, 0)
+            XCTAssertEqual(repeated.skipped, 1)
+            XCTAssertEqual(repeated.failed, 0)
+            XCTAssertEqual(try Data(contentsOf: image), published)
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-original.txt")),
+                           Data("retained original fixture bytes".utf8))
+        }
     }
 
     private struct Fixture {

@@ -1,5 +1,6 @@
 import AppKit
 import XCTest
+import ImageIO
 
 @MainActor
 final class AagedalFTPSyncSmokeTests: XCTestCase {
@@ -27,8 +28,16 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyRetainedMetadataRecovery(managed: true)
     }
 
-    private func verifyRetainedMetadataRecovery(managed: Bool) throws {
-        launch(seedJob: true, recoveryFixture: true, managedRecovery: managed)
+    func testImageRecoveryPublishesAndRetainsResultAcrossRelaunch() throws {
+        try verifyRetainedMetadataRecovery(managed: false, images: true)
+    }
+
+    func testManagedImageRecoveryPublishesAndRetainsResultAcrossRelaunch() throws {
+        try verifyRetainedMetadataRecovery(managed: true, images: true)
+    }
+
+    private func verifyRetainedMetadataRecovery(managed: Bool, images: Bool = false) throws {
+        launch(seedJob: true, recoveryFixture: true, managedRecovery: managed, imageRecovery: images)
         element("Metadata").firstMatch.click()
         let reprocess = element("reprocess-geocoding")
         XCTAssertTrue(reprocess.waitForExistence(timeout: 5))
@@ -76,6 +85,12 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let originalBytes = try Data(contentsOf: original)
         XCTAssertEqual(originalBytes, Data("retained original fixture bytes".utf8))
         let reviewedBytes = Data("reviewed visible fixture bytes".utf8)
+        let image = destination.appendingPathComponent("nested/recovery.jpg")
+        let source = root.appendingPathComponent("Source/recovery.jpg")
+        let imageBefore = images ? try Data(contentsOf: image) : nil
+        let imageDate = images ? try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate : nil
+        var imagePublished: Data?
+
         // The runner cannot write the app container. An explicit isolated launch
         // option performs fixture reconciliation inside its owning sandbox.
         app.terminate()
@@ -94,15 +109,38 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             let sheet = app.sheets.firstMatch
             XCTAssertTrue(sheet.waitForExistence(timeout: 8))
             let success = sheet.staticTexts.matching(NSPredicate(
-                format: "label CONTAINS %@ OR value CONTAINS %@", "Preflight checked 0 files", "Preflight checked 0 files"
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                images ? "Preflight checked 1 files" : "Preflight checked 0 files",
+                images ? "Preflight checked 1 files" : "Preflight checked 0 files"
             )).firstMatch
             XCTAssertTrue(success.waitForExistence(timeout: 8))
-            // The text fixture is deliberately not an image: admission succeeds,
-            // while no metadata publication is offered for an empty image batch.
-            XCTAssertFalse(sheet.buttons["Reprocess Saved Files"].isEnabled)
-            sheet.buttons["Cancel"].click()
-            waitForSheetTransition()
-            XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+            if images && !relaunch {
+                XCTAssertEqual(try Data(contentsOf: image), imageBefore, "Preflight must not publish")
+                XCTAssertTrue(sheet.buttons["Reprocess Saved Files"].isEnabled)
+                sheet.buttons["Reprocess Saved Files"].click()
+                XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+                let completion = app.staticTexts.matching(NSPredicate(
+                    format: "label CONTAINS %@ OR value CONTAINS %@",
+                    "Reprocessed 1 of 1 files; 0 skipped, 0 failed", "Reprocessed 1 of 1 files; 0 skipped, 0 failed"
+                )).firstMatch
+                XCTAssertTrue(completion.waitForExistence(timeout: 15))
+                let imageSource = try XCTUnwrap(CGImageSourceCreateWithURL(image as CFURL, nil))
+                let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any])
+                let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
+                XCTAssertEqual(iptc[kCGImagePropertyIPTCCity as String] as? String, "Recovery Venue")
+                imagePublished = try Data(contentsOf: image)
+                XCTAssertNotEqual(imagePublished, imageBefore)
+            } else {
+                XCTAssertFalse(sheet.buttons["Reprocess Saved Files"].isEnabled)
+                sheet.buttons["Cancel"].click()
+                waitForSheetTransition()
+                XCTAssertTrue(sheet.waitForNonExistence(timeout: 5))
+            }
+            if images {
+                XCTAssertEqual(try Data(contentsOf: image), imagePublished)
+                XCTAssertEqual(try Data(contentsOf: source), imageBefore)
+                XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, imageDate)
+            }
             XCTAssertFalse(manager.fileExists(atPath: recovery.path))
             XCTAssertEqual(try Data(contentsOf: rescued), originalBytes)
             XCTAssertEqual(try Data(contentsOf: visible), reviewedBytes)
@@ -630,7 +668,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         failFirstJobSave: Bool = false,
         accessibilityText: Bool = false,
         recoveryFixture: Bool = false,
-        managedRecovery: Bool = false
+        managedRecovery: Bool = false,
+        imageRecovery: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -644,6 +683,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if failFirstJobSave { app.launchEnvironment["AAGEDAL_UI_TEST_FAIL_FIRST_JOB_SAVE"] = "1" }
         if accessibilityText { app.launchEnvironment["AAGEDAL_UI_TEST_ACCESSIBILITY_TEXT"] = "1" }
         if recoveryFixture { app.launchEnvironment["AAGEDAL_UI_TEST_RECOVERY"] = "1" }
+        if imageRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] = "1" }
         if managedRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()

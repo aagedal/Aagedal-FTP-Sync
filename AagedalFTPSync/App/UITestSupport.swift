@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import ServiceManagement
 import SwiftUI
+import SwiftMediaMetadata
 
 /// Isolated launch plumbing for UI tests and hosted unit tests. Neither test host
 /// may start the user's normal jobs or load their Keychain credentials.
@@ -230,7 +231,7 @@ enum UITestSupport {
         job.startsOnAppLaunch = false
         if enabled, ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECOVERY"] == "1" {
             do {
-                try seedMetadataRecoveryFixture(job: &job, rootURL: rootURL, managed: managedRecoveryFixture)
+                try seedMetadataRecoveryFixture(job: &job, rootURL: rootURL, managed: managedRecoveryFixture, images: imageRecoveryFixture)
             } catch {
                 preconditionFailure("Unable to prepare isolated metadata recovery fixture: \(error)")
             }
@@ -270,10 +271,14 @@ enum UITestSupport {
         enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] == "1"
     }
 
+    private static var imageRecoveryFixture: Bool {
+        enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] == "1"
+    }
+
     /// Real folder permissions let native tests reach recovery admission instead
     /// of failing at placeholder-bookmark resolution. Seed once so relaunch after
     /// manual reconciliation cannot silently recreate the retained backup.
-    static func seedMetadataRecoveryFixture(job: inout SyncJob, rootURL: URL, managed: Bool = false) throws {
+    static func seedMetadataRecoveryFixture(job: inout SyncJob, rootURL: URL, managed: Bool = false, images: Bool = false) throws {
         let manager = FileManager.default
         for side in ["Source", "Destination"] {
             let folder = rootURL.appendingPathComponent(side, isDirectory: true)
@@ -283,6 +288,13 @@ enum UITestSupport {
             if side == "Source" { job.left = endpoint } else { job.right = endpoint }
         }
         job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty, localeIdentifier: "en_US")
+        if images {
+            job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty,
+                localeIdentifier: "en_US", geofences: [.init(id: UUID(uuidString: "CFE8C6D6-56C1-4CB0-96B9-3195F9A4A781")!, name: "Recovery Venue", vertices: [
+                    .init(latitude: 59.4, longitude: 10.2), .init(latitude: 59.4, longitude: 10.3),
+                    .init(latitude: 59.6, longitude: 10.3), .init(latitude: 59.6, longitude: 10.2)
+                ])])
+        }
         job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
         if managed { job.processedFilesLocation = .processedSubfolder }
         let marker = rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")
@@ -302,6 +314,28 @@ enum UITestSupport {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"), options: .atomic)
+        if images {
+            let nested = destination.appendingPathComponent("nested", isDirectory: true)
+            try manager.createDirectory(at: nested, withIntermediateDirectories: true)
+            guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4,
+                bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+                let pixels = bitmap.bitmapData else {
+                throw AppError.invalidConfiguration("Cannot create recovery image fixture")
+            }
+            pixels.initialize(repeating: 100, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+            guard let bytes = bitmap.representation(using: .jpeg, properties: [:]) else {
+                throw AppError.invalidConfiguration("Cannot encode recovery image fixture")
+            }
+            let image = nested.appendingPathComponent("recovery.jpg")
+            try bytes.write(to: image)
+            var metadata = try ImageMetadata.read(from: image)
+            metadata.setGPS(latitude: 59.5, longitude: 10.25)
+            try metadata.write(to: image)
+            try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)],
+                                      ofItemAtPath: image.path)
+            try manager.copyItem(at: image, to: rootURL.appendingPathComponent("Source/recovery.jpg"))
+        }
         try Data("seeded".utf8).write(to: marker, options: .atomic)
     }
 
