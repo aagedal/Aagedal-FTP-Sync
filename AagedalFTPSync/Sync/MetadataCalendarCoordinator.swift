@@ -556,8 +556,12 @@ final class MetadataCalendarCoordinator: ObservableObject {
         guard !busy, !isPaused else { return }
         do {
             try requireNamespace(protocolVersion)
+            // Opening job settings re-selects the current protocol. Preserve a
+            // calendar chosen by the invitation flow in that case; otherwise a
+            // server with multiple calendars falls back to the new-calendar row.
+            let suggested = discoveryProtocol == protocolVersion ? suggestedCalendarID : nil
             discoveryProtocol = protocolVersion
-            calendars = []; members = []; invitation = ""; suggestedCalendarID = nil
+            calendars = []; members = []; invitation = ""; suggestedCalendarID = suggested
             if let account { lastCalendarList[account.id] = nil }
             Task { await refresh() }
         } catch { message = error.localizedDescription }

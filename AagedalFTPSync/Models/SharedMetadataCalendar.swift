@@ -131,7 +131,16 @@ struct MetadataCalendarSummary: Codable, Identifiable, Sendable {
     var name: String
     var timeZone: String
     var role: String
+    var rangeStart: Date? = nil
+    var rangeEnd: Date? = nil
     var compatibility: MetadataCalendarCompatibility = .legacy
+    /// Older servers did not include membership scope in calendar listings.
+    var scopeIsKnown = true
+
+    var range: MetadataSharingRange? {
+        guard let rangeStart, let rangeEnd else { return nil }
+        return MetadataSharingRange(start: rangeStart, end: rangeEnd)
+    }
 }
 
 extension SharedMetadataCalendar {
@@ -174,7 +183,7 @@ extension SharedMetadataCalendar {
 }
 
 extension MetadataCalendarSummary {
-    private enum CodingKeys: String, CodingKey { case id, name, timeZone, role }
+    private enum CodingKeys: String, CodingKey { case id, name, timeZone, role, rangeStart, rangeEnd }
     init(from decoder: Decoder) throws {
         compatibility = try MetadataCalendarCompatibility.decodeHeaders(from: decoder)
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -182,6 +191,9 @@ extension MetadataCalendarSummary {
         name = try values.decode(String.self, forKey: .name)
         timeZone = try values.decode(String.self, forKey: .timeZone)
         role = try values.decode(String.self, forKey: .role)
+        rangeStart = try values.decodeIfPresent(Date.self, forKey: .rangeStart)
+        rangeEnd = try values.decodeIfPresent(Date.self, forKey: .rangeEnd)
+        scopeIsKnown = values.contains(.rangeStart) && values.contains(.rangeEnd)
     }
     func encode(to encoder: Encoder) throws {
         try compatibility.encodeHeaders(to: encoder)
@@ -190,6 +202,8 @@ extension MetadataCalendarSummary {
         try values.encode(name, forKey: .name)
         try values.encode(timeZone, forKey: .timeZone)
         try values.encode(role, forKey: .role)
+        try values.encodeIfPresent(rangeStart, forKey: .rangeStart)
+        try values.encodeIfPresent(rangeEnd, forKey: .rangeEnd)
     }
 }
 

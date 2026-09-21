@@ -50,6 +50,21 @@ final class MetadataCalendarProtocolModelTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(MetadataCalendarSummary.self, from: encoder.encode(summary)).compatibility, .legacy)
     }
 
+    func testCalendarSummaryRoundTripsMemberDateRange() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let summary = MetadataCalendarSummary(id: UUID(), name: "Scoped calendar", timeZone: "Europe/Oslo", role: "editor",
+            rangeStart: start, rangeEnd: start.addingTimeInterval(86_400))
+
+        let decoded = try decoder.decode(MetadataCalendarSummary.self, from: encoder.encode(summary))
+        XCTAssertEqual(decoded.id, summary.id)
+        XCTAssertEqual(decoded.name, summary.name)
+        XCTAssertEqual(decoded.timeZone, summary.timeZone)
+        XCTAssertEqual(decoded.role, summary.role)
+        XCTAssertEqual(decoded.rangeStart, summary.rangeStart)
+        XCTAssertEqual(decoded.rangeEnd, summary.rangeEnd)
+        XCTAssertEqual(decoded.range, MetadataSharingRange(start: start, end: start.addingTimeInterval(86_400)))
+    }
+
     func testTemplateNamespaceRoundtripRetainsHeadersEvenAfterAllActivationsRemoved() throws {
         var value = snapshot(try document(active: true), compatibility: .templates)
         XCTAssertEqual(try decoder.decode(SharedMetadataCalendar.self, from: encoder.encode(value)), value)

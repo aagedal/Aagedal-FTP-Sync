@@ -87,6 +87,8 @@ struct MetadataCalendarSettingsView: View {
                         Text("Linked to “\(binding.snapshot.name)”").font(.headline)
                         LabeledContent("Sync server", value: sync.state.accounts.first { $0.id == binding.accountID }?.displayName ?? "Unavailable")
                             .textSelection(.enabled)
+                        Text(calendarScope(binding.snapshot))
+                            .font(.caption).foregroundStyle(.secondary)
                         Text(binding.snapshot.compatibility == .templates ? "Template-enabled calendar" : "Classic calendar")
                             .font(.caption).foregroundStyle(.secondary)
                         Text(activity.detail).textSelection(.enabled)
@@ -377,17 +379,22 @@ struct MetadataCalendarSettingsView: View {
 
     private var calendarSetup: some View {
         Group {
+            Text("A server can contain more than one calendar. Choose the calendar that this job should share; joining the server alone does not select one.")
+                .font(.caption).foregroundStyle(.secondary)
             Picker("Calendar to sync", selection: Binding(get: { calendarID }, set: {
                 calendarID = $0
                 hasChosenCalendar = true
             })) {
                 Text("New shared calendar from this job").tag(nil as UUID?)
-                ForEach(availableCalendars) { calendar in Text(calendar.name).tag(Optional(calendar.id)) }
+                ForEach(availableCalendars) { calendar in
+                    Text("\(calendar.name) · \(calendarScope(calendar))").tag(Optional(calendar.id))
+                }
             }
             if let selectedCalendar {
-                Text(selectedCalendar.role == "reader"
-                     ? "This invitation is read-only. Updates from the shared calendar will appear on this Mac; local edits will not be sent."
-                     : "Changes sync both ways between this job and the shared calendar. Everyone with editing access can make changes.")
+                Text((selectedCalendar.role == "reader"
+                     ? "This invitation is read-only. Updates from the shared calendar will appear on this Mac; local edits will not be sent. "
+                     : "Changes sync both ways between this job and the shared calendar. Everyone with editing access can make changes. ")
+                     + calendarScope(selectedCalendar))
                     .font(.caption).foregroundStyle(.secondary)
                 Text("For the initial setup, this job will use the shared calendar’s programming. If it already has programming, you’ll be offered a copy to preserve the original.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -435,6 +442,26 @@ struct MetadataCalendarSettingsView: View {
         } else if let calendarID, !sync.calendars.contains(where: { $0.id == calendarID }) {
             self.calendarID = nil
         }
+    }
+
+    private func calendarScope(_ calendar: MetadataCalendarSummary) -> String {
+        guard calendar.scopeIsKnown else { return "Date scope shown after attach" }
+        guard let range = calendar.range else { return "Entire calendar" }
+        return "Dates \(formattedCalendarDate(range.start, timeZone: calendar.timeZone))–\(formattedCalendarDate(range.end.addingTimeInterval(-1), timeZone: calendar.timeZone)) (\(calendar.timeZone))"
+    }
+
+    private func calendarScope(_ calendar: SharedMetadataCalendar) -> String {
+        guard let range = calendar.range else { return "Entire calendar" }
+        return "This Mac sees only \(formattedCalendarDate(range.start, timeZone: calendar.timeZone))–\(formattedCalendarDate(range.end.addingTimeInterval(-1), timeZone: calendar.timeZone)) (\(calendar.timeZone)). Clips outside these dates, including today when it is outside the range, will not appear."
+    }
+
+    private func formattedCalendarDate(_ date: Date, timeZone identifier: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.timeZone = TimeZone(identifier: identifier) ?? .current
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
     }
 
 }

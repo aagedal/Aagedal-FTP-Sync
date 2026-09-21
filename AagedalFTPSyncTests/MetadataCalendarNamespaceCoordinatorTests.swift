@@ -221,6 +221,10 @@ final class MetadataCalendarNamespaceCoordinatorTests: XCTestCase {
         XCTAssertTrue(sync.state.bindings.isEmpty)
         XCTAssertNil(sync.receiveProposal)
         XCTAssertEqual(f.store.jobs, originalJobs)
+        XCTAssertEqual(sync.suggestedCalendarID, f.calendar.id)
+        sync.selectProtocol(.templates)
+        XCTAssertEqual(sync.suggestedCalendarID, f.calendar.id,
+            "Reopening job settings must not discard the calendar selected by the invitation")
         sync.renameAccount(account.id, name: "Sports desk")
         deadline = Date().addingTimeInterval(5)
         while sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }

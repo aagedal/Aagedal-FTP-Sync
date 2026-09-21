@@ -188,7 +188,7 @@ function liveRun(array $config): never {
         }
         if (!$device) { failLive(401, 'unauthorized'); }
         if ($r['action'] === 'listCalendars') {
-            $rows = liveQuery($pdo, 'SELECT c.id, c.name, c.time_zone AS timeZone, m.role FROM aftpsync_calendars c JOIN aftpsync_members m ON m.calendar_id = c.id WHERE m.device_id = ? ORDER BY c.name', [$id])->fetchAll(PDO::FETCH_ASSOC);
+            $rows = liveQuery($pdo, 'SELECT c.id, c.name, c.time_zone AS timeZone, m.role, m.range_start AS rangeStart, m.range_end AS rangeEnd FROM aftpsync_calendars c JOIN aftpsync_members m ON m.calendar_id = c.id WHERE m.device_id = ? ORDER BY c.name', [$id])->fetchAll(PDO::FETCH_ASSOC);
             liveReply(200, ['calendars' => $rows]);
         }
         $cid = liveID($r['calendarID'] ?? null);
