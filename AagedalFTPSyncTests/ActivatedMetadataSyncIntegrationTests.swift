@@ -233,6 +233,104 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         }
     }
 
+    func testScopedImageRecoveryPreservesReviewedConflictsAndResumesAfterReopening() async throws {
+        for managed in [false, true] {
+            for clipScope in [false, true] {
+                for suffix in ["transaction", "trash"] {
+                    let f = try fixture(headline: "Before")
+                    var job = f.job
+                    if managed { job.processedFilesLocation = .processedSubfolder }
+                    let selectedClip = try XCTUnwrap(job.metadataAutomation?.clips.first)
+                    let other = PhotographerProfile(name: "Other", filenamePrefix: "OTHER", creator: "Other", copyrightNotice: "")
+                    var otherClip = selectedClip
+                    otherClip.id = UUID()
+                    otherClip.photographerID = other.id
+                    job.metadataAutomation?.photographers.append(other)
+                    job.metadataAutomation?.clips.append(otherClip)
+                    let scope: MetadataReprocessScope = clipScope ? .clip(selectedClip.id) : .photographer(selectedClip.photographerID)
+                    let names = ["nested/FX_READY.jpg", "nested/FX_EDIT.cr3", "nested/OTHER_KEEP.jpg"]
+                    let raw = Data("opaque recovery RAW fixture".utf8)
+                    try FileManager.default.createDirectory(at: f.source.appendingPathComponent("nested"), withIntermediateDirectories: true)
+                    for name in names { try write(name.hasSuffix("cr3") ? raw : jpeg(), name: name, root: f.source) }
+                    let transfer = try await engine(f).run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTAssertEqual(transfer.metadataReport.applied, 3)
+                    let auditURL = f.root.appendingPathComponent("audit.json")
+                    try MetadataAuditRepository(fileURL: auditURL).append(transfer.metadataReport)
+                    let latest = try MetadataAuditRepository(fileURL: auditURL).latestEntries(jobID: job.id)
+                    let destination = managed ? f.destination.appendingPathComponent("Synced Files") : f.destination
+                    let sidecarPath = "nested/FX_EDIT.xmp"
+                    let sidecar = destination.appendingPathComponent(sidecarPath)
+                    let originalSidecar = try Data(contentsOf: sidecar)
+                    try MetadataWriter.apply(ResolvedMetadataChanges(headline: "Reviewed edit", existingFieldPolicy: .overwrite),
+                                             to: destination.appendingPathComponent(names[1]), relativePath: names[1])
+                    let paths = names + [sidecarPath]
+                    func snapshots() throws -> [String: Data] {
+                        try Dictionary(uniqueKeysWithValues: paths.map { ($0, try Data(contentsOf: destination.appendingPathComponent($0))) })
+                    }
+                    let reviewed = try snapshots()
+                    job.metadataAutomation?.existingFieldPolicy = .overwrite
+                    job.metadataAutomation?.clips[0].fields.setHeadline(try .activated("Recovered {photographer}"))
+                    let review = try await engine(f).preflightExistingLocalFiles(
+                        job: job, scope: scope, filter: .staleOrIncomplete, latestOutcomes: latest)
+                    XCTAssertEqual(review.scanned, 2)
+                    XCTAssertEqual(review.ready, 1)
+                    XCTAssertEqual(review.conflicts, [names[1]])
+                    XCTAssertEqual(try snapshots(), reviewed)
+
+                    // Recovery appears after review, before the approved publication starts.
+                    let recovery = destination.appendingPathComponent(suffix == "transaction"
+                        ? ".aagedal-sync-scoped.transaction" : ".aagedal-sync-reset-scoped.trash")
+                    try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+                    let retained = recovery.appendingPathComponent("original-held-0")
+                    try originalSidecar.write(to: retained)
+                    for preflight in [true, false] {
+                        do {
+                            _ = try await engine(f).reprocessExistingLocalFiles(
+                                job: job, scope: scope, filter: .staleOrIncomplete,
+                                conflictPolicy: .processEditedOutputs(review.conflictOutputRevisions),
+                                latestOutcomes: latest, isPreflight: preflight)
+                            XCTFail("Recovery must reject scoped review and approved writes")
+                        } catch {
+                            XCTAssertTrue(error.localizedDescription.contains(recovery.path), error.localizedDescription)
+                        }
+                        XCTAssertEqual(try snapshots(), reviewed)
+                        XCTAssertEqual(try Data(contentsOf: retained), originalSidecar)
+                        XCTAssertEqual(try MetadataAuditRepository(fileURL: auditURL).latestEntries(jobID: job.id), latest)
+                    }
+                    // Preserve the backup outside the watched destination, as explicit fixture reconciliation.
+                    let reconciled = f.root.appendingPathComponent("reconciled")
+                    try FileManager.default.moveItem(at: recovery, to: reconciled)
+                    let reopened = engine(f)
+                    let retry = try await reopened.preflightExistingLocalFiles(
+                        job: job, scope: scope, filter: .staleOrIncomplete, latestOutcomes: latest)
+                    XCTAssertEqual(retry, review)
+                    XCTAssertEqual(try snapshots(), reviewed)
+                    let result = try await reopened.reprocessExistingLocalFiles(
+                        job: job, scope: scope, filter: .staleOrIncomplete,
+                        conflictPolicy: .processEditedOutputs(retry.conflictOutputRevisions), latestOutcomes: latest)
+                    XCTAssertEqual(result.applied, 2)
+                    XCTAssertEqual(result.failed, 0)
+                    XCTAssertTrue(result.conflicts.isEmpty)
+                    XCTAssertEqual(Set(result.metadataReport.entries.map(\.relativePath)), Set(names.prefix(2)))
+                    XCTAssertEqual(try ImageMetadata.read(from: destination.appendingPathComponent(names[0])).iptc.headline, "Recovered Fixture")
+                    XCTAssertEqual(try XMPSidecar.read(from: sidecar).headline, "Recovered Fixture")
+                    XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(names[1])), raw)
+                    XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(names[2])), reviewed[names[2]])
+                    XCTAssertEqual(try Data(contentsOf: reconciled.appendingPathComponent("original-held-0")), originalSidecar)
+                    try MetadataAuditRepository(fileURL: auditURL).append(result.metadataReport)
+                    let receipts = try MetadataAuditRepository(fileURL: auditURL).latestEntries(jobID: job.id)
+                    let published = try snapshots()
+                    let repeated = try await engine(f).reprocessExistingLocalFiles(
+                        job: job, scope: scope, filter: .staleOrIncomplete, latestOutcomes: receipts)
+                    XCTAssertEqual(repeated.applied, 0)
+                    XCTAssertEqual(repeated.failed, 0)
+                    XCTAssertEqual(repeated.skipped, 2)
+                    XCTAssertEqual(try snapshots(), published)
+                }
+            }
+        }
+    }
+
     func testStoppedReprocessingRetainsCompletedReceiptsAndPreservesRemainingImage() async throws {
         let f = try fixture(headline: "Before")
         for name in ["FX_1.jpg", "FX_2.jpg"] { try write(jpeg(), name: name, root: f.source) }
