@@ -155,6 +155,114 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         verifyProgrammingRecoveryReview(managed: true)
     }
 
+    func testProgrammingPublishesRecoveredImageAndPreservesItAcrossRelaunch() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false)
+    }
+
+    func testManagedProgrammingPublishesRecoveredImageAndPreservesItAcrossRelaunch() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true)
+    }
+
+    private func verifyProgrammingPublishesRecoveredImage(managed: Bool) throws {
+        launch(seedJob: true, seedMap: true, recoveryFixture: true,
+               managedRecovery: managed, imageRecovery: true)
+        element("Metadata").firstMatch.click()
+        element("open-metadata-programming").click()
+        let window = app.windows["Metadata Programming"]
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        window.buttons["Reprocess Existing Files…"].click()
+        let blocked = window.sheets.firstMatch
+        XCTAssertTrue(blocked.waitForExistence(timeout: 5))
+        let failure = blocked.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            ".aagedal-sync-ui-fixture.transaction", ".aagedal-sync-ui-fixture.transaction"
+        )).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 8))
+        let message = failure.value as? String ?? failure.label
+        let pathStart = try XCTUnwrap(message.range(of: "remains at "))
+        let pathEnd = try XCTUnwrap(message.range(of: ". Recover the retained files"))
+        let recovery = URL(fileURLWithPath: String(message[pathStart.upperBound..<pathEnd.lowerBound]))
+        let destination = recovery.deletingLastPathComponent()
+        let endpoint = managed ? destination.deletingLastPathComponent() : destination
+        let root = endpoint.deletingLastPathComponent()
+        let session = try XCTUnwrap(app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"])
+        guard root.lastPathComponent == session,
+              root.deletingLastPathComponent().lastPathComponent == "AagedalFTPSyncUITests",
+              endpoint.lastPathComponent == "Destination",
+              destination.lastPathComponent == (managed ? "Synced Files" : "Destination"),
+              recovery.lastPathComponent == ".aagedal-sync-ui-fixture.transaction" else {
+            XCTFail("Refusing to inspect an image outside this isolated fixture")
+            return
+        }
+        let image = destination.appendingPathComponent("nested/recovery.jpg")
+        let source = root.appendingPathComponent("Source/recovery.jpg")
+        let before = try Data(contentsOf: image)
+        let modified = try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        XCTAssertEqual(try Data(contentsOf: source), before)
+        XCTAssertFalse(blocked.buttons["Reprocess Files"].exists)
+        blocked.buttons["Cancel"].click()
+        waitForSheetTransition()
+        XCTAssertTrue(blocked.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(try Data(contentsOf: image), before)
+
+        app.terminate()
+        app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] = "1"
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        element("Metadata").firstMatch.click()
+        element("open-metadata-programming").click()
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        window.buttons["Reprocess Existing Files…"].click()
+        let review = window.sheets.firstMatch
+        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        let ready = review.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Preflight checked 1 files: 1 ready to update",
+            "Preflight checked 1 files: 1 ready to update"
+        )).firstMatch
+        XCTAssertTrue(ready.waitForExistence(timeout: 8))
+        XCTAssertEqual(try Data(contentsOf: image), before, "Review must not publish")
+        let publish = review.buttons["Reprocess Files"]
+        XCTAssertTrue(publish.isEnabled)
+        publish.click()
+        XCTAssertTrue(review.waitForNonExistence(timeout: 5))
+        let completion = window.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Reprocessed 1 of 1 files; 0 skipped, 0 failed",
+            "Reprocessed 1 of 1 files; 0 skipped, 0 failed"
+        )).firstMatch
+        XCTAssertTrue(completion.waitForExistence(timeout: 15))
+        let imageSource = try XCTUnwrap(CGImageSourceCreateWithURL(image as CFURL, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any])
+        let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
+        XCTAssertEqual(iptc[kCGImagePropertyIPTCCity as String] as? String, "Recovery Venue")
+        let published = try Data(contentsOf: image)
+        XCTAssertNotEqual(published, before)
+        XCTAssertEqual(try Data(contentsOf: source), before)
+        XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
+
+        app.terminate()
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        element("Metadata").firstMatch.click()
+        element("open-metadata-programming").click()
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        window.buttons["Reprocess Existing Files…"].click()
+        let repeatReview = window.sheets.firstMatch
+        XCTAssertTrue(repeatReview.waitForExistence(timeout: 5))
+        let noReady = repeatReview.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Preflight checked 1 files: 0 ready to update",
+            "Preflight checked 1 files: 0 ready to update"
+        )).firstMatch
+        XCTAssertTrue(noReady.waitForExistence(timeout: 8))
+        XCTAssertFalse(repeatReview.buttons["Reprocess Files"].isEnabled)
+        XCTAssertEqual(try Data(contentsOf: image), published)
+        XCTAssertEqual(try Data(contentsOf: source), before)
+        XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
+        repeatReview.buttons["Cancel"].click()
+    }
+
     private func verifyProgrammingRecoveryReview(managed: Bool) {
         launch(seedJob: true, seedMap: true, recoveryFixture: true, managedRecovery: managed)
         element("Metadata").firstMatch.click()
