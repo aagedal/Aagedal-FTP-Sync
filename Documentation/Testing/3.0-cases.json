@@ -43,19 +43,19 @@
     {
       "id": "m0-003",
       "section": "M0 — Compatibility and baseline",
-      "title": "Verify real model and companion-service availability",
-      "prerequisites": "The intended production model distribution, configured verification key, a compatible Photo Agent exporter, and test instances of old and upgraded metadata calendar servers.",
+      "title": "Verify bundled model and companion-service availability",
+      "prerequisites": "A signed candidate containing the reviewed AuraFace model and license notice, a compatible Photo Agent exporter, and test instances of old and upgraded metadata calendar servers.",
       "steps": [
-        "Use the app's supported model installer against the intended distribution and record artifact URL identity, version, size, integrity/signature result, and successful Core ML load without recording credentials.",
+        "Verify the bundled model's source and app hashes, license notice, embedding identity, size and successful Core ML load in the signed candidate; record the build and verification output.",
         "Export a small authorized people library from the companion Photo Agent build and inspect the documented embedding-space and preprocessing manifest fields.",
         "Import that export into FTP Sync and perform one known-person recognition using a different authorized picture.",
         "Record old/new server protocol and capability responses and the deployment sequence from the server upgrade guide.",
-        "Record any unavailable artifact, verification key, companion exporter, server, or incompatible contract as a release blocker."
+        "Record any missing or invalid bundled artifact, companion exporter, server, or incompatible contract as a release blocker."
       ],
       "expected": [
-        "The real signed model is installable and usable, and the companion export identifies a compatible embedding space.",
+        "The reviewed model is present and usable in the signed app, and the companion export identifies a compatible embedding space.",
         "Calendar capability enforcement can be tested on deployed test servers.",
-        "Mocks, unsigned substitutes, or a successful compile do not count as production availability."
+        "Mocks, an unsigned development bundle, or a successful compile do not count as signed-candidate availability."
       ],
       "required": true
     },
@@ -425,11 +425,11 @@
       "id": "m3-005",
       "section": "M3 — Persistence and sharing",
       "title": "Inspect privacy boundaries in exports, logs and support bundles",
-      "prerequisites": "A disposable configuration with an installed model and imported private test library, known marker strings in test names/paths, encrypted and unencrypted exports, and a generated default support bundle.",
+      "prerequisites": "A disposable configuration with the verified bundled model and imported private test library, known marker strings in test names/paths, encrypted and unencrypted exports, and a generated default support bundle.",
       "steps": [
         "Export configuration using both protection modes and inspect unencrypted content or decrypt your own encrypted export with its test password.",
         "Inspect calendar payloads, ordinary logs and the default support bundle for reference thumbnails, embeddings, model bytes, machine library paths and secret markers.",
-        "Verify portable job policies retain supported language/time-zone settings as documented, while imports require local library/model setup.",
+        "Verify portable job policies retain supported language/time-zone settings as documented, while imports require local library setup and a compatible app bundle.",
         "Inspect incoming source/destination trees for unexpected '.faces' directories; inspect app support for the installed library location.",
         "Confirm Keychain passwords and folder security bookmarks remain absent from portable packages."
       ],
@@ -443,19 +443,18 @@
     {
       "id": "m4-001",
       "section": "M4 — Local face recognition",
-      "title": "Install, remove and recover the optional face model",
-      "prerequisites": "The actual verified model distribution, a compatible authorized library, a test network environment, and installer failure fixtures for invalid hash/signature and interrupted download/compile.",
+      "title": "Verify bundled face model admission and failure handling",
+      "prerequisites": "A signed candidate with the reviewed bundled AuraFace payload and license notice, a compatible authorized library, and disposable bundles or isolated fixtures for missing/corrupt model and invalid policy cases.",
       "steps": [
-        "Start with no model. In the job editor open Face recognition, turn on Recognize people locally, and verify Face recognition status explains the missing runtime. Turn it off again, save, and confirm an ordinary transfer still works.",
-        "Install the real component, record download size/model version and successful verification, then disconnect the network and recognize a fixture.",
-        "Exercise offline first-install, invalid signature/hash, interrupted download, cancelled install and interrupted compilation through supported test fixtures.",
-        "When replacing an existing working model fails, verify the prior verified installation still works.",
-        "Remove the model using the app's controls, restart, inspect disk removal/status and confirm file transfer remains available."
+        "Verify the signed app contains the expected model bytes and license notice, and record the source and built-app hash checks plus Core ML loading result.",
+        "Disconnect the network, launch the app, select a compatible imported library and recognize an authorized fixture; repeat after relaunch.",
+        "In isolated fixtures, test missing or corrupt bundled weights, incompatible model identity and invalid recognition-policy configuration; confirm recognition fails closed with a visible status.",
+        "With recognition disabled or unavailable, confirm an ordinary transfer still works and no automatic person name is written."
       ],
       "expected": [
-        "Only verified compatible artifacts become active; installation failures are actionable and preserve previous usable state.",
-        "Installed recognition works locally without network requests.",
-        "Missing/removed models disable face processing visibly without disabling transfer."
+        "Only the verified compatible bundled model is admitted; missing, corrupt or misconfigured payloads do not publish person names.",
+        "Recognition works locally without network requests and survives relaunch.",
+        "Unavailable recognition is visible without disabling ordinary transfer."
       ],
       "required": true
     },
@@ -753,7 +752,7 @@
         "At the authorized release cut, compare project.yml, generated project and built app version/build; verify 3.0.0 and the selected next valid build number agree.",
         "Run Scripts/check-release-identity.sh with the intended version and build explicitly and attach its output.",
         "Read user-facing docs against the actual tested controls, defaults, OS requirements, approximate location behavior, model setup and reprocessing limitations.",
-        "Check the security supported-release line, model/source licenses and attribution, distribution verification configuration, and companion-server deployment instructions.",
+        "Check the security supported-release line, bundled model/source licenses and attribution, source/app hash verification, and companion-server deployment instructions.",
         "Record any scope deferral or OS change as a decision requiring review rather than marking the original scope complete."
       ],
       "expected": [
@@ -790,13 +789,13 @@
       "steps": [
         "Build and verify the signed Release archive using the repository's documented signing/release workflow; record archive hash, revision, signing and required platform verification results.",
         "Install the actual packaged app in a clean test account, launch normally, grant folder access and confirm version/build.",
-        "Create a small local-to-local job, install the verified optional model, import the compatible library and transfer a combined-enrichment fixture.",
+        "Create a small local-to-local job, verify the bundled model, import the compatible library and transfer a combined-enrichment fixture.",
         "Quit/reopen, verify folder access/settings/model state persist, then perform preview and explicit reprocessing.",
         "Repeat the essential install/launch/processing flow on oldest and newest supported systems and attach evidence from the distributed artifact rather than only a Debug build."
       ],
       "expected": [
         "The signed Release artifact installs, launches and performs the declared scope on supported systems.",
-        "Archive identity matches the accepted revision and optional model verification works in the packaged app.",
+        "Archive identity matches the accepted revision and bundled model verification works in the packaged app.",
         "No release is published automatically by completing this test."
       ],
       "required": true
