@@ -205,6 +205,30 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(blocked.waitForNonExistence(timeout: 5))
         XCTAssertEqual(try Data(contentsOf: image), before)
 
+        // The same real image must remain protected when recovery admission is
+        // reached through a clip's scoped action, not only the full-batch button.
+        let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
+        XCTAssertTrue(clip.waitForExistence(timeout: 5))
+        clip.rightClick()
+        let clipAction = app.menuItems["Reprocess This Clip’s Files…"]
+        XCTAssertTrue(clipAction.waitForExistence(timeout: 3))
+        clipAction.click()
+        let scopedBlocked = window.sheets.firstMatch
+        XCTAssertTrue(scopedBlocked.waitForExistence(timeout: 5))
+        let scopedFailure = scopedBlocked.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            recovery.path, recovery.path
+        )).firstMatch
+        XCTAssertTrue(scopedFailure.waitForExistence(timeout: 8))
+        XCTAssertFalse(scopedBlocked.buttons["Reprocess Clip’s Files"].exists)
+        scopedBlocked.buttons["Cancel"].click()
+        waitForSheetTransition()
+        XCTAssertTrue(scopedBlocked.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(try Data(contentsOf: image), before)
+        XCTAssertEqual(try Data(contentsOf: source), before)
+        XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
+
         app.terminate()
         app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] = "1"
         app.launch()
