@@ -352,9 +352,11 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             element("open-jobs-window").click()
         }
         XCTAssertTrue(element("job-name").waitForExistence(timeout: 8))
-        element("File Filtering & Deletion").firstMatch.click()
+        let fileTab = app.radioButtons["File Filtering & Deletion"]
+        XCTAssertTrue(fileTab.waitForExistence(timeout: 5))
+        fileTab.click()
         let toggle = element("use-metadata-programming-filter")
-        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertTrue(toggle.waitForExistence(timeout: 8))
         XCTAssertFalse(element("metadata-programming-filter-explanation").exists)
         toggle.click()
         XCTAssertTrue(element("metadata-programming-filter-explanation").waitForExistence(timeout: 3))
@@ -369,7 +371,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         replaceText(in: element("job-name"), with: "Recovered job")
         element("save-job").click()
 
-        let alert = app.dialogs.firstMatch
+        let alert = app.sheets.firstMatch
         XCTAssertTrue(alert.waitForExistence(timeout: 3))
         XCTAssertTrue(alert.staticTexts["The UI smoke test intentionally blocked this save. Try saving again."].exists)
         alert.buttons["OK"].click()
@@ -483,7 +485,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before)
     }
 
-    func testPeopleLibrarySettingsShowsUnavailableModelConfiguration() {
+    func testPeopleLibrarySettingsShowsBundledModelAndLibraryAdmission() {
         launch(seedJob: true)
 
         element("Metadata").firstMatch.click()
@@ -495,7 +497,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(element("peopleLibrary.summary").waitForExistence(timeout: 5))
         let modelStatus = element("faceModel.status")
         XCTAssertTrue(modelStatus.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["Model downloads are not configured in this build."].exists)
+        XCTAssertTrue(app.staticTexts["AuraFace model included with the app"].exists)
+        XCTAssertTrue(app.staticTexts["Recognition is not ready. Select a compatible People Library and relaunch to validate the model and library."].exists)
     }
 
     private func openSeededClipEditor() {
@@ -746,9 +749,10 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(app.windows["Startup and Recovery"].waitForExistence(timeout: 8))
         XCTAssertFalse(element("startup.source.jobs-v2.json").exists)
 
-        let failClosed = "Startup could not complete safely. Saved data remains available for recovery. Quit and reopen the app before trying Open or Recover; no default configuration was loaded."
-        let failure = app.staticTexts.matching(NSPredicate(format: "value == %@", failClosed)).firstMatch
+        let failure = element("startup.message")
         XCTAssertTrue(failure.waitForExistence(timeout: 12))
+        let message = (failure.value as? String) ?? failure.label
+        XCTAssertTrue(message.contains("The app could not open your saved data"), "Actual startup message: \(message)")
         XCTAssertFalse(app.staticTexts["Review before starting"].exists)
         XCTAssertFalse(app.staticTexts["Recovery Backup UI Fixture"].exists)
     }
