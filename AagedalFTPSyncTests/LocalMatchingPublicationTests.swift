@@ -95,6 +95,7 @@ final class LocalMatchingPublicationTests: XCTestCase {
         let session = try LocalEndpointSession(endpoint: f.endpoint)
         for index in 0..<600 {
             try write("background", "background-\(index).txt", fixture: f)
+            try write("hidden background", ".unrelated-hidden-file-\(index).txt", fixture: f)
         }
         XCTAssertNoThrow(try session.validateMetadataRecoveryIsResolved())
         let recovery = f.root.appendingPathComponent(".aagedal-sync-late.transaction")

@@ -334,16 +334,17 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                 break
             }
             entriesUntilCancellationCheck -= 1
-            // All recovery artifacts are hidden. Most large photo folders contain
-            // ordinary filenames; avoid constructing a Swift String for each one
-            // at every snapshot/publication boundary. Hidden names retain the full
-            // predicate below, and cancellation is checked every 256 entries.
-            guard entry.pointee.d_name.0 == 46 else { continue } // ASCII "."
-            let name = withUnsafePointer(to: &entry.pointee.d_name) {
-                $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
-                    String(cString: $0)
+            // All recovery artifacts start with ".aagedal-sync-" and have at
+            // least 26 UTF-8 bytes. Reject ordinary and unrelated hidden names
+            // before constructing a Swift String at each admission boundary.
+            guard entry.pointee.d_namlen >= 26,
+                  entry.pointee.d_name.0 == 46 else { continue } // ASCII "."
+            guard let name = withUnsafePointer(to: &entry.pointee.d_name, { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { bytes -> String? in
+                    guard bytes[1] == 97, bytes[2] == 97 else { return nil } // ASCII "aa"
+                    return String(cString: bytes)
                 }
-            }
+            }) else { continue }
             if Self.isRecoveryArtifact(named: name) {
                 let recovery = rootURL.appendingPathComponent(name)
                 throw AppError.transferFailed(
