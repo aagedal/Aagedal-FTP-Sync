@@ -90,6 +90,22 @@ final class LocalMatchingPublicationTests: XCTestCase {
         } catch { XCTAssertFalse(error is CancellationError) }
     }
 
+    func testRecoveryAdmissionScansPastCancellationBatchesAndChecksFreshState() throws {
+        let f = try fixture()
+        let session = try LocalEndpointSession(endpoint: f.endpoint)
+        for index in 0..<600 {
+            try write("background", "background-\(index).txt", fixture: f)
+        }
+        XCTAssertNoThrow(try session.validateMetadataRecoveryIsResolved())
+        let recovery = f.root.appendingPathComponent(".aagedal-sync-late.transaction")
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: false)
+        XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved()) { error in
+            XCTAssertTrue(error.localizedDescription.contains(recovery.path), error.localizedDescription)
+        }
+        try FileManager.default.removeItem(at: recovery)
+        XCTAssertNoThrow(try session.validateMetadataRecoveryIsResolved())
+    }
+
     func testNativeRecoveryFixtureUsesRealAdmissionAndDoesNotReseedAfterReconciliation() async throws {
         try await verifyNativeRecoveryFixture(managed: false)
     }

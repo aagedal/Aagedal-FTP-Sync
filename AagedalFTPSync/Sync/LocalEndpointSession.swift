@@ -315,8 +315,16 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
         defer { closedir(directory) }
+        var entriesUntilCancellationCheck = 0
         while true {
-            try Task.checkCancellation()
+            // A cancellation check for every ordinary filename dominates repeated
+            // scans of large folders. Check once per small batch, including before
+            // the first read and after EOF; every admission still reads the entire
+            // directory and inspects every hidden name.
+            if entriesUntilCancellationCheck == 0 {
+                try Task.checkCancellation()
+                entriesUntilCancellationCheck = 256
+            }
             errno = 0
             guard let entry = readdir(directory) else {
                 let error = errno
@@ -325,10 +333,11 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                 }
                 break
             }
+            entriesUntilCancellationCheck -= 1
             // All recovery artifacts are hidden. Most large photo folders contain
             // ordinary filenames; avoid constructing a Swift String for each one
-            // at every snapshot/publication boundary. Cancellation is still checked
-            // for every entry, and hidden names retain the full predicate below.
+            // at every snapshot/publication boundary. Hidden names retain the full
+            // predicate below, and cancellation is checked every 256 entries.
             guard entry.pointee.d_name.0 == 46 else { continue } // ASCII "."
             let name = withUnsafePointer(to: &entry.pointee.d_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) {
