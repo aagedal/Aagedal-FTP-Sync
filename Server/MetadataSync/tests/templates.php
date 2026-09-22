@@ -34,6 +34,16 @@ verify($made3[0] === 200 && $made3[1]['calendar']['document'] === $v3doc
     && $made3[1]['calendar']['documentSchemaVersion'] === 3, 'V3 retains exact sources and markers');
 verify(api3($make3, $owner, $ownerKey)[1]['calendar']['revision'] === 1, 'V3 create retry is idempotent');
 verify((int) $pdo->query("SELECT COUNT(*) FROM aftpsync_calendars WHERE id = '$v3id'")->fetchColumn() === 0, 'V3 never enters legacy table');
+$beforeOldWrite = api3(['action' => 'getCalendar', 'calendarID' => $v3id], $owner, $ownerKey)[1]['calendar'];
+foreach ([1, 0] as $oldRevision) {
+    // A cached 2.9 client sends a schema-free literal document, never v3 markers.
+    $oldWrite = api(['action' => 'putCalendar', 'calendarID' => $v3id,
+        'expectedRevision' => $oldRevision, 'document' => $doc], $owner, $ownerKey);
+    verify($oldWrite[0] === 426 && $oldWrite[1]['error'] === 'client_upgrade_required'
+        && noTemplatePayload($oldWrite), "Literal old-client write at revision $oldRevision is gated before conflict handling");
+}
+verify(api3(['action' => 'getCalendar', 'calendarID' => $v3id], $owner, $ownerKey)[1]['calendar'] === $beforeOldWrite,
+    'Rejected old-client writes preserve the v3 revision and document');
 $list2 = api(['action' => 'listCalendars'], $owner, $ownerKey);
 verify(!str_contains($list2[2], $v3id) && !str_contains($list2[2], 'Private v3'), 'Legacy list omits v3 identity and name');
 verify(api3(['action' => 'getCalendar', 'calendarID' => $v3id], $editor, $editorKey, false)[0] === 403, 'Unauthorized missing-capability lookup stays generic');
