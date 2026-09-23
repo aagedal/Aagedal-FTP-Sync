@@ -252,6 +252,8 @@ enum UITestSupport {
                 name: "Map Assignment",
                 startsAt: dayStart.addingTimeInterval(9 * 60 * 60),
                 endsAt: dayStart.addingTimeInterval(10 * 60 * 60),
+                fields: ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] == "1"
+                    ? ScheduledMetadataFields(headline: "Scoped capture") : ScheduledMetadataFields(),
                 gpsPosition: ScheduledGPSPosition(
                     latitude: 59.9139,
                     longitude: 10.7522,
@@ -260,6 +262,8 @@ enum UITestSupport {
             )
             job.metadataAutomation = MetadataAutomation(
                 isEnabled: true,
+                timestampPolicy: ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] == "1"
+                    ? .cameraCapture : .sourceModification,
                 photographers: [photographer],
                 clips: [clip]
             )
@@ -327,14 +331,28 @@ enum UITestSupport {
             guard let bytes = bitmap.representation(using: .jpeg, properties: [:]) else {
                 throw AppError.invalidConfiguration("Cannot encode recovery image fixture")
             }
-            let image = nested.appendingPathComponent("recovery.jpg")
+            let matchingClip = ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] == "1"
+            let filename = matchingClip ? "MAP_recovery.jpg" : "recovery.jpg"
+            let image = nested.appendingPathComponent(filename)
             try bytes.write(to: image)
             var metadata = try ImageMetadata.read(from: image)
             metadata.setGPS(latitude: 59.5, longitude: 10.25)
+            if matchingClip {
+                let capture = Calendar.current.startOfDay(for: Date()).addingTimeInterval(9 * 60 * 60 + 30 * 60)
+                let formatter = DateFormatter()
+                formatter.calendar = Calendar(identifier: .gregorian)
+                formatter.timeZone = .current
+                formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+                let value = Data((formatter.string(from: capture) + "\0").utf8)
+                var exif = ExifData()
+                exif.exifIFD = IFD(entries: [IFDEntry(tag: ExifTag.dateTimeOriginal,
+                    type: .ascii, count: UInt32(value.count), valueData: value)])
+                metadata.exif = exif
+            }
             try metadata.write(to: image)
             try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)],
                                       ofItemAtPath: image.path)
-            try manager.copyItem(at: image, to: rootURL.appendingPathComponent("Source/recovery.jpg"))
+            try manager.copyItem(at: image, to: rootURL.appendingPathComponent("Source/\(filename)"))
         }
         try Data("seeded".utf8).write(to: marker, options: .atomic)
     }

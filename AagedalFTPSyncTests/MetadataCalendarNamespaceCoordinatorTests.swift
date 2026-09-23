@@ -316,6 +316,35 @@ final class MetadataCalendarNamespaceCoordinatorTests: XCTestCase {
         XCTAssertEqual(after.filter { $0.action == "putCalendar" }.count, 1)
     }
 
+    func testServerChangeDuringConflictReviewKeepsLocalEditAndRefreshesConflict() async throws {
+        let f = try fixture(localHeadline: .activated("Local {photographer}"))
+        var remote = f.calendar.document
+        remote.clips[0].fields.setHeadline(try .activated("Remote {photographer}"))
+        await f.server.replaceRemote(remote)
+        await f.sync.refresh(jobID: f.job.id)
+        let binding = try XCTUnwrap(f.sync.binding(for: f.job.id))
+        let review = try f.sync.conflictReview(binding)
+        let choices = Dictionary(uniqueKeysWithValues: try review.plan().conflicts.map { ($0.id, MetadataConflictChoice.local) })
+        XCTAssertFalse(choices.isEmpty)
+
+        remote.clips[0].fields.description = "New server edit"
+        await f.server.replaceRemote(remote)
+        f.sync.resolve(review, choices: choices)
+        let deadline = Date().addingTimeInterval(5)
+        while f.sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+
+        XCTAssertFalse(f.sync.busy)
+        XCTAssertEqual(f.sync.activity(for: f.job.id).phase, .conflict)
+        XCTAssertTrue(f.sync.message.contains("server changed again"), f.sync.message)
+        XCTAssertEqual(f.store.jobs.first?.metadataAutomation?.clips.first?.fields.headline, "Local {photographer}")
+        let saved = try XCTUnwrap(f.repository.load().bindings.first)
+        XCTAssertEqual(saved.snapshot, f.calendar)
+        XCTAssertEqual(saved.conflict?.revision, f.calendar.revision + 2)
+        XCTAssertEqual(saved.conflict?.document.clips.first?.fields.description, "New server edit")
+        let requests = await f.server.captured()
+        XCTAssertEqual(requests.map(\.action), ["getCalendar", "getCalendar"])
+    }
+
     func testOfflineTemplateBindingRetainsActiveLocalEditAndBaseline() async throws {
         let f = try fixture(localHeadline: .activated("Saved {gps:city}"))
         await f.server.setOffline()
