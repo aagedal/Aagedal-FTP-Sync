@@ -693,6 +693,61 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(element("startup.open").exists)
     }
 
+    func testVersion3CalendarConflictReviewRejectsServerChangeAndRefreshes() throws {
+        let session = UUID().uuidString
+        launchVersion3(session: session, fixture: "calendar-conflict", expectsStartupWindow: false)
+        if app.windows["Startup and Recovery"].exists {
+            app.disclosureTriangles["Recovery details"].click()
+            XCTFail("Startup fixture failed: \(app.windows["Startup and Recovery"].debugDescription)")
+            return
+        }
+        openStatusMenu()
+        element("open-jobs-window").click()
+        let jobs = app.windows["jobs"]
+        XCTAssertTrue(jobs.waitForExistence(timeout: 5))
+        XCTAssertTrue(element("job-name").waitForExistence(timeout: 5))
+        element("Metadata Sync").firstMatch.click()
+        let resolve = app.buttons["Resolve Conflicts…"]
+        XCTAssertTrue(resolve.waitForExistence(timeout: 5))
+        resolve.click()
+
+        let sheet = app.sheets.firstMatch
+        if !sheet.waitForExistence(timeout: 5) {
+            let nearby = jobs.staticTexts.allElementsBoundByIndex
+                .map { ($0.value as? String) ?? $0.label }
+            XCTFail("Review did not open: \(nearby)")
+            return
+        }
+        XCTAssertTrue(sheet.staticTexts["Resolve conflicts in “Fixture calendar”"].waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "This Mac {photographer}", "This Mac {photographer}"
+        )).firstMatch.exists)
+        XCTAssertTrue(sheet.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "Server {photographer}", "Server {photographer}"
+        )).firstMatch.exists)
+        XCTAssertFalse(sheet.buttons["Apply Resolutions"].isEnabled)
+        sheet.buttons["This Mac"].click()
+        XCTAssertTrue(sheet.buttons["Apply Resolutions"].isEnabled)
+        sheet.buttons["Apply Resolutions"].click()
+
+        let changed = sheet.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "server changed again", "server changed again"
+        )).firstMatch
+        XCTAssertTrue(changed.waitForExistence(timeout: 8))
+        XCTAssertTrue(sheet.exists, "A stale choice must leave the review open")
+        sheet.buttons["Refresh Review"].click()
+        let newest = sheet.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "Newest server {photographer}", "Newest server {photographer}"
+        )).firstMatch
+        XCTAssertTrue(newest.waitForExistence(timeout: 5))
+        XCTAssertTrue(sheet.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "This Mac {photographer}", "This Mac {photographer}"
+        )).firstMatch.exists)
+        XCTAssertFalse(sheet.buttons["Apply Resolutions"].isEnabled,
+            "A refreshed review must require an explicit new choice")
+    }
+
     func testVersion3SyncServerCanBeAddedWithoutSelectingAJob() {
         launchVersion3(session: UUID().uuidString, expectsStartupWindow: false)
         openStatusMenu()

@@ -84,7 +84,9 @@ final class Version3StartupController: ObservableObject {
                     return Session(store: store, calendar: calendar)
                 }, observeWorkspace: true)
             if testStartupMode {
-                let keychain = KeychainStore(passwordReader: { _ in nil }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+                let keychain = KeychainStore(passwordReader: { _ in
+                    UITestSupport.usesCalendarConflictFixture ? String(repeating: "a", count: 64) : nil
+                }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
                 result.factories = .init(appStore: { admission, faceRecognitionContext in
                     try AppStore.makePausedForValidatedStorage(admission.storage, retainedCredentialIDs: admission.currentCredentialIDs,
                         allowsCredentialGarbageCollection: false, keychain: keychain,
@@ -92,7 +94,7 @@ final class Version3StartupController: ObservableObject {
                         faceRecognitionContext: faceRecognitionContext)
                 }, calendar: { admission in
                     try MetadataCalendarCoordinator.makePausedForValidatedStorage(admission.storage, keychain: keychain,
-                        transport: { _, _, _, _, _ in throw URLError(.notConnectedToInternet) })
+                        transport: { request, _, _, _, _ in try await UITestSupport.calendarConflictResponse(request) })
                 })
             }
             return result
@@ -385,6 +387,11 @@ final class Version3StartupController: ObservableObject {
             attempt = nil
             session = Session(store: runtime.appStore, calendar: runtime.calendar, owner: runtime,
                               bridgeDirectory: runtime.admission.storage.root.appendingPathComponent("mcp-bridge", isDirectory: true))
+            if UITestSupport.usesCalendarConflictFixture {
+                // The review needs its local job, while the fixture transport
+                // supplies only a deterministic getCalendar response.
+                runtime.calendar.start(store: runtime.appStore, polling: false, observingChanges: false)
+            }
             phase = .ready
             switch operation {
             case .openCommitted:

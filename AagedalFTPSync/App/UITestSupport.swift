@@ -47,8 +47,12 @@ enum UITestSupport {
               let fixture = ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_V3_FIXTURE"] else {
             return
         }
-        let supportedFixtures = Set(["populated", "backup-only", "damaged-primary", "prepared-recovery"])
+        let supportedFixtures = Set(["populated", "backup-only", "damaged-primary", "prepared-recovery", "calendar-conflict"])
         guard supportedFixtures.contains(fixture) else { return }
+        if fixture == "calendar-conflict" {
+            try seedCalendarConflictFixture(at: rootURL)
+            return
+        }
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
         let filename = fixture == "backup-only" ? "jobs-v2.json.backup" : "jobs-v2.json"
         let repository = JobRepository(fileURL: fileURL(filename, rootURL: rootURL))
@@ -182,6 +186,67 @@ enum UITestSupport {
     }
 
     private enum FixtureInterruption: Error { case preparedBoundary, unexpectedCompletion }
+
+    static var usesCalendarConflictFixture: Bool {
+        usesVersion3Startup && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_V3_FIXTURE"] == "calendar-conflict"
+    }
+
+    /// A disposable v3 job has a local headline edit against revision 1 and a
+    /// competing server headline edit at revision 2. The fake transport returns
+    /// revision 3 when the open review is applied, simulating a second Mac edit.
+    private static func seedCalendarConflictFixture(at rootURL: URL) throws {
+        let storage = AppStorageLayout(root: rootURL.appendingPathComponent("v3", isDirectory: true), storageFormat: .version3)
+        guard !FileManager.default.fileExists(atPath: storage.jobs.path) else { return }
+        let photographer = PhotographerProfile(name: "Fixture", filenamePrefix: "FX", creator: "Fixture", copyrightNotice: "Literal")
+        let clip = MetadataScheduleClip(photographerID: photographer.id, name: "Fixture clip",
+            startsAt: Date(timeIntervalSince1970: 1_800_000_000), endsAt: Date(timeIntervalSince1970: 1_800_000_600),
+            fields: .init(headline: "Base {photographer}"))
+        var job = fixtureJob(rootURL: rootURL)
+        job.name = "Calendar Conflict UI Fixture"
+        job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+        let baseline = MetadataAutomation(photographers: [photographer], photographerTracks: [], clips: [clip])
+        job.metadataAutomation = baseline
+        try JobRepository(fileURL: rootURL.appendingPathComponent("jobs-v2.json")).save([job])
+        let catalog = try Version3MigrationSourceCatalog.inspect(root: rootURL)
+        guard let signatures = catalog.recommendedSignatureSource else { throw FixtureInterruption.unexpectedCompletion }
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .gmt
+        let plan = try catalog.makePlan(primarySources: catalog.recommendedPrimarySources,
+            signatures: signatures, calendar: calendar, migrationDate: Date(timeIntervalSince1970: 1_800_000_000))
+        _ = try Version3MigrationDriver(root: rootURL,
+            temporaryDirectory: rootURL.deletingLastPathComponent()).migrateSelectedSources(plan)
+
+        var activeBaseline = baseline
+        activeBaseline.clips[0].fields.setHeadline(try .activated("Base {photographer}"))
+        var local = activeBaseline
+        local.clips[0].fields.setHeadline(try .activated("This Mac {photographer}"))
+        job.metadataAutomation = local
+        try JobRepository(storage: storage).save([job])
+
+        let calendarID = UUID(uuidString: "A73FA2F2-148D-4AC9-8E56-0CD8E193F7B0")!
+        let base = SharedMetadataCalendar(id: calendarID, name: "Fixture calendar", timeZone: "Etc/UTC", revision: 1,
+            role: "owner", document: SharedMetadataDocument(activeBaseline), compatibility: .templates)
+        var remote = base
+        remote.revision = 2
+        remote.document.clips[0].fields.setHeadline(try .activated("Server {photographer}"))
+        let account = MetadataSyncAccount(id: UUID(), address: "https://fixture.invalid/", registered: true)
+        try MetadataCalendarRepository(storage: storage).save(.init(accounts: [account], activeAccountID: account.id,
+            bindings: [.init(accountID: account.id, jobID: job.id, snapshot: base, conflict: remote)]))
+    }
+
+    static func calendarConflictResponse(_ request: MetadataCalendarRequest) async throws -> MetadataCalendarResponse {
+        guard usesCalendarConflictFixture, let rootURL,
+              let remote = try MetadataCalendarRepository(storage: AppStorageLayout(
+                root: rootURL.appendingPathComponent("v3", isDirectory: true), storageFormat: .version3))
+                .load().bindings.first?.conflict else { throw URLError(.notConnectedToInternet) }
+        // A write reaching this transport is an error. The UI test requires
+        // the specific stale-review warning from the earlier getCalendar.
+        guard request.action == "getCalendar" else { throw URLError(.unsupportedURL) }
+        var latest = remote
+        latest.revision = 3
+        latest.document.clips[0].fields.setHeadline(try .activated("Newest server {photographer}"))
+        return MetadataCalendarResponse(service: "aagedal-metadata-sync", protocolVersion: 3,
+            calendar: latest, capabilities: ["metadata-templates-v1"])
+    }
 
     /// Leaves a valid PREPARED boundary with no installed v3 directory. The later
     /// legacy edit proves that the recovery action uses the frozen snapshot rather
