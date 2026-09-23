@@ -57,8 +57,9 @@ def compare_xmp(before: dict, after: dict, expected: dict) -> None:
             raise VerificationError(f"Expected XMP field missing: {key}")
         if after[key] != value:
             raise VerificationError(f"{key}: expected {value!r}, found {after[key]!r}")
+    missing = object()
     for key in sorted((before.keys() | after.keys()) - expected.keys()):
-        if before.get(key) != after.get(key):
+        if before.get(key, missing) != after.get(key, missing):
             raise VerificationError(
                 f"Unapproved XMP change in {key}: {before.get(key)!r} -> {after.get(key)!r}"
             )
@@ -71,6 +72,10 @@ def verify(before_raw: Path, after_raw: Path, before_xmp: Path | None,
     for path in [before_raw, after_raw, after_xmp, expected_path, before_xmp]:
         if path is not None and not path.is_file():
             raise VerificationError(f"Missing regular file: {path}")
+    if before_raw.samefile(after_raw):
+        raise VerificationError("Source and output RAW must be distinct files")
+    if before_xmp and before_xmp.samefile(after_xmp):
+        raise VerificationError("Source and output XMP must be distinct files")
     if before_raw.suffix.lower() != after_raw.suffix.lower():
         raise VerificationError("RAW extensions differ")
     raw_type = before_raw.suffix[1:].upper()
@@ -78,6 +83,10 @@ def verify(before_raw: Path, after_raw: Path, before_xmp: Path | None,
         raise VerificationError(f"Unsupported camera RAW extension: {before_raw.suffix}")
     if after_xmp.suffix.lower() != ".xmp" or (before_xmp and before_xmp.suffix.lower() != ".xmp"):
         raise VerificationError("Sidecars must use .xmp")
+    if after_xmp.stem != after_raw.stem or (before_xmp and before_xmp.stem != before_raw.stem):
+        raise VerificationError("Each XMP sidecar must match its camera RAW basename")
+    if before_xmp is None and any(before_raw.with_suffix(suffix).exists() for suffix in (".xmp", ".XMP")):
+        raise VerificationError("Source XMP sidecar exists; pass it with --before-xmp")
     try:
         expected = json.loads(expected_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
@@ -92,8 +101,8 @@ def verify(before_raw: Path, after_raw: Path, before_xmp: Path | None,
         raise VerificationError("Camera RAW bytes differ between source and output")
     for raw in [before_raw, after_raw]:
         tags = exiftool(raw, "-FileType", "-Make", "-Model", "-ImageWidth", "-ImageHeight")
-        # ExifTool's File group proves this is decoded as camera media, rather
-        # than an arbitrary byte stream with a RAW filename extension.
+        # FileType plus camera tags rejects arbitrary bytes with a RAW suffix.
+        # It does not authenticate the file's camera provenance.
         if tags.get("File:FileType") != raw_type:
             raise VerificationError(f"{raw}: ExifTool identifies {tags.get('File:FileType')!r}, expected {raw_type}")
         if not any(key.endswith(":Make") and value for key, value in tags.items()) or not any(

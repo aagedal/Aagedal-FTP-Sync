@@ -14,7 +14,11 @@ Make/Model and dimensions. It streams SHA-256 over both RAW files, then uses
 ExifTool to compare all externally readable XMP fields. Only keys explicitly
 listed in an expectations JSON file may differ. The expected output values,
 including ordered arrays and Unicode text, must match exactly. For a new
-sidecar, omit `--before-xmp`; the output must still have readable XMP.
+sidecar, omit `--before-xmp`; the output must still have readable XMP. The
+verifier requires sidecar basenames to match their RAW files, rejects an
+omitted source sidecar present beside the RAW and requires distinct source
+and output files. FileType and camera tags reject opaque renamed bytes, but
+do not authenticate camera provenance; record fixture origin separately.
 
 Example after processing a disposable `.CR3` pair:
 
@@ -42,9 +46,13 @@ hash and field comparison result when this matrix is run. Retain the original
 and output only in an authorized fixture location; the verifier writes neither.
 
 Verifier contract tests pass: `python3 Scripts/test_verify_raw_xmp_integrity.py`
-ran 4 tests, zero failures. They check preserved unrelated XMP, exact Unicode
-array comparison, missing/mismatched expected fields and rejection of opaque
-bytes renamed `.CR3`. A disposable ExifTool-produced XMP probe confirmed the
-actual `XMP-photoshop:City` and `XMP-photoshop:Country` group keys. No camera
-RAW pair was available to execute the acceptance command, so camera RAW,
-Photo Agent display and supported-macOS acceptance remain open.
+ran 10 tests, zero failures on ExifTool 13.55. They check preserved unrelated
+XMP, exact Unicode array comparison, missing/mismatched expected fields,
+null-valued field addition/removal, sidecar pairing, source-sidecar omission,
+source/output aliasing and rejection of opaque bytes renamed `.CR3`. A
+disposable synthetic XMP packet is read by the real ExifTool process to check
+the actual `XMP-photoshop:City` and Unicode `XMP-photoshop:Headline` values.
+The positive RAW metadata path uses a mock external reader and synthetic
+bytes; it does not demonstrate camera RAW decoding. No authorized camera RAW
+pair was available to execute the acceptance command, so camera RAW, Photo
+Agent display and supported-macOS acceptance remain open.
