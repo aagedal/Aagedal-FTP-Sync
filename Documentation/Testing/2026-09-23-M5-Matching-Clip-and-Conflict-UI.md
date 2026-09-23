@@ -41,7 +41,30 @@ write, leaves the local template edit intact, and saves the newest server
 revision as an active conflict. The agent's focused Xcode test passed 1/1 in
 its separate `build/v3-calendar-conflict-agent` DerivedData directory.
 
-This is a coordinator test, not a native conflict-sheet observation. Native
-interrupted-image reconciliation, camera RAW and external-reader integrity,
-older-client process rejection, and supported macOS/VoiceOver evidence remain
-open.
+At the time of that result, the conflict check covered the coordinator only.
+Native interrupted-image reconciliation, camera RAW and external-reader
+integrity, older-client process rejection, and supported macOS/VoiceOver
+evidence remain open.
+
+## Native calendar conflict review follow-up
+
+Commit `208d4f6` adds an isolated, committed version 3 fixture and a signed
+macOS UI test for the actual conflict sheet. The fixture starts with an active
+local headline edit and a competing server headline edit. Applying **This Mac**
+receives a newer server revision. The sheet stays open with the stale-review
+warning; **Refresh Review** shows the newest server headline, retains the local
+headline, and requires a new choice. The fake transport accepts only
+`getCalendar`, so this path cannot publish a stale choice.
+
+```sh
+xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' \
+  -scheme AagedalFTPSyncUISmokeTests -destination 'platform=macOS' \
+  -derivedDataPath build/v3-calendar-conflict-ui \
+  -only-testing:AagedalFTPSyncUITests/AagedalFTPSyncSmokeTests/testVersion3CalendarConflictReviewRejectsServerChangeAndRefreshes
+```
+
+The focused signed run passed 1/1 with zero failures on macOS 27.0 / Xcode
+27.0; the log is `build/v3-calendar-conflict-ui-test.log`. Earlier fixture
+iterations failed before the final passing run while establishing a committed
+v3 library and attaching its paused coordinator. This is development-host
+evidence, not the supported-OS or VoiceOver release matrix.
