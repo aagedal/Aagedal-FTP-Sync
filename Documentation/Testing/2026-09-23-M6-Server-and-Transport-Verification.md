@@ -40,6 +40,18 @@ The transport services and checklist server required permission to bind
 temporary loopback ports. The RAW fixture used by the transport harness is
 synthetic and does not establish camera RAW integrity.
 
+The vendored SwiftNIO SSH signature selection passed both regressions with
+zero failures. The Debug app built by the transport harness passed the bundled
+AuraFace app verification as well. Neither check establishes a signed Release
+archive or supported-macOS runtime coverage.
+
+```sh
+swift test --package-path Vendor/swift-nio-ssh \
+  --filter NIOSSHSignatureTests
+python3 Tools/verify_bundled_auraface.py app \
+  'build/v3-remote-transport-sep23/Build/Products/Debug/Aagedal FTP Sync.app'
+```
+
 ```sh
 Scripts/check-release-identity.sh
 Scripts/check-security-baseline.sh
