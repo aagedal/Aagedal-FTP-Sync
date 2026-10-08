@@ -92,7 +92,7 @@ enum UITestSupport {
             do {
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_INTERRUPTED_IMAGE"] == "1" {
-                    try reconcileInterruptedImageFixture(rootURL: rootURL, managed: managedRecoveryFixture, raw: rawRecoveryFixture)
+                    try reconcileInterruptedImageFixture(rootURL: rootURL, managed: managedRecoveryFixture, raw: rawRecoveryFixture, rawExtension: cameraRawExtension)
                 }
                 #endif
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] == "1" {
@@ -357,6 +357,11 @@ enum UITestSupport {
         enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RAW_RECOVERY"] == "1"
     }
 
+    // A closed fixture set prevents environment values from becoming paths.
+    private static var cameraRawExtension: String {
+        ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RAW_EXTENSION"] == "cr3" ? "cr3" : "arw"
+    }
+
     private static var interruptsImagePublication: Bool {
         #if DEBUG
         enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] == "1"
@@ -475,15 +480,15 @@ enum UITestSupport {
     private static func seedCameraRawRecoveryImage(rootURL: URL, nested: URL) throws {
         #if DEBUG
         guard interruptsImagePublication,
-              let fixture = Bundle.main.url(forResource: "UITestRecovery", withExtension: "arw") else {
+              let fixture = Bundle.main.url(forResource: "UITestRecovery", withExtension: cameraRawExtension) else {
             throw AppError.invalidConfiguration("Opt-in camera RAW test bundle is missing")
         }
         let manager = FileManager.default
         let sidecar = Data("""
-        <?xml version="1.0"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" exif:GPSLatitude="59,30N" exif:GPSLongitude="10,15E"><dc:description><rdf:Alt><rdf:li xml:lang="x-default">Preserve camera sidecar — æøå</rdf:li></rdf:Alt></dc:description></rdf:Description></rdf:RDF></x:xmpmeta>
+        <?xml version="1.0"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:custom="https://example.invalid/recovery/" xmp:Rating="4" custom:Keep="Camera &amp; desk" exif:GPSLatitude="59,30N" exif:GPSLongitude="10,15E"><dc:description><rdf:Alt><rdf:li xml:lang="x-default">Preserve camera sidecar — æøå</rdf:li></rdf:Alt></dc:description><dc:subject><rdf:Bag><rdf:li>Recovery keyword æøå</rdf:li><rdf:li>Desk &amp; camera</rdf:li></rdf:Bag></dc:subject><dc:rights><rdf:Alt><rdf:li xml:lang="x-default">© Recovery fixture</rdf:li></rdf:Alt></dc:rights></rdf:Description></rdf:RDF></x:xmpmeta>
         """.utf8)
         for folder in [nested, rootURL.appendingPathComponent("Source")] {
-            let image = folder.appendingPathComponent("recovery.arw")
+            let image = folder.appendingPathComponent("recovery." + cameraRawExtension)
             try manager.copyItem(at: fixture, to: image)
             let xmp = folder.appendingPathComponent("recovery.xmp")
             try sidecar.write(to: xmp)
@@ -538,7 +543,7 @@ enum UITestSupport {
     /// Explicit recovery choice for the single-image SIGKILL fixture. Preserve
     /// the entire transaction and the visible publication before restoring the
     /// original for a fresh native retry. This is not production recovery logic.
-    static func reconcileInterruptedImageFixture(rootURL: URL, managed: Bool = false, raw: Bool = false) throws {
+    static func reconcileInterruptedImageFixture(rootURL: URL, managed: Bool = false, raw: Bool = false, rawExtension: String = "arw") throws {
         let manager = FileManager.default
         // macOS may expose the owning sandbox's temporary root through an
         // alias. Canonicalize that root, then reject redirects below it.
@@ -559,7 +564,10 @@ enum UITestSupport {
         }
         let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
                                                from: Data(contentsOf: manifestURL))
-        let expectedPaths = raw ? ["nested/recovery.arw", "nested/recovery.xmp"] : ["nested/recovery.jpg"]
+        guard !raw || ["arw", "cr3"].contains(rawExtension) else {
+            throw AppError.invalidConfiguration("Unsupported camera recovery extension")
+        }
+        let expectedPaths = raw ? ["nested/recovery." + rawExtension, "nested/recovery.xmp"] : ["nested/recovery.jpg"]
         let outputPath = expectedPaths.last!
         guard manifest.schemaVersion == 1,
               manifest.originals.map(\.relativePath) == expectedPaths,

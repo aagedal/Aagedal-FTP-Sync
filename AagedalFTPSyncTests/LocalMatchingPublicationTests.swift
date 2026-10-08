@@ -277,52 +277,61 @@ final class LocalMatchingPublicationTests: XCTestCase {
     }
 
     func testInterruptedRawPairReconciliationValidatesWholeGroupBeforeRestoring() throws {
-        for managed in [false, true] {
-            for defect in ["none", "raw-source", "raw-visible", "sidecar-source", "sidecar-visible", "raw-held-link"] {
-                let root = FileManager.default.temporaryDirectory.appendingPathComponent("raw-reconcile-\(UUID())")
-                    .resolvingSymlinksInPath()
-                defer { try? FileManager.default.removeItem(at: root) }
-                let recovery = try seedInterruptedRawReconciliation(root: root, managed: managed)
-                let destination = recovery.deletingLastPathComponent()
-                let raw = destination.appendingPathComponent("nested/recovery.arw")
-                let sidecar = destination.appendingPathComponent("nested/recovery.xmp")
-                let heldRaw = recovery.appendingPathComponent("original-held-0")
-                switch defect {
-                case "raw-source": try Data("changed".utf8).write(to: root.appendingPathComponent("Source/recovery.arw"))
-                case "raw-visible": try Data("user-created".utf8).write(to: raw)
-                case "sidecar-source": try Data("changed".utf8).write(to: root.appendingPathComponent("Source/recovery.xmp"))
-                case "sidecar-visible": try Data("edited".utf8).write(to: sidecar)
-                case "raw-held-link":
-                    try FileManager.default.removeItem(at: heldRaw)
-                    try FileManager.default.createSymbolicLink(at: heldRaw, withDestinationURL: root.appendingPathComponent("Source/recovery.arw"))
-                default: break
+        for rawExtension in ["arw", "cr3"] {
+            for managed in [false, true] {
+                for defect in ["none", "raw-source", "raw-visible", "sidecar-source", "sidecar-visible", "raw-held-link", "wrong-extension", "unsafe-extension"] {
+                    let root = FileManager.default.temporaryDirectory.appendingPathComponent("raw-reconcile-\(UUID())")
+                        .resolvingSymlinksInPath()
+                    defer { try? FileManager.default.removeItem(at: root) }
+                    let recovery = try seedInterruptedRawReconciliation(root: root, managed: managed, rawExtension: rawExtension)
+                    let destination = recovery.deletingLastPathComponent()
+                    let raw = destination.appendingPathComponent("nested/recovery." + rawExtension)
+                    let sidecar = destination.appendingPathComponent("nested/recovery.xmp")
+                    let heldRaw = recovery.appendingPathComponent("original-held-0")
+                    switch defect {
+                    case "raw-source": try Data("changed".utf8).write(to: root.appendingPathComponent("Source/recovery." + rawExtension))
+                    case "raw-visible": try Data("user-created".utf8).write(to: raw)
+                    case "sidecar-source": try Data("changed".utf8).write(to: root.appendingPathComponent("Source/recovery.xmp"))
+                    case "sidecar-visible": try Data("edited".utf8).write(to: sidecar)
+                    case "raw-held-link":
+                        try FileManager.default.removeItem(at: heldRaw)
+                        try FileManager.default.createSymbolicLink(at: heldRaw, withDestinationURL: root.appendingPathComponent("Source/recovery." + rawExtension))
+                    default: break
+                    }
+                    let before = try Data(contentsOf: sidecar)
+                    let manifest = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+                    if defect != "none" {
+                        let requestedExtension: String
+                        switch defect {
+                        case "unsafe-extension": requestedExtension = "../cr3"
+                        case "wrong-extension": requestedExtension = rawExtension == "arw" ? "cr3" : "arw"
+                        default: requestedExtension = rawExtension
+                        }
+                        XCTAssertThrowsError(try UITestSupport.reconcileInterruptedImageFixture(
+                            rootURL: root, managed: managed, raw: true, rawExtension: requestedExtension), defect)
+                        XCTAssertEqual(try Data(contentsOf: sidecar), before)
+                        XCTAssertEqual(FileManager.default.fileExists(atPath: raw.path), defect == "raw-visible")
+                        XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
+                        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("rescued-publication.xmp").path))
+                        continue
+                    }
+                    try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension)
+                    XCTAssertEqual(try Data(contentsOf: raw), Data("camera RAW".utf8))
+                    XCTAssertEqual(try Data(contentsOf: sidecar), Data("original".utf8))
+                    XCTAssertEqual(try raw.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, Date(timeIntervalSince1970: 1_700_000_000))
+                    XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.xmp")), before)
+                    let preserved = root.appendingPathComponent("reconciled-image-recovery")
+                    XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifest)
+                    XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("original-held-0")), Data("camera RAW".utf8))
+                    try Data("retried sidecar".utf8).write(to: sidecar)
+                    try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension)
+                    XCTAssertEqual(try Data(contentsOf: sidecar), Data("retried sidecar".utf8))
                 }
-                let before = try Data(contentsOf: sidecar)
-                let manifest = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
-                if defect != "none" {
-                    XCTAssertThrowsError(try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true), defect)
-                    XCTAssertEqual(try Data(contentsOf: sidecar), before)
-                    XCTAssertEqual(FileManager.default.fileExists(atPath: raw.path), defect == "raw-visible")
-                    XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
-                    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("rescued-publication.xmp").path))
-                    continue
-                }
-                try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true)
-                XCTAssertEqual(try Data(contentsOf: raw), Data("camera RAW".utf8))
-                XCTAssertEqual(try Data(contentsOf: sidecar), Data("original".utf8))
-                XCTAssertEqual(try raw.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, Date(timeIntervalSince1970: 1_700_000_000))
-                XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.xmp")), before)
-                let preserved = root.appendingPathComponent("reconciled-image-recovery")
-                XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifest)
-                XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("original-held-0")), Data("camera RAW".utf8))
-                try Data("retried sidecar".utf8).write(to: sidecar)
-                try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true)
-                XCTAssertEqual(try Data(contentsOf: sidecar), Data("retried sidecar".utf8))
             }
         }
     }
 
-    private func seedInterruptedRawReconciliation(root: URL, managed: Bool) throws -> URL {
+    private func seedInterruptedRawReconciliation(root: URL, managed: Bool, rawExtension: String) throws -> URL {
         let recovery = try seedInterruptedReconciliation(root: root, managed: managed)
         let manager = FileManager.default
         let destination = recovery.deletingLastPathComponent()
@@ -331,13 +340,13 @@ final class LocalMatchingPublicationTests: XCTestCase {
         for prefix in ["original-held", "original-copy"] {
             try manager.moveItem(at: recovery.appendingPathComponent("\(prefix)-0"), to: recovery.appendingPathComponent("\(prefix)-1"))
         }
-        for url in [root.appendingPathComponent("Source/recovery.arw"), recovery.appendingPathComponent("original-held-0"), recovery.appendingPathComponent("original-copy-0")] {
+        for url in [root.appendingPathComponent("Source/recovery." + rawExtension), recovery.appendingPathComponent("original-held-0"), recovery.appendingPathComponent("original-copy-0")] {
             try Data("camera RAW".utf8).write(to: url)
             try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: url.path)
         }
         let manifest = LocalEndpointSession.MatchingRecoveryManifest(schemaVersion: 1,
             originals: [
-                .init(relativePath: "nested/recovery.arw", snapshotFilename: "original-copy-0", heldFilename: "original-held-0", isReplaced: false),
+                .init(relativePath: "nested/recovery." + rawExtension, snapshotFilename: "original-copy-0", heldFilename: "original-held-0", isReplaced: false),
                 .init(relativePath: "nested/recovery.xmp", snapshotFilename: "original-copy-1", heldFilename: "original-held-1", isReplaced: true)
             ], outputs: [.init(relativePath: "nested/recovery.xmp", stagedFilename: "output-stage-0", snapshotFilename: "output-copy-0", rollbackFilename: "rollback-output-0")])
         try JSONEncoder().encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"))
