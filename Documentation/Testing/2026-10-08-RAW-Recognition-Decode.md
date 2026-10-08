@@ -74,7 +74,7 @@ This is same-event selected-face evidence, not overall detector accuracy.
 Logs: `/private/tmp/aftpsync-v3-oct08-raw-decode-event-scan.log` and
 `/private/tmp/aftpsync-v3-oct08-raw-decode-matching.log`.
 The integrated non-UI suite passes 1,290 executed tests, 30 opt-in skips, zero
-failures. The final archive advances to build 44; build 43 is retained intact.
+failures. The planned archive advances to build 44; build 43 is retained intact.
 Log: `/private/tmp/aftpsync-v3-oct08-raw-decode-integrated.log`.
 
 Peak decoder memory, cold/warm budgets, sensor-RAW orientation coverage beyond
@@ -82,3 +82,33 @@ these samples, cancellation latency, macOS 14 and final signed-native acceptance
 remain open. The output cap is not a guarantee of peak decoder allocation;
 synchronous Core Image rendering cannot be interrupted midway. No ready-for-
 release or whole-detector accuracy claim is implied by these scoped checks.
+
+## Tested source and reproduction
+
+Focused and real-image runs used base `8c1d5d2` plus the then-uncommitted decoder,
+identity, audit and harness changes subsequently committed as
+`1581528b115641135c58cc687fe9745013e452de`. The final build-44 non-UI run includes
+the committed source changes and build-number update: 1,290 tests, 30 opt-in
+skips, zero failures. Log: `/private/tmp/aftpsync-v3-oct08-build44-integrated.log`.
+Only documentation changes follow that integration boundary before archiving.
+
+Commands (private manifests remain ignored):
+
+```sh
+TEST_RUNNER_AAGEDAL_FACE_EVALUATION_MANIFEST="$PWD/build/face-evaluation/ciraw-regression-manifest.local.json" \
+xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' -scheme AagedalFTPSync \
+  -destination 'platform=macOS' -derivedDataPath build/v3-oct08-tests CODE_SIGNING_ALLOWED=NO \
+  -only-testing:AagedalFTPSyncTests/AuthorizedFaceEvaluationTests/testOptInAuthorizedFaceScan
+# Repeat with ciraw-scan-manifest.local.json for all 225 captures.
+TEST_RUNNER_AAGEDAL_FACE_MATCHING_MANIFEST="$PWD/build/face-evaluation/matching-ciraw-manifest.local.json" \
+xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' -scheme AagedalFTPSync \
+  -destination 'platform=macOS' -derivedDataPath build/v3-oct08-tests CODE_SIGNING_ALLOWED=NO \
+  -only-testing:AagedalFTPSyncTests/AuthorizedFaceMatchingTests/testOptInVisuallyVerifiedHeldOutMatching
+xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' -scheme AagedalFTPSync \
+  -destination 'platform=macOS' -derivedDataPath build/v3-oct08-tests CODE_SIGNING_ALLOWED=NO \
+  -skip-testing:AagedalFTPSyncUITests
+```
+
+Host remains arm64 macOS 27.0.1 (26A434), Xcode 27.0 (27A266a). Query-runtime
+SHA-256 is `8d24bfc936c2f5b370c179120ca09d98448f6b9598686953d70a6ff5d316dde7`;
+weights identity remains the separately verified bundled SHA-256.
