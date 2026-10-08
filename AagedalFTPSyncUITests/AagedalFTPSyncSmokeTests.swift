@@ -44,9 +44,21 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedImagePublication(managed: true)
     }
 
-    private func verifyInterruptedImagePublication(managed: Bool) throws {
+    func testCameraRawPublicationReconcilesAndRetriesAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true)
+    }
+
+    func testManagedCameraRawPublicationReconcilesAndRetriesAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true)
+    }
+
+    private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false) throws {
+        if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
+            throw XCTSkip("Stage an authorized ARW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
+        }
+        let filename = raw ? "recovery.xmp" : "recovery.jpg"
         launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
-               imageRecovery: true, interruptPublication: true)
+               imageRecovery: true, interruptPublication: true, rawRecovery: raw)
         element("Metadata").firstMatch.click()
         element("reprocess-geocoding").click()
         let review = app.sheets.firstMatch
@@ -85,16 +97,22 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
         let manifest = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any]
         let originals = try XCTUnwrap(manifest?["originals"] as? [[String: Any]])
-        XCTAssertEqual(originals.count, 1)
-        XCTAssertEqual(originals[0]["relativePath"] as? String, "nested/recovery.jpg")
-        let held = recovery.appendingPathComponent(try XCTUnwrap(originals[0]["heldFilename"] as? String))
-        let source = root.appendingPathComponent("Source/recovery.jpg")
+        XCTAssertEqual(originals.count, raw ? 2 : 1)
+        let original = originals[raw ? 1 : 0]
+        XCTAssertEqual(original["relativePath"] as? String, "nested/" + filename)
+        let held = recovery.appendingPathComponent(try XCTUnwrap(original["heldFilename"] as? String))
+        let source = root.appendingPathComponent("Source/" + filename)
         XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
-        let output = destination.appendingPathComponent("nested/recovery.jpg")
-        let image = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
-        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [String: Any])
-        let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
-        XCTAssertEqual(iptc[kCGImagePropertyIPTCCity as String] as? String, "Recovery Venue")
+        let output = destination.appendingPathComponent("nested/" + filename)
+        try assertRecoveryCity(output, raw: raw)
+        let rawSource = root.appendingPathComponent("Source/recovery.arw")
+        let rawOutput = destination.appendingPathComponent("nested/recovery.arw")
+        let rawHeld = recovery.appendingPathComponent("original-held-0")
+        let rawBytes = raw ? try Data(contentsOf: rawSource) : nil
+        if raw {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: rawOutput.path))
+            XCTAssertEqual(try Data(contentsOf: rawHeld), rawBytes)
+        }
         XCTAssertEqual(try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                        Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertFalse(blocked.buttons["Reprocess Saved Files"].exists)
@@ -115,10 +133,14 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
         XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(held.lastPathComponent)), originalBytes)
         XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifestBytes)
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.jpg")), publishedBytes)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(raw ? "rescued-publication.xmp" : "rescued-publication.jpg")), publishedBytes)
         XCTAssertEqual(try Data(contentsOf: output), originalBytes)
         XCTAssertEqual(try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
 
+        if raw {
+            XCTAssertEqual(try Data(contentsOf: rawOutput), rawBytes)
+            XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("original-held-0")), rawBytes)
+        }
         element("Metadata").firstMatch.click()
         element("reprocess-geocoding").click()
         let retry = app.sheets.firstMatch
@@ -134,10 +156,11 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             format: "label CONTAINS %@ OR value CONTAINS %@",
             "Reprocessed 1 of 1 files; 0 skipped, 0 failed", "Reprocessed 1 of 1 files; 0 skipped, 0 failed"
         )).firstMatch.waitForExistence(timeout: 15))
-        let retriedImage = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
-        let retriedProperties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(retriedImage, 0, nil) as? [String: Any])
-        let retriedIPTC = try XCTUnwrap(retriedProperties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
-        XCTAssertEqual(retriedIPTC[kCGImagePropertyIPTCCity as String] as? String, "Recovery Venue")
+        try assertRecoveryCity(output, raw: raw)
+        if raw {
+            XCTAssertEqual(try Data(contentsOf: rawOutput), rawBytes)
+            XCTAssertEqual(try rawOutput.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+        }
         let retryBytes = try Data(contentsOf: output)
         XCTAssertNotEqual(retryBytes, originalBytes)
         XCTAssertEqual(try Data(contentsOf: source), originalBytes)
@@ -155,10 +178,29 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         )).firstMatch.waitForExistence(timeout: 8))
         XCTAssertFalse(repeated.buttons["Reprocess Saved Files"].isEnabled)
         repeated.buttons["Cancel"].click()
+        if raw {
+            XCTAssertEqual(try Data(contentsOf: rawOutput), rawBytes)
+            XCTAssertEqual(try Data(contentsOf: rawSource), rawBytes)
+        }
         XCTAssertEqual(try Data(contentsOf: output), retryBytes)
         XCTAssertEqual(try Data(contentsOf: source), originalBytes)
         XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(held.lastPathComponent)), originalBytes)
-        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.jpg")), publishedBytes)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(raw ? "rescued-publication.xmp" : "rescued-publication.jpg")), publishedBytes)
+    }
+
+    private func assertRecoveryCity(_ output: URL, raw: Bool) throws {
+        if raw {
+            let xml = try XMLDocument(contentsOf: output)
+            let city = try xml.nodes(forXPath: "//*[local-name()='City'] | //@*[local-name()='City']")
+            XCTAssertEqual(city.first?.stringValue, "Recovery Venue")
+            let description = try xml.nodes(forXPath: "//*[local-name()='description']//*[local-name()='li']")
+            XCTAssertEqual(description.first?.stringValue, "Preserve camera sidecar — æøå")
+        } else {
+            let image = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
+            let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [String: Any])
+            let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
+            XCTAssertEqual(iptc[kCGImagePropertyIPTCCity as String] as? String, "Recovery Venue")
+        }
     }
 
     private func verifyRetainedMetadataRecovery(managed: Bool, images: Bool = false) throws {
@@ -1009,7 +1051,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         managedRecovery: Bool = false,
         imageRecovery: Bool = false,
         matchingClipImage: Bool = false,
-        interruptPublication: Bool = false
+        interruptPublication: Bool = false,
+        rawRecovery: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -1026,6 +1069,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if imageRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] = "1" }
         if matchingClipImage { app.launchEnvironment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] = "1" }
         if managedRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] = "1" }
+        if rawRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_RAW_RECOVERY"] = "1" }
         if interruptPublication { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
