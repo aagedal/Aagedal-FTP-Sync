@@ -92,7 +92,7 @@ enum UITestSupport {
             do {
                 #if DEBUG
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_INTERRUPTED_IMAGE"] == "1" {
-                    try reconcileInterruptedImageFixture(rootURL: rootURL, managed: managedRecoveryFixture)
+                    try reconcileInterruptedImageFixture(rootURL: rootURL, managed: managedRecoveryFixture, raw: rawRecoveryFixture)
                 }
                 #endif
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] == "1" {
@@ -353,6 +353,10 @@ enum UITestSupport {
         enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] == "1"
     }
 
+    private static var rawRecoveryFixture: Bool {
+        enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RAW_RECOVERY"] == "1"
+    }
+
     private static var interruptsImagePublication: Bool {
         #if DEBUG
         enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] == "1"
@@ -425,6 +429,11 @@ enum UITestSupport {
         if images {
             let nested = destination.appendingPathComponent("nested", isDirectory: true)
             try manager.createDirectory(at: nested, withIntermediateDirectories: true)
+            if rawRecoveryFixture {
+                try seedCameraRawRecoveryImage(rootURL: rootURL, nested: nested)
+                try Data("seeded".utf8).write(to: marker, options: .atomic)
+                return
+            }
             guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4,
                 bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
                 colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
@@ -459,6 +468,32 @@ enum UITestSupport {
             try manager.copyItem(at: image, to: rootURL.appendingPathComponent("Source/\(filename)"))
         }
         try Data("seeded".utf8).write(to: marker, options: .atomic)
+    }
+
+    /// The opt-in runner stages an authorized disposable copy in the signed
+    /// DEBUG test bundle. Never read an operator's original through the app.
+    private static func seedCameraRawRecoveryImage(rootURL: URL, nested: URL) throws {
+        #if DEBUG
+        guard interruptsImagePublication,
+              let fixture = Bundle.main.url(forResource: "UITestRecovery", withExtension: "arw") else {
+            throw AppError.invalidConfiguration("Opt-in camera RAW test bundle is missing")
+        }
+        let manager = FileManager.default
+        let sidecar = Data("""
+        <?xml version="1.0"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" exif:GPSLatitude="59,30N" exif:GPSLongitude="10,15E"><dc:description><rdf:Alt><rdf:li xml:lang="x-default">Preserve camera sidecar — æøå</rdf:li></rdf:Alt></dc:description></rdf:Description></rdf:RDF></x:xmpmeta>
+        """.utf8)
+        for folder in [nested, rootURL.appendingPathComponent("Source")] {
+            let image = folder.appendingPathComponent("recovery.arw")
+            try manager.copyItem(at: fixture, to: image)
+            let xmp = folder.appendingPathComponent("recovery.xmp")
+            try sidecar.write(to: xmp)
+            for file in [image, xmp] {
+                try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: file.path)
+            }
+        }
+        #else
+        throw AppError.invalidConfiguration("Camera recovery fixtures require DEBUG")
+        #endif
     }
 
     /// Geocoding is a v3 setting and cannot be saved in the ordinary legacy UI
@@ -503,7 +538,7 @@ enum UITestSupport {
     /// Explicit recovery choice for the single-image SIGKILL fixture. Preserve
     /// the entire transaction and the visible publication before restoring the
     /// original for a fresh native retry. This is not production recovery logic.
-    static func reconcileInterruptedImageFixture(rootURL: URL, managed: Bool = false) throws {
+    static func reconcileInterruptedImageFixture(rootURL: URL, managed: Bool = false, raw: Bool = false) throws {
         let manager = FileManager.default
         // macOS may expose the owning sandbox's temporary root through an
         // alias. Canonicalize that root, then reject redirects below it.
@@ -524,43 +559,65 @@ enum UITestSupport {
         }
         let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
                                                from: Data(contentsOf: manifestURL))
-        guard manifest.schemaVersion == 1, manifest.originals.count == 1, manifest.outputs.count == 1,
-              let original = manifest.originals.first, let publication = manifest.outputs.first,
-              original.relativePath == "nested/recovery.jpg", original.isReplaced,
-              original.heldFilename == "original-held-0", original.snapshotFilename == "original-copy-0",
-              publication.relativePath == original.relativePath,
-              publication.snapshotFilename == "output-copy-0",
+        let expectedPaths = raw ? ["nested/recovery.arw", "nested/recovery.xmp"] : ["nested/recovery.jpg"]
+        let outputPath = expectedPaths.last!
+        guard manifest.schemaVersion == 1,
+              manifest.originals.map(\.relativePath) == expectedPaths,
+              manifest.outputs.count == 1, let publication = manifest.outputs.first,
+              publication.relativePath == outputPath, publication.snapshotFilename == "output-copy-0",
               publication.stagedFilename == "output-stage-0", publication.rollbackFilename == "rollback-output-0" else {
             throw AppError.invalidConfiguration("Unexpected interrupted image path map")
         }
-        let held = recovery.appendingPathComponent(original.heldFilename)
-        let snapshot = recovery.appendingPathComponent(original.snapshotFilename)
-        let publishedSnapshot = recovery.appendingPathComponent(publication.snapshotFilename)
-        let visible = destination.appendingPathComponent(original.relativePath)
-        let source = rootURL.appendingPathComponent("Source/recovery.jpg")
-        for url in [held, snapshot, publishedSnapshot, visible, source] {
+        func checkRegular(_ url: URL) throws {
             guard url.standardizedFileURL.path == url.resolvingSymlinksInPath().path,
                   try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
                 throw AppError.invalidConfiguration("Redirected interrupted image evidence")
             }
         }
-        let originalBytes = try Data(contentsOf: held)
-        let publishedBytes = try Data(contentsOf: visible)
-        guard originalBytes == (try Data(contentsOf: source)), originalBytes == (try Data(contentsOf: snapshot)),
-              publishedBytes == (try Data(contentsOf: publishedSnapshot)) else {
-            throw AppError.invalidConfiguration("Interrupted image evidence changed before recovery")
+        var restore: [(URL, Data, Date?)] = []
+        // Validate the entire group before writing either member.
+        for (index, original) in manifest.originals.enumerated() {
+            guard original.isReplaced == (original.relativePath == outputPath),
+                  original.heldFilename == "original-held-\(index)",
+                  original.snapshotFilename == "original-copy-\(index)" else {
+                throw AppError.invalidConfiguration("Unexpected interrupted image holdings")
+            }
+            let held = recovery.appendingPathComponent(original.heldFilename)
+            let snapshot = recovery.appendingPathComponent(original.snapshotFilename)
+            let source = rootURL.appendingPathComponent("Source/" + URL(fileURLWithPath: original.relativePath).lastPathComponent)
+            let visible = destination.appendingPathComponent(original.relativePath)
+            for url in [held, snapshot, source] { try checkRegular(url) }
+            let bytes = try Data(contentsOf: held)
+            guard bytes == (try Data(contentsOf: source)), bytes == (try Data(contentsOf: snapshot)) else {
+                throw AppError.invalidConfiguration("Interrupted image evidence changed before recovery")
+            }
+            if original.isReplaced {
+                try checkRegular(visible)
+            } else {
+                guard !manager.fileExists(atPath: visible.path),
+                      visible.standardizedFileURL.path == visible.resolvingSymlinksInPath().path else {
+                    throw AppError.invalidConfiguration("Guard-only RAW destination changed before recovery")
+                }
+            }
+            restore.append((visible, bytes, try (original.isReplaced ? visible : held).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate))
+        }
+        let visible = destination.appendingPathComponent(outputPath)
+        let publishedSnapshot = recovery.appendingPathComponent(publication.snapshotFilename)
+        try checkRegular(publishedSnapshot)
+        guard try Data(contentsOf: visible) == Data(contentsOf: publishedSnapshot) else {
+            throw AppError.invalidConfiguration("Interrupted publication changed before recovery")
         }
         let preserved = rootURL.appendingPathComponent("reconciled-image-recovery")
-        let rescuedPublication = rootURL.appendingPathComponent("rescued-publication.jpg")
+        let rescuedPublication = rootURL.appendingPathComponent(raw ? "rescued-publication.xmp" : "rescued-publication.jpg")
         guard !manager.fileExists(atPath: preserved.path), !manager.fileExists(atPath: rescuedPublication.path) else {
             throw AppError.invalidConfiguration("Interrupted image rescue already exists")
         }
-        let date = try visible.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         try manager.copyItem(at: visible, to: rescuedPublication)
-        // Restore while the transaction still blocks admission. If this step
-        // fails, all retained evidence remains available at its original path.
-        try originalBytes.write(to: visible, options: .atomic)
-        if let date { try manager.setAttributes([.modificationDate: date], ofItemAtPath: visible.path) }
+        // Keep recovery admission blocked until both originals are restored.
+        for (url, bytes, date) in restore {
+            try bytes.write(to: url, options: .atomic)
+            if let date { try manager.setAttributes([.modificationDate: date], ofItemAtPath: url.path) }
+        }
         try manager.moveItem(at: recovery, to: preserved)
     }
     #endif
