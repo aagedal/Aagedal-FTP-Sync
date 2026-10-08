@@ -11,7 +11,34 @@ final class AuraFaceRecognitionRuntimeTests: XCTestCase {
         XCTAssertEqual(model.componentID, PeopleLibraryManifest.EmbeddingContract.auraFaceV1.componentID)
         XCTAssertEqual(model.modelID, AuraFaceRecognitionRuntime.modelID)
         XCTAssertEqual(model.embeddingSpaceVersion, 3)
-        XCTAssertEqual(model.runtimeRevision, BundledAuraFaceModel.expectedWeightsSHA256)
+        XCTAssertEqual(model.modelRevision, BundledAuraFaceModel.expectedWeightsSHA256)
+        XCTAssertEqual(model.runtimeRevision, BundledAuraFaceModel.expectedRuntimeRevision)
+        XCTAssertNotEqual(model.runtimeRevision, model.modelRevision)
+        XCTAssertTrue(model.supports(.auraFaceV1))
+    }
+
+    func testQueryDecoderAndHostChangesInvalidateProcessingRevisionWithoutRelabelingReferences() throws {
+        let weights = BundledAuraFaceModel.expectedWeightsSHA256
+        let current = AuraFaceRecognitionRuntime.processingRevision(modelRevision: weights, osVersion: "host-a")
+        XCTAssertNotEqual(current, weights)
+        XCTAssertNotEqual(current, AuraFaceRecognitionRuntime.processingRevision(modelRevision: weights,
+            queryRevision: "legacy-imageio", osVersion: "host-a"))
+        XCTAssertNotEqual(current, AuraFaceRecognitionRuntime.processingRevision(modelRevision: weights, osVersion: "host-b"))
+        let policy = try FaceRecognitionAcceptancePolicy(maximumCosineDistance: 0.68,
+            minimumRunnerUpGap: 0.04, minimumCaptureQuality: 0.15, unavailableQualityPolicy: .reject)
+        let old = try FaceRecognitionAuditEvidence.Provenance(contract: .auraFaceV1,
+            runtimeRevision: weights, acceptancePolicy: policy)
+        let modern = try FaceRecognitionAuditEvidence.Provenance(contract: .auraFaceV1,
+            runtimeRevision: current, queryPreprocessingRevision: FaceRecognitionImageDecoder.queryPreprocessingRevision,
+            acceptancePolicy: policy)
+        XCTAssertEqual(modern.preprocessingRevision, old.preprocessingRevision)
+        XCTAssertNotEqual(modern.runtimeRevision, old.runtimeRevision)
+        XCTAssertEqual(try JSONDecoder().decode(FaceRecognitionAuditEvidence.Provenance.self,
+            from: JSONEncoder().encode(old)).queryPreprocessingRevision, nil)
+        let legacyJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as! [String: Any]
+        XCTAssertNil(legacyJSON["queryPreprocessingRevision"])
+        XCTAssertEqual(try JSONDecoder().decode(FaceRecognitionAuditEvidence.Provenance.self,
+            from: JSONEncoder().encode(modern)), modern)
     }
 
     func testProductionInputPackingUsesRGBNCHWNormalization() throws {

@@ -50,6 +50,7 @@
 		29BE94CD87E7633AB11C1D05 /* WhisperRuntime in Resources */ = {isa = PBXBuildFile; fileRef = 0E6EB5FB0E4FDBC403E32457 /* WhisperRuntime */; };
 		2B9BA322075F20D5D955CE22 /* MetadataGeocodingProviderRoutingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49AFAD3B9A5D9477EFF888FA /* MetadataGeocodingProviderRoutingTests.swift */; };
 		2EC9ADA12A338F2D50E2EC68 /* VersionedStoreCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4C0484744C0A440263B8FBB /* VersionedStoreCodec.swift */; };
+		2EE2D4C33B6299427F48C255 /* FaceRecognitionImageDecoderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F882071E9824D8D7A3E1C843 /* FaceRecognitionImageDecoderTests.swift */; };
 		3272AD1AC4E4A5BE4D5DC080 /* SFTPEndpointSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1230146607A0960638643931 /* SFTPEndpointSession.swift */; };
 		3589B31FAAF09EF0BB33C7B4 /* MetadataProcessingAuditEvidenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75AF960E289616BA2B1EE122 /* MetadataProcessingAuditEvidenceTests.swift */; };
 		3659D6A2D7F9F1C55541138C /* MetadataTemplateKeywordsEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10E2CA7C37A3B7362AE24A96 /* MetadataTemplateKeywordsEditor.swift */; };
@@ -224,6 +225,7 @@
 		D8054E5616C4770714492674 /* embedding.fem2.base64 in Resources */ = {isa = PBXBuildFile; fileRef = 69E33806E9DDC4EEA10E5146 /* embedding.fem2.base64 */; };
 		D89D2DA329D13358B1A26CF2 /* FaceRecognitionMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D24C6857F785F3CED4B32B0A /* FaceRecognitionMatcherTests.swift */; };
 		D8D1786A1A6CF4FD38046CE6 /* MetadataScheduledCoordinateProcessingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 794DE8833BC0419B26AEB847 /* MetadataScheduledCoordinateProcessingTests.swift */; };
+		D8FE39D40BCBE45406E7A19F /* FaceRecognitionImageDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 208794253955C19798F85A1C /* FaceRecognitionImageDecoder.swift */; };
 		DA924CF56A13474097753F2E /* MetadataPresetRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60E0E09FD8169213D49FACE8 /* MetadataPresetRepository.swift */; };
 		DC1FF0B0F1590933DFEB5D6D /* LocalSyncIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C9F952969D2D03BFCC3221 /* LocalSyncIntegrationTests.swift */; };
 		DD52285E81DBCC4ADF34AB63 /* Version3StartupControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6E403DBBB590146C1D02B2B /* Version3StartupControllerTests.swift */; };
@@ -302,6 +304,7 @@
 		1AF81AC92A35155B26A9363C /* VersionedStoreCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedStoreCodecTests.swift; sourceTree = "<group>"; };
 		1BB180B6BD3E3CD976DB60B5 /* MetadataPlaceWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPlaceWriterTests.swift; sourceTree = "<group>"; };
 		1DCDDA70C398498A3A611F8B /* Version3StartupPathsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3StartupPathsTests.swift; sourceTree = "<group>"; };
+		208794253955C19798F85A1C /* FaceRecognitionImageDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceRecognitionImageDecoder.swift; sourceTree = "<group>"; };
 		20EB8972E51D2F6B24AD7B77 /* TemplateActivationBoundaryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplateActivationBoundaryTests.swift; sourceTree = "<group>"; };
 		21199D2C1CA349452587E48F /* FTPListingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FTPListingTests.swift; sourceTree = "<group>"; };
 		21477C3D3A3A2235CA5B9892 /* DownloadNamingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNamingSession.swift; sourceTree = "<group>"; };
@@ -525,6 +528,7 @@
 		F2E0134521531D31F0A13CBD /* LegacySignatureSQLiteAcquisition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LegacySignatureSQLiteAcquisition.swift; sourceTree = "<group>"; };
 		F3A2D6F5AD2A2701FD04AA11 /* MetadataSyncSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncSettingsView.swift; sourceTree = "<group>"; };
 		F488B465A35870C5148449F4 /* Citadel */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Citadel; path = Vendor/Citadel; sourceTree = SOURCE_ROOT; };
+		F882071E9824D8D7A3E1C843 /* FaceRecognitionImageDecoderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaceRecognitionImageDecoderTests.swift; sourceTree = "<group>"; };
 		F90079927622715BF02539C9 /* VersionedRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VersionedRepositoryTests.swift; sourceTree = "<group>"; };
 		FC5DD7F9670E3114DCB8DD33 /* MetadataCalendarCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarCoordinator.swift; sourceTree = "<group>"; };
 		FCA8B4BCB5DE7068D2FF88EB /* OfflineMetadataGeocodingProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfflineMetadataGeocodingProvider.swift; sourceTree = "<group>"; };
@@ -696,6 +700,7 @@
 				BEB828412ECEBBD9478815F7 /* AuraFaceRecognitionRuntime.swift */,
 				CA5BB233E4D7D06021927929 /* AuraFaceZIPArchive.swift */,
 				885A5CB89858194103A3AA97 /* BundledAuraFaceModel.swift */,
+				208794253955C19798F85A1C /* FaceRecognitionImageDecoder.swift */,
 			);
 			path = FaceRecognition;
 			sourceTree = "<group>";
@@ -814,6 +819,7 @@
 				8F06744FB64AE857F37EAEAD /* EffectiveMetadataCoordinatesTests.swift */,
 				481B957391DD80300FF98DF3 /* FaceRecognitionAnalysisServiceTests.swift */,
 				7554C792225ACDEF185D1DB1 /* FaceRecognitionEmbeddingCodecTests.swift */,
+				F882071E9824D8D7A3E1C843 /* FaceRecognitionImageDecoderTests.swift */,
 				D24C6857F785F3CED4B32B0A /* FaceRecognitionMatcherTests.swift */,
 				BC25AACD3C7F08B23B371518 /* FileFilterTests.swift */,
 				21199D2C1CA349452587E48F /* FTPListingTests.swift */,
@@ -1200,6 +1206,7 @@
 				EA92EB4FBB105356154EC1DA /* FTPListingTests.swift in Sources */,
 				731D30E4EBFA3F012686A9DC /* FaceRecognitionAnalysisServiceTests.swift in Sources */,
 				E7B7FB038B110CB915F59A9F /* FaceRecognitionEmbeddingCodecTests.swift in Sources */,
+				2EE2D4C33B6299427F48C255 /* FaceRecognitionImageDecoderTests.swift in Sources */,
 				D89D2DA329D13358B1A26CF2 /* FaceRecognitionMatcherTests.swift in Sources */,
 				643C37FA6F70828858D71250 /* FileFilterTests.swift in Sources */,
 				22BD502CBC16C803C3A26C19 /* JobProcessingTimeZoneEditingTests.swift in Sources */,
@@ -1332,6 +1339,7 @@
 				973799DA05C20351F143A17B /* FTPEndpointSession.swift in Sources */,
 				03EE0C7732EEAEE4CAF63E81 /* FaceRecognitionAnalysisService.swift in Sources */,
 				8EB6821937D6F8F0AE8BECE9 /* FaceRecognitionEmbeddingCodec.swift in Sources */,
+				D8FE39D40BCBE45406E7A19F /* FaceRecognitionImageDecoder.swift in Sources */,
 				260E3A6BFC6C700EE233F9C1 /* FaceRecognitionMatcher.swift in Sources */,
 				79E2BF28F85A8C162884EF96 /* FolderBookmark.swift in Sources */,
 				C6B77D4268CF1DC2DFB2B28F /* JobDetailEditor.swift in Sources */,
@@ -1511,7 +1519,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1680,7 +1688,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 43;
+				CURRENT_PROJECT_VERSION = 44;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;

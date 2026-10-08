@@ -13,6 +13,7 @@ final class AuthorizedFaceEvaluationTests: XCTestCase {
         let files: [String]
         let outputRoot: String
         let maximumFaces: Int?
+        let retainWorkingImages: Bool?
     }
     private struct Face: Codable {
         let ordinal: Int
@@ -29,6 +30,8 @@ final class AuthorizedFaceEvaluationTests: XCTestCase {
         let preprocessingRevision: String
         let embeddingSpaceVersion: Int
         let runtimeRevision: String
+        let modelRevision: String
+        let queryPreprocessingRevision: String
         let index: Int
         let sourcePath: String
         let sourceSHA256: String?
@@ -44,6 +47,8 @@ final class AuthorizedFaceEvaluationTests: XCTestCase {
         let preprocessingRevision: String
         let embeddingSpaceVersion: Int
         let runtimeRevision: String
+        let modelRevision: String
+        let queryPreprocessingRevision: String
         let filesCompleted: Int
         let failedFiles: Int
         let detectedFaces: Int
@@ -106,7 +111,15 @@ final class AuthorizedFaceEvaluationTests: XCTestCase {
                 let observations = try await runtime.analyze(imageURL: input, maximumFaces: manifest.maximumFaces ?? 64)
                 inferenceSeconds = Date().timeIntervalSince(inferenceStart)
                 guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
-                      let image = Self.makeWorkingImage(from: source) else { throw Failure.unreadableImage }
+                      let image = FaceRecognitionImageDecoder.decode(imageURL: input, source: source) else { throw Failure.unreadableImage }
+                if manifest.retainWorkingImages == true {
+                    let output = root.appendingPathComponent(String(format: "working-image-%05d.jpg", index))
+                    guard let destination = CGImageDestinationCreateWithURL(output as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
+                        throw Failure.cropEncoding
+                    }
+                    CGImageDestinationAddImage(destination, image, nil)
+                    guard CGImageDestinationFinalize(destination) else { throw Failure.cropEncoding }
+                }
                 guard observations.enumerated().allSatisfy({ $0.offset == $0.element.ordinal }) else {
                     throw Failure.invalidBoundingBox
                 }
@@ -143,12 +156,14 @@ final class AuthorizedFaceEvaluationTests: XCTestCase {
             faceCount += records.count
             try write(Scan(boundingBoxSource: "production-analysis", schemaVersion: 1, modelID: runtime.modelID,
                 preprocessingRevision: runtime.preprocessingRevision, embeddingSpaceVersion: runtime.embeddingSpaceVersion,
-                runtimeRevision: runtime.runtimeRevision, index: index, sourcePath: input.path, sourceSHA256: before,
+                runtimeRevision: runtime.runtimeRevision, modelRevision: runtime.modelRevision,
+                queryPreprocessingRevision: runtime.queryPreprocessingRevision, index: index, sourcePath: input.path, sourceSHA256: before,
                 elapsedSeconds: Date().timeIntervalSince(begin), inferenceSeconds: inferenceSeconds, faces: records, failure: failure),
                 to: root.appendingPathComponent(String(format: "image-%05d.json", index)))
             try write(Summary(schemaVersion: 1, mode: "scan", modelID: runtime.modelID,
                 preprocessingRevision: runtime.preprocessingRevision, embeddingSpaceVersion: runtime.embeddingSpaceVersion,
-                runtimeRevision: runtime.runtimeRevision, filesCompleted: index + 1, failedFiles: failures,
+                runtimeRevision: runtime.runtimeRevision, modelRevision: runtime.modelRevision,
+                queryPreprocessingRevision: runtime.queryPreprocessingRevision, filesCompleted: index + 1, failedFiles: failures,
                 detectedFaces: faceCount, modelAdmissionSeconds: admissionSeconds,
                 elapsedSeconds: Date().timeIntervalSince(started), accuracyEvaluated: false),
                 to: root.appendingPathComponent("summary.json"))
@@ -190,86 +205,6 @@ final class AuthorizedFaceEvaluationTests: XCTestCase {
                     CGRect(x: 0, y: 0, width: CGFloat.infinity, height: 0.2)] {
             XCTAssertThrowsError(try Self.visibleBoundingBox(box))
         }
-    }
-
-    // Mirror the runtime's private image decoding/orientation for display only.
-    // Authoritative boxes are returned with each runtime observation, avoiding a
-    // second detection pass that could associate a crop with another embedding.
-    private static func makeWorkingImage(from source: CGImageSource) -> CGImage? {
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: AuraFaceRecognitionRuntime.maximumWorkingImageDimension,
-            kCGImageSourceShouldCacheImmediately: true,
-        ]
-        if let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-            return image
-        }
-        guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        return applyOrientation(to: image, value: orientationValue(in: source))
-    }
-
-    private static func orientationValue(in source: CGImageSource) -> UInt32 {
-        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-        else { return 1 }
-        return orientationValue(in: properties)
-    }
-
-    private static func orientationValue(in properties: [CFString: Any]) -> UInt32 {
-        func number(_ value: Any?) -> UInt32? { (value as? NSNumber)?.uint32Value }
-        if let direct = number(properties[kCGImagePropertyOrientation]), direct != 1 { return direct }
-        if let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any],
-           let value = number(tiff[kCGImagePropertyTIFFOrientation]), value != 1 { return value }
-        if let heic = properties[kCGImagePropertyHEICSDictionary] as? [CFString: Any],
-           let value = number(heic[kCGImagePropertyOrientation]) { return value }
-        return 1
-    }
-
-    private static func applyOrientation(to image: CGImage, value: UInt32) -> CGImage {
-        guard value != 1 else { return image }
-        let width = image.width
-        let height = image.height
-        var outputWidth = width
-        var outputHeight = height
-        var transform = CGAffineTransform.identity
-        switch value {
-        case 2:
-            transform = CGAffineTransform(scaleX: -1, y: 1).translatedBy(x: -CGFloat(width), y: 0)
-        case 3:
-            transform = CGAffineTransform(translationX: CGFloat(width), y: CGFloat(height)).rotated(by: .pi)
-        case 4:
-            transform = CGAffineTransform(scaleX: 1, y: -1).translatedBy(x: 0, y: -CGFloat(height))
-        case 5:
-            outputWidth = height; outputHeight = width
-            transform = CGAffineTransform(translationX: CGFloat(outputWidth), y: CGFloat(outputHeight))
-                .rotated(by: .pi / 2).scaledBy(x: -1, y: 1)
-        case 6:
-            outputWidth = height; outputHeight = width
-            transform = CGAffineTransform(translationX: 0, y: CGFloat(outputHeight)).rotated(by: -.pi / 2)
-        case 7:
-            outputWidth = height; outputHeight = width
-            transform = CGAffineTransform(rotationAngle: -.pi / 2).scaledBy(x: -1, y: 1)
-                .translatedBy(x: -CGFloat(outputWidth), y: 0)
-        case 8:
-            outputWidth = height; outputHeight = width
-            transform = CGAffineTransform(translationX: CGFloat(outputWidth), y: 0).rotated(by: .pi / 2)
-        default:
-            return image
-        }
-        let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        let context = CGContext(
-            data: nil,
-            width: outputWidth,
-            height: outputHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: space,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        )
-        guard let context else { return image }
-        context.concatenate(transform)
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        return context.makeImage() ?? image
     }
 
 }

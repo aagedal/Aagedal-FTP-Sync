@@ -45,10 +45,12 @@ enum ProductionFaceRecognitionAdmission {
                     root: admission.storage.peopleLibraryDirectory
                   ).currentSnapshot() else { return nil }
             let runtime = try BundledAuraFaceModel.admit(from: bundle)
+            guard runtime.supports(library.manifest.contract) else { return nil }
             return try MetadataFaceRecognitionContext(
                 service: FaceRecognitionAnalysisService(admittedRuntime: runtime),
                 snapshot: library,
                 runtimeRevision: runtime.runtimeRevision,
+                queryPreprocessingRevision: runtime.queryPreprocessingRevision,
                 acceptancePolicy: configuration.policy
             )
         } catch {

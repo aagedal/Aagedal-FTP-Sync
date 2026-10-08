@@ -197,7 +197,7 @@ struct MetadataProcessingAuditEvidence: Codable, Equatable, Sendable {
 /// processing inputs without identifying the selected people-library snapshot.
 struct FaceRecognitionAuditEvidence: Codable, Equatable, Sendable {
     struct Provenance: Codable, Equatable, Sendable {
-        enum ValidationError: Error, Equatable { case invalidRuntimeRevision }
+        enum ValidationError: Error, Equatable { case invalidRuntimeRevision, invalidQueryPreprocessingRevision }
 
         let librarySchemaVersion: Int
         let embeddingSpaceVersion: Int
@@ -206,7 +206,10 @@ struct FaceRecognitionAuditEvidence: Codable, Equatable, Sendable {
         let preprocessingRevision: String
         let vectorEncoding: String
         let embeddingDimension: Int
-        /// SHA-256 of the admitted runtime artifact, never a local model path.
+        /// Query decoder policy; absent on legacy audit records. Reference
+        /// preprocessingRevision above still describes the saved vectors.
+        let queryPreprocessingRevision: String?
+        /// SHA-256 of the model plus versioned query policy/host decoder identity.
         let runtimeRevision: String
         /// SHA-256 of the exact calibrated policy values, never raw thresholds.
         let acceptancePolicyRevision: String
@@ -214,11 +217,16 @@ struct FaceRecognitionAuditEvidence: Codable, Equatable, Sendable {
         init(
             contract: PeopleLibraryManifest.EmbeddingContract,
             runtimeRevision: String,
+            queryPreprocessingRevision: String? = nil,
             acceptancePolicy: FaceRecognitionAcceptancePolicy
         ) throws {
             guard runtimeRevision.utf8.count == 64,
                   runtimeRevision.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
             else { throw ValidationError.invalidRuntimeRevision }
+            guard queryPreprocessingRevision == nil || queryPreprocessingRevision == FaceRecognitionImageDecoder.queryPreprocessingRevision else {
+                throw ValidationError.invalidQueryPreprocessingRevision
+            }
+            self.queryPreprocessingRevision = queryPreprocessingRevision
             librarySchemaVersion = 2
             embeddingSpaceVersion = contract.embeddingSpaceVersion
             componentID = contract.componentID

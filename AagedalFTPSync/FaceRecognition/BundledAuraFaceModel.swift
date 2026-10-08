@@ -9,6 +9,10 @@ enum BundledAuraFaceModel {
     static let expectedWeightsSHA256 =
         "c189aaf7d6758dafb1603b4ea7f7c2161b69639434ddbce800e0cc632b26d7e0"
 
+    static var expectedRuntimeRevision: String {
+        AuraFaceRecognitionRuntime.processingRevision(modelRevision: expectedWeightsSHA256)
+    }
+
     enum Failure: Error, Equatable {
         case missingModel
         case invalidWeights

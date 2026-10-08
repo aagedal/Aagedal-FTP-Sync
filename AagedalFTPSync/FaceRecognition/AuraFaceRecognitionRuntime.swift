@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreML
+import CryptoKit
 import Foundation
 import ImageIO
 import Vision
@@ -33,6 +34,8 @@ final class AuraFaceRecognitionRuntime: @unchecked Sendable {
     let preprocessingRevision: String
     let embeddingSpaceVersion: Int
     let runtimeRevision: String
+    let modelRevision: String
+    let queryPreprocessingRevision = FaceRecognitionImageDecoder.queryPreprocessingRevision
 
     private let model: MLModel
 
@@ -66,7 +69,8 @@ final class AuraFaceRecognitionRuntime: @unchecked Sendable {
         modelID = Self.modelID
         preprocessingRevision = Self.preprocessingRevision
         embeddingSpaceVersion = Self.embeddingSpaceVersion
-        self.runtimeRevision = runtimeRevision
+        modelRevision = runtimeRevision
+        self.runtimeRevision = Self.processingRevision(modelRevision: runtimeRevision)
         model = loaded
     }
 
@@ -99,9 +103,10 @@ final class AuraFaceRecognitionRuntime: @unchecked Sendable {
         try Task.checkCancellation()
         guard maximumFaces > 0,
               let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
-              let image = Self.makeWorkingImage(from: source)
+              let image = FaceRecognitionImageDecoder.decode(imageURL: imageURL, source: source)
         else { throw Failure.unreadableImage }
 
+        try Task.checkCancellation()
         let originalWidth = Self.orientedPixelWidth(from: source) ?? image.width
         let detected = try Self.detectFaces(in: image)
             .filter {
@@ -265,18 +270,18 @@ final class AuraFaceRecognitionRuntime: @unchecked Sendable {
         return left.height > right.height
     }
 
-    private static func makeWorkingImage(from source: CGImageSource) -> CGImage? {
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maximumWorkingImageDimension,
-            kCGImageSourceShouldCacheImmediately: true,
-        ]
-        if let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-            return image
-        }
-        guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        return applyOrientation(to: image, value: orientationValue(in: source))
+    /// Reference vectors retain their declared v3 production identity. Only
+    /// query RAW decoding changes; this compatibility assertion is measured
+    /// against immutable v3 references before candidate acceptance.
+    func supports(_ contract: PeopleLibraryManifest.EmbeddingContract) -> Bool {
+        contract == .auraFaceV1
+    }
+
+    static func processingRevision(modelRevision: String,
+                                   queryRevision: String = FaceRecognitionImageDecoder.queryPreprocessingRevision,
+                                   osVersion: String = ProcessInfo.processInfo.operatingSystemVersionString) -> String {
+        let identity = ["face-query-runtime-v2", modelRevision, queryRevision, osVersion].joined(separator: "\n")
+        return SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func orientedPixelWidth(from source: CGImageSource) -> Int? {

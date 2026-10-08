@@ -35,6 +35,12 @@ final class AuthorizedFaceMatchingTests: XCTestCase {
         var examples: [UUID: [PeopleLibraryPayload.Example]] = [:]
         var provenance: [FaceEvaluation.ReferenceProvenance] = []
         for row in references {
+            if row.queryPreprocessingRevision != nil {
+                guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: row.sourcePath) as CFURL, nil),
+                      !FaceRecognitionImageDecoder.usesRAWDecoder(source: source) else {
+                    throw FaceEvaluation.Invalid("Corrected RAW queries cannot be relabeled as legacy reference vectors")
+                }
+            }
             let cropURL = try FaceEvaluation.reviewedCropURL(row)
             let (cropBytes, before) = try FaceEvaluation.verifiedCropData(cropURL, reviewedHash: row.label.cropSHA256)
             let jpeg = try FaceEvaluation.upgradeJPEG(cropBytes)
@@ -143,7 +149,8 @@ final class AuthorizedFaceMatchingTests: XCTestCase {
         let criteriaMet = manifest.heldOutCriteria.map { $0.accepts(heldOut) }
         let report = FaceEvaluation.Report(schemaVersion: 1,
             manifestSHA256: FaceEvaluation.digest(manifestBytes),
-            runtimeRevision: BundledAuraFaceModel.expectedWeightsSHA256,
+            runtimeRevision: manifest.queryPreprocessingRevision == nil ? BundledAuraFaceModel.expectedWeightsSHA256 : BundledAuraFaceModel.expectedRuntimeRevision,
+            queryPreprocessingRevision: manifest.queryPreprocessingRevision,
             referencePeople: people.count, referenceExamples: references.count,
             policy: .init(configuration.policy), thresholdCheckPerformed: criteriaMet != nil,
             heldOutCriteria: manifest.heldOutCriteria, heldOutCriteriaMet: criteriaMet,
@@ -156,6 +163,24 @@ final class AuthorizedFaceMatchingTests: XCTestCase {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(report).write(to: output.appendingPathComponent("matching-results.json"), options: .atomic)
         if let criteriaMet { XCTAssertTrue(criteriaMet, "Explicit held-out criteria failed; see private matching-results.json") }
+    }
+
+    func testMatchingRequiresDeclaredQueryPipelineAndDoesNotRouteLegacyQueriesAsCurrent() {
+        func record(_ current: Bool) -> FaceEvaluation.ScanRecord {
+            .init(schemaVersion: 1, index: 0, sourcePath: "/fixture.jpg", sourceSHA256: nil,
+                modelID: AuraFaceRecognitionRuntime.modelID, preprocessingRevision: AuraFaceRecognitionRuntime.preprocessingRevision,
+                embeddingSpaceVersion: 3,
+                runtimeRevision: current ? BundledAuraFaceModel.expectedRuntimeRevision : BundledAuraFaceModel.expectedWeightsSHA256,
+                modelRevision: current ? BundledAuraFaceModel.expectedWeightsSHA256 : nil,
+                queryPreprocessingRevision: current ? FaceRecognitionImageDecoder.queryPreprocessingRevision : nil,
+                boundingBoxSource: "production-analysis", faces: [], failure: nil)
+        }
+        let query = FaceRecognitionImageDecoder.queryPreprocessingRevision
+        XCTAssertTrue(FaceEvaluation.validRuntime(record(false), role: .reference, queryRevision: query))
+        XCTAssertTrue(FaceEvaluation.validRuntime(record(true), role: .heldOut, queryRevision: query))
+        XCTAssertFalse(FaceEvaluation.validRuntime(record(false), role: .heldOut, queryRevision: query))
+        XCTAssertFalse(FaceEvaluation.validRuntime(record(true), role: .calibration, queryRevision: nil))
+        XCTAssertTrue(FaceEvaluation.validRuntime(record(false), role: .heldOut, queryRevision: nil))
     }
 
     func testSplitValidationRejectsDuplicateFacesAndCrossRoleCaptureLeakage() throws {
@@ -246,6 +271,7 @@ private enum FaceEvaluation {
         let outputRoot: String
         let examples: [Label]
         let heldOutCriteria: Criteria?
+        let queryPreprocessingRevision: String?
     }
     struct ScanRecord: Decodable {
         let schemaVersion: Int
@@ -256,6 +282,8 @@ private enum FaceEvaluation {
         let preprocessingRevision: String
         let embeddingSpaceVersion: Int
         let runtimeRevision: String
+        let modelRevision: String?
+        let queryPreprocessingRevision: String?
         let boundingBoxSource: String
         let faces: [ScanFace]
         let failure: String?
@@ -276,6 +304,7 @@ private enum FaceEvaluation {
         let embedding: FaceRecognitionEmbedding
         let quality: Double?
         let diagnosticCrop: String
+        let queryPreprocessingRevision: String?
     }
     struct SplitEntry {
         let faceKey: String
@@ -347,6 +376,9 @@ private enum FaceEvaluation {
     }
     static func load(_ manifest: Manifest) throws -> [Loaded] {
         guard manifest.schemaVersion == 1, !manifest.examples.isEmpty else { throw Invalid("Invalid matching manifest schema") }
+        guard manifest.queryPreprocessingRevision == nil || manifest.queryPreprocessingRevision == FaceRecognitionImageDecoder.queryPreprocessingRevision else {
+            throw Invalid("Unknown query preprocessing identity")
+        }
         try validateLabels(manifest.examples)
         let ids = Set(manifest.examples.filter { $0.role == .reference }.compactMap(\.personID))
         guard ids.count >= 2, manifest.examples.contains(where: { $0.role == .heldOut }) else {
@@ -376,7 +408,7 @@ private enum FaceEvaluation {
                   record.modelID == AuraFaceRecognitionRuntime.modelID,
                   record.preprocessingRevision == AuraFaceRecognitionRuntime.preprocessingRevision,
                   record.embeddingSpaceVersion == AuraFaceRecognitionRuntime.embeddingSpaceVersion,
-                  record.runtimeRevision == BundledAuraFaceModel.expectedWeightsSHA256,
+                  validRuntime(record, role: label.role, queryRevision: manifest.queryPreprocessingRevision),
                   record.boundingBoxSource == "production-analysis",
                   let sha = record.sourceSHA256, validSHA256(sha),
                   Set(record.faces.map(\.ordinal)).count == record.faces.count,
@@ -386,6 +418,12 @@ private enum FaceEvaluation {
             let sourceURL = try absoluteURL(record.sourcePath).resolvingSymlinksInPath()
             guard !sourceURL.pathComponents.contains(where: { $0.hasPrefix(".") }) else {
                 throw Invalid("Hidden caches and face_data crops are ineligible capture images")
+            }
+            if label.role == .reference, record.queryPreprocessingRevision != nil {
+                guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+                      !FaceRecognitionImageDecoder.usesRAWDecoder(source: source) else {
+                    throw Invalid("Compatibility evaluation requires legacy RAW reference vectors")
+                }
             }
             let actualHash: String
             if let cached = sourceHashes[record.sourcePath] { actualHash = cached }
@@ -410,11 +448,19 @@ private enum FaceEvaluation {
             loaded.append(.init(label: label, sourcePath: record.sourcePath, sourceSHA256: sha,
                 recordPath: url.path, recordSHA256: recordHash,
                 embedding: try .init(validatingNormalized: face.embedding), quality: face.captureQuality,
-                diagnosticCrop: face.diagnosticCrop))
+                diagnosticCrop: face.diagnosticCrop, queryPreprocessingRevision: record.queryPreprocessingRevision))
         }
         try validateSplits(loaded.map { .init(faceKey: "\($0.sourceSHA256):\($0.label.ordinal)",
             imageSHA: $0.sourceSHA256, captureGroup: $0.label.captureGroup, role: $0.label.role) })
         return loaded
+    }
+    static func validRuntime(_ record: ScanRecord, role: Role, queryRevision: String?) -> Bool {
+        let legacy = record.runtimeRevision == BundledAuraFaceModel.expectedWeightsSHA256
+            && record.queryPreprocessingRevision == nil
+        let current = record.runtimeRevision == BundledAuraFaceModel.expectedRuntimeRevision
+            && record.modelRevision == BundledAuraFaceModel.expectedWeightsSHA256
+            && record.queryPreprocessingRevision == FaceRecognitionImageDecoder.queryPreprocessingRevision
+        return role == .reference ? (legacy || current) : (queryRevision == nil ? legacy : current)
     }
     static func checkSources(_ rows: [Loaded]) throws {
         for row in Dictionary(grouping: rows, by: \.sourcePath).values {
@@ -602,6 +648,7 @@ private enum FaceEvaluation {
         let schemaVersion: Int
         let manifestSHA256: String
         let runtimeRevision: String
+        let queryPreprocessingRevision: String?
         let referencePeople: Int
         let referenceExamples: Int
         let policy: Policy

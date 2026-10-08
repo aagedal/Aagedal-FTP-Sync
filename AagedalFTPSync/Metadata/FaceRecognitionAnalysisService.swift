@@ -622,6 +622,7 @@ struct MetadataFaceRecognitionContext: Sendable {
         service: FaceRecognitionAnalysisService,
         snapshot: PeopleLibrarySnapshot,
         runtimeRevision: String,
+        queryPreprocessingRevision: String? = nil,
         acceptancePolicy: FaceRecognitionAcceptancePolicy
     ) throws {
         guard service.readiness == .ready else { throw ValidationError.serviceUnavailable }
@@ -635,6 +636,7 @@ struct MetadataFaceRecognitionContext: Sendable {
         provenance = try FaceRecognitionAuditEvidence.Provenance(
             contract: snapshot.manifest.contract,
             runtimeRevision: runtimeRevision,
+            queryPreprocessingRevision: queryPreprocessingRevision,
             acceptancePolicy: acceptancePolicy
         )
         libraryRevision = revision
@@ -648,6 +650,7 @@ struct MetadataFaceRecognitionContext: Sendable {
         contract: PeopleLibraryManifest.EmbeddingContract = .auraFaceV1,
         libraryRevision: String,
         runtimeRevision: String,
+        queryPreprocessingRevision: String? = nil,
         acceptancePolicy: FaceRecognitionAcceptancePolicy
     ) throws {
         guard service.readiness == .ready else { throw ValidationError.serviceUnavailable }
@@ -660,6 +663,7 @@ struct MetadataFaceRecognitionContext: Sendable {
         provenance = try FaceRecognitionAuditEvidence.Provenance(
             contract: contract,
             runtimeRevision: runtimeRevision,
+            queryPreprocessingRevision: queryPreprocessingRevision,
             acceptancePolicy: acceptancePolicy
         )
         self.libraryRevision = libraryRevision

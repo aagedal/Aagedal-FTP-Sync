@@ -213,7 +213,8 @@ enum MetadataAuditEvidencePresentation {
     }
 
     static func recognitionProvenance(_ provenance: FaceRecognitionAuditEvidence.Provenance) -> String {
-        "Recognition provenance: model \(provenance.modelID), component \(provenance.componentID), preprocessing \(provenance.preprocessingRevision), embedding space \(provenance.embeddingSpaceVersion), \(provenance.vectorEncoding)/\(provenance.embeddingDimension), library schema \(provenance.librarySchemaVersion), runtime \(provenance.runtimeRevision), policy \(provenance.acceptancePolicyRevision)."
+        let query = provenance.queryPreprocessingRevision ?? "legacy-imageio"
+        return "Recognition provenance: model \(provenance.modelID), component \(provenance.componentID), reference preprocessing \(provenance.preprocessingRevision), query preprocessing \(query), embedding space \(provenance.embeddingSpaceVersion), \(provenance.vectorEncoding)/\(provenance.embeddingDimension), library schema \(provenance.librarySchemaVersion), runtime \(provenance.runtimeRevision), policy \(provenance.acceptancePolicyRevision)."
     }
 
     static func processingTime(_ evidence: MetadataProcessingAuditEvidence) -> String {
