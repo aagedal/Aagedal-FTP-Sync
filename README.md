@@ -5,7 +5,7 @@ A native macOS menu-bar utility for getting newsroom files where they need to go
 Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
 This branch contains the in-development 3.0 implementation. It is not a beta or a
-shipping release: the bundle identifies itself as 3.0.0 (build 38). Face recognition
+shipping release: the bundle identifies itself as 3.0.0 (build 43). Face recognition
 uses Photo Agent defaults; the remaining
 native, supported-macOS, performance and release gates are tracked in the
 [3.0 readiness report](Documentation/3.0-Readiness.md). Use the latest tagged 2.9.x
@@ -164,6 +164,37 @@ xcodebuild test \
 ```
 
 UI automation requires a signed test runner, so do not add `CODE_SIGNING_ALLOWED=NO` to this command.
+
+To prepare a traceable Developer ID signed development candidate from committed,
+clean source, run:
+
+```sh
+python3 Scripts/build-3.0-candidate.py --team-id YOUR_TEAM_ID --register
+```
+
+The archive stays under `build/candidates/`; the workflow neither installs nor
+publishes it. Its signed Info.plist records the source commit and tree. The
+candidate record includes the executable SHA-256 and a new checklist ID, preserving
+previous result sets. Registration leaves its status `IMPLEMENTING` until the
+required acceptance evidence is complete. Notarization and final user acceptance
+remain separate steps. Never reuse the same build number for a changed candidate.
+
+Authorized real-image checks are opt-in. Create an ignored JSON manifest with
+`files` containing absolute image paths and `outputRoot` naming a new disposable
+directory, then run:
+
+```sh
+TEST_RUNNER_AAGEDAL_REAL_MEDIA_MANIFEST=/absolute/path/to/manifest.local.json \
+xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' -scheme AagedalFTPSync \
+  -destination 'platform=macOS' -derivedDataPath build/real-media-tests \
+  CODE_SIGNING_ALLOWED=NO \
+  -only-testing:AagedalFTPSyncTests/AuthorizedMediaAcceptanceTests
+```
+
+Inputs remain read-only; transfer/reprocessing and managed-folder handoff use
+copies. The checks retain outputs for independent ExifTool/Photo Agent review.
+Bundled-model decoding and face detection are checked separately from labeled
+matching accuracy; detection success does not establish correct identities.
 
 The scheduled integration workflow runs this suite on a trusted self-hosted macOS runner with an Apple Development identity. Give that runner the custom `signed-ui-tests` label and configure the repository variable `APPLE_DEVELOPMENT_TEAM` for its signing account; pull-request events never automatically dispatch code to it.
 

@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import ServiceManagement
 import SwiftUI
@@ -151,7 +152,10 @@ enum UITestSupport {
             ),
             engine: SyncEngine(
                 sourceSignatureRepository: sourceSignatures,
-                downloadManifestRepository: downloadManifest
+                downloadManifestRepository: downloadManifest,
+                localReprocessSessionFactory: { endpoint, managed in
+                    try reprocessingFixtureSession(endpoint: endpoint, managed: managed)
+                }
             ),
             failureNotificationCoordinator: SyncFailureNotificationCoordinator(
                 delivery: UITestNotificationDelivery()
@@ -344,6 +348,33 @@ enum UITestSupport {
         enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] == "1"
     }
 
+    private static var interruptsImagePublication: Bool {
+        #if DEBUG
+        enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] == "1"
+        #else
+        false
+        #endif
+    }
+
+    private static func reprocessingFixtureSession(endpoint: Endpoint, managed: ManagedOutputFolder?) throws -> LocalEndpointSession {
+        #if DEBUG
+        guard interruptsImagePublication, let rootURL,
+              URL(fileURLWithPath: endpoint.localPath).resolvingSymlinksInPath().path
+                == rootURL.appendingPathComponent("Destination").resolvingSymlinksInPath().path else {
+            return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed)
+        }
+        return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+            guard case .beforeCommit = phase else { return }
+            try Data("beforeCommit".utf8).write(to: rootURL.appendingPathComponent("native-image-interruption"), options: .atomic)
+            // Only a DEBUG, explicitly isolated UI fixture can reach this hook.
+            // The runner survives; the app leaves its actual image transaction on disk.
+            kill(getpid(), SIGKILL)
+        })
+        #else
+        return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed)
+        #endif
+    }
+
     /// Real folder permissions let native tests reach recovery admission instead
     /// of failing at placeholder-bookmark resolution. Seed once so relaunch after
     /// manual reconciliation cannot silently recreate the retained backup.
@@ -370,19 +401,22 @@ enum UITestSupport {
         guard !manager.fileExists(atPath: marker.path) else { return }
         let destination = recoveryFixtureDestination(rootURL: rootURL, managed: managed)
         let recovery = destination.appendingPathComponent(".aagedal-sync-ui-fixture.transaction", isDirectory: true)
-        try manager.createDirectory(at: recovery, withIntermediateDirectories: true)
-        try Data("retained original fixture bytes".utf8).write(to: recovery.appendingPathComponent("original-held-0"))
-        try Data("retained original fixture bytes".utf8).write(to: recovery.appendingPathComponent("original-copy-0"))
-        try Data("visible destination fixture bytes".utf8).write(to: destination.appendingPathComponent("preserved.txt"))
-        try Data("visible destination fixture bytes".utf8).write(to: recovery.appendingPathComponent("output-copy-0"))
-        let manifest = LocalEndpointSession.MatchingRecoveryManifest(schemaVersion: 1,
-            originals: [.init(relativePath: "preserved.txt", snapshotFilename: "original-copy-0",
-                              heldFilename: "original-held-0", isReplaced: true)],
-            outputs: [.init(relativePath: "preserved.txt", stagedFilename: "output-stage-0",
-                            snapshotFilename: "output-copy-0", rollbackFilename: "rollback-output-0")])
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"), options: .atomic)
+        try manager.createDirectory(at: destination, withIntermediateDirectories: true)
+        if !interruptsImagePublication {
+            try manager.createDirectory(at: recovery, withIntermediateDirectories: true)
+            try Data("retained original fixture bytes".utf8).write(to: recovery.appendingPathComponent("original-held-0"))
+            try Data("retained original fixture bytes".utf8).write(to: recovery.appendingPathComponent("original-copy-0"))
+            try Data("visible destination fixture bytes".utf8).write(to: destination.appendingPathComponent("preserved.txt"))
+            try Data("visible destination fixture bytes".utf8).write(to: recovery.appendingPathComponent("output-copy-0"))
+            let manifest = LocalEndpointSession.MatchingRecoveryManifest(schemaVersion: 1,
+                originals: [.init(relativePath: "preserved.txt", snapshotFilename: "original-copy-0",
+                                  heldFilename: "original-held-0", isReplaced: true)],
+                outputs: [.init(relativePath: "preserved.txt", stagedFilename: "output-stage-0",
+                                snapshotFilename: "output-copy-0", rollbackFilename: "rollback-output-0")])
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"), options: .atomic)
+        }
         if images {
             let nested = destination.appendingPathComponent("nested", isDirectory: true)
             try manager.createDirectory(at: nested, withIntermediateDirectories: true)

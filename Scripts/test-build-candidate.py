@@ -1,0 +1,36 @@
+"""Reject mismatched or untraceable app identity before candidate registration."""
+import importlib.util
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location("candidate", Path(__file__).with_name("build-3.0-candidate.py"))
+candidate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(candidate)
+
+
+class CandidateTests(unittest.TestCase):
+    def test_identity_rejects_each_mismatch_and_missing_revision(self):
+        info = {"AFTSourceCommit": "a" * 40, "AFTSourceTree": "b" * 40,
+                "CFBundleShortVersionString": "3.0.0", "CFBundleVersion": "43",
+                "CFBundleIdentifier": "no.aagedal.AagedalFTPSync"}
+        candidate.verify_identity(info, "a" * 40, "b" * 40, "3.0.0", "43")
+        for key in info:
+            with self.subTest(key=key):
+                changed = dict(info)
+                changed[key] = "wrong"
+                with self.assertRaises(ValueError):
+                    candidate.verify_identity(changed, "a" * 40, "b" * 40, "3.0.0", "43")
+        del info["AFTSourceCommit"]
+        with self.assertRaises(ValueError):
+            candidate.verify_identity(info, "a" * 40, "b" * 40, "3.0.0", "43")
+
+    def test_dirty_or_untracked_source_prevents_candidate(self):
+        for status in [" M project.yml", "?? new-source.swift", "M  source.swift"]:
+            with self.subTest(status=status), patch.object(candidate, "run", return_value=status):
+                with self.assertRaises(ValueError):
+                    candidate.source_identity()
+
+
+if __name__ == "__main__":
+    unittest.main()

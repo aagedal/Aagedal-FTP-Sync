@@ -160,6 +160,7 @@
 		9B0FC1A1FB7FED9F4DC35A82 /* MetadataAuditRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11EEAAEEA8F25FFA2893352E /* MetadataAuditRepository.swift */; };
 		9BEE330C4CCB3416CF4CB8F2 /* MetadataProgrammingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D1E4B1B6D1EC921FAB3E2C5 /* MetadataProgrammingCoordinator.swift */; };
 		9DB40C0F242BAF5400C1AB08 /* SourceSignatureVersion3Tests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6814BDEA2C7D9393E32617C /* SourceSignatureVersion3Tests.swift */; };
+		9EF5FBCA567D14959BF473FF /* AuthorizedMediaAcceptanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24C37B5BC1EBC4F88CC700B7 /* AuthorizedMediaAcceptanceTests.swift */; };
 		A0534370D1A62D35C61FCBBC /* SyncSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78AC91617DD666A454615C1A /* SyncSchedulerTests.swift */; };
 		A0863F1D6C4FD686BDA2D700 /* PathSafetyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C502318E99DE80F0847AFF6E /* PathSafetyTests.swift */; };
 		A1923F1FD1A91F340A95C9D6 /* SourceSignatureRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08A451EA9979512369078E47 /* SourceSignatureRepositoryTests.swift */; };
@@ -306,6 +307,7 @@
 		22FCF100FDDAAE382C66BB35 /* MetadataGeofence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeofence.swift; sourceTree = "<group>"; };
 		23BFD8D23D8730CCA08AEDEE /* Version3StorageLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Version3StorageLease.swift; sourceTree = "<group>"; };
 		244B69E04AEFF6E5F6E014AF /* MetadataGeocodingServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeocodingServiceTests.swift; sourceTree = "<group>"; };
+		24C37B5BC1EBC4F88CC700B7 /* AuthorizedMediaAcceptanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorizedMediaAcceptanceTests.swift; sourceTree = "<group>"; };
 		254DB69814E24065108EE9FE /* MetadataCalendarMigrationJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarMigrationJournal.swift; sourceTree = "<group>"; };
 		25C577F4C00B53FEE0AEAEC4 /* SyncScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncScheduler.swift; sourceTree = "<group>"; };
 		2623F20DBA78FD96B4E3BB79 /* manifest.json.base64 */ = {isa = PBXFileReference; path = manifest.json.base64; sourceTree = "<group>"; };
@@ -430,7 +432,7 @@
 		96BEB9DB3BA25A81D2C50D52 /* MetadataProgrammingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataProgrammingCoordinatorTests.swift; sourceTree = "<group>"; };
 		97C0C816A4FB1006374B4D23 /* PhotographerMapTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotographerMapTimelineTests.swift; sourceTree = "<group>"; };
 		97F55ED30B4C3721009803C5 /* MetadataSyncServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataSyncServerClient.swift; sourceTree = "<group>"; };
-		9C35572797947764BD999107 /* AuraFaceR100.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = AuraFaceR100.mlpackage; sourceTree = "<group>"; };
+		9C35572797947764BD999107 /* AuraFaceR100.mlpackage */ = {isa = PBXFileReference; path = AuraFaceR100.mlpackage; sourceTree = "<group>"; };
 		9C550265145C1840CA4CAF18 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9C7B57A47D6AE4FF9FA83D5B /* ConfigurationTransferActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigurationTransferActivationTests.swift; sourceTree = "<group>"; };
 		9C80FA23E6C80A52EE89914F /* MetadataCalendarActivationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarActivationTests.swift; sourceTree = "<group>"; };
@@ -796,6 +798,7 @@
 				4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */,
 				74D4F6EDD116D10B5A093ACE /* AuraFaceComponentInstallerTests.swift */,
 				30E9B274485FB5B8B56F1FF5 /* AuraFaceRecognitionRuntimeTests.swift */,
+				24C37B5BC1EBC4F88CC700B7 /* AuthorizedMediaAcceptanceTests.swift */,
 				9C7B57A47D6AE4FF9FA83D5B /* ConfigurationTransferActivationTests.swift */,
 				61206E0435FCE509729F69A0 /* ConfigurationTransferCoordinatorTests.swift */,
 				D0EAD657F152BADDBE31F18A /* ConfigurationTransferTests.swift */,
@@ -1178,6 +1181,7 @@
 				4BC09059CA26CBE02F7E39D7 /* AppleMetadataGeocodingProviderTests.swift in Sources */,
 				730DF7B0F6D82B30A78EF3A7 /* AuraFaceComponentInstallerTests.swift in Sources */,
 				F68FF3FF812B39081C377CBE /* AuraFaceRecognitionRuntimeTests.swift in Sources */,
+				9EF5FBCA567D14959BF473FF /* AuthorizedMediaAcceptanceTests.swift in Sources */,
 				5745C7E7A629C9CCA2B88A64 /* ConfigurationTransferActivationTests.swift in Sources */,
 				5662C3ECC707EE19CDE34F51 /* ConfigurationTransferCoordinatorTests.swift in Sources */,
 				0F49E4F6EC05AB6395A4F2FA /* ConfigurationTransferTests.swift in Sources */,
@@ -1499,7 +1503,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 38;
+				CURRENT_PROJECT_VERSION = 43;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -1668,7 +1672,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 38;
+				CURRENT_PROJECT_VERSION = 43;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;

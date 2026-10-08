@@ -1,7 +1,7 @@
 # Metadata and geocoder compatibility probe
 
 An isolated macOS 14 / Swift 6 executable using the same exact SwiftMediaMetadata
-2.0.0 pin as FTP Sync. It changes no app settings or user files. Default execution
+3.0.1 pin as FTP Sync. It changes no app settings or user files. Default execution
 performs offline lookups and writes/removes synthetic temporary JPEG/XMP fixtures:
 
 ```sh
@@ -10,7 +10,7 @@ swift run --package-path Tools/MetadataCompatibilityProbe MetadataCompatibilityP
 
 Explicit opt-in online adapter checks send only fixed public Oslo coordinates
 (59.9139, 10.7522) and `en_US` to Apple. Each request has a 20-second cancellation
-timer. This probe does not exercise the future production queue/cache/backoff:
+timer. This probe checks the OS adapters separately from the production queue/cache/backoff:
 
 ```sh
 swift run --package-path Tools/MetadataCompatibilityProbe MetadataCompatibilityProbe --online-mapkit

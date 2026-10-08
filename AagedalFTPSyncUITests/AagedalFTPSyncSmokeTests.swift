@@ -36,6 +36,74 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyRetainedMetadataRecovery(managed: true, images: true)
     }
 
+    func testInterruptedImagePublicationRetainsActualTransactionAndBlocksRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false)
+    }
+
+    func testManagedInterruptedImagePublicationRetainsActualTransactionAndBlocksRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true)
+    }
+
+    private func verifyInterruptedImagePublication(managed: Bool) throws {
+        launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
+               imageRecovery: true, interruptPublication: true)
+        element("Metadata").firstMatch.click()
+        element("reprocess-geocoding").click()
+        let review = app.sheets.firstMatch
+        XCTAssertTrue(review.waitForExistence(timeout: 8))
+        let publish = review.buttons["Reprocess Saved Files"]
+        XCTAssertTrue(publish.waitForExistence(timeout: 8))
+        XCTAssertTrue(publish.isEnabled)
+        publish.click()
+        let stopped = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in self.app.state == .notRunning }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 15), .completed)
+
+        app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION")
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        element("Metadata").firstMatch.click()
+        element("reprocess-geocoding").click()
+        let blocked = app.sheets.firstMatch
+        XCTAssertTrue(blocked.waitForExistence(timeout: 8))
+        let message = blocked.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "remains at ", "remains at "
+        )).firstMatch
+        XCTAssertTrue(message.waitForExistence(timeout: 8))
+        let text = message.value as? String ?? message.label
+        let start = try XCTUnwrap(text.range(of: "remains at "))
+        let end = try XCTUnwrap(text.range(of: ". Recover the retained files"))
+        let recovery = URL(fileURLWithPath: String(text[start.upperBound..<end.lowerBound]))
+        let destination = recovery.deletingLastPathComponent()
+        let endpoint = managed ? destination.deletingLastPathComponent() : destination
+        let root = endpoint.deletingLastPathComponent()
+        XCTAssertEqual(root.lastPathComponent, app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"])
+        XCTAssertEqual(root.deletingLastPathComponent().lastPathComponent, "AagedalFTPSyncUITests")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("native-image-interruption"), encoding: .utf8), "beforeCommit")
+        XCTAssertTrue(recovery.lastPathComponent.hasPrefix(".aagedal-sync-"))
+        XCTAssertNotEqual(recovery.lastPathComponent, ".aagedal-sync-ui-fixture.transaction")
+        let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: recovery.appendingPathComponent("recovery.json"))) as? [String: Any]
+        let originals = try XCTUnwrap(manifest?["originals"] as? [[String: Any]])
+        XCTAssertEqual(originals.count, 1)
+        XCTAssertEqual(originals[0]["relativePath"] as? String, "nested/recovery.jpg")
+        let held = recovery.appendingPathComponent(try XCTUnwrap(originals[0]["heldFilename"] as? String))
+        let source = root.appendingPathComponent("Source/recovery.jpg")
+        XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
+        let output = destination.appendingPathComponent("nested/recovery.jpg")
+        let image = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [String: Any])
+        let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
+        XCTAssertEqual(iptc[kCGImagePropertyIPTCCity as String] as? String, "Recovery Venue")
+        XCTAssertEqual(try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                       Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertFalse(blocked.buttons["Reprocess Saved Files"].exists)
+        blocked.buttons["Cancel"].click()
+        waitForSheetTransition()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
+        XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
+        // Retain the genuine interrupted transaction for independent/manual recovery.
+    }
+
     private func verifyRetainedMetadataRecovery(managed: Bool, images: Bool = false) throws {
         launch(seedJob: true, recoveryFixture: true, managedRecovery: managed, imageRecovery: images)
         element("Metadata").firstMatch.click()
@@ -883,7 +951,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         recoveryFixture: Bool = false,
         managedRecovery: Bool = false,
         imageRecovery: Bool = false,
-        matchingClipImage: Bool = false
+        matchingClipImage: Bool = false,
+        interruptPublication: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -900,6 +969,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if imageRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] = "1" }
         if matchingClipImage { app.launchEnvironment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] = "1" }
         if managedRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] = "1" }
+        if interruptPublication { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 

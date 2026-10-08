@@ -20,6 +20,10 @@
     <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>AFTSourceCommit</key>
+    <string>$(AFT_SOURCE_COMMIT)</string>
+    <key>AFTSourceTree</key>
+    <string>$(AFT_SOURCE_TREE)</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
