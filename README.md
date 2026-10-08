@@ -196,6 +196,25 @@ copies. The checks retain outputs for independent ExifTool/Photo Agent review.
 Bundled-model decoding and face detection are checked separately from labeled
 matching accuracy; detection success does not establish correct identities.
 
+Private face-reference evaluation uses `AuthorizedFaceEvaluationTests` with
+`TEST_RUNNER_AAGEDAL_FACE_EVALUATION_MANIFEST` (mode `scan`, absolute `files`,
+fresh `outputRoot` under this checkout's ignored `build/`). Review the production
+face crops visually before assigning pseudonyms. Do not use automatic clusters
+as ground truth or split RAW/JPEG variants of one capture across test roles.
+
+`AuthorizedFaceMatchingTests` accepts
+`TEST_RUNNER_AAGEDAL_FACE_MATCHING_MANIFEST` with hash-pinned records, reviewed
+labels and capture-disjoint `reference`, `calibration` and `heldOut` roles.
+Package generation additionally requires
+`TEST_RUNNER_AAGEDAL_FACE_REFERENCE_OUTPUT` and
+`TEST_RUNNER_AAGEDAL_FACE_REFERENCE_SOURCE_COMMIT`; the source must be clean at
+that exact current HEAD and each reference label must pin its reviewed
+`cropSHA256`. Run only `testOptInExportAuthorizedReferenceLibrary` when exporting
+an existing evaluation whose matching report already exists. The generated
+schema-3 `.aagedalpeople` package is a private test-helper reference library;
+it does not establish native Photo Agent producer interoperability. Keep all
+photos, names, vectors and local manifests out of Git.
+
 The scheduled integration workflow runs this suite on a trusted self-hosted macOS runner with an Apple Development identity. Give that runner the custom `signed-ui-tests` label and configure the repository variable `APPLE_DEVELOPMENT_TEAM` for its signing account; pull-request events never automatically dispatch code to it.
 
 Opt-in loopback FTP, trusted implicit-FTPS, and SFTP write/fault tests use OpenSSL plus the pinned Python packages in `Scripts/delivery-latency-requirements.txt`. Install the Python packages in an activated virtual environment, then run:

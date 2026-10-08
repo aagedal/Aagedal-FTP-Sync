@@ -1,11 +1,14 @@
 {
   "schemaVersion": 1,
-  "id": "development-9f04fad-programmed-server-filter",
+  "id": "development-3.0.0-43-6501476cd415-6d96fdc91576",
   "status": "IMPLEMENTING",
-  "commit": "9f04fade20ac19777af89d2c6ee1d5df5633f638",
-  "version": "2.9.2",
-  "build": "37",
-  "appPath": "/Users/truls.aagedal/Developer/Aagedal FTP Sync/build/v3-programmed-filter-release/Build/Products/Release/AagedalFTPSync.app",
-  "evidence": "Documentation/Testing/2026-09-15-Metadata-Programming-Server-Filename-Filter.md",
-  "note": "Development build only, not ready for beta or human acceptance. The unsigned arm64 Release executable at app-code commit 9f04fad has SHA-256 3f62340cb2f83c59ac3c805c6a152bc25c2036c135f1dda021445da9bb310628. One-way server downloads can derive current-day filename prefixes from Metadata Programming; empty days select no files and older manual jobs retain their behavior. The complete non-UI target executes 1,151 tests with 16 opt-in skips and zero failures, the focused signed version-3 upgrade/editor save test passes, the transfer selection passes 26/26, and 12 disposable FTP/FTPS/SFTP loopback cases pass. Security/current-identity guards pass. The unchanged PHP/MariaDB suite passed 162 assertions at 5440e77. The exact SwiftMediaMetadata 3.0.1 compatibility probe and complete signed UI suite (18/18) last passed at 5944d5b and must be rerun for a release-tier candidate. Live filter-specific transport, production face trust/artifacts and calibration, authorized actual-face fixtures, macOS 14 evidence, native image/location/calendar workflows, enriched performance, 3.0 identity, signed archive, full candidate matrix and final user acceptance remain open. The app remains 2.9.2 (37); prior candidate evidence is preserved."
+  "commit": "6501476cd415237eed8cd23a1fca8599aadda840",
+  "sourceTree": "3075b424333bd055bf544534333dc91bccde3eac",
+  "version": "3.0.0",
+  "build": "43",
+  "appPath": "/Users/truls.aagedal/.t3/worktrees/Aagedal FTP Sync/t3code-6664228d/build/candidates/3.0.0-43-6501476cd415/Aagedal FTP Sync.xcarchive/Products/Applications/Aagedal FTP Sync.app",
+  "executableSHA256": "6d96fdc91576f39d0e6a1a3457095162d05740033cae88c60d702dd158e642c9",
+  "archivePath": "/Users/truls.aagedal/.t3/worktrees/Aagedal FTP Sync/t3code-6664228d/build/candidates/3.0.0-43-6501476cd415/Aagedal FTP Sync.xcarchive",
+  "evidence": "Documentation/3.0-Readiness.md",
+  "note": "Developer ID signed Release archive from clean source. Not notarized or published by this workflow. Required acceptance gates remain open; this is not READY_FOR_USER_TESTING."
 }

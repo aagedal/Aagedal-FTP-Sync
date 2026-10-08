@@ -148,6 +148,7 @@
 		91DD491F9AA521AF4EF731DE /* MetadataPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F63E1167F0C4B8DD60E70E /* MetadataPreview.swift */; };
 		91F7228F88CF2AE72CAAB591 /* MetadataGeofenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 304A4483E49FF0C6138E198D /* MetadataGeofenceTests.swift */; };
 		921B6B84636D390B6CC692B4 /* MetadataProcessingServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62E0498D7957586C0C97F579 /* MetadataProcessingServices.swift */; };
+		928EE893CF6B074EB7E42A1A /* AuthorizedFaceEvaluationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC8A38B35A18B3F9EAAAD5BE /* AuthorizedFaceEvaluationTests.swift */; };
 		937CF5EDC856E9AED7C54AA3 /* MetadataGeocodingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14F7A0C710D70D36A49F620 /* MetadataGeocodingSettings.swift */; };
 		94D1340D4631F3C38C02C8C4 /* Version3JSONStoreConversion.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4361B07FCB5CAEA92777F35 /* Version3JSONStoreConversion.swift */; };
 		956AD2A7D233570C7B9327AE /* ConfigurationTransferView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44DC5631E8E1F2C557CA626F /* ConfigurationTransferView.swift */; };
@@ -198,6 +199,7 @@
 		BDCA6761E7DD6019A77D9685 /* MetadataCalendarMigrationStorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B0AB6F63199B4C259A2D5B0F /* MetadataCalendarMigrationStorageTests.swift */; };
 		C0159059E634FA79B86530D5 /* PeopleLibraryRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DF237B6B6C1F44979F0D803 /* PeopleLibraryRepositoryTests.swift */; };
 		C308CFF384FCB8F0E387D5AE /* SupportBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F61EC3ED2F318802DDF460 /* SupportBundle.swift */; };
+		C3CBB46C8BE573486C7D1B3A /* AuthorizedFaceMatchingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3049A8F4220A23FA184B23BB /* AuthorizedFaceMatchingTests.swift */; };
 		C4E064A09FD348F8DBC2DF17 /* SyncRuntimeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E93E3863E7CE51C640F3CCF /* SyncRuntimeSupport.swift */; };
 		C59FEB0268DFF93AFE0BAA03 /* UploadNamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A3135E3B7AE16B13F9085BD /* UploadNamingTests.swift */; };
 		C6591CB1C66AA79DB767AAD6 /* MetadataCalendarCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC5DD7F9670E3114DCB8DD33 /* MetadataCalendarCoordinator.swift */; };
@@ -321,6 +323,7 @@
 		2E644FA2F409DD867793517D /* editor-photo-agent.json.base64 */ = {isa = PBXFileReference; path = "editor-photo-agent.json.base64"; sourceTree = "<group>"; };
 		2E65EC551E128F2CEA855514 /* MetadataPreset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataPreset.swift; sourceTree = "<group>"; };
 		2E6853FEBA45C727246210CC /* MetadataCaptureDateReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCaptureDateReaderTests.swift; sourceTree = "<group>"; };
+		3049A8F4220A23FA184B23BB /* AuthorizedFaceMatchingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorizedFaceMatchingTests.swift; sourceTree = "<group>"; };
 		304A4483E49FF0C6138E198D /* MetadataGeofenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataGeofenceTests.swift; sourceTree = "<group>"; };
 		30978DC45B262D8C7E18A029 /* MetadataCalendarSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarSettingsView.swift; sourceTree = "<group>"; };
 		30E9B274485FB5B8B56F1FF5 /* AuraFaceRecognitionRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceRecognitionRuntimeTests.swift; sourceTree = "<group>"; };
@@ -510,6 +513,7 @@
 		E7AF60A3923F21701F379868 /* ServerProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProfile.swift; sourceTree = "<group>"; };
 		E97321D663D13186B49EA810 /* MetadataExistingPreviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataExistingPreviewTests.swift; sourceTree = "<group>"; };
 		EAD49E1D220570F8E3185574 /* PeopleLibraryControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleLibraryControllerTests.swift; sourceTree = "<group>"; };
+		EC8A38B35A18B3F9EAAAD5BE /* AuthorizedFaceEvaluationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthorizedFaceEvaluationTests.swift; sourceTree = "<group>"; };
 		EDFDBE6187BE47D3DA7E605E /* SSHHostKeyFingerprintTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHHostKeyFingerprintTests.swift; sourceTree = "<group>"; };
 		EE20E0C1B29F4F92DD057885 /* AppPersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPersistenceCoordinator.swift; sourceTree = "<group>"; };
 		EE378617ED2105019F256F1A /* SyncJobProcessingTimeZoneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncJobProcessingTimeZoneTests.swift; sourceTree = "<group>"; };
@@ -798,6 +802,8 @@
 				4BCAFE74715340489B86A976 /* AppStorageLayoutTests.swift */,
 				74D4F6EDD116D10B5A093ACE /* AuraFaceComponentInstallerTests.swift */,
 				30E9B274485FB5B8B56F1FF5 /* AuraFaceRecognitionRuntimeTests.swift */,
+				EC8A38B35A18B3F9EAAAD5BE /* AuthorizedFaceEvaluationTests.swift */,
+				3049A8F4220A23FA184B23BB /* AuthorizedFaceMatchingTests.swift */,
 				24C37B5BC1EBC4F88CC700B7 /* AuthorizedMediaAcceptanceTests.swift */,
 				9C7B57A47D6AE4FF9FA83D5B /* ConfigurationTransferActivationTests.swift */,
 				61206E0435FCE509729F69A0 /* ConfigurationTransferCoordinatorTests.swift */,
@@ -1181,6 +1187,8 @@
 				4BC09059CA26CBE02F7E39D7 /* AppleMetadataGeocodingProviderTests.swift in Sources */,
 				730DF7B0F6D82B30A78EF3A7 /* AuraFaceComponentInstallerTests.swift in Sources */,
 				F68FF3FF812B39081C377CBE /* AuraFaceRecognitionRuntimeTests.swift in Sources */,
+				928EE893CF6B074EB7E42A1A /* AuthorizedFaceEvaluationTests.swift in Sources */,
+				C3CBB46C8BE573486C7D1B3A /* AuthorizedFaceMatchingTests.swift in Sources */,
 				9EF5FBCA567D14959BF473FF /* AuthorizedMediaAcceptanceTests.swift in Sources */,
 				5745C7E7A629C9CCA2B88A64 /* ConfigurationTransferActivationTests.swift in Sources */,
 				5662C3ECC707EE19CDE34F51 /* ConfigurationTransferCoordinatorTests.swift in Sources */,

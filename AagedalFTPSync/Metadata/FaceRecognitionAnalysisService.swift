@@ -8,11 +8,17 @@ struct FaceRecognitionAnalysisObservation: Equatable, Sendable {
     let ordinal: Int
     let embedding: FaceRecognitionEmbedding
     let captureQuality: Double?
+    /// Region from the same detection pass that produced this embedding.
+    /// Used by operator diagnostics to label the correct face; never persisted
+    /// in metadata/audit results by the recognition service.
+    let normalizedBoundingBox: CGRect?
 
-    init(ordinal: Int, embedding: FaceRecognitionEmbedding, captureQuality: Double?) {
+    init(ordinal: Int, embedding: FaceRecognitionEmbedding, captureQuality: Double?,
+         normalizedBoundingBox: CGRect? = nil) {
         self.ordinal = ordinal
         self.embedding = embedding
         self.captureQuality = captureQuality
+        self.normalizedBoundingBox = normalizedBoundingBox
     }
 }
 

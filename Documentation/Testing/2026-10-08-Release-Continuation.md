@@ -44,7 +44,8 @@ canonical source sidecars remain unchanged.
 
 A separate copy of each published output exercises City, Country and Unicode Person
 Shown writes. ExifTool independently checks ARW/CR3 outputs in both folder modes:
-all 156 ARW and 76 CR3 source-sidecar fields are compared; only Headline, Creator,
+all 152 ARW and 73 CR3 source-sidecar fields are preserved except approved changes;
+the resulting 156/76-field outputs are compared in full; only Headline, Creator,
 City, Country and the appended Person Shown name are allowed to change. All four
 checks pass and RAW hashes match. This is coverage of these two camera formats,
 not every supported RAW family, native Photo Agent display or recognition accuracy.
@@ -107,3 +108,59 @@ macOS 14 and other supported-OS/VoiceOver acceptance, remaining native migration
 reconciliation and metadata UI matrix, all final-candidate checklist cases,
 independent review and the user-only final acceptance. No missing prerequisite is
 counted as passing, and no production release or existing user result was changed.
+
+## Clean-source archive and integrated regression
+
+Developer ID archive from clean `6501476cd415237eed8cd23a1fca8599aadda840`
+succeeded. The embedded source tree is
+`3075b424333bd055bf544534333dc91bccde3eac`; Info.plist reports 3.0.0 (43)
+and minimum macOS 14.0. Strict deep code-signature and bundled-model verification
+pass. The archive is Apple silicon; it contains approximately 208 MB of app files.
+Executable SHA-256:
+`6d96fdc91576f39d0e6a1a3457095162d05740033cae88c60d702dd158e642c9`.
+The new candidate is `development-3.0.0-43-6501476cd415-6d96fdc91576`.
+It remains IMPLEMENTING; no notarization, installation or publication was performed.
+
+After integration, the complete non-UI suite at this source passes 1,274 executed
+tests, 27 opt-in skips, zero failures. The two extra skips are the operator-supplied
+image tests, which passed separately with the authorized manifest. The complete
+signed UI run is still pending; no final-candidate full-matrix pass is claimed.
+
+## Checklist persistence
+
+The T3 collaborative preview opened the loopback checklist and displayed the exact
+3.0.0 (43) candidate, archive path and IMPLEMENTING status. The unavailable macOS 14
+case was saved as blocked in the agent lane through the browser, then reloaded;
+the durable JSON has revision 1 and zero user entries. Human acceptance is untouched.
+
+This browser activity raised T3 Code in front of the native app during the full
+UI suite's managed-image recovery tab click. XCTest explicitly recorded that
+interrupting T3 window, and the test could not find the Reprocess control.
+The complete run is not counted as passing. Native tests and browser activity
+will be serialized for the rerun; no app-code change is justified by this result.
+
+## Independent review and future archive guard
+
+A separate read-only reviewer inspected commit `6501476`, the source/evidence,
+media isolation and candidate workflow. No blocking issue was found. The reviewer
+identified that the original script could reuse the same version/build after a
+source commit changed. The script now rejects any existing artifact for that
+version/build and the registered candidate even when its artifact is absent.
+All three candidate-script tests pass, and a follow-up review has no findings.
+This guard affects future archives; build 43 continues to identify `6501476`.
+The review did not independently reproduce tests or close full M0–M6 acceptance.
+
+## Serialized native suite and authorized face evaluation
+
+The complete signed native suite rerun with browser activity paused passes
+36/36 tests with zero failures (880 seconds). Log:
+`/private/tmp/aftpsync-v3-oct08-serial-ui.log`. The earlier interrupted run remains
+a failed observation. This is current-host Debug UI evidence, not macOS 14 or
+isolated signed Release acceptance.
+
+The subsequently authorized event folder supplies visually reviewed pseudonym
+reference identities and a capture-disjoint held-out matching evaluation.
+See [the dedicated report](2026-10-08-Authorized-Face-Evaluation.md). It also
+exposed a material compressed-RAW decoder defect; the signed build 43 predates
+the diagnostic observation additions and does not contain a decoder correction.
+A future source archive needs a new build/candidate identity.

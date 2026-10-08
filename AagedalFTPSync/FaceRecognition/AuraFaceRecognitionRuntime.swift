@@ -156,7 +156,8 @@ final class AuraFaceRecognitionRuntime: @unchecked Sendable {
             observations.append(.init(
                 ordinal: ordinal,
                 embedding: embedding,
-                captureQuality: qualities[face.uuid].map(Double.init)
+                captureQuality: qualities[face.uuid].map(Double.init),
+                normalizedBoundingBox: face.boundingBox
             ))
         }
         return observations
