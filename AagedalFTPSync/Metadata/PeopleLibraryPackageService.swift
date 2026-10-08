@@ -26,8 +26,10 @@ struct PeopleLibraryPackageService: Sendable {
     enum Failure: Error, Equatable {
         case invalidPackage, destinationExists, snapshotChanged, unsafeFile, busy, io
     }
-    static let pathExtension = "aagedalpeople"
-    static let zipPathExtension = "aagedalpeople.zip"
+    static let pathExtension = "photoagentpeople"
+    static let legacyPathExtension = "aagedalpeople"
+    static let acceptedPathExtensions = [pathExtension, legacyPathExtension]
+    static let zipPathExtension = "photoagentpeople.zip"
     private let limits: PeopleLibraryManifest.Limits
     private let beforePublish: @Sendable () throws -> Void
 
@@ -229,17 +231,23 @@ struct PeopleLibraryPackageService: Sendable {
     }
 
     private enum PackageKind { case directory, zip }
+    private static func isDirectoryPackageName(_ name: String) -> Bool {
+        acceptedPathExtensions.contains { name.hasSuffix("." + $0) && name.count > $0.count + 1 }
+    }
     private static func packageKind(_ url: URL) throws -> PackageKind {
-        guard url.isFileURL, url.pathExtension == pathExtension, !url.path.contains("\0"),
-              !url.lastPathComponent.isEmpty else {
-            guard url.isFileURL, url.lastPathComponent.hasSuffix("." + zipPathExtension),
-                  !url.path.contains("\0"), !url.lastPathComponent.isEmpty else { throw Failure.invalidPackage }
-            return .zip
-        }
-        return .directory
+        guard url.isFileURL, !url.path.contains("\0") else { throw Failure.invalidPackage }
+        let name = url.lastPathComponent
+        if isDirectoryPackageName(name) { return .directory }
+        if acceptedPathExtensions.contains(where: {
+            let suffix = "." + $0 + ".zip"
+            return name.hasSuffix(suffix) && name.count > suffix.count
+        }) { return .zip }
+        throw Failure.invalidPackage
     }
     private static func validatePackageURL(_ url: URL) throws {
-        guard try packageKind(url) == .directory else { throw Failure.invalidPackage }
+        guard try packageKind(url) == .directory, url.pathExtension == pathExtension else {
+            throw Failure.invalidPackage
+        }
     }
     private static func requireSame(_ actual: PeopleLibrarySnapshot, _ expected: PeopleLibrarySnapshot) throws {
         guard actual.manifest == expected.manifest, actual.gallery == expected.gallery else { throw Failure.snapshotChanged }
@@ -594,7 +602,7 @@ struct PeopleLibraryPackageService: Sendable {
             let components = manifestEntry.path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
             let rootComponents = Array(components.dropLast())
             guard rootComponents.count <= 1,
-                  rootComponents.isEmpty || rootComponents[0].hasSuffix("." + PeopleLibraryPackageService.pathExtension) else {
+                  rootComponents.isEmpty || PeopleLibraryPackageService.isDirectoryPackageName(rootComponents[0]) else {
                 throw Failure.invalidPackage
             }
             let root = rootComponents.first

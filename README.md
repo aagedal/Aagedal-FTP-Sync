@@ -34,7 +34,7 @@ The 3.0 source currently adds these guarded workflows:
 - Template-enabled protocol-3 calendars in a server namespace separate from classic
   2.x calendars. Migration creates and reviews a new calendar instead of rewriting the
   classic one, and every participant in the new calendar needs version 3.
-- Import and exact export of immutable `.aagedalpeople` packages produced by Photo Agent.
+- Import and exact export of immutable `.photoagentpeople` packages produced by Photo Agent; legacy `.aagedalpeople` packages remain importable.
   Face recognition is local and appends only accepted names to Person Shown, with an
   optional Keywords append and `{persons}` expansion. Uncertain or unavailable results
   are omitted and remain visible in preview/audit evidence.
@@ -211,7 +211,7 @@ Package generation additionally requires
 that exact current HEAD and each reference label must pin its reviewed
 `cropSHA256`. Run only `testOptInExportAuthorizedReferenceLibrary` when exporting
 an existing evaluation whose matching report already exists. The generated
-schema-3 `.aagedalpeople` package is a private test-helper reference library;
+schema-3 `.photoagentpeople` package is a private test-helper reference library;
 it does not establish native Photo Agent producer interoperability. Keep all
 photos, names, vectors and local manifests out of Git.
 

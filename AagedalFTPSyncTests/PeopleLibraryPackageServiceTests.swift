@@ -16,7 +16,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
     private func sha(_ bytes: Data) -> String { SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined() }
     private func fixture() throws -> Fixture {
         let parent = FileManager.default.temporaryDirectory.appendingPathComponent("people-package-\(UUID())")
-        let source = parent.appendingPathComponent("source.aagedalpeople")
+        let source = parent.appendingPathComponent("source.photoagentpeople")
         try FileManager.default.createDirectory(at: source.appendingPathComponent("embeddings"), withIntermediateDirectories: true)
         addTeardownBlock {
             if let entries = FileManager.default.enumerator(at: parent, includingPropertiesForKeys: nil) {
@@ -50,7 +50,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         return try XCTUnwrap(image.representation(using: .jpeg, properties: [.compressionFactor: 0.9]))
     }
     private func cropPackage(_ f: Fixture, crop: Data? = nil) throws -> (URL, String, Data) {
-        let package = f.parent.appendingPathComponent("crops.aagedalpeople")
+        let package = f.parent.appendingPathComponent("crops.photoagentpeople")
         try FileManager.default.createDirectory(at: package.appendingPathComponent("embeddings"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: package.appendingPathComponent("upgrade_sources"), withIntermediateDirectories: true)
         let oldPayload = try PeopleLibraryPayload.decode(Data(contentsOf: f.snapshot.directoryURL.appendingPathComponent("people.json")))
@@ -163,14 +163,14 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
     func testNoCropSchemaThreeImportExportsAsSchemaTwo() throws {
         let f = try fixture()
-        let package = f.parent.appendingPathComponent("empty-schema3.aagedalpeople")
+        let package = f.parent.appendingPathComponent("empty-schema3.photoagentpeople")
         let service = PeopleLibraryPackageService()
         try service.export(f.snapshot, to: package)
         try schemaThreeWithoutCrops(at: package)
         let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("empty-schema3-receiver"))
         let imported = try service.importPackage(at: package, into: receiver)
         XCTAssertEqual(imported.manifest.schemaVersion, 3)
-        let output = f.parent.appendingPathComponent("empty-schema3-export.aagedalpeople")
+        let output = f.parent.appendingPathComponent("empty-schema3-export.photoagentpeople")
         try service.export(imported, to: output)
         let exported = try PeopleLibraryManifest.decode(Data(contentsOf: output.appendingPathComponent("manifest.json")))
         XCTAssertEqual(exported.schemaVersion, 2)
@@ -182,7 +182,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
     func testNoCropSchemaThreeExportRebindsEditorMetadata() throws {
         let f = try fixture()
-        let package = f.parent.appendingPathComponent("empty-editor-schema3.aagedalpeople")
+        let package = f.parent.appendingPathComponent("empty-editor-schema3.photoagentpeople")
         let service = PeopleLibraryPackageService()
         try service.export(f.snapshot, to: package)
         let payload = try PeopleLibraryPayload.decode(Data(contentsOf: package.appendingPathComponent("people.json")))
@@ -209,7 +209,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
             into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("empty-editor-receiver")))
         XCTAssertEqual(imported.manifest.schemaVersion, 3)
         XCTAssertNotEqual(try Data(contentsOf: package.appendingPathComponent(descriptor.path)), originalEditorBytes)
-        let output = f.parent.appendingPathComponent("empty-editor-export.aagedalpeople")
+        let output = f.parent.appendingPathComponent("empty-editor-export.photoagentpeople")
         try service.export(imported, to: output)
         let exported = try PeopleLibraryManifest.decode(Data(contentsOf: output.appendingPathComponent("manifest.json")))
         XCTAssertEqual(exported.schemaVersion, 2)
@@ -227,12 +227,12 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         let imported = try service.importPackage(at: package, into: receiver)
         XCTAssertEqual(imported.manifest.schemaVersion, 3)
         XCTAssertEqual(try Data(contentsOf: imported.directoryURL.appendingPathComponent(cropPath)), cropBytes)
-        let output = f.parent.appendingPathComponent("crop-export.aagedalpeople")
+        let output = f.parent.appendingPathComponent("crop-export.photoagentpeople")
         try service.export(imported, to: output)
         XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(cropPath)), cropBytes)
         XCTAssertEqual(try PeopleLibraryManifest.decode(Data(contentsOf: output.appendingPathComponent("manifest.json"))).revision,
             imported.manifest.revision)
-        let archive = f.parent.appendingPathComponent("crop-archive.aagedalpeople.zip")
+        let archive = f.parent.appendingPathComponent("crop-archive.photoagentpeople.zip")
         try zip(packageEntries(at: package), at: archive)
         let zipImported = try service.importPackage(at: archive,
             into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("crop-zip-receiver")))
@@ -240,20 +240,20 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: zipImported.directoryURL.appendingPathComponent(cropPath)), cropBytes)
         var compressed = try packageEntries(at: package)
         compressed[0].method = 8
-        let compressedArchive = f.parent.appendingPathComponent("compressed-crop.aagedalpeople.zip")
+        let compressedArchive = f.parent.appendingPathComponent("compressed-crop.photoagentpeople.zip")
         try zip(compressed, at: compressedArchive)
         XCTAssertThrowsError(try service.importPackage(at: compressedArchive,
             into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("compressed-crop-receiver"))))
         var extra = try packageEntries(at: package)
         extra[0].extra = Data([0xfe, 0xca, 0, 0])
-        let extraArchive = f.parent.appendingPathComponent("extra-crop.aagedalpeople.zip")
+        let extraArchive = f.parent.appendingPathComponent("extra-crop.photoagentpeople.zip")
         try zip(extra, at: extraArchive)
         XCTAssertThrowsError(try service.importPackage(at: extraArchive,
             into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("extra-crop-receiver"))))
         let wrapped = try packageEntries(at: package).map { item -> ZIPEntry in
-            ZIPEntry(name: "Wrapped.aagedalpeople/" + item.name, data: item.data)
+            ZIPEntry(name: "Wrapped.photoagentpeople/" + item.name, data: item.data)
         }
-        let wrappedArchive = f.parent.appendingPathComponent("wrapped-crop.aagedalpeople.zip")
+        let wrappedArchive = f.parent.appendingPathComponent("wrapped-crop.photoagentpeople.zip")
         try zip(wrapped, at: wrappedArchive)
         XCTAssertThrowsError(try service.importPackage(at: wrappedArchive,
             into: PeopleLibraryRepository(root: f.parent.appendingPathComponent("wrapped-crop-receiver"))))
@@ -291,7 +291,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         let receiver = PeopleLibraryRepository(root: f.parent.appendingPathComponent("prune-receiver"))
         let first = try service.importPackage(at: package, into: receiver)
         XCTAssertTrue(FileManager.default.fileExists(atPath: first.directoryURL.appendingPathComponent(cropPath).path))
-        let schemaTwoPackage = f.parent.appendingPathComponent("replacement.aagedalpeople")
+        let schemaTwoPackage = f.parent.appendingPathComponent("replacement.photoagentpeople")
         try service.export(f.snapshot, to: schemaTwoPackage)
         let replacement = try service.importPackage(at: schemaTwoPackage, into: receiver)
         XCTAssertEqual(replacement.manifest.schemaVersion, 2)
@@ -380,6 +380,43 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         return value ^ 0xffff_ffff
     }
 
+    func testNewAndLegacyDirectoryAndZIPNamesImportIdenticalSnapshots() throws {
+        let f = try fixture(), service = PeopleLibraryPackageService()
+        var index = 0
+        for ext in ["photoagentpeople", "aagedalpeople"] {
+            let directory = f.parent.appendingPathComponent("reference." + ext)
+            try FileManager.default.copyItem(at: f.snapshot.directoryURL, to: directory)
+            let imported = try service.importPackage(at: directory,
+                into: .init(root: f.parent.appendingPathComponent("directory-" + ext)))
+            XCTAssertEqual(imported.manifest, f.snapshot.manifest)
+            XCTAssertEqual(imported.gallery, f.snapshot.gallery)
+            for wrapper in ["", "wrapped.photoagentpeople/", "wrapped.aagedalpeople/"] {
+                let archive = f.parent.appendingPathComponent("reference-\(index)." + ext + ".zip")
+                try zip(packageEntries(f, root: wrapper), at: archive)
+                let snapshot = try service.importPackage(at: archive,
+                    into: .init(root: f.parent.appendingPathComponent("archive-\(index)")))
+                XCTAssertEqual(snapshot.manifest, f.snapshot.manifest)
+                XCTAssertEqual(snapshot.gallery, f.snapshot.gallery)
+                index += 1
+            }
+        }
+        try assertNoStages(f)
+    }
+
+    func testExportsRequireNewExtensionAndRejectMalformedImportNamesWithoutMutation() throws {
+        let f = try fixture(), service = PeopleLibraryPackageService()
+        let oldOutput = f.parent.appendingPathComponent("old.aagedalpeople")
+        XCTAssertThrowsError(try service.export(f.snapshot, to: oldOutput))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: oldOutput.path))
+        for name in [".photoagentpeople", ".aagedalpeople", ".photoagentpeople.zip", ".aagedalpeople.zip",
+                     "reference.photoagentpeople.bak", "reference.PHOTOAGENTPEOPLE", "reference.photoagentpeople.ZIP"] {
+            let receiver = f.parent.appendingPathComponent("unused-" + name)
+            XCTAssertThrowsError(try service.importPackage(at: f.parent.appendingPathComponent(name), into: .init(root: receiver)))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: receiver.path))
+        }
+        try assertNoStages(f)
+    }
+
     func testCommittedCrossAppGoldenPackageAndExactReexport() throws {
         let repositoryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("people-golden-\(UUID())")
@@ -393,7 +430,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         let snapshot = try PeopleLibraryPackageService().importPackage(at: fixture, into: repository)
         XCTAssertEqual(snapshot.manifest.coreRevision, "636f498dba7a9bb357ece23e2f5edcd02997fb4df1acc1e1101eecfd32438e83")
         XCTAssertEqual(snapshot.manifest.revision, "12324ae00b79094d239447531d81348e4c6450b7a65fbc329daab261c08025ba")
-        let output = repositoryRoot.appendingPathComponent("roundtrip.aagedalpeople")
+        let output = repositoryRoot.appendingPathComponent("roundtrip.photoagentpeople")
         try PeopleLibraryPackageService().export(snapshot, to: output)
         for path in snapshot.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName] {
             XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(path)),
@@ -415,24 +452,26 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         XCTAssertEqual(imported.manifest.schemaVersion, 3)
         XCTAssertEqual(imported.manifest.coreRevision, "3747303528858361c874f656461ec6dfbcb005851e43b468baecec213294565f")
         XCTAssertEqual(imported.manifest.revision, "5e409e1e8d083d51b446eda5ba53c0e21104a157bbbec345f2851631007c1300")
-        let output = parent.appendingPathComponent("golden-v3-export.aagedalpeople")
+        let output = parent.appendingPathComponent("golden-v3-export.photoagentpeople")
         try service.export(imported, to: output)
         for path in imported.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName] {
             XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(path)),
                 try Data(contentsOf: fixture.appendingPathComponent(path)), path)
         }
-        let archive = parent.appendingPathComponent("golden-v3.aagedalpeople.zip")
-        try zip(packageEntries(at: fixture), at: archive)
-        let zipImported = try service.importPackage(at: archive,
-            into: PeopleLibraryRepository(root: parent.appendingPathComponent("zip-receiver")))
-        XCTAssertEqual(zipImported.manifest.revision, imported.manifest.revision)
-        XCTAssertEqual(try Data(contentsOf: zipImported.directoryURL.appendingPathComponent(cropPath)),
-            try Data(contentsOf: fixture.appendingPathComponent(cropPath)))
+        for ext in ["photoagentpeople", "aagedalpeople"] {
+            let archive = parent.appendingPathComponent("golden-v3." + ext + ".zip")
+            try zip(packageEntries(at: fixture), at: archive)
+            let zipImported = try service.importPackage(at: archive,
+                into: PeopleLibraryRepository(root: parent.appendingPathComponent("zip-receiver-" + ext)))
+            XCTAssertEqual(zipImported.manifest.revision, imported.manifest.revision)
+            XCTAssertEqual(try Data(contentsOf: zipImported.directoryURL.appendingPathComponent(cropPath)),
+                try Data(contentsOf: fixture.appendingPathComponent(cropPath)))
+        }
     }
 
     func testExactByteExportAndImportIntoSeparateRepository() throws {
         let f = try fixture(), service = PeopleLibraryPackageService()
-        let output = f.parent.appendingPathComponent("shared.aagedalpeople")
+        let output = f.parent.appendingPathComponent("shared.photoagentpeople")
         XCTAssertEqual(try service.export(f.snapshot, to: output), output)
         let paths = f.snapshot.manifest.files.map(\.path) + [PeopleLibraryManifest.fileName]
         for path in paths {
@@ -460,7 +499,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
                 throw Failure.injected
             }
         })
-        try service.export(f.snapshot, to: f.parent.appendingPathComponent("leased-export.aagedalpeople"))
+        try service.export(f.snapshot, to: f.parent.appendingPathComponent("leased-export.photoagentpeople"))
     }
 
     func testCropExportPreventsConcurrentRemovalAndLeavesNoStage() throws {
@@ -476,7 +515,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
                 // The export lease must keep the crop-bearing selection intact.
             }
         })
-        let output = f.parent.appendingPathComponent("lease-crop-export.aagedalpeople")
+        let output = f.parent.appendingPathComponent("lease-crop-export.photoagentpeople")
         try service.export(snapshot, to: output)
         XCTAssertEqual(try receiver.currentSnapshot()?.manifest.revision, snapshot.manifest.revision)
         XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(cropPath)), cropBytes)
@@ -486,8 +525,8 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
     }
 
     func testWrappedZIPImportsStoredAndDeflatedFilesByteForByte() throws {
-        let f = try fixture(), archive = f.parent.appendingPathComponent("shared.aagedalpeople.zip")
-        var entries = try packageEntries(f, root: "shared.aagedalpeople/")
+        let f = try fixture(), archive = f.parent.appendingPathComponent("shared.photoagentpeople.zip")
+        var entries = try packageEntries(f, root: "shared.photoagentpeople/")
         let manifestIndex = try XCTUnwrap(entries.firstIndex { $0.name.hasSuffix(PeopleLibraryManifest.fileName) })
         entries[manifestIndex].usesDataDescriptor = true
         entries[manifestIndex].signedDataDescriptor = true
@@ -533,11 +572,11 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
             base + [.init(name: "PEOPLE.JSON", data: Data([1]))],
             base + [.init(name: "undeclared", data: Data([1]))],
             hardlinkEntries,
-            try packageEntries(f, root: "one.aagedalpeople/") +
-                [.init(name: "two.aagedalpeople/extra", data: Data([1]))],
+            try packageEntries(f, root: "one.photoagentpeople/") +
+                [.init(name: "two.photoagentpeople/extra", data: Data([1]))],
         ]
         for (index, entries) in variants.enumerated() {
-            let archive = f.parent.appendingPathComponent("unsafe-\(index).aagedalpeople.zip")
+            let archive = f.parent.appendingPathComponent("unsafe-\(index).photoagentpeople.zip")
             try zip(entries, at: archive)
             let receiverRoot = f.parent.appendingPathComponent("unsafe-receiver-\(index)")
             XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(
@@ -556,7 +595,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
         var oversized = try packageEntries(f)
         let payloadIndex = try XCTUnwrap(oversized.firstIndex { $0.name == PeopleLibraryManifest.payloadFileName })
         oversized[payloadIndex].declaredSize = UInt32(PeopleLibraryManifest.Limits().maximumFileBytes + 1)
-        let oversizedURL = f.parent.appendingPathComponent("oversized.aagedalpeople.zip")
+        let oversizedURL = f.parent.appendingPathComponent("oversized.photoagentpeople.zip")
         try zip(oversized, at: oversizedURL)
         let oversizedRoot = f.parent.appendingPathComponent("oversized-receiver")
         XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: oversizedURL, into: .init(root: oversizedRoot)))
@@ -564,7 +603,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
         var corrupt = try packageEntries(f)
         corrupt[payloadIndex].crcOverride = 0
-        let corruptURL = f.parent.appendingPathComponent("corrupt.aagedalpeople.zip")
+        let corruptURL = f.parent.appendingPathComponent("corrupt.photoagentpeople.zip")
         try zip(corrupt, at: corruptURL)
         let corruptRoot = f.parent.appendingPathComponent("corrupt-receiver")
         XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(at: corruptURL, into: .init(root: corruptRoot)))
@@ -573,9 +612,9 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
     }
 
     func testZIPArchiveHardlinkIsRejectedBeforeRepositoryMutation() throws {
-        let f = try fixture(), archive = f.parent.appendingPathComponent("shared.aagedalpeople.zip")
+        let f = try fixture(), archive = f.parent.appendingPathComponent("shared.photoagentpeople.zip")
         try zip(try packageEntries(f), at: archive)
-        let hardlink = f.parent.appendingPathComponent("linked.aagedalpeople.zip")
+        let hardlink = f.parent.appendingPathComponent("linked.photoagentpeople.zip")
         try FileManager.default.linkItem(at: archive, to: hardlink)
         let receiverRoot = f.parent.appendingPathComponent("hardlink-receiver")
         XCTAssertThrowsError(try PeopleLibraryPackageService().importPackage(
@@ -618,7 +657,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
             ],
             editorPayload: descriptor
         )
-        let package = f.parent.appendingPathComponent("editor-source.aagedalpeople")
+        let package = f.parent.appendingPathComponent("editor-source.photoagentpeople")
         try FileManager.default.createDirectory(at: package.appendingPathComponent("embeddings"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: package.appendingPathComponent("editor"), withIntermediateDirectories: true)
         for declaration in f.snapshot.manifest.files {
@@ -631,14 +670,14 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
         let repository = PeopleLibraryRepository(root: f.parent.appendingPathComponent("editor-receiver"))
         let imported = try PeopleLibraryPackageService().importPackage(at: package, into: repository)
-        let output = f.parent.appendingPathComponent("editor-roundtrip.aagedalpeople")
+        let output = f.parent.appendingPathComponent("editor-roundtrip.photoagentpeople")
         try PeopleLibraryPackageService().export(imported, to: output)
         XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(descriptor.path)), editorBytes)
         XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent(PeopleLibraryManifest.fileName)),
                        try Data(contentsOf: imported.directoryURL.appendingPathComponent(PeopleLibraryManifest.fileName)))
         let secondRepository = PeopleLibraryRepository(root: f.parent.appendingPathComponent("editor-second-receiver"))
         let second = try PeopleLibraryPackageService().importPackage(at: output, into: secondRepository)
-        let secondOutput = f.parent.appendingPathComponent("editor-second-roundtrip.aagedalpeople")
+        let secondOutput = f.parent.appendingPathComponent("editor-second-roundtrip.photoagentpeople")
         try PeopleLibraryPackageService().export(second, to: secondOutput)
         XCTAssertEqual(try Data(contentsOf: secondOutput.appendingPathComponent(descriptor.path)), editorBytes)
         XCTAssertEqual(second.manifest.coreRevision, f.snapshot.manifest.coreRevision)
@@ -647,7 +686,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
     func testExistingAndConcurrentlyCreatedDestinationsAreNeverReplaced() throws {
         let f = try fixture()
-        let output = f.parent.appendingPathComponent("occupied.aagedalpeople")
+        let output = f.parent.appendingPathComponent("occupied.photoagentpeople")
         let sentinel = Data("Keep existing user content".utf8)
         let racing = PeopleLibraryPackageService(beforePublish: {
             try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
@@ -662,7 +701,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
     }
 
     func testFailureAndChangedSourcePreserveStagesAfterExternalHook() throws {
-        let f = try fixture(), output = f.parent.appendingPathComponent("failed.aagedalpeople")
+        let f = try fixture(), output = f.parent.appendingPathComponent("failed.photoagentpeople")
         let unrelated = f.parent.appendingPathComponent("unrelated"); try Data([1, 2, 3]).write(to: unrelated)
         XCTAssertThrowsError(try PeopleLibraryPackageService(beforePublish: { throw Failure.injected }).export(f.snapshot, to: output))
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
@@ -681,7 +720,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
     func testTighterImportLimitsFailBeforeReceivingRepositoryMutation() throws {
         let f = try fixture()
-        let package = f.parent.appendingPathComponent("bounded.aagedalpeople")
+        let package = f.parent.appendingPathComponent("bounded.photoagentpeople")
         try PeopleLibraryPackageService().export(f.snapshot, to: package)
         var limits = PeopleLibraryManifest.Limits(); limits.maximumFileBytes = 1
         let receiverRoot = f.parent.appendingPathComponent("limit-receiver")
@@ -693,7 +732,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
     }
 
     func testSubstitutedStageChildIsPreservedAfterHookFailure() throws {
-        let f = try fixture(), output = f.parent.appendingPathComponent("substituted.aagedalpeople")
+        let f = try fixture(), output = f.parent.appendingPathComponent("substituted.photoagentpeople")
         let replacement = Data("Foreign replacement must remain".utf8)
         let service = PeopleLibraryPackageService(beforePublish: {
             let stage = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: f.parent, includingPropertiesForKeys: nil)
@@ -712,7 +751,7 @@ final class PeopleLibraryPackageServiceTests: XCTestCase {
 
     func testSymlinkHardlinkAndWrongPackageExtensionAreRejected() throws {
         let f = try fixture(), service = PeopleLibraryPackageService()
-        let output = f.parent.appendingPathComponent("blocked.aagedalpeople")
+        let output = f.parent.appendingPathComponent("blocked.photoagentpeople")
         let alias = f.parent.appendingPathComponent("alias")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: f.snapshot.directoryURL)
         let aliased = PeopleLibrarySnapshot(manifest: f.snapshot.manifest, gallery: f.snapshot.gallery, directoryURL: alias)

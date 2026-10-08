@@ -9,7 +9,7 @@ final class PhotoAgentPeopleLibraryInterchangeTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("photo-agent-interchange-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let input = root.appendingPathComponent("producer.aagedalpeople")
-        let output = root.appendingPathComponent("receiver.aagedalpeople")
+        let output = root.appendingPathComponent("receiver.photoagentpeople")
         let paths = [
             "manifest.json": "manifest.json.base64",
             "people.json": "people.json.base64",

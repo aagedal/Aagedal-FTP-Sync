@@ -44,7 +44,7 @@ final class PeopleLibraryControllerTests: XCTestCase {
     func testImportFailureAndExportCollisionRetainSelectionAndSanitizeErrors() async throws {
         let parent = try directory()
         let repository = PeopleLibraryRepository(root: parent.appendingPathComponent("installed"))
-        let source = try fixture(in: parent, name: "valid.aagedalpeople", library: "11111111-1111-1111-1111-111111111111", person: "22222222-2222-2222-2222-222222222222")
+        let source = try fixture(in: parent, name: "valid.photoagentpeople", library: "11111111-1111-1111-1111-111111111111", person: "22222222-2222-2222-2222-222222222222")
         let controller = PeopleLibraryController(repository: repository)
         await controller.refresh()
         XCTAssertEqual(controller.state, .unselected)
@@ -52,13 +52,13 @@ final class PeopleLibraryControllerTests: XCTestCase {
         let selected = controller.state
         guard case .selected(let summary) = selected else { return XCTFail("Import must select library") }
         XCTAssertEqual(summary.peopleCount, 1)
-        await controller.importPackage(at: parent.appendingPathComponent("private-source-secret.aagedalpeople"))
+        await controller.importPackage(at: parent.appendingPathComponent("private-source-secret.photoagentpeople"))
         XCTAssertEqual(controller.state, selected)
         XCTAssertFalse(try XCTUnwrap(controller.message).contains("private-source-secret"))
         await controller.exportPackage(to: source)
         XCTAssertEqual(controller.state, selected)
         XCTAssertNotNil(controller.message)
-        let export = parent.appendingPathComponent("export.aagedalpeople")
+        let export = parent.appendingPathComponent("export.photoagentpeople")
         await controller.exportPackage(to: export)
         XCTAssertNil(controller.message)
         XCTAssertTrue(FileManager.default.fileExists(atPath: export.appendingPathComponent("manifest.json").path))
@@ -73,7 +73,7 @@ final class PeopleLibraryControllerTests: XCTestCase {
         let controller = PeopleLibraryController(repository: .init(root: root))
         controller.suspend()
         await controller.refresh()
-        await controller.importPackage(at: parent.appendingPathComponent("missing.aagedalpeople"))
+        await controller.importPackage(at: parent.appendingPathComponent("missing.photoagentpeople"))
         await controller.removeCurrentLibrary()
         XCTAssertTrue(controller.suspended)
         XCTAssertFalse(controller.busy)
@@ -93,7 +93,7 @@ final class PeopleLibraryControllerTests: XCTestCase {
     }
     func testInFlightSuspensionKeepsWorkerOccupiedAndRejectsStaleSummary() async throws {
         let parent = try directory()
-        let source = try fixture(in: parent, name: "valid.aagedalpeople", library: "11111111-1111-1111-1111-111111111111", person: "22222222-2222-2222-2222-222222222222")
+        let source = try fixture(in: parent, name: "valid.photoagentpeople", library: "11111111-1111-1111-1111-111111111111", person: "22222222-2222-2222-2222-222222222222")
         let reached = expectation(description: "Reached activation boundary")
         let release = DispatchSemaphore(value: 0)
         let repository = PeopleLibraryRepository(root: parent.appendingPathComponent("installed"), beforeActivate: {

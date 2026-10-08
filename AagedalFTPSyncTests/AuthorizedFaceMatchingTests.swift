@@ -72,7 +72,7 @@ final class AuthorizedFaceMatchingTests: XCTestCase {
         try encoder.encode(libraryManifest).write(to: source.appendingPathComponent(PeopleLibraryManifest.fileName), options: .atomic)
         let snapshot = try PeopleLibraryRepository(root: output.appendingPathComponent("Admitted")).importSnapshot(from: source)
         XCTAssertEqual(snapshot.manifest.schemaVersion, 3)
-        let package = output.appendingPathComponent("Pseudonym Reference Library.aagedalpeople")
+        let package = output.appendingPathComponent("Pseudonym Reference Library.photoagentpeople")
         _ = try PeopleLibraryPackageService().export(snapshot, to: package)
         let imported = try PeopleLibraryPackageService().importPackage(at: package,
             into: PeopleLibraryRepository(root: output.appendingPathComponent("Reimported")))

@@ -1,0 +1,639 @@
+--- a/Aagedal Photo Agent/Info.plist
++++ b/Aagedal Photo Agent/Info.plist
+@@ -43,6 +43,7 @@
+ 			<dict>
+ 				<key>public.filename-extension</key>
+ 				<array>
++					<string>photoagentpeople</string>
+ 					<string>aagedalpeople</string>
+ 				</array>
+ 			</dict>
+--- a/Aagedal Photo Agent/Services/KnownPeopleInterchangeProductionOperations.swift
++++ b/Aagedal Photo Agent/Services/KnownPeopleInterchangeProductionOperations.swift
+@@ -205,7 +205,7 @@
+             do {
+                 if format == .zip, try await !KnownPeopleInterchangeZIPCapacity().fits(captured.snapshot.files) {
+                     return .requiresDirectory(.init(.zipRequiresDirectory,
+-                        detail: "ZIP32 supports at most 65,534 entries and 512 MiB. Export this library as an .aagedalpeople directory package.",
++                        detail: "ZIP32 supports at most 65,534 entries and 512 MiB. Export this library as a .photoagentpeople directory package.",
+                         identityAssignment: identity))
+                 }
+                 let write: KnownPeopleInterchangeCommitEvidence
+@@ -307,8 +307,10 @@
+     enum Failure: Error { case invalid, exists }
+     func validate(_ url: URL, format: KnownPeopleInterchangeFormat, overwrite: Bool) throws {
+         try Task.checkCancellation()
+-        let suffix = format == .directory ? ".aagedalpeople" : ".aagedalpeople.zip"
+-        guard url.isFileURL, url.lastPathComponent.hasSuffix(suffix), url.lastPathComponent.count > suffix.count,
++        let validName = format == .directory
++            ? KnownPeoplePackageNaming.isDirectoryExportName(url.lastPathComponent)
++            : KnownPeoplePackageNaming.isArchiveExportName(url.lastPathComponent)
++        guard url.isFileURL, validName,
+               !url.path.contains("\0") else { throw Failure.invalid }
+         var info = stat()
+         if lstat(url.path, &info) == 0 {
+--- a/Aagedal Photo Agent/Services/KnownPeoplePackageAdmissionService.swift
++++ b/Aagedal Photo Agent/Services/KnownPeoplePackageAdmissionService.swift
+@@ -102,8 +102,8 @@
+         guard !parts.isEmpty, !parts.contains("."), !parts.contains("..") else { throw KnownPeoplePackageAdmissionFailure.unsafeSource }
+         let leaf = parts.last!
+         let kind: KnownPeoplePackageAdmissionProvenance.Kind
+-        if leaf.hasSuffix(".aagedalpeople.zip"), leaf.count > ".aagedalpeople.zip".count { kind = .archive }
+-        else if leaf.hasSuffix(".aagedalpeople"), leaf.count > ".aagedalpeople".count { kind = .directoryPackage }
++        if KnownPeoplePackageNaming.isArchiveImportName(leaf) { kind = .archive }
++        else if KnownPeoplePackageNaming.isDirectoryImportName(leaf) { kind = .directoryPackage }
+         else { throw KnownPeoplePackageAdmissionFailure.unsupportedName }
+         var current = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+         guard current >= 0 else { throw KnownPeoplePackageAdmissionFailure.io }
+--- a/Aagedal Photo Agent/Services/KnownPeoplePackageArchive.swift
++++ b/Aagedal Photo Agent/Services/KnownPeoplePackageArchive.swift
+@@ -318,7 +318,7 @@
+             try Task.checkCancellation()
+             let destination = try Self.destination(destinationURL, archive: false)
+             let source = archiveURL.resolvingSymlinksInPath().standardizedFileURL
+-            guard archiveURL.isFileURL, archiveURL.lastPathComponent.hasSuffix(".aagedalpeople.zip"),
++            guard archiveURL.isFileURL, KnownPeoplePackageNaming.isArchiveImportName(archiveURL.lastPathComponent),
+                   !Self.contains(destination, source) else { throw KnownPeoplePackageArchiveError.unsafePath }
+             let input = try ArchiveFile(url: archiveURL)
+             let bytes = try input.bytes()
+@@ -487,7 +487,7 @@
+     }
+ 
+     private static func destination(_ url: URL, archive: Bool) throws -> URL {
+-        let validExtension = archive ? url.lastPathComponent.hasSuffix(".aagedalpeople.zip") : url.pathExtension == "aagedalpeople"
++        let validExtension = archive ? KnownPeoplePackageNaming.isArchiveExportName(url.lastPathComponent) : KnownPeoplePackageNaming.isDirectoryExportName(url.lastPathComponent)
+         guard url.isFileURL, validExtension, !url.lastPathComponent.contains("\0") else {
+             throw KnownPeoplePackageArchiveError.unsafePath
+         }
+--- a/Aagedal Photo Agent/Services/KnownPeoplePackageDirectoryWriter.swift
++++ b/Aagedal Photo Agent/Services/KnownPeoplePackageDirectoryWriter.swift
+@@ -126,7 +126,7 @@
+             guard destinationURL.isFileURL else {
+                 throw KnownPeoplePackageWriterError.invalidDestinationURL
+             }
+-            guard destinationURL.pathExtension == "aagedalpeople" else {
++            guard KnownPeoplePackageNaming.isDirectoryExportName(destinationURL.lastPathComponent) else {
+                 throw KnownPeoplePackageWriterError.invalidDestinationExtension(destinationURL.pathExtension)
+             }
+             let source = snapshot.sourceDirectoryURL
+@@ -642,12 +642,12 @@
+     var errorDescription: String? {
+         switch self {
+         case .invalidSnapshot: "The captured Known People package is inconsistent or invalid."
+-        case .invalidDestination: "Choose a regular destination directory package ending in .aagedalpeople."
++        case .invalidDestination: "Choose a regular destination directory package ending in .photoagentpeople."
+         case .invalidSourceURL: "The admitted source package is not a file URL."
+         case .invalidDestinationURL: "The destination package is not a file URL."
+         case .notDirectory(let path): "The filesystem entry at \(path) is not a regular directory."
+         case .invalidDestinationExtension(let value):
+-            "The destination extension is \(value.isEmpty ? "missing" : value); choose a package ending in .aagedalpeople."
++            "The destination extension is \(value.isEmpty ? "missing" : value); choose a package ending in .photoagentpeople."
+         case .sourceUnavailable: "The admitted source package is no longer available as a regular directory."
+         case .parentUnavailable: "The destination parent is no longer available as a regular directory."
+         case .sourceDestinationOverlap: "The destination overlaps the source package. Choose another location."
+--- a/Aagedal Photo Agent/Services/KnownPeoplePackageType.swift
++++ b/Aagedal Photo Agent/Services/KnownPeoplePackageType.swift
+@@ -1,10 +1,31 @@
+ import UniformTypeIdentifiers
+ 
+ extension UTType {
+-    /// Shared with Aagedal FTP Sync. A bare `.aagedalpeople` item is a directory
+-    /// package; ZIP transport uses the distinct `.aagedalpeople.zip` suffix.
++    /// Shared with Aagedal FTP Sync. A bare `.photoagentpeople` item is a directory
++    /// package; ZIP transport uses the distinct `.photoagentpeople.zip` suffix. Legacy extensions remain importable.
+     static let aagedalPeopleLibrary = UTType(
+         exportedAs: "no.aagedal.people-library",
+         conformingTo: .package
+     )
+ }
++
++/// Public filenames only; internal schema and the shared UTType identity stay unchanged.
++nonisolated enum KnownPeoplePackageNaming {
++    static let directoryExtension = "photoagentpeople"
++    static let archiveSuffix = ".photoagentpeople.zip"
++    private static func matches(_ name: String, suffix: String) -> Bool {
++        name.hasSuffix(suffix) && name.count > suffix.count
++    }
++    static func isDirectoryExportName(_ name: String) -> Bool {
++        matches(name, suffix: "." + directoryExtension)
++    }
++    static func isArchiveExportName(_ name: String) -> Bool {
++        matches(name, suffix: archiveSuffix)
++    }
++    static func isDirectoryImportName(_ name: String) -> Bool {
++        isDirectoryExportName(name) || matches(name, suffix: ".aagedalpeople")
++    }
++    static func isArchiveImportName(_ name: String) -> Bool {
++        isArchiveExportName(name) || matches(name, suffix: ".aagedalpeople.zip")
++    }
++}
+--- a/Aagedal Photo Agent/Views/Faces/KnownPeopleInterchangePresentation.swift
++++ b/Aagedal Photo Agent/Views/Faces/KnownPeopleInterchangePresentation.swift
+@@ -90,7 +90,7 @@
+     static func chooseImportSource() -> URL? {
+         let panel = NSOpenPanel()
+         panel.title = "Import People Library"
+-        panel.message = "Choose a .aagedalpeople directory package or .aagedalpeople.zip archive. The current local library will only change after you review the replacement."
++        panel.message = "Choose a .photoagentpeople directory package or .photoagentpeople.zip archive. Legacy .aagedalpeople packages and archives are also accepted. The current local library will only change after you review the replacement."
+         panel.prompt = "Review Import"
+         panel.allowedContentTypes = [.aagedalPeopleLibrary, .zip]
+         panel.canChooseFiles = true
+@@ -115,10 +115,10 @@
+         switch format {
+         case .directory:
+             panel.allowedContentTypes = [.aagedalPeopleLibrary]
+-            panel.nameFieldStringValue = "Known People.aagedalpeople"
++            panel.nameFieldStringValue = "Known People.photoagentpeople"
+         case .zip:
+             panel.allowedContentTypes = [.zip]
+-            panel.nameFieldStringValue = "Known People.aagedalpeople.zip"
++            panel.nameFieldStringValue = "Known People.photoagentpeople.zip"
+         }
+         return panel.runModal() == .OK ? panel.url : nil
+     }
+--- a/Aagedal Photo Agent Tests/KnownPeopleInterchangeProductionOperationsTests.swift
++++ b/Aagedal Photo Agent Tests/KnownPeopleInterchangeProductionOperationsTests.swift
+@@ -15,7 +15,7 @@
+     private func fixture() async throws -> Fixture {
+         let parent = URL(fileURLWithPath: "/private/tmp/InterchangeAdapter-\(UUID().uuidString)", isDirectory: true)
+         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+-        let source = parent.appendingPathComponent("input.aagedalpeople")
++        let source = parent.appendingPathComponent("input.photoagentpeople")
+         let base = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/PeopleLibraryV2")
+         for (path, name) in ["manifest.json": "manifest.json.base64", "people.json": "people.json.base64",
+             "editor/photo-agent.json": "editor-photo-agent.json.base64",
+@@ -131,7 +131,7 @@
+             }
+         }
+         let result = await KnownPeopleInterchangeProductionOperations(access: access).export(
+-            to: fixture.parent.appendingPathComponent(kind == "zip" ? "output.aagedalpeople.zip" : "output.aagedalpeople"),
++            to: fixture.parent.appendingPathComponent(kind == "zip" ? "output.photoagentpeople.zip" : "output.photoagentpeople"),
+             format: kind == "zip" ? .zip : .directory, overwrite: false)
+         let writer = kind == "zip" ? ["zip-cleanup"] : kind == "directory" ? ["directory-cleanup"] : []
+         #expect(trace.events == ["start", "destination", "prepare"] + writer + (started ? ["stop"] : []))
+@@ -167,7 +167,7 @@
+                     recoveryDirectory: recovery, installedState: nil, failure: "Identity committed; sync uncertain", wasCancelled: false),
+                 failure: ready ? nil : "Final capture unavailable", wasCancelled: false)
+         }
+-        let result = await KnownPeopleInterchangeProductionOperations(access: access).export(to: fixture.parent.appendingPathComponent("out.aagedalpeople"), format: .directory, overwrite: false)
++        let result = await KnownPeopleInterchangeProductionOperations(access: access).export(to: fixture.parent.appendingPathComponent("out.photoagentpeople"), format: .directory, overwrite: false)
+         let evidence: KnownPeopleInterchangeCommitEvidence?
+         switch result {
+         case .written(let value): #expect(ready); evidence = value.identityAssignment
+@@ -191,10 +191,10 @@
+             manifest: fixture.snapshot.manifest, payload: fixture.snapshot.payload, editor: fixture.snapshot.editor,
+             files: files, people: fixture.snapshot.people)
+         access.prepareExport = { .init(capture: capture(oversized), identityAssignment: nil, failure: nil, wasCancelled: false) }
+-        let result = await KnownPeopleInterchangeProductionOperations(access: access).export(to: fixture.parent.appendingPathComponent("out.aagedalpeople.zip"), format: .zip, overwrite: false)
++        let result = await KnownPeopleInterchangeProductionOperations(access: access).export(to: fixture.parent.appendingPathComponent("out.photoagentpeople.zip"), format: .zip, overwrite: false)
+         guard case .requiresDirectory(let problem) = result else { Issue.record("Expected ZIP capacity guidance"); return }
+         if case .zipRequiresDirectory = problem.category {} else { Issue.record("Expected typed ZIP capacity") }
+-        #expect(problem.detail?.contains(".aagedalpeople directory") == true)
++        #expect(problem.detail?.contains(".photoagentpeople directory") == true)
+         #expect(!trace.events.contains("zip-cleanup") && !trace.events.contains("directory-cleanup"))
+         #expect(trace.events.last == "stop")
+     }
+@@ -299,7 +299,7 @@
+             scope: .init(start: { _ in false }, stop: { _ in Issue.record("Unstarted scope was stopped") }))
+         access.availability = { .available }
+         access.validateDestination = { _, _, _ in }
+-        let destination = fixture.parent.appendingPathComponent("missing-revision.aagedalpeople")
++        let destination = fixture.parent.appendingPathComponent("missing-revision.photoagentpeople")
+         let result = await KnownPeopleInterchangeProductionOperations(access: access).export(
+             to: destination, format: .directory, overwrite: false)
+         guard case .failed(let problem) = result else { Issue.record("Expected metadata refusal"); return }
+@@ -341,7 +341,7 @@
+         // Isolate the global coordinator's cached UI preference; the real owner still
+         // checks the persisted local route and uses only the strict schema-2 preparation.
+         access.availability = { .available }
+-        let destination = fixture.parent.appendingPathComponent("output.aagedalpeople")
++        let destination = fixture.parent.appendingPathComponent("output.photoagentpeople")
+         let outcome = await KnownPeopleInterchangeProductionOperations(access: access).export(to: destination, format: .directory, overwrite: false)
+         guard case .failed(let problem) = outcome else { Issue.record("Legacy input must not reach a writer"); return }
+         if case .exportPreparationFailed = problem.category {} else { Issue.record("Expected strict preparation refusal") }
+--- a/Aagedal Photo Agent Tests/KnownPeoplePackageAdmissionServiceTests.swift
++++ b/Aagedal Photo Agent Tests/KnownPeoplePackageAdmissionServiceTests.swift
+@@ -12,7 +12,7 @@
+         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+         return url
+     }
+-    private func fixture(_ parent: URL) throws -> (directory: URL, archive: URL, temporary: URL, files: [String: Data]) {
++    private func fixture(_ parent: URL, extensionName: String = "aagedalpeople") throws -> (directory: URL, archive: URL, temporary: URL, files: [String: Data]) {
+         let base = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/PeopleLibraryV2")
+         var files: [String: Data] = [:]
+         for (path, name) in ["manifest.json": "manifest.json.base64", "people.json": "people.json.base64",
+@@ -21,13 +21,13 @@
+             let text = try String(contentsOf: base.appendingPathComponent(name), encoding: .utf8)
+             files[path] = try #require(Data(base64Encoded: text.components(separatedBy: .whitespacesAndNewlines).joined()))
+         }
+-        let directory = parent.appendingPathComponent("golden.aagedalpeople")
++        let directory = parent.appendingPathComponent("golden.\(extensionName)")
+         for (path, bytes) in files {
+             let url = directory.appendingPathComponent(path)
+             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+             try bytes.write(to: url)
+         }
+-        let archive = parent.appendingPathComponent("golden.aagedalpeople.zip")
++        let archive = parent.appendingPathComponent("golden.\(extensionName).zip")
+         try KnownPeoplePackageArchiveCodec.encode(files).write(to: archive)
+         let temporary = parent.appendingPathComponent("temporary")
+         try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: false)
+@@ -38,10 +38,10 @@
+         return try encoder.encode(people)
+     }
+ 
+-    @Test("Directory and archive inputs admit identical bytes and support managed planning after extraction cleanup")
+-    func equivalentAdmissions() async throws {
+-        let parent = try parent(); defer { try? FileManager.default.removeItem(at: parent) }
+-        let fixture = try fixture(parent), originalArchive = try Data(contentsOf: fixture.archive)
++    @Test("Canonical and legacy directory/archive inputs preserve exact package bytes", arguments: ["photoagentpeople", "aagedalpeople"])
++    func equivalentAdmissions(extensionName: String) async throws {
++        let parent = try parent(); defer { try? FileManager.default.removeItem(at: parent) }
++        let fixture = try fixture(parent, extensionName: extensionName), originalArchive = try Data(contentsOf: fixture.archive)
+         let service = KnownPeoplePackageAdmissionService(temporaryParentURL: fixture.temporary)
+         let directoryResult = await service.admit(at: fixture.directory)
+         let archiveResult = await service.admit(at: fixture.archive)
+@@ -71,7 +71,8 @@
+ 
+     @Test("Only exact compound extensions and matching regular input kinds are dispatched",
+           arguments: ["legacy.zip", "wrong.zip.aagedalpeople.zip.zip", "name.AAGEDALPEOPLE.zip", "name.aagedalpeople.ZIP",
+-                      "name.aagedalpeople.bak", "bare-file.aagedalpeople", "directory.aagedalpeople.zip", ".aagedalpeople.zip"])
++                      "name.aagedalpeople.bak", "bare-file.aagedalpeople", "directory.aagedalpeople.zip", ".aagedalpeople.zip", ".photoagentpeople.zip", "name.PHOTOAGENTPEOPLE.zip",
++                      "name.photoagentpeople.ZIP", "name.photoagentpeople.bak"])
+     func invalidNamesAndKinds(name: String) async throws {
+         let parent = try parent(); defer { try? FileManager.default.removeItem(at: parent) }
+         let fixture = try fixture(parent), input = parent.appendingPathComponent(name)
+@@ -80,6 +81,22 @@
+         let result = await KnownPeoplePackageAdmissionService(temporaryParentURL: fixture.temporary).admit(at: input)
+         #expect(!result.completed && result.admission == nil && result.failure != nil && result.recoveryDirectories.isEmpty)
+         #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.temporary.path).isEmpty)
++    }
++
++    @Test("Exports require canonical extensions while imports retain legacy extensions")
++    func publicNamingPolicy() {
++        #expect(KnownPeoplePackageNaming.isDirectoryExportName("People.photoagentpeople"))
++        #expect(KnownPeoplePackageNaming.isArchiveExportName("People.photoagentpeople.zip"))
++        #expect(!KnownPeoplePackageNaming.isDirectoryExportName("People.aagedalpeople"))
++        #expect(!KnownPeoplePackageNaming.isArchiveExportName("People.aagedalpeople.zip"))
++        #expect(KnownPeoplePackageNaming.isDirectoryImportName("People.aagedalpeople"))
++        #expect(KnownPeoplePackageNaming.isArchiveImportName("People.aagedalpeople.zip"))
++        for name in [".photoagentpeople", "People.PHOTOAGENTPEOPLE", "People.photoagentpeople.zip", "People.photoagentpeople.bak"] {
++            #expect(!KnownPeoplePackageNaming.isDirectoryExportName(name))
++        }
++        for name in [".photoagentpeople.zip", "People.photoagentpeople.ZIP", "People.photoagentpeople.zip.zip", "People.zip"] {
++            #expect(!KnownPeoplePackageNaming.isArchiveExportName(name))
++        }
+     }
+ 
+     @Test("Source symlinks, ancestor aliases, hardlinks and Finder aliases are refused",
+--- a/Aagedal Photo Agent Tests/KnownPeoplePackageArchiveTests.swift
++++ b/Aagedal Photo Agent Tests/KnownPeoplePackageArchiveTests.swift
+@@ -23,7 +23,7 @@
+         return url
+     }
+     private func snapshot(_ root: URL) async throws -> KnownPeoplePackageSnapshot {
+-        let source = root.appendingPathComponent("source.aagedalpeople")
++        let source = root.appendingPathComponent("source.photoagentpeople")
+         for (path, data) in try files() {
+             let url = source.appendingPathComponent(path)
+             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+@@ -32,11 +32,23 @@
+         return try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+     }
+ 
++    @Test("Legacy filenames remain import-only and cannot be new export destinations")
++    func legacyExportDestinationsAreRefused() async throws {
++        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
++        let source = try await snapshot(root)
++        let directory = root.appendingPathComponent("legacy.aagedalpeople")
++        let archive = root.appendingPathComponent("legacy.aagedalpeople.zip")
++        #expect(!(await KnownPeoplePackageDirectoryWriter().write(snapshot: source, destinationURL: directory)).completed)
++        #expect(!(try await KnownPeoplePackageArchive().export(snapshot: source, to: archive)).completed)
++        #expect(!FileManager.default.fileExists(atPath: directory.path))
++        #expect(!FileManager.default.fileExists(atPath: archive.path))
++    }
++
+     @Test("Golden archive is deterministic and admits exact bytes through the directory reader")
+     func golden() async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+         let source = try await snapshot(root), adapter = KnownPeoplePackageArchive()
+-        let archive = root.appendingPathComponent("export.aagedalpeople.zip")
++        let archive = root.appendingPathComponent("export.photoagentpeople.zip")
+         let result = try await adapter.export(snapshot: source, to: archive)
+         #expect(result.completed, "\(result.failure ?? "")")
+         #expect(result.receipt?.installedBytesVerified == true && result.receipt?.parentDirectorySynced == true)
+@@ -44,12 +56,12 @@
+         #expect(bytes == (try KnownPeoplePackageArchiveCodec.encode(source.files)))
+         #expect(bytes == Self.zip(source.files.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }))
+         #expect(try KnownPeoplePackageArchiveCodec.decode(bytes) == source.files)
+-        let target = root.appendingPathComponent("imported.aagedalpeople")
++        let target = root.appendingPathComponent("imported.photoagentpeople")
+         let imported = await adapter.importArchive(at: archive, to: target)
+         #expect(imported.completed, "\(imported.failure ?? "")")
+         let admitted = try await KnownPeoplePackageDirectoryReader().read(directoryURL: target)
+         #expect(admitted.files == source.files && admitted.editor == source.editor)
+-        let second = root.appendingPathComponent("second.aagedalpeople.zip")
++        let second = root.appendingPathComponent("second.photoagentpeople.zip")
+         #expect(try await adapter.export(snapshot: admitted, to: second).completed)
+         #expect(try Data(contentsOf: second) == bytes)
+         #expect(!(await adapter.importArchive(at: archive, to: target)).completed)
+@@ -79,7 +91,7 @@
+         if kind == "comment" { bytes[bytes.count - 2] = 1; bytes.append(0) }
+         if kind == "truncated" { bytes.removeLast() }
+         if kind == "count" { bytes[bytes.count - 12] = 0xff; bytes[bytes.count - 11] = 0xff }
+-        let archive = root.appendingPathComponent("bad.aagedalpeople.zip"), target = root.appendingPathComponent("output.aagedalpeople")
++        let archive = root.appendingPathComponent("bad.photoagentpeople.zip"), target = root.appendingPathComponent("output.photoagentpeople")
+         try bytes.write(to: archive)
+         var access = KnownPeoplePackageArchiveAccess()
+         access.beforeMaterialization = { Issue.record("Invalid archive reached materialization") }
+@@ -92,7 +104,7 @@
+     @Test("Replacement requires explicit authorization; failures before commit preserve prior bytes", arguments: ["failure", "cancel", "changed"])
+     func precommit(kind: String) async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+-        let source = try await snapshot(root), target = root.appendingPathComponent("target.aagedalpeople.zip")
++        let source = try await snapshot(root), target = root.appendingPathComponent("target.photoagentpeople.zip")
+         let original = Data("prior regular output".utf8), newer = Data("independent newer output".utf8)
+         try original.write(to: target)
+         #expect(!(try await KnownPeoplePackageArchive().export(snapshot: source, to: target)).completed)
+@@ -112,7 +124,7 @@
+     @Test("Post-write stage admission failure cleans the owned stage without publishing", arguments: [false, true])
+     func stageAdmissionFailure(existing: Bool) async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+-        let source = try await snapshot(root), target = root.appendingPathComponent("target.aagedalpeople.zip")
++        let source = try await snapshot(root), target = root.appendingPathComponent("target.photoagentpeople.zip")
+         let previous = Data("prior archive".utf8)
+         if existing { try previous.write(to: target) }
+         var access = KnownPeoplePackageArchiveAccess()
+@@ -132,7 +144,7 @@
+     @Test("After atomic replacement failure or cancellation reports installed bytes and retains prior archive", arguments: [false, true])
+     func postcommit(cancel: Bool) async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+-        let source = try await snapshot(root), target = root.appendingPathComponent("target.aagedalpeople.zip")
++        let source = try await snapshot(root), target = root.appendingPathComponent("target.photoagentpeople.zip")
+         let previous = Data("prior archive".utf8); try previous.write(to: target)
+         var access = KnownPeoplePackageArchiveAccess()
+         access.afterCommit = { if cancel { throw CancellationError() }; throw Injected.failure }
+@@ -146,7 +158,7 @@
+     @Test("Successful replacement consumes backup only after exact readback")
+     func replace() async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+-        let source = try await snapshot(root), target = root.appendingPathComponent("target.aagedalpeople.zip")
++        let source = try await snapshot(root), target = root.appendingPathComponent("target.photoagentpeople.zip")
+         try Data("old".utf8).write(to: target)
+         let result = try await KnownPeoplePackageArchive().export(snapshot: source, to: target, overwrite: true)
+         #expect(result.completed && result.recoveryURLs.isEmpty && result.receipt?.replacedExistingArchive == true)
+@@ -157,19 +169,19 @@
+     func unsafeDestinations() async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+         let source = try await snapshot(root), adapter = KnownPeoplePackageArchive()
+-        let bare = root.appendingPathComponent("wrong.aagedalpeople")
++        let bare = root.appendingPathComponent("wrong.photoagentpeople")
+         #expect(!(try await adapter.export(snapshot: source, to: bare)).completed)
+-        #expect(!(try await adapter.export(snapshot: source, to: source.sourceDirectoryURL.appendingPathComponent("nested.aagedalpeople.zip"))).completed)
+-        let link = root.appendingPathComponent("linked.aagedalpeople.zip")
++        #expect(!(try await adapter.export(snapshot: source, to: source.sourceDirectoryURL.appendingPathComponent("nested.photoagentpeople.zip"))).completed)
++        let link = root.appendingPathComponent("linked.photoagentpeople.zip")
+         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source.sourceDirectoryURL.appendingPathComponent("manifest.json"))
+         #expect(!(try await adapter.export(snapshot: source, to: link, overwrite: true)).completed)
+-        let hardlink = root.appendingPathComponent("hard.aagedalpeople.zip")
++        let hardlink = root.appendingPathComponent("hard.photoagentpeople.zip")
+         try FileManager.default.linkItem(at: source.sourceDirectoryURL.appendingPathComponent("manifest.json"), to: hardlink)
+         #expect(!(try await adapter.export(snapshot: source, to: hardlink, overwrite: true)).completed)
+         var damaged = source.files; damaged["people.json"] = Data([0])
+         let invalid = KnownPeoplePackageSnapshot(sourceDirectoryURL: source.sourceDirectoryURL, sourceDevice: source.sourceDevice,
+             sourceInode: source.sourceInode, manifest: source.manifest, payload: source.payload, editor: source.editor, files: damaged, people: source.people)
+-        let fresh = root.appendingPathComponent("fresh.aagedalpeople.zip")
++        let fresh = root.appendingPathComponent("fresh.photoagentpeople.zip")
+         #expect(!(try await adapter.export(snapshot: invalid, to: fresh)).completed)
+         #expect(!FileManager.default.fileExists(atPath: fresh.path))
+     }
+@@ -177,7 +189,7 @@
+     @Test("Cancellation after full admission but before extraction leaves no materialized files")
+     func cancelledImport() async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+-        let archive = root.appendingPathComponent("input.aagedalpeople.zip"), output = root.appendingPathComponent("output.aagedalpeople")
++        let archive = root.appendingPathComponent("input.photoagentpeople.zip"), output = root.appendingPathComponent("output.photoagentpeople")
+         try KnownPeoplePackageArchiveCodec.encode(files()).write(to: archive)
+         var access = KnownPeoplePackageArchiveAccess(); access.beforeMaterialization = { throw CancellationError() }
+         let result = await KnownPeoplePackageArchive(access: access).importArchive(at: archive, to: output)
+@@ -190,7 +202,7 @@
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+         let original = root.appendingPathComponent("original"), moved = root.appendingPathComponent("moved")
+         try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+-        let archive = original.appendingPathComponent("input.aagedalpeople.zip")
++        let archive = original.appendingPathComponent("input.photoagentpeople.zip")
+         try KnownPeoplePackageArchiveCodec.encode(files()).write(to: archive)
+         var access = KnownPeoplePackageArchiveAccess()
+         access.beforeCommit = {
+@@ -205,11 +217,11 @@
+             }
+         }
+         let result = await KnownPeoplePackageArchive(access: access).importArchive(at: archive,
+-            to: original.appendingPathComponent("output.aagedalpeople"))
++            to: original.appendingPathComponent("output.photoagentpeople"))
+         #expect(result.completed, "\(result.failure ?? "")")
+         #expect(result.recoveryDirectories.isEmpty)
+         let receipt = try #require(result.receipt)
+-        #expect(receipt.destinationURL.path == moved.appendingPathComponent("output.aagedalpeople").path)
++        #expect(receipt.destinationURL.path == moved.appendingPathComponent("output.photoagentpeople").path)
+         #expect(try await KnownPeoplePackageDirectoryReader().read(directoryURL: receipt.destinationURL).files == files())
+         #expect(try FileManager.default.contentsOfDirectory(atPath: moved.path).allSatisfy { !$0.hasPrefix(".KnownPeople-") })
+         if counterfeit {
+@@ -223,7 +235,7 @@
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+         let original = root.appendingPathComponent("original"), moved = root.appendingPathComponent("moved")
+         try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+-        let source = try await snapshot(original), leaf = "output.aagedalpeople.zip"
++        let source = try await snapshot(original), leaf = "output.photoagentpeople.zip"
+         let output = original.appendingPathComponent(leaf), previous = Data("old archive".utf8)
+         try previous.write(to: output)
+         var access = KnownPeoplePackageArchiveAccess()
+@@ -251,14 +263,14 @@
+     @Test("Unfinished import cleanup is explicit and reports the actual retained stage")
+     func cleanupFailure() async throws {
+         let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+-        let archive = root.appendingPathComponent("input.aagedalpeople.zip"), rescue = root.appendingPathComponent("retained-stage")
++        let archive = root.appendingPathComponent("input.photoagentpeople.zip"), rescue = root.appendingPathComponent("retained-stage")
+         try KnownPeoplePackageArchiveCodec.encode(files()).write(to: archive)
+         var access = KnownPeoplePackageArchiveAccess()
+         access.afterCommit = {
+             let stage = try #require(FileManager.default.contentsOfDirectory(atPath: root.path).first { $0.hasPrefix(".KnownPeople-import-") })
+             try FileManager.default.moveItem(at: root.appendingPathComponent(stage), to: rescue)
+         }
+-        let result = await KnownPeoplePackageArchive(access: access).importArchive(at: archive, to: root.appendingPathComponent("output.aagedalpeople"))
++        let result = await KnownPeoplePackageArchive(access: access).importArchive(at: archive, to: root.appendingPathComponent("output.photoagentpeople"))
+         #expect(result.receipt != nil && !result.completed && result.failure != nil)
+         #expect(result.recoveryDirectories.map(\.path) == [rescue.path])
+         #expect(try await KnownPeoplePackageDirectoryReader().read(directoryURL: rescue).files == files())
+--- a/Aagedal Photo Agent Tests/KnownPeoplePackageDirectoryWriterTests.swift
++++ b/Aagedal Photo Agent Tests/KnownPeoplePackageDirectoryWriterTests.swift
+@@ -58,8 +58,8 @@
+     @Test("Golden bytes round-trip through new destination and atomic replacement", arguments: [false, true])
+     func goldenRoundTrip(replace: Bool) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); try put(files, at: source)
+         if replace { try put(priorFiles(), at: destination) }
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+@@ -82,8 +82,8 @@
+     ], [false, true])
+     func precommitFailure(stage: String, replace: Bool) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); let old = try priorFiles()
+         try put(files, at: source)
+         if replace { try put(old, at: destination) }
+@@ -117,8 +117,8 @@
+     ])
+     func postcommitFailure(stage: String) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); let old = try priorFiles()
+         try put(files, at: source); try put(old, at: destination)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+@@ -160,8 +160,8 @@
+     @Test("Forged in-memory snapshots fail before staging", arguments: ["extra-file", "hash", "people", "editor"])
+     func invalidSnapshot(kind: String) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         try put(fixtureFiles(), at: source)
+         let original = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+         var files = original.files
+@@ -184,14 +184,14 @@
+     @Test("Source aliases and source/destination nesting are refused", arguments: ["same", "alias", "inside"])
+     func sourceOverlap(kind: String) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
+         let files = try fixtureFiles(); try put(files, at: source)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+         let destination: URL
+         if kind == "same" { destination = source }
+-        else if kind == "inside" { destination = source.appendingPathComponent("inside.aagedalpeople") }
++        else if kind == "inside" { destination = source.appendingPathComponent("inside.photoagentpeople") }
+         else {
+-            destination = directory.appendingPathComponent("alias.aagedalpeople")
++            destination = directory.appendingPathComponent("alias.photoagentpeople")
+             try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: source)
+         }
+         let result = await KnownPeoplePackageDirectoryWriter().write(snapshot: snapshot, destinationURL: destination)
+@@ -203,8 +203,8 @@
+     @Test("A concurrently changed nested destination file is not overwritten")
+     func changedDestination() async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         try put(fixtureFiles(), at: source); try put(priorFiles(), at: destination)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+         let changed = Data("External editor bytes must survive".utf8)
+@@ -219,8 +219,8 @@
+     @Test("An independently arriving destination survives exclusive-install refusal")
+     func arrivingDestination() async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         try put(fixtureFiles(), at: source)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+         var access = KnownPeoplePackageWriteAccess()
+@@ -239,8 +239,8 @@
+     ])
+     func installWindowMutation(kind: String) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); let old = try priorFiles()
+         try put(files, at: source); try put(old, at: destination)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+@@ -273,8 +273,8 @@
+     ])
+     func mutationInsideInstall(kind: String) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); let old = try priorFiles()
+         try put(files, at: source); try put(old, at: destination)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+@@ -315,9 +315,9 @@
+     ])
+     func afterCommitMutation(kind: String) async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
+-        let movedInstalled = directory.appendingPathComponent("externally-moved.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
++        let movedInstalled = directory.appendingPathComponent("externally-moved.photoagentpeople")
+         let files = try fixtureFiles(); let old = try priorFiles()
+         try put(files, at: source); try put(old, at: destination)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+@@ -359,8 +359,8 @@
+             try? FileManager.default.removeItem(at: directory)
+             try? FileManager.default.removeItem(at: moved)
+         }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); try put(files, at: source)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+         let counterfeit = Data([7, 8, 9])
+@@ -371,7 +371,7 @@
+             try FileManager.default.moveItem(at: directory, to: moved)
+             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+             let counterfeitStage = directory.appendingPathComponent(stageName, isDirectory: true)
+-            let counterfeitDestination = directory.appendingPathComponent("output.aagedalpeople", isDirectory: true)
++            let counterfeitDestination = directory.appendingPathComponent("output.photoagentpeople", isDirectory: true)
+             try FileManager.default.createDirectory(at: counterfeitStage, withIntermediateDirectories: false)
+             try FileManager.default.createDirectory(at: counterfeitDestination, withIntermediateDirectories: false)
+             try counterfeit.write(to: counterfeitStage.appendingPathComponent("marker"))
+@@ -381,7 +381,7 @@
+             .write(snapshot: snapshot, destinationURL: destination)
+         let receipt = try #require(result.receipt, "Writer failure: \(result.failure ?? "none")")
+         #expect(result.completed)
+-        #expect(receipt.destinationURL == moved.appendingPathComponent("output.aagedalpeople", isDirectory: true))
++        #expect(receipt.destinationURL == moved.appendingPathComponent("output.photoagentpeople", isDirectory: true))
+         #expect(try await KnownPeoplePackageDirectoryReader().read(directoryURL: receipt.destinationURL).files == files)
+         #expect(try Data(contentsOf: destination.appendingPathComponent("marker")) == counterfeit)
+     }
+@@ -389,8 +389,8 @@
+     @Test("Cancellation at the cleanup boundary retains the displaced package")
+     func cleanupBoundaryCancellation() async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); let old = try priorFiles()
+         try put(files, at: source); try put(old, at: destination)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+@@ -410,8 +410,8 @@
+     @Test("Independent writer instances serialize replacement through the parent lock")
+     func independentWritersSerialize() async throws {
+         let directory = try root(); defer { try? FileManager.default.removeItem(at: directory) }
+-        let source = directory.appendingPathComponent("source.aagedalpeople")
+-        let destination = directory.appendingPathComponent("output.aagedalpeople")
++        let source = directory.appendingPathComponent("source.photoagentpeople")
++        let destination = directory.appendingPathComponent("output.photoagentpeople")
+         let files = try fixtureFiles(); try put(files, at: source); try put(priorFiles(), at: destination)
+         let snapshot = try await KnownPeoplePackageDirectoryReader().read(directoryURL: source)
+         let firstEntered = KnownPeopleWriterTestGate()

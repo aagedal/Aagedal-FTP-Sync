@@ -7,13 +7,13 @@ struct PeopleLibrarySettingsView: View {
     @State private var importing = false
     @State private var choosingExportFolder = false
     @State private var confirmingRemoval = false
-    @State private var filename = "People Library.aagedalpeople"
+    @State private var filename = "People Library.photoagentpeople"
     @State private var panelError: String?
     @State private var operation: Task<Void, Never>?
 
     private var validFilename: Bool {
         let name = filename.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name == filename && name.hasSuffix(".aagedalpeople") && name != ".aagedalpeople"
+        return name == filename && name.hasSuffix(".photoagentpeople") && name != ".photoagentpeople"
             && name.utf8.count <= 200 && !name.contains("/") && !name.contains("\\")
             && !name.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
             && !name.hasPrefix(".")
@@ -40,15 +40,15 @@ struct PeopleLibrarySettingsView: View {
                         }
                     }
                 }.accessibilityIdentifier("peopleLibrary.summary")
-                Text("Import a .aagedalpeople package or .aagedalpeople.zip archive from Photo Agent. Importing selects a local copy; it does not enable recognition or automatic sync.")
+                Text("Import a .photoagentpeople package or .photoagentpeople.zip archive from Photo Agent. Older .aagedalpeople packages and archives are also accepted. Importing selects a local copy; it does not enable recognition or automatic sync.")
                     .font(.callout).foregroundStyle(.secondary)
                 Text("Schema 3 packages can contain 320×320 JPEG face crops. These sensitive images are stored locally with the library and copied byte for byte into exports. Exporting into a synced folder can upload them with the package.")
                     .font(.callout).foregroundStyle(.secondary)
                 Button("Import People Library…") { panelError = nil; importing = true }
                     .accessibilityIdentifier("peopleLibrary.import")
                 TextField("Export filename", text: $filename)
-                    .help("Choose a new filename ending in .aagedalpeople.")
-                if !validFilename { Text("Enter a filename ending in .aagedalpeople, without folder separators.").font(.caption) }
+                    .help("Choose a new filename ending in .photoagentpeople.")
+                if !validFilename { Text("Enter a filename ending in .photoagentpeople, without folder separators.").font(.caption) }
                 Button("Export People Library…") { panelError = nil; choosingExportFolder = true }
                     .disabled(!hasSelection || !validFilename)
                     .accessibilityIdentifier("peopleLibrary.export")

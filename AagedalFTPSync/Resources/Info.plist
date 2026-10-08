@@ -48,13 +48,14 @@
 				<string>com.apple.package</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Aagedal People Library</string>
+			<string>Photo Agent People</string>
 			<key>UTTypeIdentifier</key>
 			<string>no.aagedal.people-library</string>
 			<key>UTTypeTagSpecification</key>
 			<dict>
 				<key>public.filename-extension</key>
 				<array>
+					<string>photoagentpeople</string>
 					<string>aagedalpeople</string>
 				</array>
 			</dict>
