@@ -112,3 +112,24 @@ xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' -scheme AagedalFTPSync \
 Host remains arm64 macOS 27.0.1 (26A434), Xcode 27.0 (27A266a). Query-runtime
 SHA-256 is `8d24bfc936c2f5b370c179120ca09d98448f6b9598686953d70a6ff5d316dde7`;
 weights identity remains the separately verified bundled SHA-256.
+
+## Signed development archive and native observation limit
+
+Developer ID Release archive succeeded from clean source
+`38340e5fa3de17e80aba1418415257949a9759fa`, source tree
+`99439a398d7f9ca1659c1d8197dc0c7483682cd9`, version 3.0.0 (44). Strict deep
+signature and bundled-model verification pass. Executable SHA-256:
+`02b1a23032c973c5e4e77269d89f15a9457356d782580e8f547f9415a323650c`.
+Candidate `development-3.0.0-44-38340e5fa3de-02b1a23032c9` remains IMPLEMENTING.
+It is not installed, notarized or published; build 43 and the installed build 42
+remain intact. Log: `/private/tmp/aftpsync-v3-oct08-build44-archive.log`.
+
+The archive was launched with documented `AAGEDAL_UI_TESTING=1`, a new isolated
+session, open-jobs and seeded-disposable-job flags. Native CUA inspection of the
+exact app path returned `timeoutReached` (error -10005), taking 1,262 seconds
+despite the requested 30-second tool timeout. No UI state was returned, so no
+native launch, model admission or settings smoke pass is claimed. Cleanup checked
+the owned PID and found it had already exited. Its log is empty and no current
+FTP Sync crash report was found; the reason for exit is not established.
+No user app process was terminated, and no user app data was used. The final
+candidate still needs native signed observation and the other open release gates.

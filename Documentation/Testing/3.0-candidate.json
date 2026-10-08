@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "id": "development-3.0.0-43-6501476cd415-6d96fdc91576",
+  "id": "development-3.0.0-44-38340e5fa3de-02b1a23032c9",
   "status": "IMPLEMENTING",
-  "commit": "6501476cd415237eed8cd23a1fca8599aadda840",
-  "sourceTree": "3075b424333bd055bf544534333dc91bccde3eac",
+  "commit": "38340e5fa3de17e80aba1418415257949a9759fa",
+  "sourceTree": "99439a398d7f9ca1659c1d8197dc0c7483682cd9",
   "version": "3.0.0",
-  "build": "43",
-  "appPath": "/Users/truls.aagedal/.t3/worktrees/Aagedal FTP Sync/t3code-6664228d/build/candidates/3.0.0-43-6501476cd415/Aagedal FTP Sync.xcarchive/Products/Applications/Aagedal FTP Sync.app",
-  "executableSHA256": "6d96fdc91576f39d0e6a1a3457095162d05740033cae88c60d702dd158e642c9",
-  "archivePath": "/Users/truls.aagedal/.t3/worktrees/Aagedal FTP Sync/t3code-6664228d/build/candidates/3.0.0-43-6501476cd415/Aagedal FTP Sync.xcarchive",
+  "build": "44",
+  "appPath": "/Users/truls.aagedal/.t3/worktrees/Aagedal FTP Sync/t3code-6664228d/build/candidates/3.0.0-44-38340e5fa3de/Aagedal FTP Sync.xcarchive/Products/Applications/Aagedal FTP Sync.app",
+  "executableSHA256": "02b1a23032c973c5e4e77269d89f15a9457356d782580e8f547f9415a323650c",
+  "archivePath": "/Users/truls.aagedal/.t3/worktrees/Aagedal FTP Sync/t3code-6664228d/build/candidates/3.0.0-44-38340e5fa3de/Aagedal FTP Sync.xcarchive",
   "evidence": "Documentation/3.0-Readiness.md",
   "note": "Developer ID signed Release archive from clean source. Not notarized or published by this workflow. Required acceptance gates remain open; this is not READY_FOR_USER_TESTING."
 }
