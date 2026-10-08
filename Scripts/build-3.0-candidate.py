@@ -52,6 +52,16 @@ def write_json(path, value):
             os.unlink(temporary)
 
 
+def require_unused_build(candidate_root, registered_path, version, build):
+    previous = list(candidate_root.glob(f"{version}-{build}-*"))
+    if registered_path.exists():
+        registered = json.loads(registered_path.read_text())
+        if registered.get("version") == version and str(registered.get("build")) == build:
+            previous.append(registered_path)
+    if previous:
+        raise ValueError(f"Candidate build {version} ({build}) was already used; preserve it and choose a new build number: {previous[0]}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--team-id", required=True, help="Developer ID team used for signing")
@@ -63,9 +73,10 @@ def main():
     build = re.search(r"^\s+CURRENT_PROJECT_VERSION: ([0-9]+)$", spec, re.M).group(1)
     run("Scripts/check-release-identity.sh", version, build)
     run("Scripts/check-security-baseline.sh")
-    artifact_root = ROOT / "build" / "candidates" / f"{version}-{build}-{commit[:12]}"
-    if artifact_root.exists():
-        raise ValueError(f"Candidate output already exists; preserve it and use a new build number: {artifact_root}")
+    candidate_root = ROOT / "build" / "candidates"
+    registered_path = ROOT / "Documentation/Testing/3.0-candidate.json"
+    require_unused_build(candidate_root, registered_path, version, build)
+    artifact_root = candidate_root / f"{version}-{build}-{commit[:12]}"
     artifact_root.mkdir(parents=True)
     archive = artifact_root / "Aagedal FTP Sync.xcarchive"
     run("xcodebuild", "archive", "-project", "Aagedal FTP Sync.xcodeproj",
@@ -98,7 +109,7 @@ def main():
     write_json(artifact_root / "candidate.json", candidate)
     if args.register:
         # A new ID preserves all previous checklist runs; do not edit result lanes.
-        write_json(ROOT / "Documentation/Testing/3.0-candidate.json", candidate)
+        write_json(registered_path, candidate)
     print(f"Signed development candidate: {app}")
     print(f"Identity: {candidate['id']}")
 

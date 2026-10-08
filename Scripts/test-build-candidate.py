@@ -1,6 +1,8 @@
 """Reject mismatched or untraceable app identity before candidate registration."""
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -30,6 +32,23 @@ class CandidateTests(unittest.TestCase):
             with self.subTest(status=status), patch.object(candidate, "run", return_value=status):
                 with self.assertRaises(ValueError):
                     candidate.source_identity()
+
+    def test_used_build_is_rejected_across_commits_and_missing_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifacts = root / "candidates"
+            registered = root / "registered.json"
+            candidate.require_unused_build(artifacts, registered, "3.0.0", "43")
+            previous = artifacts / "3.0.0-43-differentcommit"
+            previous.mkdir(parents=True)
+            with self.assertRaises(ValueError):
+                candidate.require_unused_build(artifacts, registered, "3.0.0", "43")
+            previous.rmdir()
+            registered.write_text(json.dumps({"version": "3.0.0", "build": "43"}))
+            with self.assertRaises(ValueError):
+                candidate.require_unused_build(artifacts, registered, "3.0.0", "43")
+            candidate.require_unused_build(artifacts, registered, "3.0.0", "44")
+            candidate.require_unused_build(artifacts, registered, "3.0.1", "43")
 
 
 if __name__ == "__main__":
