@@ -90,6 +90,11 @@ enum UITestSupport {
         let jobRepository: JobRepository
         if enabled, ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECOVERY"] == "1" {
             do {
+                #if DEBUG
+                if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_INTERRUPTED_IMAGE"] == "1" {
+                    try reconcileInterruptedImageFixture(rootURL: rootURL, managed: managedRecoveryFixture)
+                }
+                #endif
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_RECOVERY"] == "1" {
                     try reconcileMetadataRecoveryFixture(rootURL: rootURL, managed: managedRecoveryFixture)
                 }
@@ -493,6 +498,72 @@ enum UITestSupport {
         let destination = rootURL.appendingPathComponent("Destination", isDirectory: true)
         return managed ? destination.appendingPathComponent("Synced Files", isDirectory: true) : destination
     }
+
+    #if DEBUG
+    /// Explicit recovery choice for the single-image SIGKILL fixture. Preserve
+    /// the entire transaction and the visible publication before restoring the
+    /// original for a fresh native retry. This is not production recovery logic.
+    static func reconcileInterruptedImageFixture(rootURL: URL, managed: Bool = false) throws {
+        let manager = FileManager.default
+        // macOS may expose the owning sandbox's temporary root through an
+        // alias. Canonicalize that root, then reject redirects below it.
+        let rootURL = rootURL.resolvingSymlinksInPath()
+        let destination = recoveryFixtureDestination(rootURL: rootURL, managed: managed)
+        let candidates = try manager.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".aagedal-sync-") && $0.pathExtension == "transaction" }
+        guard !candidates.isEmpty else { return } // Relaunch must not restore twice.
+        guard candidates.count == 1,
+              try Data(contentsOf: rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")) == Data("seeded".utf8),
+              try Data(contentsOf: rootURL.appendingPathComponent("native-image-interruption")) == Data("beforeCommit".utf8) else {
+            throw AppError.invalidConfiguration("Unexpected interrupted image fixture")
+        }
+        let recovery = candidates[0]
+        let manifestURL = recovery.appendingPathComponent("recovery.json")
+        guard manifestURL.standardizedFileURL.path == manifestURL.resolvingSymlinksInPath().path else {
+            throw AppError.invalidConfiguration("Redirected interrupted image fixture")
+        }
+        let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
+                                               from: Data(contentsOf: manifestURL))
+        guard manifest.schemaVersion == 1, manifest.originals.count == 1, manifest.outputs.count == 1,
+              let original = manifest.originals.first, let publication = manifest.outputs.first,
+              original.relativePath == "nested/recovery.jpg", original.isReplaced,
+              original.heldFilename == "original-held-0", original.snapshotFilename == "original-copy-0",
+              publication.relativePath == original.relativePath,
+              publication.snapshotFilename == "output-copy-0",
+              publication.stagedFilename == "output-stage-0", publication.rollbackFilename == "rollback-output-0" else {
+            throw AppError.invalidConfiguration("Unexpected interrupted image path map")
+        }
+        let held = recovery.appendingPathComponent(original.heldFilename)
+        let snapshot = recovery.appendingPathComponent(original.snapshotFilename)
+        let publishedSnapshot = recovery.appendingPathComponent(publication.snapshotFilename)
+        let visible = destination.appendingPathComponent(original.relativePath)
+        let source = rootURL.appendingPathComponent("Source/recovery.jpg")
+        for url in [held, snapshot, publishedSnapshot, visible, source] {
+            guard url.standardizedFileURL.path == url.resolvingSymlinksInPath().path,
+                  try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                throw AppError.invalidConfiguration("Redirected interrupted image evidence")
+            }
+        }
+        let originalBytes = try Data(contentsOf: held)
+        let publishedBytes = try Data(contentsOf: visible)
+        guard originalBytes == (try Data(contentsOf: source)), originalBytes == (try Data(contentsOf: snapshot)),
+              publishedBytes == (try Data(contentsOf: publishedSnapshot)) else {
+            throw AppError.invalidConfiguration("Interrupted image evidence changed before recovery")
+        }
+        let preserved = rootURL.appendingPathComponent("reconciled-image-recovery")
+        let rescuedPublication = rootURL.appendingPathComponent("rescued-publication.jpg")
+        guard !manager.fileExists(atPath: preserved.path), !manager.fileExists(atPath: rescuedPublication.path) else {
+            throw AppError.invalidConfiguration("Interrupted image rescue already exists")
+        }
+        let date = try visible.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        try manager.copyItem(at: visible, to: rescuedPublication)
+        // Restore while the transaction still blocks admission. If this step
+        // fails, all retained evidence remains available at its original path.
+        try originalBytes.write(to: visible, options: .atomic)
+        if let date { try manager.setAttributes([.modificationDate: date], ofItemAtPath: visible.path) }
+        try manager.moveItem(at: recovery, to: preserved)
+    }
+    #endif
 
     private static func oneShotJobSaveFailure() -> @Sendable () throws -> Void {
         guard ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_FAIL_FIRST_JOB_SAVE"] == "1" else {
