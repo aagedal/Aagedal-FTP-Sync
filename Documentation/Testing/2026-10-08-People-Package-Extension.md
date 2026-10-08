@@ -26,3 +26,12 @@ its clean, pinned adjacent source. It has not been applied to that active checko
 or tested in native Photo Agent. This filename change does not close the decoder,
 native exchange, macOS 14 or other open 3.0 release gates. Build 43 is the earlier
 archive; the next changed-source archive needs a new build/candidate identity.
+
+Clean source `50adea87b75076920dd15fb4aa28187dac966d08` generated the private
+20-person package at
+`build/face-evaluation/reference-library-02/Pseudonym Reference Library.photoagentpeople`.
+The opt-in export/reimport test passes without skips, preserving all 178 query
+outcomes. Log: `/private/tmp/aftpsync-v3-oct08-reference-export-new-extension.log`.
+The earlier legacy-named package is retained as historical private evidence.
+Independent review of the companion patch found no blocking issue; application
+and native companion verification remain pending.
