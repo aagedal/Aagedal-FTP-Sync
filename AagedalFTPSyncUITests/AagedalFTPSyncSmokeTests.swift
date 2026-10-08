@@ -52,13 +52,21 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedImagePublication(managed: true, raw: true)
     }
 
-    private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false) throws {
+    func testCanonRawPublicationReconcilesAndRetriesAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, rawExtension: "cr3")
+    }
+
+    func testManagedCanonRawPublicationReconcilesAndRetriesAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3")
+    }
+
+    private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false, rawExtension: String = "arw") throws {
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
-            throw XCTSkip("Stage an authorized ARW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
+            throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
         }
         let filename = raw ? "recovery.xmp" : "recovery.jpg"
         launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
-               imageRecovery: true, interruptPublication: true, rawRecovery: raw)
+               imageRecovery: true, interruptPublication: true, rawRecovery: raw, rawExtension: rawExtension)
         element("Metadata").firstMatch.click()
         element("reprocess-geocoding").click()
         let review = app.sheets.firstMatch
@@ -105,8 +113,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
         let output = destination.appendingPathComponent("nested/" + filename)
         try assertRecoveryCity(output, raw: raw)
-        let rawSource = root.appendingPathComponent("Source/recovery.arw")
-        let rawOutput = destination.appendingPathComponent("nested/recovery.arw")
+        let rawSource = root.appendingPathComponent("Source/recovery." + rawExtension)
+        let rawOutput = destination.appendingPathComponent("nested/recovery." + rawExtension)
         let rawHeld = recovery.appendingPathComponent("original-held-0")
         let rawBytes = raw ? try Data(contentsOf: rawSource) : nil
         if raw {
@@ -195,6 +203,12 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             XCTAssertEqual(city.first?.stringValue, "Recovery Venue")
             let description = try xml.nodes(forXPath: "//*[local-name()='description']//*[local-name()='li']")
             XCTAssertEqual(description.first?.stringValue, "Preserve camera sidecar — æøå")
+            XCTAssertEqual(try xml.nodes(forXPath: "//*[local-name()='subject']//*[local-name()='li']").map(\.stringValue),
+                           ["Recovery keyword æøå", "Desk & camera"])
+            XCTAssertEqual(try xml.nodes(forXPath: "//*[local-name()='rights']//*[local-name()='li']").first?.stringValue,
+                           "© Recovery fixture")
+            XCTAssertEqual(try xml.nodes(forXPath: "//@*[local-name()='Rating']").first?.stringValue, "4")
+            XCTAssertEqual(try xml.nodes(forXPath: "//@*[local-name()='Keep']").first?.stringValue, "Camera & desk")
         } else {
             let image = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
             let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(image, 0, nil) as? [String: Any])
@@ -1052,7 +1066,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         imageRecovery: Bool = false,
         matchingClipImage: Bool = false,
         interruptPublication: Bool = false,
-        rawRecovery: Bool = false
+        rawRecovery: Bool = false,
+        rawExtension: String = "arw"
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -1069,7 +1084,10 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if imageRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] = "1" }
         if matchingClipImage { app.launchEnvironment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] = "1" }
         if managedRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] = "1" }
-        if rawRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_RAW_RECOVERY"] = "1" }
+        if rawRecovery {
+            app.launchEnvironment["AAGEDAL_UI_TEST_RAW_RECOVERY"] = "1"
+            app.launchEnvironment["AAGEDAL_UI_TEST_RAW_EXTENSION"] = rawExtension
+        }
         if interruptPublication { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1" }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
