@@ -36,11 +36,11 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyRetainedMetadataRecovery(managed: true, images: true)
     }
 
-    func testInterruptedImagePublicationRetainsActualTransactionAndBlocksRelaunch() throws {
+    func testInterruptedImagePublicationReconcilesAndRetriesAcrossRelaunch() throws {
         try verifyInterruptedImagePublication(managed: false)
     }
 
-    func testManagedInterruptedImagePublicationRetainsActualTransactionAndBlocksRelaunch() throws {
+    func testManagedInterruptedImagePublicationReconcilesAndRetriesAcrossRelaunch() throws {
         try verifyInterruptedImagePublication(managed: true)
     }
 
@@ -82,7 +82,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("native-image-interruption"), encoding: .utf8), "beforeCommit")
         XCTAssertTrue(recovery.lastPathComponent.hasPrefix(".aagedal-sync-"))
         XCTAssertNotEqual(recovery.lastPathComponent, ".aagedal-sync-ui-fixture.transaction")
-        let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: recovery.appendingPathComponent("recovery.json"))) as? [String: Any]
+        let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+        let manifest = try JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any]
         let originals = try XCTUnwrap(manifest?["originals"] as? [[String: Any]])
         XCTAssertEqual(originals.count, 1)
         XCTAssertEqual(originals[0]["relativePath"] as? String, "nested/recovery.jpg")
@@ -101,7 +102,63 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         waitForSheetTransition()
         XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
         XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
-        // Retain the genuine interrupted transaction for independent/manual recovery.
+        let publishedBytes = try Data(contentsOf: output)
+        let originalBytes = try Data(contentsOf: source)
+        let date = try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        // Explicitly choose the retained original in this disposable sandbox.
+        // The launch helper preserves both versions and the actual transaction.
+        app.terminate()
+        app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_INTERRUPTED_IMAGE"] = "1"
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        let preserved = root.appendingPathComponent("reconciled-image-recovery")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
+        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(held.lastPathComponent)), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifestBytes)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.jpg")), publishedBytes)
+        XCTAssertEqual(try Data(contentsOf: output), originalBytes)
+        XCTAssertEqual(try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+
+        element("Metadata").firstMatch.click()
+        element("reprocess-geocoding").click()
+        let retry = app.sheets.firstMatch
+        XCTAssertTrue(retry.waitForExistence(timeout: 8))
+        XCTAssertTrue(retry.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "Preflight checked 1 files", "Preflight checked 1 files"
+        )).firstMatch.waitForExistence(timeout: 8))
+        XCTAssertEqual(try Data(contentsOf: output), originalBytes, "Recovery retry preflight must be read-only")
+        XCTAssertTrue(retry.buttons["Reprocess Saved Files"].isEnabled)
+        retry.buttons["Reprocess Saved Files"].click()
+        XCTAssertTrue(retry.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Reprocessed 1 of 1 files; 0 skipped, 0 failed", "Reprocessed 1 of 1 files; 0 skipped, 0 failed"
+        )).firstMatch.waitForExistence(timeout: 15))
+        let retriedImage = try XCTUnwrap(CGImageSourceCreateWithURL(output as CFURL, nil))
+        let retriedProperties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(retriedImage, 0, nil) as? [String: Any])
+        let retriedIPTC = try XCTUnwrap(retriedProperties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
+        XCTAssertEqual(retriedIPTC[kCGImagePropertyIPTCCity as String] as? String, "Recovery Venue")
+        let retryBytes = try Data(contentsOf: output)
+        XCTAssertNotEqual(retryBytes, originalBytes)
+        XCTAssertEqual(try Data(contentsOf: source), originalBytes)
+        XCTAssertEqual(try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+
+        app.terminate()
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        element("Metadata").firstMatch.click()
+        element("reprocess-geocoding").click()
+        let repeated = app.sheets.firstMatch
+        XCTAssertTrue(repeated.waitForExistence(timeout: 8))
+        XCTAssertTrue(repeated.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "Preflight checked 1 files", "Preflight checked 1 files"
+        )).firstMatch.waitForExistence(timeout: 8))
+        XCTAssertFalse(repeated.buttons["Reprocess Saved Files"].isEnabled)
+        repeated.buttons["Cancel"].click()
+        XCTAssertEqual(try Data(contentsOf: output), retryBytes)
+        XCTAssertEqual(try Data(contentsOf: source), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(held.lastPathComponent)), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.jpg")), publishedBytes)
     }
 
     private func verifyRetainedMetadataRecovery(managed: Bool, images: Bool = false) throws {

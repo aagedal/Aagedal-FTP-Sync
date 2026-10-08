@@ -251,6 +251,90 @@ final class LocalMatchingPublicationTests: XCTestCase {
         }
     }
 
+    #if DEBUG
+    func testInterruptedImageReconciliationPreservesBothChoicesAndIsIdempotent() throws {
+        for managed in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("interrupted-reconcile-\(UUID())")
+                .resolvingSymlinksInPath()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let recovery = try seedInterruptedReconciliation(root: root, managed: managed)
+            let destination = recovery.deletingLastPathComponent()
+            let visible = destination.appendingPathComponent("nested/recovery.jpg")
+            let manifest = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+            let date = try visible.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+            try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed)
+            XCTAssertEqual(try Data(contentsOf: visible), Data("original".utf8))
+            XCTAssertEqual(try visible.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.jpg")), Data("published".utf8))
+            let rescued = root.appendingPathComponent("reconciled-image-recovery")
+            XCTAssertEqual(try Data(contentsOf: rescued.appendingPathComponent("original-held-0")), Data("original".utf8))
+            XCTAssertEqual(try Data(contentsOf: rescued.appendingPathComponent("recovery.json")), manifest)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
+            try Data("later retry".utf8).write(to: visible)
+            try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed)
+            XCTAssertEqual(try Data(contentsOf: visible), Data("later retry".utf8))
+        }
+    }
+
+    func testInterruptedImageReconciliationRejectsChangedAndRedirectedEvidence() throws {
+        for defect in ["source", "visible", "held-link", "manifest-path", "extra-transaction", "existing-rescue"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("interrupted-reject-\(UUID())")
+                .resolvingSymlinksInPath()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let recovery = try seedInterruptedReconciliation(root: root, managed: false)
+            let visible = recovery.deletingLastPathComponent().appendingPathComponent("nested/recovery.jpg")
+            switch defect {
+            case "source": try Data("changed".utf8).write(to: root.appendingPathComponent("Source/recovery.jpg"))
+            case "visible": try Data("edited".utf8).write(to: visible)
+            case "held-link":
+                let held = recovery.appendingPathComponent("original-held-0")
+                try FileManager.default.removeItem(at: held)
+                try FileManager.default.createSymbolicLink(at: held, withDestinationURL: root.appendingPathComponent("Source/recovery.jpg"))
+            case "manifest-path":
+                let url = recovery.appendingPathComponent("recovery.json")
+                var manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+                var originals = try XCTUnwrap(manifest["originals"] as? [[String: Any]])
+                originals[0]["heldFilename"] = "../../Source/recovery.jpg"
+                manifest["originals"] = originals
+                try JSONSerialization.data(withJSONObject: manifest).write(to: url)
+            case "extra-transaction":
+                try FileManager.default.createDirectory(at: recovery.deletingLastPathComponent().appendingPathComponent(".aagedal-sync-other.transaction"), withIntermediateDirectories: false)
+            default: try Data("prior rescue".utf8).write(to: root.appendingPathComponent("rescued-publication.jpg"))
+            }
+            let before = try Data(contentsOf: visible)
+            XCTAssertThrowsError(try UITestSupport.reconcileInterruptedImageFixture(rootURL: root), defect)
+            XCTAssertEqual(try Data(contentsOf: visible), before, defect)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path), defect)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("reconciled-image-recovery").path), defect)
+        }
+    }
+
+    private func seedInterruptedReconciliation(root: URL, managed: Bool) throws -> URL {
+        let manager = FileManager.default
+        let destination = root.appendingPathComponent(managed ? "Destination/Synced Files" : "Destination")
+        let recovery = destination.appendingPathComponent(".aagedal-sync-\(UUID()).transaction")
+        for folder in [root.appendingPathComponent("Source"), destination.appendingPathComponent("nested"), recovery] {
+            try manager.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        for url in [root.appendingPathComponent("Source/recovery.jpg"), recovery.appendingPathComponent("original-held-0"),
+                    recovery.appendingPathComponent("original-copy-0")] {
+            try Data("original".utf8).write(to: url)
+        }
+        for url in [destination.appendingPathComponent("nested/recovery.jpg"), recovery.appendingPathComponent("output-copy-0")] {
+            try Data("published".utf8).write(to: url)
+        }
+        try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)],
+                                  ofItemAtPath: destination.appendingPathComponent("nested/recovery.jpg").path)
+        try Data("seeded".utf8).write(to: root.appendingPathComponent("metadata-recovery-fixture-seeded"))
+        try Data("beforeCommit".utf8).write(to: root.appendingPathComponent("native-image-interruption"))
+        let manifest = LocalEndpointSession.MatchingRecoveryManifest(schemaVersion: 1,
+            originals: [.init(relativePath: "nested/recovery.jpg", snapshotFilename: "original-copy-0", heldFilename: "original-held-0", isReplaced: true)],
+            outputs: [.init(relativePath: "nested/recovery.jpg", stagedFilename: "output-stage-0", snapshotFilename: "output-copy-0", rollbackFilename: "rollback-output-0")])
+        try JSONEncoder().encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"))
+        return recovery
+    }
+    #endif
+
     private struct Fixture {
         let root: URL
         let inputs: URL
