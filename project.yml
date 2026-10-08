@@ -12,28 +12,73 @@ settings:
   base:
     ARCHS: arm64
     SWIFT_VERSION: "6.0"
-    CURRENT_PROJECT_VERSION: 37
-    MARKETING_VERSION: 2.9.2
+    SWIFT_INCLUDE_PATHS: '$(inherited) "$(SRCROOT)/Vendor/CExpat"'
+    CURRENT_PROJECT_VERSION: 44
+    MARKETING_VERSION: 3.0.0
     CODE_SIGN_STYLE: Automatic
     DEAD_CODE_STRIPPING: YES
     ENABLE_USER_SCRIPT_SANDBOXING: YES
     ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
     STRING_CATALOG_GENERATE_SYMBOLS: YES
 packages:
+  MetadataProcessing:
+    path: Packages/MetadataProcessing
   Citadel:
     path: Vendor/Citadel
   SwiftMediaMetadata:
     url: https://github.com/aagedal/SwiftMediaMetadata.git
-    exactVersion: 2.0.0
+    exactVersion: 3.0.1
 targets:
-  AagedalFTPSync:
+  Aagedal FTP Sync:
     type: application
     platform: macOS
+    preBuildScripts:
+      - name: Prepare and Verify Bundled AuraFace
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          python3 "$SRCROOT/Tools/prepare_bundled_auraface.py"
+          python3 "$SRCROOT/Tools/verify_bundled_auraface.py" source "$SRCROOT/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage"
+        inputFiles:
+          - $(SRCROOT)/Tools/prepare_bundled_auraface.py
+          - $(SRCROOT)/Tools/verify_bundled_auraface.py
+          - $(SRCROOT)/Tools/ModelSource/AuraFaceR100.weights.part-aa
+          - $(SRCROOT)/Tools/ModelSource/AuraFaceR100.weights.part-ab
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFace-LICENSE.md
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Manifest.json
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/model.mlmodel
+        outputFiles:
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights
+          - $(SRCROOT)/AagedalFTPSync/Resources/Models/AuraFaceR100.mlpackage/Data/com.apple.CoreML/weights/weight.bin
     sources:
       - path: AagedalFTPSync
+        excludes:
+          - Resources/WhisperRuntime
+      - path: AagedalFTPSync/Resources/WhisperRuntime
+        type: folder
+        buildPhase: resources
+    postBuildScripts:
+      - name: Sign Whisper Runtime
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          if [ "${CODE_SIGNING_ALLOWED:-NO}" = "YES" ]; then
+            timestamp_option="--timestamp=none"
+            case "${EXPANDED_CODE_SIGN_IDENTITY_NAME:-}" in
+              "Developer ID Application"*) timestamp_option="--timestamp" ;;
+            esac
+            /usr/bin/codesign --force --options runtime "$timestamp_option" --sign "${EXPANDED_CODE_SIGN_IDENTITY:--}" --entitlements "$SRCROOT/Configuration/WhisperRuntime.entitlements" "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/WhisperRuntime/ffmpeg"
+          fi
+        inputFiles:
+          - $(SRCROOT)/Configuration/WhisperRuntime.entitlements
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WhisperRuntime/ffmpeg
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/WhisperRuntime/ffmpeg.cstemp
     dependencies:
       - package: Citadel
       - package: SwiftMediaMetadata
+      - package: MetadataProcessing
+        product: MetadataTemplates
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSync
@@ -54,8 +99,10 @@ targets:
     sources:
       - path: AagedalFTPSyncTests
     dependencies:
-      - target: AagedalFTPSync
+      - target: Aagedal FTP Sync
       - package: SwiftMediaMetadata
+      - package: MetadataProcessing
+        product: MetadataTemplates
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSyncTests
@@ -67,7 +114,7 @@ targets:
     sources:
       - path: AagedalFTPSyncUITests
     dependencies:
-      - target: AagedalFTPSync
+      - target: Aagedal FTP Sync
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: no.aagedal.AagedalFTPSyncUITests
@@ -77,16 +124,24 @@ schemes:
   AagedalFTPSync:
     build:
       targets:
-        AagedalFTPSync: all
+        Aagedal FTP Sync: all
         AagedalFTPSyncTests: [test]
+      preActions:
+        - name: Reassemble Pinned AuraFace Weights
+          settingsTarget: Aagedal FTP Sync
+          script: python3 "$PROJECT_DIR/Tools/prepare_bundled_auraface.py"
     test:
       targets:
         - AagedalFTPSyncTests
   AagedalFTPSyncUISmokeTests:
     build:
       targets:
-        AagedalFTPSync: all
+        Aagedal FTP Sync: all
         AagedalFTPSyncUITests: [test]
+      preActions:
+        - name: Reassemble Pinned AuraFace Weights
+          settingsTarget: Aagedal FTP Sync
+          script: python3 "$PROJECT_DIR/Tools/prepare_bundled_auraface.py"
     test:
       targets:
         - AagedalFTPSyncUITests

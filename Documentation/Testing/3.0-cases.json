@@ -1,0 +1,824 @@
+{
+  "schemaVersion": 1,
+  "title": "Aagedal FTP Sync 3.0 final manual acceptance",
+  "cases": [
+    {
+      "id": "m0-001",
+      "section": "M0 — Compatibility and baseline",
+      "title": "Prepare isolated fixtures and identify the exact candidate",
+      "prerequisites": "A built 3.0 candidate, a separate macOS test account or isolated app data, and disposable local and remote test folders. Use authorized pictures and people examples. Keep production jobs and production originals outside this test environment.",
+      "steps": [
+        "Record the app marketing version, build number, Git revision, build configuration, Mac model, chip, RAM, macOS version/build, and test date in the checklist notes.",
+        "Create separate source, destination, processed, and evidence folders. Save untouched fixture copies and hashes before running tests.",
+        "Prepare JPEG, HEIC, TIFF and each declared supported RAW family, including files with and without XMP, GPS, capture dates, existing editorial fields, and faces.",
+        "Record the pinned SwiftMediaMetadata version, extracted Photo Agent source revision, model identifier and hash, people-library identity/revision, and geocoder dataset/provider versions; mark unavailable items blocked.",
+        "Record fixture filenames and where screenshots, metadata dumps, logs, and benchmark results will be stored without putting private images or library contents in a public repository."
+      ],
+      "expected": [
+        "Every result is attributable to an exact candidate and reproducible fixture set.",
+        "Production originals and live jobs are untouched; missing prerequisites are recorded as blocked, never passed.",
+        "Reusable-code provenance and required notices are documented."
+      ],
+      "required": true
+    },
+    {
+      "id": "m0-002",
+      "section": "M0 — Compatibility and baseline",
+      "title": "Run on the oldest and newest supported macOS",
+      "prerequisites": "Actual Apple silicon machines or suitable test environments running macOS 14 and the newest declared supported macOS; a signed candidate and real model setup. A newer SDK build alone does not satisfy this case.",
+      "steps": [
+        "Install and launch the candidate independently on both systems; record each OS build and signing identity.",
+        "Create a local-to-local job, grant source and destination folder access, quit, reopen, and perform a transfer.",
+        "Exercise variable preview, offline geocoding, online geocoding, and a real face match on both systems; attach results identifying the adapter actually selected.",
+        "On macOS 14 verify the compatible online adapter is used; on macOS 26 or newer verify the availability-gated MapKit adapter when applicable.",
+        "Record unsupported API, deployment-target, Core ML loading, or permission failures separately; if an environment is unavailable leave this gate blocked."
+      ],
+      "expected": [
+        "The declared scope runs on both supported endpoints without unavailable-API crashes.",
+        "Folder permissions survive restart and model/geocoder compatibility is demonstrated by execution.",
+        "Any proposed OS-support change is explicitly documented and reviewed before release."
+      ],
+      "required": true
+    },
+    {
+      "id": "m0-003",
+      "section": "M0 — Compatibility and baseline",
+      "title": "Verify bundled model and companion-service availability",
+      "prerequisites": "A signed candidate containing the reviewed AuraFace model and license notice, a compatible Photo Agent exporter, and test instances of old and upgraded metadata calendar servers.",
+      "steps": [
+        "Verify the bundled model's source and app hashes, license notice, embedding identity, size and successful Core ML load in the signed candidate; record the build and verification output.",
+        "Export a small authorized people library from the companion Photo Agent build and inspect the documented embedding-space and preprocessing manifest fields.",
+        "Import that export into FTP Sync and perform one known-person recognition using a different authorized picture.",
+        "Record old/new server protocol and capability responses and the deployment sequence from the server upgrade guide.",
+        "Record any missing or invalid bundled artifact, companion exporter, server, or incompatible contract as a release blocker."
+      ],
+      "expected": [
+        "The reviewed model is present and usable in the signed app, and the companion export identifies a compatible embedding space.",
+        "Calendar capability enforcement can be tested on deployed test servers.",
+        "Mocks, an unsigned development bundle, or a successful compile do not count as signed-candidate availability."
+      ],
+      "required": true
+    },
+    {
+      "id": "m0-004",
+      "section": "M0 — Compatibility and baseline",
+      "title": "Record baseline and concrete performance budgets",
+      "prerequisites": "A preserved 2.9.2 baseline, the intended benchmark Mac, a fixed disposable burst fixture set and loopback transport environment; use the existing delivery-latency harness and design documentation.",
+      "steps": [
+        "Record fixture counts, file sizes/types, face counts, directory structure, storage, transport, and benchmark Mac specifications.",
+        "Run the baseline with metadata features disabled in cold and warm conditions and record first-file publication, p50/p95 publication latency, images per second, peak memory, backlog and cancellation latency.",
+        "Agree and record numerical acceptable budgets for each measure before evaluating the new implementation, including queue count and staged-byte limits.",
+        "Retain the harness invocation, raw measurements, and conditions for comparison in M5; distinguish unmeasured values from zero."
+      ],
+      "expected": [
+        "Baseline evidence and explicit measurable budgets exist before performance acceptance.",
+        "The same workload and conditions can be repeated on the candidate without claiming an unmeasured speed improvement."
+      ],
+      "required": true
+    },
+    {
+      "id": "m1-001",
+      "section": "M1 — Variables and metadata",
+      "title": "Upgrade preserves literal braces and leaves new features off",
+      "prerequisites": "An isolated 2.9 profile containing jobs, presets, photographers, calendar clips, audit records and source signatures; include literal strings resembling tokens, escaped braces, and real existing output files.",
+      "steps": [
+        "Back up the complete isolated 2.9 profile and capture the current job settings and metadata outputs.",
+        "Open that profile with the 3.0 candidate and inspect all existing jobs and template-bearing records.",
+        "Run a legacy schedule containing literal '{date:YYYY-MM-DD}' and '{photographer}' text without activating variable processing.",
+        "Compare the output, existing audit history and repeated-poll behavior with the baseline.",
+        "Explicitly activate variables on a copied test template and verify only that copy begins expanding tokens."
+      ],
+      "expected": [
+        "Existing jobs decode and all new processing options default off.",
+        "Legacy braces stay literal until activation, old records remain readable, and enabling one template does not reinterpret unrelated records."
+      ],
+      "required": true
+    },
+    {
+      "id": "m1-002",
+      "section": "M1 — Variables and metadata",
+      "title": "Insert supported variables and compare preview with delivery",
+      "prerequisites": "Two disposable photos with different capture dates, a matching photographer profile and schedule, and a copied test preset; GPS/person services can remain off for this case.",
+      "steps": [
+        "In Metadata Programming, open a copied clip. Beside Headline or Description choose Variables…, use Insert Variable (Capture date is first; insertion appends at the end), then explicitly enable Resolve Variables and choose Apply. Repeat for both fields.",
+        "Choose Edit Keywords…, Add Keyword for each separate entry, and enable Resolve variables for the entire keyword list before Apply. In Photographer Profile use Variables… beside Copyright notice and enable Resolve Variables. Save the clip/profile and use Save as New or Update under Reusable Presets. Keep these templates local unless the server explicitly supports them.",
+        "Inspect the editor sample marked Sample output only; this is synthetic, not a photo preview. Run the real folder preview on both photos and select each file. Compare the Existing value and Proposed value or outcome columns, including separately labeled IPTC/XMP carriers, preservation/omission decisions and capture/processing zone. Confirm values independently with an external metadata reader.",
+        "Transfer each photo through the matching schedule, then compare all four fields with the corresponding preview using an external metadata reader.",
+        "Reopen the preset and clip to verify stored text still contains the original variable source rather than the first photo's resolved values."
+      ],
+      "expected": [
+        "Insertion includes the documented subset with capture date offered first for captions.",
+        "Preview and transfer resolve per image from the same decisions, including Copyright after photographer resolution.",
+        "Templates are preserved as source and never replaced with sample output."
+      ],
+      "required": true
+    },
+    {
+      "id": "m1-003",
+      "section": "M1 — Variables and metadata",
+      "title": "Dates respect calendar boundaries, offsets and job time zone",
+      "prerequisites": "Fixtures with EXIF capture dates on leap day, Dec 31/Jan 1, immediately around midnight, explicit positive/negative offsets, no offset, and no capture date. Record expected dates independently before testing.",
+      "steps": [
+        "In job metadata settings, choose Processing time zone → Choose…, search for Europe/Oslo or America/New_York, select a zone different from the Mac, choose Use Selected Zone, then Save the job. Reopen and confirm Saved zone. Preview both date aliases for every fixture. Simply opening or canceling the chooser must not initialize an unset literal job.",
+        "Check Dec/Jan and leap-day results against the recorded calendar dates; test an explicit offset whose local date differs from UTC.",
+        "Change the Mac's locale and time zone while retaining the job's configured zone, then repeat previews.",
+        "Verify the offset-free fixture identifies the saved fallback zone and a fixture with an explicit offset identifies that original offset. After transfer, expand Metadata audit trail → Processing details and compare recorded processing time/zone and capture assumption. Missing capture must remain unavailable rather than becoming today.",
+        "Preview/transfer with a fixed-clock test build or documented midnight-boundary procedure to confirm one processing date is shared by every field and retry within the same operation; attach that evidence."
+      ],
+      "expected": [
+        "Both aliases use numeric Gregorian calendar-year dates, with no week-year or day-of-year error.",
+        "Explicit capture offsets are preserved; offset-free capture and processing dates use the saved job zone.",
+        "Missing capture dates never become today's date, and one operation does not mix processing dates."
+      ],
+      "required": true
+    },
+    {
+      "id": "m1-004",
+      "section": "M1 — Variables and metadata",
+      "title": "Validate syntax and expand substituted text only once",
+      "prerequisites": "An editable copied template, a photographer whose canonical name contains Unicode and literal braces such as 'Åse {date:YYYY-MM-DD}', and the documented input-size limit.",
+      "steps": [
+        "Preview repeated and adjacent supported tokens, '{{' and '}}' literal-brace escapes, Unicode text, and the brace-containing photographer name.",
+        "Try an unknown token, an unsupported date format, unmatched opening and closing braces, and input above the documented limit.",
+        "In Variables… enable Resolve Variables for each invalid draft and verify Apply remains disabled while the draft stays editable. Correct it without closing, then Cancel and reopen to confirm the saved source was never changed. Repeat in Edit Keywords… with one invalid row and verify the whole list is rejected.",
+        "Correct the syntax and verify activation succeeds; transfer a picture using the brace-containing name."
+      ],
+      "expected": [
+        "Supported tokens expand once; names containing braces stay literal and escapes produce literal braces.",
+        "Unknown syntax, unsupported formats and excessive input visibly prevent activation without losing editable drafts.",
+        "No unresolved token is accidentally published by an activated template."
+      ],
+      "required": true
+    },
+    {
+      "id": "m1-005",
+      "section": "M1 — Variables and metadata",
+      "title": "Missing variables preserve the complete affected field",
+      "prerequisites": "Pictures with preexisting Headline, Description, Copyright and Keywords; fixtures missing capture date, photographer assignment or GPS; a preset mixing resolvable and unavailable variables.",
+      "steps": [
+        "Activate Description containing ordinary text plus a missing variable, and a resolvable Headline template.",
+        "Create multiple keyword template entries with one unavailable variable and another resolvable value.",
+        "Preview the image, inspect missing-dependency explanations and preservation decisions, then transfer it.",
+        "Compare all original fields with output in an external reader and inspect the per-file audit.",
+        "Repeat with a location token while lookups are disabled and with an empty photographer name, checking the documented legacy-name fallback separately."
+      ],
+      "expected": [
+        "One unavailable value suppresses the entire affected field, preserving the previous text or keyword list.",
+        "Other resolvable fields still apply, with no token leakage, partial caption text or silent word removal.",
+        "Preview identifies dependencies and audit separates delivered files from incomplete enrichment."
+      ],
+      "required": true
+    },
+    {
+      "id": "m1-006",
+      "section": "M1 — Variables and metadata",
+      "title": "Keywords remain individual normalized entries",
+      "prerequisites": "A fixture with existing keywords, a photographer name containing a comma, Unicode examples, and a schedule with several keyword template entries.",
+      "steps": [
+        "Add duplicate keyword template entries, whitespace variants, repeated variable results, and one entry resolving to a comma-containing name.",
+        "Reopen Edit Keywords… and confirm each source is still its own row, including commas, duplicates and whitespace. Cancel a changed row or newly added row, reopen, and confirm cancellation preserved the exact prior list. Use Convert Entire List to Literal Text only on a copy and verify braces then stay literal.",
+        "Preview and transfer with the supported preserve/fill and overwrite keyword policies in separate runs.",
+        "Inspect the actual metadata keyword array using an external reader rather than only the app's comma-joined display.",
+        "Verify Unicode is retained and record the normalization/deduplication behavior."
+      ],
+      "expected": [
+        "Each template entry remains one keyword even when its resolved text contains commas.",
+        "Normalization removes duplicate entries consistently and respects the selected existing-keyword policy."
+      ],
+      "required": true
+    },
+    {
+      "id": "m1-007",
+      "section": "M1 — Variables and metadata",
+      "title": "Preview stays read-only, cancellable and keyboard accessible",
+      "prerequisites": "The signed candidate, sample photos with recorded hashes and filesystem dates, and macOS VoiceOver; a slow test provider or a sufficiently large preview folder.",
+      "steps": [
+        "Use Tab and keyboard activation to reach Variables… for Headline, Description and Copyright, then Insert Variable, Resolve Variables, Apply and Cancel. Repeat with Edit Keywords… and Add Keyword. Inspect sample output and missing-dependency help, then inspect the real folder preview separately.",
+        "Enable VoiceOver and navigate variable help, missing-dependency messages, loading state and per-field decisions.",
+        "Start a slow preview, change the selected sample or close the preview, and verify old asynchronous results do not replace the new selection.",
+        "Cancel an active preview and continue using the job editor.",
+        "Compare source hashes, sidecars and filesystem dates before/after preview; repeat the main flow in every supported app language and inspect clipping."
+      ],
+      "expected": [
+        "Preview writes no source image or sidecar and does not block ordinary UI interaction.",
+        "Cancellation works, stale results stay hidden, and controls/messages are usable by keyboard and VoiceOver.",
+        "Localized labels and help fit and convey the same processing decisions."
+      ],
+      "required": true
+    },
+    {
+      "id": "m2-001",
+      "section": "M2 — Reverse geocoding",
+      "title": "Offline geocoding works independently of the calendar",
+      "prerequisites": "A tested build with Geocoding controls and the bundled GeoNames dataset, disposable GPS-tagged photos, a one-way job with a local destination, isolated app state, and a network monitor scoped to the app. Controls and integration exist; actual native observations remain required. Record fixture paths and expected nearby settlements before testing.",
+      "steps": [
+        "In the job editor, disable schedule metadata. In Geocoding, select Offline GeoNames as Location provider, leave Resolve place variables off, set Write city and Write country to Fill empty only, choose and record Place-name language, then save. Reopen and confirm the saved controls and Processing time zone.",
+        "Disconnect network access and transfer a GPS-tagged picture, then inspect City/Country and the lookup audit.",
+        "Repeat with an empty or removed calendar and a nonmatching photographer filename.",
+        "Restore connectivity, monitor app connections, quit/relaunch the isolated test app to clear its in-memory lookup cache, and transfer a fresh disposable source copy.",
+        "Independently enable place-variable resolution on a matching clip while disabling City/Country writes and inspect the resulting caption.",
+        "Select Preview Geocoding for saved settings and inspect existing/proposed City/Country and lookup distance. Cancel a larger preview and confirm no file bytes or timestamps changed.",
+        "On disposable destination copies, select Reprocess Saved Files, read the confirmation, and run with the schedule disabled. Confirm enrichment succeeds without a source connection and preserves RAW bytes and unrelated XMP.",
+        "Enable a processed destination in the disposable job, repeat with a fresh valid GPS source pair, and inspect both destination and processed RAW/XMP. Repeat with missing GPS: base delivery may succeed, but source removal must not occur."
+      ],
+      "expected": [
+        "Standalone place fields work without an enabled schedule, clip or calendar.",
+        "Offline lookup makes no network requests; place variables and field writes have independent controls.",
+        "Audit includes source and distance, and UI does not promise a street address or exact venue."
+      ],
+      "required": true
+    },
+    {
+      "id": "m2-002",
+      "section": "M2 — Reverse geocoding",
+      "title": "Resolve complete GPS pairs with correct source precedence",
+      "prerequisites": "Embedded and RAW fixtures with conflicting valid EXIF/XMP pairs, a valid XMP-only pair, invalid/incomplete pairs, and a schedule capable of GPS fill-empty and overwrite. For the activated processing path, enable Resolve Variables in a disposable clip Headline using {photographer}, save a Processing time zone on the job, and use a matching test photographer. Enable a Write city policy in Geocoding and save. Frozen coordinate selection is now connected to offline lookup; observe each native case independently.",
+      "steps": [
+        "Record the expected complete effective pair for each fixture: RAW prefers valid XMP; embedded images prefer valid EXIF with XMP fallback.",
+        "Preview and transfer with scheduled GPS disabled, then compare the selected coordinate source and conflict reporting.",
+        "Repeat with a valid scheduled replacement under preserve/fill-empty and overwrite policies.",
+        "Include a RAW fixture whose existing sidecar has no GPS but embedded EXIF has a complete valid pair. With scheduled fill-empty, confirm both the lookup and final GPS preserve the embedded pair; repeat with scheduled overwrite.",
+        "Select the RAW row in preview: Existing value must show the embedded camera GPS even when its sidecar contains no GPS. After processing, expand Processing details in the audit and inspect selected location source, disagreement, invalid-source and scheduled proposal/preservation messages. A proposal is not proof of successful publication; check the file and operation status separately.",
+        "Use disposable malformed GPS fixtures, including an EXIF latitude with one rational instead of three and invalid direction references. Under activated fill-empty with a valid scheduled pair and no other valid pair, verify the scheduled pair is actually written while unrelated filled fields remain unchanged. Invalid scheduled GPS must be omitted and mark resolution incomplete.",
+        "Test latitude-only EXIF combined with longitude-only XMP and confirm the app does not construct a synthetic pair.",
+        "Compare geocoded output and final GPS against the recorded expected pair for each run."
+      ],
+      "expected": [
+        "The correct whole pair drives one lookup and valid source conflicts are recorded.",
+        "Scheduled GPS supersedes existing coordinates only when its write policy permits it.",
+        "Coordinates are never assembled from unrelated sources.",
+        "Raw audit evidence stores source and policy decisions without numeric coordinate pairs. Legacy literal schedules keep their previous sidecar write behavior; activating variables opts into the corrected coordinate resolution path."
+      ],
+      "required": true
+    },
+    {
+      "id": "m2-003",
+      "section": "M2 — Reverse geocoding",
+      "title": "Preserved place fields do not change variable meaning",
+      "prerequisites": "A GPS fixture whose lookup result differs from existing City/Country, plus copies with only one of those fields empty; a caption containing both location variables.",
+      "steps": [
+        "In Geocoding, enable Resolve place variables, set Write city to Fill empty only and Write country to Overwrite, then save. Use a matching clip caption with Resolve Variables enabled and both {gps:city} and {gps:country}; preview, transfer, and inspect the fields and caption.",
+        "Reverse the two policies and repeat with fresh copies.",
+        "Test the one-empty-field fixtures to confirm each field makes an independent decision.",
+        "Disable field writing while leaving variable resolution enabled, then disable lookups and inspect dependency warnings."
+      ],
+      "expected": [
+        "City and Country obey their own policies.",
+        "Location tokens use the lookup result even when an existing place field is preserved.",
+        "Disabling lookups makes dependent templates visibly unresolved without erasing existing metadata."
+      ],
+      "required": true
+    },
+    {
+      "id": "m2-004",
+      "section": "M2 — Reverse geocoding",
+      "title": "Handle invalid GPS and distant, rural, coastal and border locations",
+      "prerequisites": "Named fixtures covering zero coordinates, negative coordinates, out-of-range/non-finite values and missing GPS. Use the public offline-provider set: Point Nemo (-48.876, -123.393), rural Hardangervidda (60.1000, 7.5000; expected beyond the settlement cutoff), coastal Sola (58.8887, 5.6009; expected nearby settlement), Helsingør, Denmark (56.0361, 12.6136), and Helsingborg, Sweden (56.0465, 12.6945). The last two are the nearby cross-border pair. Retain the documented 50 km maximum-distance policy.",
+      "steps": [
+        "Record each fixture's coordinates and expected validity before import; use fixture tooling for values ordinary cameras cannot create.",
+        "Preview and transfer all fixtures through the offline provider.",
+        "Inspect lookup source, distance, no-result reasons, accepted place text and preservation decisions.",
+        "Check the border pair separately to detect inappropriate spatial rounding and review rural/coastal results against the declared nearby-city behavior.",
+        "Record any returned place beyond the configured maximum distance and compare its handling with policy."
+      ],
+      "expected": [
+        "Valid zero/negative coordinates are accepted; invalid or absent pairs preserve affected fields with a specific outcome.",
+        "No-result and excessive-distance results follow policy and do not invent locations.",
+        "Nearby coordinates are not merged through coarse rounding, and results are presented as approximate nearby cities."
+      ],
+      "required": true
+    },
+    {
+      "id": "m2-005",
+      "section": "M2 — Reverse geocoding",
+      "title": "Online lookup is explicit and failures remain recoverable",
+      "prerequisites": "Internet access, disposable photos, explicit selection of Apple lookup, and a test proxy/provider harness able to simulate timeout, rate limiting and provider failure without altering production networking.",
+      "steps": [
+        "In the job editor’s Geocoding section, change Location provider from Offline GeoNames to Apple online. Read the coordinate-sharing dialog and Cancel: verify the provider and saved job remain unchanged. Repeat and choose Use Apple and Allow Coordinates; verify this changes only the draft, then save explicitly.",
+        "Transfer a known GPS fixture and record adapter/provider, concrete output locale and successful result.",
+        "Run the actual candidate on macOS 14/15 and macOS 26 or newer: record the Core Location or MapKit adapter respectively. Confirm the lookup uses the photo GPS and does not request device location permission.",
+        "Simulate offline access, timeout, rate limiting and a provider failure in separate runs while another independent metadata field can resolve.",
+        "Inspect finite deadlines, retry/backoff outcomes and audit entries; cancel a queued lookup and verify no late publication.",
+        "Confirm no failure silently switches provider or output language, then restore service and explicitly retry/reprocess.",
+        "Export this disposable Apple job and import it into isolated app state, including an encrypted package. Cancel the import coordinate-sharing confirmation and verify nothing is imported. Repeat with affirmative permission; confirm jobs remain stopped, reopen the job and verify Apple is selected. Switch offline, save and relaunch; verify no Apple requests occur for offline work."
+      ],
+      "expected": [
+        "Online lookup requires the user's explicit setting and clearly explains coordinate transmission.",
+        "The image can deliver with independently successful fields while affected fields remain intact and incomplete enrichment is visible.",
+        "Requests have bounded retries/deadlines and recover through explicit, observable behavior."
+      ],
+      "required": true
+    },
+    {
+      "id": "m2-006",
+      "section": "M2 — Reverse geocoding",
+      "title": "Verify cache keys, shared queue and concurrent coalescing",
+      "prerequisites": "Two disposable jobs, repeated and distinct GPS fixtures, diagnostic request counters or a deterministic provider harness, and documented queue/cache limits.",
+      "steps": [
+        "Start concurrent jobs whose photos share an exact coordinate pair and inspect provider request counts for the same provider, version and concrete locale.",
+        "Repeat warm, then change output language, provider and dataset/provider version using supported test setup one at a time.",
+        "Use coordinates differing by a small amount near a border and verify distinct keys.",
+        "Submit more unique coordinates than the cache and queue limits, record peak pending work and cache eviction, and cancel one waiter while another still needs a coalesced result.",
+        "For Apple lookup, hold one native request past caller cancellation and its deadline. Confirm no replacement request starts until the native callback completes, then verify the documented completion pause before the next start. Confirm unrelated coalesced callers still receive their result."
+      ],
+      "expected": [
+        "Concurrent identical requests coalesce; materially different coordinates, versions, providers or locales do not share incorrect results.",
+        "Cache retention and work admission remain bounded, and cancelling one consumer does not corrupt another's result.",
+        "Evidence uses measured request counts rather than visual timing guesses."
+      ],
+      "required": true
+    },
+    {
+      "id": "m3-001",
+      "section": "M3 — Persistence and sharing",
+      "title": "Verify versioned stores and safe downgrade recovery",
+      "prerequisites": "A backed-up isolated 2.9 profile, 2.9 and 3.0 binaries, and the documented downgrade procedure; never use the production user profile.",
+      "steps": [
+        "Quit all other copies of FTP Sync. Launch the candidate against the supplied isolated 2.9 fixture and open Startup and Recovery from its menu-bar item. Before continuing, open Jobs, Metadata Programming and Settings: each must show startup/recovery rather than editable default libraries.",
+        "In Prepare your saved data for 3.0, review every library source. Use a fixture with a missing primary and retained backup: the source picker must say Choose a source until you explicitly select that backup. Choose the appropriate Original file history format, acknowledge that other copies are closed, and click Prepare 3.0 Copy.",
+        "After admission, verify the expected saved jobs and literal text. Jobs must remain stopped and calendar sync paused; inspect the Startup and Recovery window before deliberately starting calendar sync against the disposable server.",
+        "Activate and save a new variable template once that feature is available in the candidate, then quit 3.0 cleanly.",
+        "Inspect documented store paths and backup metadata to confirm template source and activation/version markers are retained together. Relaunch and use Open Saved 3.0 Data; the current state must be validated without importing later edits to retained 2.9 files.",
+        "Launch 2.9 using the documented downgrade workflow and inspect recovered jobs, presets and calendars without enabling transfers. Quit it before returning to 3.0. Confirm it cannot reinterpret or overwrite 3.0 template-enabled storage.",
+        "Repeat a documented interrupted-migration fixture and choose Recover Prepared Copy. Verify the frozen source selection is recovered even if the legacy files changed afterward. Missing or corrupt committed data must show recovery details, never empty replacement libraries.",
+        "With only disposable jobs/files, exercise the supplied second-copy detection fixture. The menu must show an attention icon and open recovery, new work must be blocked, and calendar sync must pause. Closing the extra copy must not silently resume this runtime; quit and reopen after any active cancellation settles.",
+        "Using only a disposable profile, replace an active record with a future language marker while retaining an older literal backup. Relaunch and attempt recovery/save: verify the incompatible primary and backup remain byte-identical, and no fallback silently removes activation."
+      ],
+      "expected": [
+        "A consistent 2.9 backup is recoverable and the documented downgrade boundary protects new templates.",
+        "Returning to 2.9 clearly restores older settings; 3.0 state is not silently corrupted.",
+        "Failed/interrupted migration preserves a recoverable prior state.",
+        "Source selection is explicit, all store-backed scenes wait for admission, and first startup preserves saved launch choices while keeping work paused.",
+        "An observed writer conflict remains latched until relaunch; cooperative cancellation is not reported as an instantaneous drain or permission to release storage ownership."
+      ],
+      "required": true
+    },
+    {
+      "id": "m3-002",
+      "section": "M3 — Persistence and sharing",
+      "title": "Round-trip copy, presets and configuration packages",
+      "prerequisites": "Activated templates in clips, presets and Copyright; legacy version 1 and 2 .aftpsync fixtures; a second isolated profile and access to a 2.9 importer.",
+      "steps": [
+        "Copy/paste a clip, apply a preset and move a clip between dates/tracks; verify template source and activation/version markers after each operation.",
+        "Export full configuration and selected-day metadata, then import them into the second profile and resolve different sample images.",
+        "Import valid legacy version 1 and 2 packages and verify new processing remains off and literal braces remain literal.",
+        "Try importing a template-enabled 3.0 package in 2.9 and confirm clear rejection; export a genuinely legacy-only package and verify the documented compatibility path.",
+        "Try malformed and unsupported-new-version fixtures and inspect failure recovery. Verify imported jobs are disabled and require fresh local setup.",
+        "Inspect exported JSON versions: selected active metadata must use package 3; literal-only and jobs-only exports remain package 2. Repeat imports with both plaintext and password-protected packages, and reject active contents relabeled as version 1 or 2."
+      ],
+      "expected": [
+        "Portable templates retain source and semantics, never sample-expanded values.",
+        "Legacy packages remain importable, unsupported formats fail atomically, and older clients reject unsupported processing semantics.",
+        "Imported jobs cannot immediately run with inherited machine permissions or private model/library bindings."
+      ],
+      "required": true
+    },
+    {
+      "id": "m3-003",
+      "section": "M3 — Persistence and sharing",
+      "title": "Enforce template capabilities on actual old and new servers/clients",
+      "prerequisites": "Disposable old and upgraded HTTPS PHP/MySQL servers, current and actual older client builds or recorded genuine older payloads, separate editor accounts, and the deployment guide. Install schema.sql, schema-live-sync.sql and schema-template-sync.sql before upgraded index.php/live.php/templates.php. Explicit classic-calendar migration and its recovery controls are implemented but still require native/live acceptance. Use a disposable server/proxy that can delay or discard a create response to test interruption; an uninterrupted success is not interruption evidence. See 2026-09-11-M3-Calendar-Migration.md and 2026-09-11-M3-Protocol-Foundation.md.",
+      "steps": [
+        "Connect 3.0 to the old server and share/edit a legacy calendar to verify existing functionality.",
+        "Attempt to activate or publish variables on that shared calendar and inspect the upgrade message and server state.",
+        "On the upgraded server, open Calendar settings. Under Calendar type, set Browse and create to Template-enabled — requires 3.0. Select an unlinked disposable local job, choose New shared calendar from this job, enter a unique name and click Activate Sync. Wait for a successful revision before activating variables. Confirm the linked job says Template-enabled calendar. Request the new calendar using an actual older client and old protocol payloads.",
+        "Create and copy an invitation for that template-enabled calendar. Paste the entire invitation into the second 3.0 client and click Join Calendar; confirm it selects the template-enabled list even if that client was browsing Classic. A raw invitation code requires selecting the matching calendar type. The old client must reject the new copied invitation format or the server must reject its old-protocol request without a document.",
+        "Attempt old-client uploads that strip activation markers or downgrade the same document; inspect server responses and the retained document.",
+        "Exercise documented handling of an older client's previously cached offline calendar and verify it cannot obtain template-bearing content or overwrite new semantics.",
+        "On the legacy protocol, verify an active linked job blocks discovery, receive and publish before credentials or requests are used. Test an active cached snapshot and interrupted-receive receipt; stale literal state must not overwrite the retained incompatible cache.",
+        "On a disposable database, exercise the documented old-PHP rollback fixture and restore upgraded PHP. Confirm no v3 source appears through legacy list/read/conflict/invitation paths and a legacy cached write cannot alter the new calendar. A reused UUID must be quarantined rather than merged. Retain server/client revisions and response evidence without secrets.",
+        "With a newly published template calendar still awaiting server confirmation, attempt to activate a variable and confirm the draft is retained without saving. Restore access or use Retry Now, wait for a confirmed revision, and save the variable successfully. Switching Browse and create back to Classic must not change the protocol of that already-linked job.",
+        "On an upgraded server, select a synced classic owner calendar and click Create Template-Enabled Calendar…. Confirm that the review names the original local job, calendar revision and server. Click Cancel and verify no new calendar or persisted migration intent was created. Make an unsynced local edit and repeat: migration must ask you to sync/review first without silently resolving it.",
+        "After saving/syncing the intended classic metadata, prepare again and choose Create and Link New Calendar. Verify the job links to a new UUID in the template namespace, its metadata is still literal, and the original classic calendar retains its UUID, revision and content. Existing participants and invitations must not gain access to the new calendar. Invite the second 3.0 client explicitly with a fresh invitation.",
+        "Interrupt after confirmation or discard the create response using the disposable test server. Relaunch the client. In Calendar migration pending, verify the original job/server labels and click Retry Migration or Finish Calendar Migration. The saved destination UUID must stay the same; successful recovery must not create duplicate calendars. Later edits by classic-calendar participants stay on the original calendar and are not copied into the already-reviewed fork.",
+        "With an uncertain migration pending, make a literal local edit or open a draft, then retry. The edit must remain intact and the job must not silently rebind. Choose Keep Using Classic Calendar…, inspect the named job/server and confirm. The classic link and local edit stay; any already-created new calendar remains on the server, and no remote delete or invitation is issued. The migration record remains saved across relaunch.",
+        "After a successful migration, choose Detach and Keep Local Metadata. Relaunch and verify local metadata remains editable and migration provenance is retained. Receive the same new calendar into a fresh local job; the retained archive must not prevent this deliberate rejoin."
+      ],
+      "expected": [
+        "Old servers remain usable for legacy calendars but cannot accept unsafe template sharing.",
+        "The server enforces capabilities and rejects unsupported reads/writes; client UI alone is insufficient.",
+        "Older clients never receive template-bearing documents and cannot erase activation markers through stale uploads."
+      ],
+      "required": true
+    },
+    {
+      "id": "m3-004",
+      "section": "M3 — Persistence and sharing",
+      "title": "Shared merges, offline conflicts and date boundaries retain semantics",
+      "prerequisites": "Two current clients on an upgraded disposable server, an editor and read-only account, and a calendar shared for a selected date range including its first and last days.",
+      "steps": [
+        "Share clips/templates and photographer Copyright records containing active variables, then preview different local pictures on each client.",
+        "Disconnect both clients and make conflicting edits to a template's source and activation state; reconnect and resolve the conflict through the UI.",
+        "Inspect both clients and the server after the merge for the winning source and matching version/activation marker.",
+        "Edit records on the first/last shared dates and just outside the range; verify the documented boundary behavior and read-only restrictions.",
+        "Receive an empty or removed remote calendar and run a local job with independent geocoding/face processing still enabled.",
+        "On one 3.0 client explicitly turn off variable processing for an active retained field, save and sync. Confirm the exact field conversion reaches the server while all other activation markers remain. Repeat with a remote concurrent edit and a lost response; the next sync must preserve both the namespace and the correct source/activation pair."
+      ],
+      "expected": [
+        "Template semantics survive merges and offline resolution, with per-picture expansion on each Mac.",
+        "Date-range and role restrictions remain enforced, and shared records do not carry machine processing policy.",
+        "Empty/removed calendars do not disable independent local enrichment."
+      ],
+      "required": true
+    },
+    {
+      "id": "m3-005",
+      "section": "M3 — Persistence and sharing",
+      "title": "Inspect privacy boundaries in exports, logs and support bundles",
+      "prerequisites": "A disposable configuration with the verified bundled model and imported private test library, known marker strings in test names/paths, encrypted and unencrypted exports, and a generated default support bundle.",
+      "steps": [
+        "Export configuration using both protection modes and inspect unencrypted content or decrypt your own encrypted export with its test password.",
+        "Inspect calendar payloads, ordinary logs and the default support bundle for reference thumbnails, embeddings, model bytes, machine library paths and secret markers.",
+        "Verify portable job policies retain supported language/time-zone settings as documented, while imports require local library setup and a compatible app bundle.",
+        "Inspect incoming source/destination trees for unexpected '.faces' directories; inspect app support for the installed library location.",
+        "Confirm Keychain passwords and folder security bookmarks remain absent from portable packages."
+      ],
+      "expected": [
+        "Private reference thumbnails/embeddings, model files and machine paths stay out of ordinary exports and calendar sharing.",
+        "Ordinary logs/default support bundles exclude reference library contents; actual output metadata names remain subject to the documented audit policy.",
+        "The library lives in app support and no incoming-folder face database is created."
+      ],
+      "required": true
+    },
+    {
+      "id": "m4-001",
+      "section": "M4 — Local face recognition",
+      "title": "Verify bundled face model admission and failure handling",
+      "prerequisites": "A signed candidate with the reviewed bundled AuraFace payload and license notice, a compatible authorized library, and disposable bundles or isolated fixtures for missing/corrupt model and invalid policy cases.",
+      "steps": [
+        "Verify the signed app contains the expected model bytes and license notice, and record the source and built-app hash checks plus Core ML loading result.",
+        "Disconnect the network, launch the app, select a compatible imported library and recognize an authorized fixture; repeat after relaunch.",
+        "In isolated fixtures, test missing or corrupt bundled weights, incompatible model identity and invalid recognition-policy configuration; confirm recognition fails closed with a visible status.",
+        "With recognition disabled or unavailable, confirm an ordinary transfer still works and no automatic person name is written."
+      ],
+      "expected": [
+        "Only the verified compatible bundled model is admitted; missing, corrupt or misconfigured payloads do not publish person names.",
+        "Recognition works locally without network requests and survives relaunch.",
+        "Unavailable recognition is visible without disabling ordinary transfer."
+      ],
+      "required": true
+    },
+    {
+      "id": "m4-002",
+      "section": "M4 — Local face recognition",
+      "title": "Import and replace a compatible immutable people snapshot",
+      "prerequisites": "Two compatible exports from the companion Photo Agent exporter: revision A and revision B with a renamed person, a removed person, and updated examples; a usable model and a slow multi-image recognition run.",
+      "steps": [
+        "In the job editor choose Manage People Library…; in Settings choose Import People Library… for revision A, then compare the displayed library identity, revision, person/example counts and names with the export.",
+        "Start recognition of several files, then replace the library with revision B while one operation is in progress.",
+        "Inspect per-operation provenance and results to verify an operation uses a single library/model snapshot.",
+        "Start a new operation and verify it sees B, including renamed/removed entries and updated examples.",
+        "Choose Export People Library… and verify the exported package round-trips exactly. Then choose Remove Current Library…, restart the app, and inspect status and ordinary transfer availability."
+      ],
+      "expected": [
+        "Replacement reflects the full snapshot, including removals and edits to existing IDs.",
+        "In-progress work never mixes library revisions; subsequent work binds to the new snapshot.",
+        "Removing the library disables matching with an actionable status and does not imply rollback of previously delivered names."
+      ],
+      "required": true
+    },
+    {
+      "id": "m4-003",
+      "section": "M4 — Local face recognition",
+      "title": "Reject malformed and incompatible library archives atomically",
+      "prerequisites": "A working installed library and a reviewed adversarial fixture pack: traversal/absolute paths, symlinks, oversized expanded data/counts, duplicate IDs, invalid vector dimensions/non-finite values, unsupported codec/embedding/model/preprocessing versions, corrupt thumbnails and an unbound legacy export.",
+      "steps": [
+        "Record the current library revision and a known-good recognition result.",
+        "Import each invalid fixture separately and record its rejection reason; do not create malicious archives in production folders.",
+        "Interrupt an otherwise valid import before installation, restart the app, and inspect the selected library.",
+        "Verify no archive entries were installed outside the designated app-support library location.",
+        "Re-run known-good recognition after failures; test legacy import only if documented compatibility proof exists, otherwise check the compatible re-export message."
+      ],
+      "expected": [
+        "All malformed/incompatible fixtures are rejected before atomic installation.",
+        "The previous library remains usable after failure/interruption and no path escapes occur.",
+        "Unknown embedding compatibility is never guessed or silently converted."
+      ],
+      "required": true
+    },
+    {
+      "id": "m4-004",
+      "section": "M4 — Local face recognition",
+      "title": "Recognize locally and merge Person Shown, Keywords and persons templates",
+      "prerequisites": "A verified model and compatible library, authorized images with one and multiple known people, duplicate appearances, existing Person Shown/Keywords and brace-containing names; include an independent face-only job with no schedule.",
+      "steps": [
+        "Turn off Automatic syncing enabled and Enable automatically on app launch. In Face recognition, turn on Recognize people locally, save, then run standalone recognition with no schedule and inspect accepted names appended to existing Person Shown.",
+        "Repeat a multiple/duplicate-person fixture and verify stable name order with no duplicates.",
+        "Turn on Add recognized names to Keywords and test both scheduled keyword preserve and overwrite policies on fresh copies.",
+        "Enable a matching Description template containing '{persons}' and '{photographer}', including a detected person whose name contains braces.",
+        "Inspect metadata arrays and caption in an external reader; compare the photographer field with the matched photographer profile."
+      ],
+      "expected": [
+        "Only accepted names append once; existing Person Shown is preserved and keywords receive each accepted name as a separate entry after scheduled policy.",
+        "'{persons}' uses merged usable names and imported names remain literal data.",
+        "The photographer comes from the profile and is never inferred from a face."
+      ],
+      "required": true
+    },
+    {
+      "id": "m4-005",
+      "section": "M4 — Local face recognition",
+      "title": "Distinguish no face, no match, ambiguity, low quality and failure",
+      "prerequisites": "Authorized fixtures with no people, unknown people, similar known identities, small/blurred/rotated faces and RAW previews; deterministic boundary fixtures plus a test hook for decode/inference failure.",
+      "steps": [
+        "Process every fixture with face recognition enabled and inspect the distinct per-image outcomes.",
+        "Evaluate runner-up ambiguity immediately inside and outside the configured cutoff using reviewed deterministic fixtures.",
+        "Repeat with '{persons}' when existing Person Shown is empty and when it contains a usable name.",
+        "Inject a model/decode failure and inspect retained existing names and the dependent-caption decision.",
+        "Check displayed scores and inspect the library to ensure uncertain/unknown detections were not enrolled automatically."
+      ],
+      "expected": [
+        "No faces, no accepted match and insufficient quality are distinct normal outcomes; ambiguous identities are omitted.",
+        "Recognition errors preserve existing names; a persons-dependent caption remains unresolved when no usable names remain.",
+        "Similarity scores are not described as percentage identity probabilities and no automatic reference enrollment occurs."
+      ],
+      "required": true
+    },
+    {
+      "id": "m4-006",
+      "section": "M4 — Local face recognition",
+      "title": "Evaluate unattended matching with held-out newsroom examples",
+      "prerequisites": "Authorized, labeled images representative of intended newsroom use, separate calibration and held-out sets, a frozen library/model/preprocessing version and a documented acceptance policy. Synthetic unit fixtures do not satisfy this case.",
+      "steps": [
+        "Record dataset composition and consent/authorization location without committing private images, including known/unknown people, group scenes, difficult quality and varied lighting/pose.",
+        "Select thresholds using the calibration set, record them, and freeze them before running held-out evaluation.",
+        "Run the held-out set once through the actual image detector/embedder/matcher and independently review every proposed identity against labels.",
+        "Report false name assignments, missed matches, abstentions and detection failures separately, with counts and denominators.",
+        "Compare results with the documented unattended-publication acceptance criteria; treat unavailable data or unmet criteria as blocked/failed, and use a fresh held-out set after retuning."
+      ],
+      "expected": [
+        "Real-model accuracy evidence supports the selected policy for automatic delivery.",
+        "No calibrated-probability or accuracy claim is inferred from cosine scores or routine unit-test fixtures.",
+        "Unacceptable false assignments block face-release readiness."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-001",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Verify image/RAW integrity and external metadata interoperability",
+      "prerequisites": "Every supported embedded format and declared RAW family, existing XMP with unrelated fields, recorded pixel/RAW hashes, Photo Agent and an independent metadata reader such as ExifTool.",
+      "steps": [
+        "Apply combined static fields, variables, City/Country and accepted Person Shown to fresh copies of each fixture.",
+        "Open output in Photo Agent and the external reader and compare all intended field values, arrays and Unicode text.",
+        "Compare decoded embedded-image pixels and exact RAW byte hashes with originals using the documented integrity tooling.",
+        "Inspect existing sidecar unrelated namespaces/fields and embedded camera metadata for preservation.",
+        "Record unsupported formats explicitly against the declared release scope rather than silently omitting them."
+      ],
+      "expected": [
+        "Supported formats preserve pixels/RAW bytes and unrelated metadata while writing interoperable intended fields.",
+        "RAW enrichment uses the correct companion sidecar and does not modify RAW image data.",
+        "Photo Agent and the independent reader agree on Person Shown, City, Country and expanded text."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-002",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Exercise regular, early and independent-processing transfer paths",
+      "prerequisites": "Disposable local-to-local and FTP/FTPS/SFTP-to-local jobs, a multi-directory listing fixture that triggers early delivery, and schedule-only, geocode-only, face-only and combined settings.",
+      "steps": [
+        "Run each processing mode with regular transfers and the completed-directory early-delivery path using the existing transport harness where appropriate.",
+        "For independent modes repeat with schedule disabled, no matching clip and an empty calendar.",
+        "Run two jobs concurrently, including a shared remote host, and observe admission and cancellation behavior.",
+        "Compare final metadata and stage outcomes for the same fixtures across paths.",
+        "Inspect upload and bidirectional job editors and confirm new automatic metadata cannot be activated outside the one-way local-destination scope."
+      ],
+      "expected": [
+        "All eligible transfer paths use equivalent resolved decisions and independent enrichment does not depend on a schedule assignment.",
+        "Existing transport scheduling restrictions hold and waiting jobs remain cancellable.",
+        "Unsupported upload/bidirectional enrichment remains unavailable with clear validation."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-003",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "RAW companions, resends and collisions preserve output ownership",
+      "prerequisites": "Disposable RAW/XMP groups, a RAW initially without XMP, a destination with an unrelated colliding sidecar, case-colliding remote names, and signatures captured before each scenario.",
+      "steps": [
+        "Transfer a RAW using geocode-only or face-only processing and verify a generated sidecar is reserved and published with correct ownership.",
+        "Add or change source XMP without changing RAW and run again while the file filter excludes standalone XMP.",
+        "Resend changed source image/companion content and verify source evidence is distinguished from metadata-transformed destination output.",
+        "Create a generated-sidecar destination collision and inspect refusal/recovery without overwriting unrelated files.",
+        "Exercise remote case-colliding image names and ambiguous RAW/XMP companion names using the existing regression fixtures."
+      ],
+      "expected": [
+        "Companion changes are detected and output groups remain correctly paired and owned even without a schedule.",
+        "The app's own metadata changes do not look like source resends.",
+        "Collisions preserve unrelated outputs and existing filename mapping/ambiguity protections remain intact."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-004",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Downstream watchers see final metadata and final filesystem dates",
+      "prerequisites": "A disposable watched destination, an event-capture watcher that immediately reads new visible outputs, fixtures with known source modification times, and delayed enrichment to make partial publication detectable.",
+      "steps": [
+        "Start the watcher before a combined-enrichment transfer and capture first visible image/sidecar contents and timestamps.",
+        "Run with Source modification time, then with Download time on fresh outputs and processed copies.",
+        "Inspect event history for any visible unprocessed file followed by in-place metadata or timestamp modification.",
+        "Compare Finder filesystem dates with capture metadata; if checking Adobe Bridge, record cache refresh behavior separately.",
+        "Repeat with a RAW/XMP output group and inspect the existing transaction's documented group visibility guarantees."
+      ],
+      "expected": [
+        "Enrichment completes before each final output is published and the visible file is not later retouched for metadata or dates.",
+        "Filesystem dates follow the selected policy while camera capture dates remain intact.",
+        "Watcher evidence supports delivery behavior; application thumbnail caches are not mistaken for filesystem failures."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-005",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Cancellation and restart cannot publish late partial work",
+      "prerequisites": "A large disposable batch, a slow lookup or inference fixture, a previously published destination and diagnostics showing active stages and queue sizes.",
+      "steps": [
+        "Stop a job while waiting for admission, while geocoding, and while real Core ML inference is active in separate runs.",
+        "Measure stop-to-quiescence latency and watch the destination for late publication after cancellation.",
+        "Restart the app during a controlled staged-operation test using the documented fault harness, then inspect temporary files and the last published output.",
+        "Run a new sync after restart and verify valid pending work can complete without duplicate names or stale-context reuse.",
+        "Record whether already-executing Core ML work finishes internally and verify it cannot commit output after cancellation."
+      ],
+      "expected": [
+        "Cancellation stops admitting images and no cancelled operation publishes a late result.",
+        "Restart discards temporary partial work and retains the last successfully published state.",
+        "Measured cancellation latency meets the recorded budget and is honestly distinguished from instantaneous inference interruption."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-006",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Recover from source changes, write failures and grouped publication faults",
+      "prerequisites": "Disposable fault-test folders/server and the existing test harness; a limited-capacity test volume or controlled write-failure injector, existing destination copies and changing-source fixtures.",
+      "steps": [
+        "Change a source's size/content during download and verify the unstable file/group is deferred while existing destination data remains available.",
+        "Inject a metadata-write failure after successful enrichment and inspect the delivered intact original image/sidecar and outcome details.",
+        "Inject disk-full or permission failure in staging and publication without exhausting the Mac's production disk.",
+        "Fail publication between RAW/XMP transaction steps and verify documented rollback restores the prior group.",
+        "Restore resources, retry and compare output hashes, source signatures and audit status with a clean run."
+      ],
+      "expected": [
+        "Unstable sources and partial groups are not published; unrelated files can continue under existing recovery rules.",
+        "Metadata write failure preserves original data and is not reported as successful enrichment.",
+        "Publication failure retains transaction rollback guarantees and a later retry recovers cleanly."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-007",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Processed handoff and source-removal guards cover incomplete enrichment",
+      "prerequisites": "Only disposable source files on test local/remote endpoints; explicitly enabled processed handoff and source removal; managed and custom processed folders plus complete, missing-variable, failed-stage and no-match fixtures.",
+      "steps": [
+        "Run successful enrichment in Custom Folder mode and managed Synced Files/Processed Files mode, including photographer subfolders and RAW companions.",
+        "Repeat with an unresolved requested location/person caption, lookup failure and inference error; inspect source retention and processed handoff decisions.",
+        "Run a successful no-face/no-accepted-match scan without a persons-dependent caption, then repeat with such a caption and no existing names.",
+        "Change the disposable source after download but before the removal safety check and inspect restoration.",
+        "Create a processed-folder collision and verify source remains. Confirm processed roots are not enumerated as incoming downloads."
+      ],
+      "expected": [
+        "Source removal requires verified output groups and complete requested enrichment, with source content rechecked.",
+        "A successful no-match scan is complete, but an unresolved dependent caption still blocks removal.",
+        "Failures, collisions and changed sources preserve source files; folder layout and ownership protections remain intact."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-008",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Unchanged polling is idle and explicit reprocessing is protected",
+      "prerequisites": "Successfully processed and incomplete outputs with saved fingerprints, diagnostic processing counters, a changed library/template/policy revision, and an external metadata editor.",
+      "steps": [
+        "Poll unchanged sources repeatedly and record lookup/inference/write counts, output hashes/dates and the original processing date.",
+        "Change library/model/settings/template revision through supported controls and inspect stale filtering without triggering automatic retransfers.",
+        "Select incomplete/stale items for explicit reprocessing and inspect the preview, fresh context and any changed processing date.",
+        "After preview, edit one destination externally before applying; confirm the app rejects the stale write and preserves the edit.",
+        "Repreview and process valid items, restart the app, and verify successful provenance includes source/companion evidence, output signatures, revisions, locale/time-zone assumptions and processing date."
+      ],
+      "expected": [
+        "Unchanged polling performs no repeated geocoding, face scanning, date expansion or metadata rewrite.",
+        "Changes mark prior work stale for explicit action and do not retransmit the whole folder automatically.",
+        "Reprocessing previews a fresh context, protects user edits and persists distinct source and output evidence."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-009",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Compare cold/warm bursts with the M0 performance budgets",
+      "prerequisites": "The exact benchmark Mac/workload and numerical budgets from m0-004, the existing delivery-latency harness, real model/library sizes representative of use, and diagnostics for queues, staged bytes and memory.",
+      "steps": [
+        "Measure the candidate with all new features off using the same cold/warm baseline conditions.",
+        "Repeat geocode-only, face-only and combined bursts, varying image face counts and realistic small/large libraries.",
+        "Capture first-file latency, p50/p95 publication latency, images/sec, peak memory, pending count, staged bytes and cancellation latency for each condition.",
+        "Run a burst above the admission limit and verify bounded backlog/backpressure with the initially single-image inference worker and separate geocoder queue.",
+        "Compare each metric with the predeclared budgets and retain raw output plus explanations of any tuning or unmet budget."
+      ],
+      "expected": [
+        "Feature-off behavior retains the accepted baseline and enabled modes meet their explicit latency/memory budgets.",
+        "Pending work and staged storage remain bounded and transport scheduling remains responsive.",
+        "Release claims reflect measured real-model/network evidence; unmet budgets remain visible."
+      ],
+      "required": true
+    },
+    {
+      "id": "m5-010",
+      "section": "M5 — Delivery, recovery and performance",
+      "title": "Regression-check existing transfer and cleanup controls",
+      "prerequisites": "Disposable FTP, trusted FTPS, verified-key SFTP and local endpoints; filename/filter fixtures, RAW/XMP groups, age-window data and the existing remote transport test environment.",
+      "steps": [
+        "Smoke-test local copies and each remote protocol with new features off, then one enabled local-destination job per protocol.",
+        "Check filename initials/prefix/suffix and extension filters, upload naming, recent-file windows and equal-date/size conflict behavior using existing fixtures.",
+        "Verify SFTP rejects a changed host key and FTPS rejects an untrusted certificate in disposable test servers.",
+        "Exercise destination-only age cleanup and reset ownership on disposable data, including generated RAW sidecars and unrelated destination files.",
+        "Confirm source deletions are not mirrored and identical/nested local source/destination folders remain rejected."
+      ],
+      "expected": [
+        "Existing transfer, authentication, filters, conflict and filename behavior survives the metadata changes.",
+        "Cleanup/reset affect only authorized owned destination groups and never issue unintended source deletion.",
+        "Security and overlap protections remain enforced."
+      ],
+      "required": true
+    },
+    {
+      "id": "m6-001",
+      "section": "M6 — Release gates and user acceptance",
+      "title": "Verify release identity, documentation and distribution notices",
+      "prerequisites": "The proposed final 3.0.0 candidate, the next valid build number, generated Xcode project, README/changelog/help/screenshots, server upgrade guide and model notices.",
+      "steps": [
+        "At the authorized release cut, compare project.yml, generated project and built app version/build; verify 3.0.0 and the selected next valid build number agree.",
+        "Run Scripts/check-release-identity.sh with the intended version and build explicitly and attach its output.",
+        "Read user-facing docs against the actual tested controls, defaults, OS requirements, approximate location behavior, model setup and reprocessing limitations.",
+        "Check the security supported-release line, bundled model/source licenses and attribution, source/app hash verification, and companion-server deployment instructions.",
+        "Record any scope deferral or OS change as a decision requiring review rather than marking the original scope complete."
+      ],
+      "expected": [
+        "Release identity is internally consistent and documentation describes implemented, verified behavior.",
+        "Required notices and upgrade instructions accompany the candidate.",
+        "This check does not itself authorize publishing, signing changes or release distribution."
+      ],
+      "required": true
+    },
+    {
+      "id": "m6-002",
+      "section": "M6 — Release gates and user acceptance",
+      "title": "Attach complete automated, signed UI and server regression evidence",
+      "prerequisites": "The exact final candidate revision, Xcode, development signing identity, dependency/tool prerequisites in README/SECURITY, disposable loopback servers and the documented PHP/MySQL test environment.",
+      "steps": [
+        "Run Scripts/check-security-baseline.sh and the current release-identity guard; attach command, revision and exit results.",
+        "Run the documented vendored SSH NIOSSHSignatureTests and AagedalFTPSync unit suite; include any new local processing package tests required by implementation.",
+        "Run AagedalFTPSyncUISmokeTests with a configured development signing identity; do not disable code signing for its runner.",
+        "Run Scripts/run-remote-transport-tests.py with its pinned dependencies and the PHP/MySQL integration suite documented in Server/MetadataSync/README.md.",
+        "Inspect failures, skipped tests and unavailable prerequisites individually. Retest affected suites after fixes and record the final candidate revision for every evidence item."
+      ],
+      "expected": [
+        "All required suites pass on the candidate being accepted, including signed UI, remote faults and real server integration.",
+        "Skipped or unavailable mandatory tests remain blockers; unit success is not substituted for external integration evidence.",
+        "Vendored security modifications and dependency baseline remain intact."
+      ],
+      "required": true
+    },
+    {
+      "id": "m6-003",
+      "section": "M6 — Release gates and user acceptance",
+      "title": "Install and smoke-test the signed Release artifact",
+      "prerequisites": "The authorized release signing setup, a signed Release archive built from the recorded candidate, and clean oldest/newest supported test systems. Distribution remains gated on the user's final approval.",
+      "steps": [
+        "Build and verify the signed Release archive using the repository's documented signing/release workflow; record archive hash, revision, signing and required platform verification results.",
+        "Install the actual packaged app in a clean test account, launch normally, grant folder access and confirm version/build.",
+        "Create a small local-to-local job, verify the bundled model, import the compatible library and transfer a combined-enrichment fixture.",
+        "Quit/reopen, verify folder access/settings/model state persist, then perform preview and explicit reprocessing.",
+        "Repeat the essential install/launch/processing flow on oldest and newest supported systems and attach evidence from the distributed artifact rather than only a Debug build."
+      ],
+      "expected": [
+        "The signed Release artifact installs, launches and performs the declared scope on supported systems.",
+        "Archive identity matches the accepted revision and bundled model verification works in the packaged app.",
+        "No release is published automatically by completing this test."
+      ],
+      "required": true
+    },
+    {
+      "id": "m6-004",
+      "section": "M6 — Release gates and user acceptance",
+      "title": "User performs final newsroom workflow and records release decision",
+      "prerequisites": "All preceding required cases have evidence and no unresolved blockers; the user has the exact signed candidate plus this checklist. This case must be performed and acknowledged by the user, never self-approved by an agent.",
+      "steps": [
+        "The user verifies candidate version/build/revision, reviews failed/blocked cases and the agent's known-limitations summary, and confirms the intended release scope.",
+        "Using disposable copies of representative newsroom material, configure the user's usual transfer workflow, photographer schedule, variable caption, geocoding choice and compatible people library.",
+        "Preview several images, deliver a representative mixed burst and inspect captions, places, people names, file order and RAW sidecars in the user's actual downstream tools.",
+        "Stop/restart a run, inspect one incomplete result, explicitly reprocess it and verify a manually edited destination is protected.",
+        "Record candidate identity, test date, observed issues and an explicit user decision in the checklist. If any issue is fixed afterward, retest affected cases and renew acceptance for the new candidate before release."
+      ],
+      "expected": [
+        "The user has personally tested the final candidate and explicitly records acceptance or rejection.",
+        "The agent may prepare and notify readiness but cannot mark this user-acceptance case passed on the user's behalf.",
+        "Release remains pending until user acceptance is recorded for the exact candidate and any separate publishing authorization is satisfied."
+      ],
+      "required": true,
+      "userOnly": true
+    }
+  ]
+}

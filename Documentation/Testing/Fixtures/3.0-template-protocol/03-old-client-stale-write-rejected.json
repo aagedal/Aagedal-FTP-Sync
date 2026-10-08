@@ -1,0 +1,33 @@
+{
+  "status": "design-only; not executed",
+  "request": {
+    "headers": {
+      "X-Aagedal-Protocol": "2"
+    },
+    "body": {
+      "action": "putCalendar",
+      "calendarID": "33333333-3333-4333-8333-333333333333",
+      "expectedRevision": 1,
+      "document": {
+        "photographers": [],
+        "photographerTracks": [],
+        "clips": []
+      }
+    }
+  },
+  "response": {
+    "httpStatus": 426,
+    "body": {
+      "service": "aagedal-metadata-sync",
+      "protocolVersion": 2,
+      "error": "client_upgrade_required"
+    }
+  },
+  "expected": [
+    "Authenticated existing member; access denied instead if unauthorized.",
+    "Gate runs before revision conflict and snapshot creation.",
+    "Body has no calendar/document/source or invite token.",
+    "No mutation even if expectedRevision matches.",
+    "Repeat with stale expectedRevision and getCalendar/create retry/acceptInvite paths."
+  ]
+}

@@ -132,7 +132,10 @@ def run_xcodebuild(configuration_path: Path) -> None:
         "-derivedDataPath",
         os.environ.get("AFTPSYNC_TEST_DERIVED_DATA", str(configuration_path.parent / "DerivedData")),
         "CODE_SIGNING_ALLOWED=NO",
-        "-only-testing:AagedalFTPSyncTests/RemoteTransportIntegrationTests",
+        "-only-testing:" + os.environ.get(
+            "AFTPSYNC_REMOTE_ONLY_TESTING",
+            "AagedalFTPSyncTests/RemoteTransportIntegrationTests",
+        ),
     ]
     process = subprocess.Popen(
         command,

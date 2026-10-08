@@ -21,7 +21,8 @@ let package = Package(
         .package(path: "../swift-nio-ssh"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
-        .package(url: "https://github.com/attaswift/BigInt.git", from: "5.2.0"),
+        // BigInt 5.7.0 is pinned locally with a warning-free Xcode 27 manifest.
+        .package(path: "../BigInt"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.5.1"),
     ],
     targets: [

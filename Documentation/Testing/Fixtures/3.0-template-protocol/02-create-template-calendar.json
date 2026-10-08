@@ -1,0 +1,112 @@
+{
+  "status": "design-only; not executed",
+  "request": {
+    "headers": {
+      "X-Aagedal-Protocol": "3"
+    },
+    "body": {
+      "action": "createCalendar",
+      "capabilities": [
+        "metadata-templates-v1"
+      ],
+      "calendarID": "33333333-3333-4333-8333-333333333333",
+      "name": "Template-enabled example",
+      "timeZone": "Europe/Oslo",
+      "documentSchemaVersion": 3,
+      "document": {
+        "photographers": [
+          {
+            "id": "11111111-1111-4111-8111-111111111111",
+            "name": "Example Photographer",
+            "filenamePrefix": "TEST",
+            "creator": "Example Photographer",
+            "copyrightNotice": "© {date:YYYY-MM-DD} {photographer}",
+            "copyrightTemplateVersion": 1
+          }
+        ],
+        "photographerTracks": [],
+        "clips": [
+          {
+            "id": "44444444-4444-4444-8444-444444444444",
+            "photographerID": "11111111-1111-4111-8111-111111111111",
+            "name": "Disposable template fixture",
+            "startsAt": 1788940800000,
+            "endsAt": 1788944400000,
+            "fields": {
+              "headline": "Literal {braces} remain literal",
+              "description": "{gps:city}, {dateCaptured:YYYY-MM-DD}. Photo: {photographer}.",
+              "keywords": [
+                "News",
+                "{persons}"
+              ],
+              "templateVersions": {
+                "description": 1,
+                "keywords": 1
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "response": {
+    "httpStatus": 200,
+    "body": {
+      "service": "aagedal-metadata-sync",
+      "protocolVersion": 3,
+      "calendar": {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "name": "Template-enabled example",
+        "timeZone": "Europe/Oslo",
+        "revision": 1,
+        "role": "owner",
+        "rangeStart": null,
+        "rangeEnd": null,
+        "documentSchemaVersion": 3,
+        "minimumClientProtocol": 3,
+        "requiredCapabilities": [
+          "metadata-templates-v1"
+        ],
+        "document": {
+          "photographers": [
+            {
+              "id": "11111111-1111-4111-8111-111111111111",
+              "name": "Example Photographer",
+              "filenamePrefix": "TEST",
+              "creator": "Example Photographer",
+              "copyrightNotice": "© {date:YYYY-MM-DD} {photographer}",
+              "copyrightTemplateVersion": 1
+            }
+          ],
+          "photographerTracks": [],
+          "clips": [
+            {
+              "id": "44444444-4444-4444-8444-444444444444",
+              "photographerID": "11111111-1111-4111-8111-111111111111",
+              "name": "Disposable template fixture",
+              "startsAt": 1788940800000,
+              "endsAt": 1788944400000,
+              "fields": {
+                "headline": "Literal {braces} remain literal",
+                "description": "{gps:city}, {dateCaptured:YYYY-MM-DD}. Photo: {photographer}.",
+                "keywords": [
+                  "News",
+                  "{persons}"
+                ],
+                "templateVersions": {
+                  "description": 1,
+                  "keywords": 1
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "expected": [
+    "Storage uses only the v3 calendar namespace.",
+    "New calendar identity differs from any source legacy calendar.",
+    "Headline has no marker and remains literal even though it contains braces."
+  ]
+}

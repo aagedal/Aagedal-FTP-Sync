@@ -61,6 +61,195 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.processedFileCount(for: photographer, in: store), 0)
     }
 
+    func testSavedReprocessReviewRejectsChangedSettingsFilterScopeAndUnfinishedWork() throws {
+        var job = previewJob()
+        job.metadataGeocoding = try .init(cityPolicy: .overwrite, localeIdentifier: "en")
+        let review = SavedMetadataReprocessReview(job: job, filter: .staleOrIncomplete)
+        let result = MetadataReprocessPreflight(scanned: 3, ready: 1, skipped: 1, failed: 1,
+            conflicts: ["edited.jpg"], conflictOutputRevisions: ["edited.jpg": "reviewed-content"])
+        let ready = MetadataReprocessPhase.ready(Date(), .all, .staleOrIncomplete, result)
+        XCTAssertEqual(review.result(currentJob: job, filter: .staleOrIncomplete, phase: ready), result)
+        XCTAssertNil(review.result(currentJob: nil, filter: .staleOrIncomplete, phase: ready))
+        XCTAssertNil(review.result(currentJob: job, filter: .all, phase: ready))
+        XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete,
+                                   phase: .ready(Date(), .all, .all, result)))
+        XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete,
+                                   phase: .ready(Date(), .photographer(UUID()), .staleOrIncomplete, result)))
+        for phase: MetadataReprocessPhase? in [nil, .idle, .preflighting, .running, .failed("cancelled")] {
+            XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete, phase: phase))
+        }
+        let scope = MetadataReprocessScope.clip(UUID())
+        let scopedReview = SavedMetadataReprocessReview(job: job, filter: .staleOrIncomplete, scope: scope)
+        XCTAssertEqual(scopedReview.result(currentJob: job, filter: .staleOrIncomplete,
+            phase: .ready(Date(), scope, .staleOrIncomplete, result)), result)
+        XCTAssertNil(scopedReview.result(currentJob: job, filter: .staleOrIncomplete, phase: ready))
+        job.metadataGeocoding = try .init(cityPolicy: .fillEmpty, localeIdentifier: "en")
+        XCTAssertNil(review.result(currentJob: job, filter: .staleOrIncomplete, phase: ready),
+                     "A confirmation must not apply newer saved choices using an older review")
+    }
+
+    func testProgrammingReviewInvalidatesChangedDraftFilterSettingsAndSelection() async throws {
+        for change in ["draft", "filter", "settings", "selection", "close"] {
+            let (root, store, _, coordinator, source, target) = try switchFixture(realFolders: true)
+            defer { try? FileManager.default.removeItem(at: root) }
+            XCTAssertTrue(coordinator.beginReprocessing(.all, in: store))
+            let deadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(source), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(store.isJobBusy(source))
+            XCTAssertNotNil(coordinator.reprocessPreflight(in: store), "Real empty-folder preflight should complete: \(store.metadataReprocessPhases)")
+            switch change {
+            case "draft":
+                coordinator.draft.clips[0].name = "Unreviewed caption assignment"
+            case "filter":
+                coordinator.reprocessFilter = .all
+            case "settings":
+                var job = try XCTUnwrap(store.jobs.first { $0.id == source })
+                job.metadataAutomation?.existingFieldPolicy = .fillEmpty
+                XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""), store.alertMessage ?? "Save failed")
+            case "selection":
+                store.selectedJobID = target
+            default:
+                coordinator.cancelPendingReprocessing(in: store)
+            }
+            // Call confirmation before SwiftUI onChange can dismiss the stale dialog.
+            XCTAssertNil(coordinator.reprocessPreflight(in: store), change)
+            XCTAssertFalse(coordinator.confirmReprocessing(in: store), change)
+            XCTAssertNil(coordinator.pendingReprocessScope, change)
+            XCTAssertFalse(store.isJobBusy(source), "Stale approval must not enqueue writes")
+        }
+    }
+
+    func testProgrammingReviewShowsRecoveryFailureAndClearsItOnRetryForEveryScope() async throws {
+        let (root, store, _, coordinator, jobID, _) = try switchFixture(realFolders: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recovery = root.appendingPathComponent("output/.aagedal-sync-review.transaction")
+        let retained = Data("retained original".utf8)
+        let scopes: [MetadataReprocessScope] = [
+            .all, .photographer(coordinator.draft.photographers[0].id), .clip(coordinator.draft.clips[0].id)
+        ]
+        for scope in scopes {
+            try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+            let original = recovery.appendingPathComponent("original-held-0")
+            try retained.write(to: original)
+            XCTAssertTrue(coordinator.beginReprocessing(scope, in: store))
+            let deadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(jobID), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard case .failed = store.metadataReprocessPhases[jobID] else {
+                return XCTFail("Retained recovery must reject preflight")
+            }
+            let message = coordinator.reprocessConfirmationMessage(in: store)
+            XCTAssertTrue(message.contains("Preflight failed:"))
+            XCTAssertTrue(message.contains(recovery.path))
+            XCTAssertTrue(message.contains("Recover the retained files"))
+            XCTAssertFalse(message.contains("is checking"))
+            XCTAssertNil(store.alertMessage, "The sheet must contain the failure without a competing alert")
+            XCTAssertFalse(coordinator.confirmReprocessing(in: store))
+            XCTAssertEqual(try Data(contentsOf: original), retained)
+            coordinator.cancelPendingReprocessing(in: store)
+            XCTAssertNil(coordinator.pendingReprocessScope)
+
+            // Reconcile only this disposable transaction, preserving its contents.
+            try FileManager.default.moveItem(at: recovery, to: root.appendingPathComponent(UUID().uuidString))
+            XCTAssertTrue(coordinator.beginReprocessing(scope, in: store))
+            XCTAssertFalse(coordinator.reprocessConfirmationMessage(in: store).contains("Preflight failed:"))
+            let retryDeadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(jobID), Date() < retryDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertNotNil(coordinator.reprocessPreflight(in: store))
+            XCTAssertTrue(coordinator.reprocessConfirmationMessage(in: store).contains("Preflight checked 0 files"))
+            coordinator.cancelPendingReprocessing(in: store)
+        }
+    }
+
+    func testProgrammingReviewCancellationStopsInFlightPreflight() throws {
+        let (root, store, _, coordinator, source, _) = try switchFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertTrue(coordinator.beginReprocessing(.all, in: store))
+        XCTAssertEqual(store.metadataReprocessPhases[source], .preflighting)
+        coordinator.draft.clips[0].name = "Changed while checking"
+        coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        XCTAssertNil(coordinator.pendingReprocessScope)
+        XCTAssertEqual(store.metadataReprocessPhases[source], .idle)
+        XCTAssertFalse(coordinator.confirmReprocessing(in: store))
+    }
+
+    func testStopQueuedReprocessingDrainsLeaseAndAllowsAnotherRun() async throws {
+        let controller = SyncConcurrencyController(policy: .init(globalLimit: 1, perHostLimit: nil))
+        let heldLease = try await controller.acquire(hosts: [])
+        let (root, store, _, coordinator, jobID, _) = try switchFixture(
+            realFolders: true, concurrencyController: controller)
+        defer { try? FileManager.default.removeItem(at: root) }
+        store.reprocessExistingLocalFiles(jobID)
+        XCTAssertEqual(store.metadataReprocessPhases[jobID], .running)
+        let admissionDeadline = Date().addingTimeInterval(5)
+        while await controller.snapshot().pendingCount == 0, Date() < admissionDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let queued = await controller.snapshot()
+        XCTAssertEqual(queued.pendingCount, 1)
+        store.cancelMetadataReprocess(jobID)
+        XCTAssertEqual(store.metadataReprocessPhases[jobID], .cancelling)
+        XCTAssertTrue(store.isJobBusy(jobID), "Stopping must retain the job until its task drains")
+        XCTAssertTrue(coordinator.isReprocessing(in: store))
+        XCTAssertFalse(store.preflightMetadataReprocess(jobID))
+        let stopDeadline = Date().addingTimeInterval(5)
+        while store.isJobBusy(jobID), Date() < stopDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(store.isJobBusy(jobID))
+        XCTAssertEqual(store.metadataReprocessPhases[jobID], .cancelled)
+        XCTAssertEqual(coordinator.reprocessStatusText(in: store),
+                       "Reprocessing stopped. Files already completed remain updated.")
+        XCTAssertNil(store.alertMessage)
+        let drained = await controller.snapshot()
+        XCTAssertEqual(drained.pendingCount, 0)
+        XCTAssertEqual(drained.activeCount, 1, "The unrelated lease remains owned")
+        await controller.release(heldLease)
+        XCTAssertTrue(store.preflightMetadataReprocess(jobID))
+        let retryDeadline = Date().addingTimeInterval(5)
+        while store.isJobBusy(jobID), Date() < retryDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard case .ready = store.metadataReprocessPhases[jobID] else {
+            return XCTFail("The stopped job must admit a fresh preflight")
+        }
+        store.cancelMetadataReprocess(jobID)
+        guard case .ready = store.metadataReprocessPhases[jobID] else {
+            return XCTFail("Stop must not discard a finished preflight")
+        }
+    }
+
+    func testIndependentReprocessingAdmissionPreservesRuntimeAndTimestampGuards() throws {
+        let coordinator = MetadataProgrammingCoordinator()
+        var job = previewJob()
+        coordinator.draft = previewAutomation()
+        coordinator.draft.isEnabled = false
+        coordinator.draft.timestampPolicy = .localArrival
+        func available(_ runtime: Bool = true) -> Bool {
+            coordinator.canReprocessMetadata(for: job, faceRecognitionRuntimeAvailable: runtime)
+        }
+        XCTAssertFalse(available())
+        job.metadataGeocoding = try .init(cityPolicy: .fillEmpty, localeIdentifier: "en")
+        XCTAssertTrue(available())
+        coordinator.draft.isEnabled = true
+        XCTAssertFalse(available())
+        coordinator.draft.timestampPolicy = .sourceModification
+        XCTAssertTrue(available())
+        coordinator.draft.isEnabled = false
+        job.metadataFaceRecognition = .init()
+        XCTAssertFalse(available(false), "Missing runtime must block combined processing")
+        XCTAssertTrue(available())
+        job.metadataGeocoding = nil
+        XCTAssertTrue(available(), "Recognition alone does not require a schedule or geocoding")
+        job.direction = .bidirectional
+        XCTAssertFalse(available())
+    }
+
     func testOpenClipSelectsItsDayTrackAndEditor() {
         let calendar = utcCalendar
         let photographerID = UUID()
@@ -605,7 +794,7 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.playhead)
     }
 
-    private func switchFixture(clipCount: Int = 2, beforeSave: @escaping @Sendable () throws -> Void = {}) throws -> (URL, AppStore, JobRepository, MetadataProgrammingCoordinator, UUID, UUID) {
+    private func switchFixture(clipCount: Int = 2, realFolders: Bool = false, concurrencyController: SyncConcurrencyController = SyncConcurrencyController(), beforeSave: @escaping @Sendable () throws -> Void = {}) throws -> (URL, AppStore, JobRepository, MetadataProgrammingCoordinator, UUID, UUID) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("metadata-switch-\(UUID())")
         let photographer = PhotographerProfile(name: "Example", filenamePrefix: "EX", creator: "Example", copyrightNotice: "")
         let start = Date(timeIntervalSince1970: 1_800_000_000)
@@ -614,6 +803,15 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         source.startsOnAppLaunch = false
         source.left = Endpoint(kind: .local, localPath: root.appendingPathComponent("input").path, bookmark: Data([1]))
         source.right = Endpoint(kind: .local, localPath: root.appendingPathComponent("output").path, bookmark: Data([1]))
+        if realFolders {
+            for path in [source.left.localPath, source.right.localPath] {
+                try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+            }
+            source.left.bookmark = try URL(fileURLWithPath: source.left.localPath).bookmarkData(
+                options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            source.right.bookmark = try URL(fileURLWithPath: source.right.localPath).bookmarkData(
+                options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+        }
         source.metadataAutomation = MetadataAutomation(isEnabled: true, photographers: [photographer], clips: (0..<clipCount).map {
             MetadataScheduleClip(photographerID: photographer.id, name: "Clip \($0)",
                 startsAt: start.addingTimeInterval(Double($0 * 200)), endsAt: start.addingTimeInterval(Double($0 * 200 + 100)))
@@ -631,7 +829,8 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
             metadataAuditRepository: MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json")),
             syncFailureRepository: SyncFailureRepository(fileURL: root.appendingPathComponent("failures.json")),
             sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.json")),
-            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")))
+            downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+            syncConcurrencyController: concurrencyController)
         let coordinator = MetadataProgrammingCoordinator()
         store.selectedJobID = source.id
         coordinator.loadSelectedJob(from: store)
@@ -1019,9 +1218,10 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
     func testPreviewPublishesInjectedResultAndClearsLoadingState() async {
         let expected = MetadataPreviewResult(items: [])
-        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
             MetadataProgrammingPreview(folderName: "Synced Files", result: expected)
         }
+        coordinator.draft = previewAutomation()
         let job = previewJob()
         coordinator.loadedJobID = job.id
 
@@ -1035,9 +1235,10 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
     }
 
     func testPreviewFailurePublishesErrorAndClearsLoadingState() async {
-        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
             throw PreviewFailure.expected
         }
+        coordinator.draft = previewAutomation()
         let job = previewJob()
         coordinator.loadedJobID = job.id
 
@@ -1049,11 +1250,60 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertNotNil(coordinator.metadataPreviewError)
     }
 
+    func testPreviewRejectsUnavailableSavedRecognitionWithoutInvokingOperation() async {
+        let calls = PreviewCallCounter()
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
+            await calls.increment()
+            return MetadataProgrammingPreview(folderName: "Unexpected", result: .init(items: []))
+        }
+        var job = previewJob()
+        job.metadataFaceRecognition = .init()
+        coordinator.loadedJobID = job.id
+
+        XCTAssertFalse(coordinator.canPreviewMetadata(for: job))
+        XCTAssertTrue(coordinator.previewHelp(for: job).contains("cannot run"))
+        coordinator.previewConfiguredLocalFolder(for: job)
+        await Task.yield()
+
+        let callCount = await calls.value
+        XCTAssertEqual(callCount, 0)
+        XCTAssertFalse(coordinator.isPreviewingMetadata)
+        XCTAssertNil(coordinator.metadataPreview)
+    }
+
+    func testPreviewPassesAdmittedRecognitionContextToOperation() async throws {
+        let expectedContext = try previewFaceContext()
+        let received = PreviewContextCapture()
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, context in
+            await received.set(context)
+            return MetadataProgrammingPreview(folderName: "Recognized", result: .init(items: []))
+        }
+        coordinator.draft = previewAutomation()
+        var job = previewJob()
+        job.metadataFaceRecognition = .init()
+        coordinator.loadedJobID = job.id
+
+        XCTAssertTrue(coordinator.canPreviewMetadata(
+            for: job,
+            faceRecognitionRuntimeAvailable: true
+        ))
+        coordinator.previewConfiguredLocalFolder(
+            for: job,
+            faceRecognitionContext: expectedContext
+        )
+        await waitForPreview(coordinator)
+
+        let capturedContext = await received.value
+        XCTAssertNotNil(capturedContext)
+        XCTAssertEqual(coordinator.metadataPreviewFolderName, "Recognized")
+    }
+
     func testReplacementPreviewIgnoresCancelledRequest() async {
         let previews = PreviewSequence()
-        let coordinator = MetadataProgrammingCoordinator { _, _, _ in
+        let coordinator = MetadataProgrammingCoordinator { _, _, _, _ in
             try await previews.next()
         }
+        coordinator.draft = previewAutomation()
         let job = previewJob()
         coordinator.loadedJobID = job.id
 
@@ -1081,6 +1331,22 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(coordinator.reprocessActionTitle, "Reprocess Clip’s Files")
         XCTAssertTrue(coordinator.reprocessConfirmationMessage(for: nil).contains("“Morning desk” clip"))
+        XCTAssertTrue(coordinator.reprocessConfirmationMessage(for: nil).contains("stale or incomplete files"))
+
+        coordinator.reprocessFilter = .all
+        XCTAssertTrue(coordinator.reprocessConfirmationMessage(for: nil).contains("all matching files"))
+
+        let preflight = MetadataReprocessPreflight(
+            scanned: 8,
+            ready: 3,
+            skipped: 4,
+            failed: 1,
+            conflicts: ["edited.jpg"]
+        )
+        let message = coordinator.reprocessConfirmationMessage(for: nil, preflight: preflight)
+        XCTAssertTrue(message.contains("Preflight checked 8 files"))
+        XCTAssertTrue(message.contains("3 ready to update"))
+        XCTAssertTrue(message.contains("1 edited output was found"))
     }
 
     private func waitForPreview(_ coordinator: MetadataProgrammingCoordinator) async {
@@ -1098,6 +1364,46 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         )
         job.direction = .leftToRight
         return job
+    }
+
+    private func previewAutomation() -> MetadataAutomation {
+        let photographer = PhotographerProfile(
+            name: "Preview",
+            filenamePrefix: "PRE",
+            creator: "Preview",
+            copyrightNotice: ""
+        )
+        return MetadataAutomation(
+            photographers: [photographer],
+            clips: [MetadataScheduleClip(
+                photographerID: photographer.id,
+                name: "Preview",
+                startsAt: Date(timeIntervalSince1970: 1_700_000_000),
+                endsAt: Date(timeIntervalSince1970: 1_700_003_600)
+            )]
+        )
+    }
+
+    private func previewFaceContext() throws -> MetadataFaceRecognitionContext {
+        var values = [Float](repeating: 0, count: FaceRecognitionEmbedding.dimension)
+        values[0] = 1
+        let embedding = try FaceRecognitionEmbedding(validatingNormalized: values)
+        let gallery = try FaceRecognitionGallery(people: [
+            try FaceRecognitionPerson(id: UUID(), name: "Preview", examples: [embedding]),
+        ])
+        let service = FaceRecognitionAnalysisService { _, _ in [] }
+        return try MetadataFaceRecognitionContext(
+            service: service,
+            gallery: gallery,
+            libraryRevision: String(repeating: "a", count: 64),
+            runtimeRevision: String(repeating: "b", count: 64),
+            acceptancePolicy: .init(
+                maximumCosineDistance: 0.5,
+                minimumRunnerUpGap: 0.1,
+                minimumCaptureQuality: 0.5,
+                unavailableQualityPolicy: .reject
+            )
+        )
     }
 
     private var utcCalendar: Calendar {
@@ -1126,6 +1432,16 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
 
 private enum PreviewFailure: Error {
     case expected
+}
+
+private actor PreviewCallCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
+private actor PreviewContextCapture {
+    private(set) var value: MetadataFaceRecognitionContext?
+    func set(_ value: MetadataFaceRecognitionContext?) { self.value = value }
 }
 
 private actor PreviewSequence {

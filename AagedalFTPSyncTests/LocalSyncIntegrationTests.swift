@@ -76,6 +76,83 @@ final class TransactionalRemovalTests: XCTestCase {
 }
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    func testSyncRequiresRecoveryReconciliationBeforeAnyTransfer() async throws {
+        for direction in [SyncDirection.leftToRight, .rightToLeft, .bidirectional] {
+            for recoveryOnLeft in [false, true] {
+                for suffix in ["transaction", "trash"] {
+                    let fixture = try LocalFixture()
+                    defer { fixture.cleanUp() }
+                    let job = try fixture.job(direction: direction)
+                    let source = direction == .rightToLeft ? fixture.right : fixture.left
+                    let destination = direction == .rightToLeft ? fixture.left : fixture.right
+                    let incoming = source.appendingPathComponent("photo.jpg")
+                    try Data("incoming".utf8).write(to: incoming)
+                    let root = recoveryOnLeft ? fixture.left : fixture.right
+                    let recovery = root.appendingPathComponent(suffix == "transaction"
+                        ? ".aagedal-sync-interrupted.transaction" : ".aagedal-sync-reset-interrupted.trash")
+                    try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: false)
+                    let held = recovery.appendingPathComponent("original-held-0")
+                    try Data("retained original".utf8).write(to: held)
+                    let manifest = DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("downloads.json"))
+                    let engine = SyncEngine(
+                        sourceSignatureRepository: SourceSignatureRepository(fileURL: fixture.root.appendingPathComponent("signatures.sqlite")),
+                        downloadManifestRepository: manifest)
+                    do {
+                        _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                        XCTFail("Sync must reject unresolved recovery before publishing")
+                    } catch {
+                        XCTAssertTrue(error.localizedDescription.contains(recovery.path), error.localizedDescription)
+                    }
+                    XCTAssertEqual(try Data(contentsOf: held), Data("retained original".utf8))
+                    XCTAssertEqual(try Data(contentsOf: incoming), Data("incoming".utf8))
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("photo.jpg").path))
+                    let paths = try await manifest.relativePaths(jobID: job.id, destinationEndpoint: direction == .rightToLeft ? job.left : job.right)
+                    XCTAssertTrue(paths.isEmpty)
+                    try FileManager.default.removeItem(at: recovery)
+                    let retry = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTAssertEqual(retry.transferred, 1)
+                    XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("photo.jpg")), Data("incoming".utf8))
+                }
+            }
+        }
+    }
+
+    func testSyncChecksManagedAndCustomProcessedRecoveryBeforeDownload() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            for inProcessedFolder in [false, true] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                var job = try fixture.job(direction: .leftToRight)
+                job.processedFilesLocation = location
+                if location == .customFolder { job.processedFolder = try fixture.endpoint(for: fixture.processed) }
+                let destination = location == .processedSubfolder
+                    ? fixture.right.appendingPathComponent("Synced Files") : fixture.right
+                let processed = location == .processedSubfolder
+                    ? fixture.right.appendingPathComponent("Processed Files") : fixture.processed
+                let root = inProcessedFolder ? processed : destination
+                let recovery = root.appendingPathComponent(".aagedal-sync-interrupted.transaction")
+                try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+                let held = recovery.appendingPathComponent("original-held-0")
+                try Data("retained original".utf8).write(to: held)
+                try Data("incoming".utf8).write(to: fixture.left.appendingPathComponent("photo.jpg"))
+                let engine = SyncEngine(
+                    sourceSignatureRepository: SourceSignatureRepository(fileURL: fixture.root.appendingPathComponent("signatures.sqlite")),
+                    downloadManifestRepository: DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("downloads.json")))
+                do {
+                    _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("Recovery in any output root must prevent even the initial download")
+                } catch {
+                    XCTAssertTrue(error.localizedDescription.contains(recovery.path), error.localizedDescription)
+                }
+                XCTAssertEqual(try Data(contentsOf: held), Data("retained original".utf8))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("photo.jpg").path))
+                try FileManager.default.removeItem(at: recovery)
+                let retry = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(retry.transferred, 1)
+            }
+        }
+    }
+
     func testChangedSourceSidecarReappliesMetadataWithoutRepeatedTransfers() async throws {
         for preserveDates in [true, false] {
             let fixture = try LocalFixture()
@@ -567,6 +644,51 @@ final class LocalSyncIntegrationTests: XCTestCase {
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: processedFile.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: sourceFile.path))
+    }
+
+    func testResetPreservesRecoveryFilesAndHistoryUntilRecoveryIsResolved() async throws {
+        for managed in [false, true] {
+            for suffix in ["transaction", "trash"] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                var job = try fixture.job(direction: .leftToRight)
+                if managed { job.processedFilesLocation = .processedSubfolder }
+                let root = managed
+                    ? fixture.right.appendingPathComponent("Synced Files", isDirectory: true)
+                    : fixture.right
+                let recovery = root.appendingPathComponent(
+                    suffix == "transaction" ? ".aagedal-sync-\(UUID()).transaction"
+                        : ".aagedal-sync-reset-\(UUID()).trash", isDirectory: true)
+                try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+                let retained = recovery.appendingPathComponent("original-held-0")
+                let downloaded = root.appendingPathComponent("photo.jpg")
+                try Data("retained original".utf8).write(to: retained)
+                try Data("published edit".utf8).write(to: downloaded)
+                let manifest = DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("downloads.json"))
+                try await manifest.record(relativePaths: ["photo.jpg"], jobID: job.id, destinationEndpoint: job.right)
+                let service = JobResetService(downloadManifestRepository: manifest)
+                for previewOnly in [true, false] {
+                    do {
+                        if previewOnly { _ = try await service.preview(for: job) }
+                        else { _ = try await service.resetDownloads(for: job) }
+                        XCTFail("Reset must preserve unresolved \(suffix) recovery, managed=\(managed)")
+                    } catch {
+                        XCTAssertTrue(error.localizedDescription.contains("recovery folder"))
+                    }
+                    XCTAssertEqual(try? Data(contentsOf: retained), Data("retained original".utf8))
+                    XCTAssertEqual(try? Data(contentsOf: downloaded), Data("published edit".utf8))
+                    let paths = try await manifest.relativePaths(jobID: job.id, destinationEndpoint: job.right)
+                    XCTAssertEqual(paths, ["photo.jpg"])
+                }
+                // Resolving the recovery explicitly admits an ordinary reset again.
+                try? FileManager.default.removeItem(at: recovery)
+                let result = try await service.resetDownloads(for: job)
+                XCTAssertEqual(result.deletedFiles, 1)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: downloaded.path))
+                let paths = try await manifest.relativePaths(jobID: job.id, destinationEndpoint: job.right)
+                XCTAssertTrue(paths.isEmpty)
+            }
+        }
     }
 
     func testResetJobDeletesOnlyManifestOwnedFilesFromOrdinaryDestination() async throws {
@@ -2002,14 +2124,20 @@ final class LocalSyncIntegrationTests: XCTestCase {
             accuracy: 1
         )
 
-        let secondResult = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+        let latestOutcomes = Dictionary(uniqueKeysWithValues: result.metadataReport.entries.map {
+            ($0.relativePath, $0)
+        })
+        let secondResult = try await SyncEngine().reprocessExistingLocalFiles(
+            job: job,
+            filter: .staleOrIncomplete,
+            latestOutcomes: latestOutcomes
+        )
         XCTAssertEqual(secondResult.scanned, 1)
         XCTAssertEqual(secondResult.applied, 0)
         XCTAssertEqual(secondResult.skipped, 1)
         XCTAssertEqual(secondResult.failed, 0)
-        XCTAssertTrue(
-            secondResult.metadataReport.entries.first?.detail?.contains("already applied") == true
-        )
+        XCTAssertEqual(secondResult.conflicts, [])
+        XCTAssertNotNil(secondResult.metadataReport.entries.first?.processingFingerprint)
     }
 
     func testReprocessExistingRawCreatesSidecarWithoutRewritingRaw() async throws {

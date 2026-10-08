@@ -7,6 +7,7 @@ struct MetadataAuditLoadResult: Sendable {
 
 /// Bounded, backup-protected storage for per-file metadata decisions.
 struct MetadataAuditRepository: Sendable {
+    private let codec: VersionedStoreCodec
     private let fileURL: URL
     private let maximumEntries: Int
 
@@ -14,15 +15,9 @@ struct MetadataAuditRepository: Sendable {
         fileURL.appendingPathExtension("backup")
     }
 
-    init(fileURL: URL? = nil, maximumEntries: Int = 2_000) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.fileURL = base
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-                .appendingPathComponent("metadata-audit-v1.json")
-        }
+    init(fileURL: URL? = nil, maximumEntries: Int = 2_000, storage: AppStorageLayout = .legacy) {
+        self.codec = VersionedStoreCodec(format: storage.storageFormat, store: .metadataAudit)
+        self.fileURL = fileURL ?? storage.metadataAudit
         self.maximumEntries = max(maximumEntries, 1)
     }
 
@@ -33,7 +28,9 @@ struct MetadataAuditRepository: Sendable {
     }
 
     func loadResult() throws -> MetadataAuditLoadResult {
+        try codec.validateExistingStore(at: fileURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            try codec.validateExistingStore(at: fileURL)
             return MetadataAuditLoadResult(entries: [], recoveredFromBackup: false)
         }
         do {
@@ -42,6 +39,7 @@ struct MetadataAuditRepository: Sendable {
                 recoveredFromBackup: false
             )
         } catch let primaryError {
+            guard VersionedStoreCodec.permitsBackupRecovery(after: primaryError) else { throw primaryError }
             guard FileManager.default.fileExists(atPath: backupURL.path) else { throw primaryError }
             do {
                 return MetadataAuditLoadResult(
@@ -49,9 +47,24 @@ struct MetadataAuditRepository: Sendable {
                     recoveredFromBackup: true
                 )
             } catch {
+                guard VersionedStoreCodec.permitsBackupRecovery(after: error) else { throw error }
                 throw primaryError
             }
         }
+    }
+
+    /// The newest durable processing outcome for every destination path.
+    ///
+    /// A later incomplete or failed outcome intentionally replaces an older
+    /// fingerprint in this index. Callers must not treat a previously complete
+    /// result as current after a newer attempt observed a different outcome.
+    func latestEntries(jobID: UUID) throws -> [String: MetadataAuditEntry] {
+        try MetadataRunReport(entries: load(jobID: jobID)).latestOutcomes
+    }
+
+    /// Complete processing receipts from the newest outcome for each path.
+    func latestProcessingFingerprints(jobID: UUID) throws -> [String: MetadataProcessingFingerprint] {
+        try latestEntries(jobID: jobID).compactMapValues(\.processingFingerprint)
     }
 
     @discardableResult
@@ -69,12 +82,22 @@ struct MetadataAuditRepository: Sendable {
 
     @discardableResult
     func save(_ entries: [MetadataAuditEntry]) throws -> [MetadataAuditEntry] {
-        let retained = Array(entries
-            .sorted(by: Self.oldestFirst)
-            .suffix(maximumEntries))
+        let retained = Array(entries.enumerated()
+            .sorted { lhs, rhs in
+                if lhs.element.occurredAt != rhs.element.occurredAt {
+                    return lhs.element.occurredAt < rhs.element.occurredAt
+                }
+                // Preserve append/file order through saves and retention after
+                // timestamp precision is lost in the compatible ISO-8601 codec.
+                return lhs.offset < rhs.offset
+            }
+            .suffix(maximumEntries)
+            .map(\.element))
+        try codec.validateExistingStore(at: fileURL)
+        try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder.metadataAuditConfigured.encode(retained)
+        let data = try codec.encode(retained, encoder: JSONEncoder.metadataAuditConfigured)
 
         if FileManager.default.fileExists(atPath: fileURL.path),
            (try? decode(at: fileURL)) != nil {
@@ -89,15 +112,7 @@ struct MetadataAuditRepository: Sendable {
     }
 
     private func decode(at url: URL) throws -> [MetadataAuditEntry] {
-        try JSONDecoder.metadataAuditConfigured.decode(
-            [MetadataAuditEntry].self,
-            from: Data(contentsOf: url)
-        )
-    }
-
-    private static func oldestFirst(_ lhs: MetadataAuditEntry, _ rhs: MetadataAuditEntry) -> Bool {
-        if lhs.occurredAt != rhs.occurredAt { return lhs.occurredAt < rhs.occurredAt }
-        return lhs.id.uuidString < rhs.id.uuidString
+        try codec.decode([MetadataAuditEntry].self, from: Data(contentsOf: url), decoder: JSONDecoder.metadataAuditConfigured)
     }
 }
 
@@ -117,4 +132,3 @@ private extension JSONDecoder {
         return decoder
     }
 }
-

@@ -1,0 +1,30 @@
+{
+  "status": "design-only; not executed; patch-like scenario descriptions are not wire requests",
+  "startingSnapshotFixture": "02-create-template-calendar.json#/response/body/calendar",
+  "accidentalEdit": {
+    "operation": "Remove clips[0].fields.templateVersions.description, retain clip record and source",
+    "expectedHTTPStatus": 422,
+    "expectedError": "template_activation_lost",
+    "expectedMutation": false
+  },
+  "explicitEdit": {
+    "operation": "Convert the same Description to literal through a reviewed editor action",
+    "requestAdditionalFields": {
+      "templateDeactivations": [
+        {
+          "recordKind": "clip",
+          "recordID": "44444444-4444-4444-8444-444444444444",
+          "field": "description",
+          "previousVersion": 1
+        }
+      ]
+    },
+    "expectedHTTPStatus": 200,
+    "requires": "Matching current expectedRevision, namespace/capability, role/range, and document validation"
+  },
+  "expected": [
+    "Missing markers never silently cause server-side downgrade.",
+    "The active source and marker merge as one value.",
+    "Deleting the whole clip is record deletion, not deactivation."
+  ]
+}

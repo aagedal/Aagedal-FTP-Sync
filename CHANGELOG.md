@@ -1,5 +1,120 @@
 # Changelog
 
+## Unreleased — Voice memos
+
+- Add downloadable Norwegian and multilingual Whisper models in Settings → Voice Memos.
+- Resolve `{voiceMemoTranscript}` from a matching WAV, using only its first 30 seconds.
+- Add `{existingDescription}` with repeat-safe caption composition and the existing 2,000-byte caption limit.
+- Retry images when their voice memo arrives later; report incomplete transcription in metadata details.
+
+## Unreleased (3.0.0)
+
+- Enable local face recognition with the user-approved Photo Agent matching defaults
+  when a compatible People Library is selected and recognition is enabled for a job.
+  Preserve conservative ambiguity checks and reject unavailable face quality.
+
+- Remove the extra frame around job settings while retaining the three-section selector.
+
+- Reopen committed libraries with valid SQLite write-ahead logs after interrupted
+  runs. Validate a complete temporary snapshot without changing original files,
+  while keeping damaged logs and unsupported database formats in recovery.
+
+- Offer a confirmed Backup and Reset App Data action when startup cannot open a
+  saved library, with a Finder shortcut to the backup and readable storage errors.
+  Preserve existing data before resetting and block startup after an interrupted reset.
+
+- Add a Docker server image and Compose deployment with persistent MariaDB, optional
+  HTTPS, private setup credentials, health checks, and backup/restore helpers.
+  Document Docker and manual PHP/SQL installation, upgrades, and recovery.
+
+- Resolve conflicts in template-enabled shared calendars without rejecting active
+  variables, while preserving independent edits and activation markers.
+
+- Explain missing sync configuration and API files for both calendar protocols,
+  and back off on HTTP rate limits and server outages while honoring Retry-After.
+
+- Apply the same calendar document size limit when publishing and updating, and
+  explain how to recover when a calendar exceeds that limit.
+
+- Keep metadata reprocessing review open and up to date as asynchronous preflight
+  completes, including recovery errors, file counts and available actions.
+
+- Reduce local folder scan overhead while preserving symbolic-link checks at file
+  access. Report inaccessible folders as errors and honor cancellation on empty scans.
+
+- Preserve metadata outcome order when saved timestamps share a second, so a later
+  failure cannot be replaced by an earlier success during reprocessing or history retention.
+
+- Require recovery of retained reprocessing/reset folders before metadata preflight
+  or another replacement, with a path-specific error and retry after recovery.
+
+- Block Reset Job while retained reprocessing or reset recovery folders remain,
+  preserving backups and download history in managed and ordinary destinations.
+
+- Reject reprocessing batches whose RAW files share an XMP output before changing
+  any files, including scheduled-only literal and variable templates.
+
+- Reject metadata reprocessing receipts when the destination image or RAW sidecar
+  changes during resolution, including passes that would not rewrite metadata.
+
+- Limit clip reprocessing conflict review and audit results to the selected clip,
+  and include its edited images in the scanned count.
+
+- Retain audit receipts for completed files when a later input failure interrupts
+  metadata reprocessing, while keeping the batch failure visible.
+
+- Discard Metadata Programming reprocessing approval when its saved job, draft,
+  filter or selected job changes; cancel pending preflight when leaving the editor.
+
+- Review saved-file reprocessing before writing, with stale/incomplete and all-file
+  filters, preflight counts, explicit approval for reviewed edited outputs, and
+  completion status. Discard pending reviews when saved settings or drafts change.
+
+- Include enabled face recognition and historical programming filename filters in
+  saved-job geocoding previews. Show missing recognition prerequisites before
+  preview/reprocessing, and allow admitted face-only jobs through reprocessing.
+- Release temporary file buffers after each fingerprint chunk so large-image previews
+  and reprocessing do not retain a full file's worth of hashing buffers. Check
+  cancellation before opening fingerprint inputs and after the final read.
+- Open routine version 3 installations directly: create a fresh store or migrate
+  unambiguous current 2.9 data automatically, while retaining originals and
+  stopping for backup-only, damaged or conflicting sources. Remove the permanent
+  Startup and Recovery button from the ready menu panel; start paused calendar
+  sync from Metadata Sync settings.
+- Expose saved jobs, photographers and metadata clips to Codex, Claude Code and
+  OpenCode through one local MCP server. Photographer and clip additions run in
+  the admitted app session, reject unsaved drafts and invalid programming, and
+  use the existing job/library save transaction.
+- Let one-way server-to-local jobs derive camera filename prefixes from the photographers
+  assigned on the current Metadata Programming day. Empty days select no files; previews
+  use the selected day, while cleanup and reprocessing include historical assignments.
+  Preserve existing fixed-initials jobs, and require configuration format 3 for exports
+  containing the new filter choice.
+- Expose each metadata timeline clip as one keyboard- and VoiceOver-accessible
+  control with its assignment, time range, interaction guidance and edit action.
+- Allow the version 3 startup lease to open its already-validated Application
+  Support directory inside App Sandbox while retaining final-symlink and
+  replacement checks. This fixes first-run preparation failing before migration.
+- Add explicit AuraFace model status, download/install, cancellation, retry and
+  removal controls to People Library settings. Model changes take effect after
+  relaunch, and unconfigured builds keep recognition visibly disabled.
+- Show per-file face-recognition outcomes and the final merged Person Shown proposal
+  in read-only metadata preview, including preservation and optional Keywords behavior.
+- Validate geocoding consent/settings and face-runtime prerequisites before reading a
+  staged image, retaining the disabled literal no-read path while still resolving
+  `{persons}` from existing Person Shown metadata when requested.
+- Restore jobs configured to start on launch after a committed version 3 store passes
+  startup admission, while keeping first migration, recovery, unavailable face jobs
+  and calendar sync paused for explicit review.
+- Admit an optional signed AuraFace runtime, immutable people library and calibrated
+  policy before version 3 app writers are published. Use the same admitted context for
+  transfer, reprocessing and read-only preview while keeping face-enabled jobs paused
+  when any required dependency is unavailable.
+- Back off automatic calendar-sync retries after connection failures, skip redundant requests to the same unavailable account, and retain immediate manual Retry Now. Refresh the calendar picker less often without slowing healthy linked-calendar updates.
+- Avoid duplicate network-failure diagnostic entries and explain connection error codes without exposing addresses or credentials.
+- Avoid rewriting the growing download-name map after every directory. Checkpoint it before source reads/removals and after the final listing, retaining the existing mapping format and restart guarantees.
+- Read filename extensions without resolving the working directory for each scanned file, preserving existing filter behavior.
+
 ## 2.9.2 — 2026-09-09
 
 - Sync saved metadata edits after a short pause in editing instead of waiting for the next polling cycle. Resume when drafts are saved or closed, and queue refresh requests made while another calendar operation is running.

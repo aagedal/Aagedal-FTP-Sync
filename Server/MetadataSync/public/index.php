@@ -12,10 +12,10 @@ function respond(int $status, array $checks = [], ?string $error = null): never
 {
     http_response_code($status);
     $isCalendarRequest = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST'
-        && ($_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] ?? '') === '2';
+        && in_array($_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] ?? '', ['2', '3'], true);
     $body = [
         'service' => 'aagedal-metadata-sync',
-        'protocolVersion' => $isCalendarRequest ? 2 : 1,
+        'protocolVersion' => $isCalendarRequest ? (int) $_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] : 1,
         'stage' => $isCalendarRequest ? 'calendar-sync' : 'hosting-check',
         'checks' => $checks,
     ];
@@ -51,9 +51,12 @@ try {
         respond(503, [], 'not_configured');
     }
     $config = require $configPath;
-    if (is_array($config) && ($_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] ?? '') === '2') {
+    if (is_array($config) && in_array($_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] ?? '', ['2', '3'], true)) {
         if (!is_file(__DIR__ . '/live.php')) {
             respond(503, [], 'live_api_missing');
+        }
+        if (!is_file(__DIR__ . '/templates.php')) {
+            respond(503, [], 'template_api_missing');
         }
         require __DIR__ . '/live.php';
         liveRun($config);

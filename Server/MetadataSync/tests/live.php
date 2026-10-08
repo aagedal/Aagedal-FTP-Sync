@@ -11,8 +11,8 @@ function api(array $body, string $id, string $key, ?string $setup = null): array
     return [(int) $match[1], json_decode($response, true, 32, JSON_THROW_ON_ERROR), $response];
 }
 function uuid(int $n): string { return sprintf('00000000-0000-4000-8000-%012d', $n); }
-$owner = uuid(1); $editor = uuid(2); $reader = uuid(3); $outsider = uuid(4); $limited = uuid(5);
-$ownerKey = str_repeat('1', 64); $editorKey = str_repeat('2', 64); $readerKey = str_repeat('3', 64); $limitedKey = str_repeat('5', 64);
+$owner = uuid(1); $editor = uuid(2); $reader = uuid(3); $outsider = uuid(4); $limited = uuid(5); $coowner = uuid(6);
+$ownerKey = str_repeat('1', 64); $editorKey = str_repeat('2', 64); $readerKey = str_repeat('3', 64); $limitedKey = str_repeat('5', 64); $coownerKey = str_repeat('6', 64);
 $setup = str_repeat('a', 64);
 verify(api(['action' => 'listCalendars'], $outsider, str_repeat('4', 64))[0] === 401, 'Unregistered devices cannot list calendars');
 verify(api(['action' => 'bootstrap', 'deviceName' => 'Owner'], $owner, $ownerKey, str_repeat('b', 64))[0] === 403, 'Bootstrap needs setup credential');
@@ -48,6 +48,11 @@ verify(joinWith($editorInvite, $outsider, str_repeat('4', 64))[0] === 403, 'Invi
 verify(joinWith(inviteFor('reader'), $reader, $readerKey)[0] === 200, 'Read-only invitation enrolls reader');
 $rangeInvite = inviteFor('editor', $start, $end);
 verify(joinWith($rangeInvite, $limited, $limitedKey)[0] === 200, 'Date-range invitation enrolls limited editor');
+$ownerInvite = inviteFor('owner');
+verify(joinWith($ownerInvite, $coowner, $coownerKey)[0] === 200, 'Owner invitation enrolls co-owner');
+verify(api(['action' => 'createInvite', 'calendarID' => $cid, 'role' => 'reader'], $coowner, $coownerKey)[0] === 200, 'Co-owner can manage invitations');
+$invalidOwnerRange = api(['action' => 'createInvite', 'calendarID' => $cid, 'role' => 'owner', 'rangeStart' => $start, 'rangeEnd' => $end], $owner, $ownerKey);
+verify($invalidOwnerRange[0] === 400, 'Owner invitations cannot be date-limited');
 $get = ['action' => 'getCalendar', 'calendarID' => $cid];
 $limitedGet = api($get, $limited, $limitedKey);
 verify($limitedGet[0] === 200 && count($limitedGet[1]['calendar']['document']['clips']) === 1
@@ -102,8 +107,8 @@ echo "All live sync integration checks passed.\n";
 $installation = sys_get_temp_dir() . '/metadata-install-' . bin2hex(random_bytes(8));
 mkdir($installation . '/public', 0700, true);
 copy('/srv/public/index.php', $installation . '/public/index.php');
-function installationProbe(string $installation): array {
-    $script = '$_SERVER["REQUEST_METHOD"] = "POST"; $_SERVER["HTTP_X_AAGEDAL_PROTOCOL"] = "2"; require '
+function installationProbe(string $installation, int $protocol = 2): array {
+    $script = '$_SERVER["REQUEST_METHOD"] = "POST"; $_SERVER["HTTP_X_AAGEDAL_PROTOCOL"] = "' . $protocol . '"; require '
         . var_export($installation . '/public/index.php', true) . ';';
     $output = []; $status = 0;
     exec(escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg($script), $output, $status);
@@ -113,10 +118,17 @@ function installationProbe(string $installation): array {
 try {
     $missingConfig = installationProbe($installation);
     verify($missingConfig['protocolVersion'] === 2 && $missingConfig['error'] === 'not_configured', 'Missing private config uses requested calendar protocol');
+    verify(installationProbe($installation, 3)['error'] === 'not_configured', 'V3 missing config remains an installation error');
     copy('/srv/tests/config.php', $installation . '/config.php');
     $missingAPI = installationProbe($installation);
     verify($missingAPI['protocolVersion'] === 2 && $missingAPI['error'] === 'live_api_missing', 'Missing live.php returns specific installation error');
+    copy('/srv/public/live.php', $installation . '/public/live.php');
+    foreach ([2, 3] as $protocol) {
+        $missingTemplate = installationProbe($installation, $protocol);
+        verify($missingTemplate['protocolVersion'] === $protocol && $missingTemplate['error'] === 'template_api_missing', 'Missing templates.php is actionable in each protocol');
+    }
 } finally {
+    @unlink($installation . '/public/live.php');
     @unlink($installation . '/config.php');
     unlink($installation . '/public/index.php');
     rmdir($installation . '/public');

@@ -18,7 +18,7 @@ struct PhotographerSettingsView: View {
     @State private var saveConfirmation = false
 
     var body: some View {
-        HSplitView {
+        HStack(spacing: 0) {
             VStack(spacing: 0) {
                 HStack {
                     Text("Known Photographers")
@@ -105,7 +105,9 @@ struct PhotographerSettingsView: View {
                     }
                 }
             }
-            .frame(minWidth: 235, idealWidth: 260, maxWidth: 310)
+            .frame(width: 280)
+
+            Divider()
 
             Group {
                 if let draftBinding {

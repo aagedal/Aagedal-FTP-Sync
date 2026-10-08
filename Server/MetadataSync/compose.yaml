@@ -1,0 +1,55 @@
+services:
+  database:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: sync
+      MARIADB_USER: sync
+      MARIADB_PASSWORD_FILE: /run/secrets/db_password
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/db_root_password
+    secrets:
+      - db_password
+      - db_root_password
+    volumes:
+      - database:/var/lib/mysql
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-hosting.sql:ro
+      - ./schema-live-sync.sql:/docker-entrypoint-initdb.d/02-calendar.sql:ro
+      - ./schema-template-sync.sql:/docker-entrypoint-initdb.d/03-templates.sql:ro
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  app:
+    image: aagedal-metadata-sync:local
+    build: .
+    restart: unless-stopped
+    environment:
+      SYNC_SETUP_ENABLED: ${SYNC_SETUP_ENABLED:-false}
+    secrets:
+      - db_password
+      - setup_key
+    ports:
+      - "127.0.0.1:${SYNC_HTTP_PORT:-8080}:80"
+    depends_on:
+      database:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  database:
+
+secrets:
+  db_password:
+    file: ${SYNC_SECRETS_DIR:-./secrets}/db_password
+  db_root_password:
+    file: ${SYNC_SECRETS_DIR:-./secrets}/db_root_password
+  setup_key:
+    file: ${SYNC_SECRETS_DIR:-./secrets}/setup_key

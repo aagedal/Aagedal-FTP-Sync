@@ -2,6 +2,9 @@ import Foundation
 
 enum MetadataPreviewStatus: String, Codable, Sendable {
     case willApply
+    case resolutionIncomplete
+    case previewFailed
+    case noChanges
     case alreadyApplied
     case existingMetadataPreserved
     case noMatchingPhotographer
@@ -11,6 +14,9 @@ enum MetadataPreviewStatus: String, Codable, Sendable {
     var title: String {
         switch self {
         case .willApply: "Will apply"
+        case .resolutionIncomplete: "Resolution incomplete"
+        case .previewFailed: "Preview failed"
+        case .noChanges: "No changes proposed"
         case .alreadyApplied: "Already applied"
         case .existingMetadataPreserved: "Existing metadata preserved"
         case .noMatchingPhotographer: "No matching photographer"
@@ -31,6 +37,27 @@ struct MetadataPreviewItem: Identifiable, Equatable, Sendable {
     let photographerName: String?
     let clipID: UUID?
     let clipName: String?
+    var processing: MetadataProcessingResult? = nil
+    var detail: String? = nil
+    var existingFields: MetadataWriter.ExistingFieldsSnapshot? = nil
+    var existingFieldsUnavailable = false
+    var existingPlaces: MetadataWriter.ExistingPlaceFieldsSnapshot? = nil
+
+    /// Person Shown is an XMP-only carrier and is intentionally kept separate
+    /// from the ordinary scheduled-field table. Preview still needs the same
+    /// stable, case-insensitive merge that the writer will apply.
+    var existingPersonNames: [String] {
+        guard !existingFieldsUnavailable, let existingFields, existingFields.readable else { return [] }
+        return ResolvedFaceNameChanges(
+            names: existingFields.carriers.flatMap(\.personInImage)
+        ).names
+    }
+
+    var proposedPersonNames: [String] {
+        ResolvedFaceNameChanges(
+            names: existingPersonNames + (processing?.changes.faceNames?.names ?? [])
+        ).names
+    }
 }
 
 struct MetadataPreviewResult: Equatable, Sendable {
@@ -39,7 +66,8 @@ struct MetadataPreviewResult: Equatable, Sendable {
     var scanned: Int { items.count }
     var willApply: Int { items.count { $0.status == .willApply } }
     var alreadyApplied: Int { items.count { $0.status == .alreadyApplied } }
-    var skipped: Int { scanned - willApply - alreadyApplied }
+    var needsAttention: Int { items.count { $0.status == .previewFailed || $0.status == .resolutionIncomplete } }
+    var skipped: Int { scanned - willApply - alreadyApplied - needsAttention }
 }
 
 /// Builds the same photographer and schedule assignments used during sync without
@@ -63,8 +91,12 @@ enum MetadataPreviewService {
         automation: MetadataAutomation,
         filter: FileFilter = FileFilter(),
         arrivalDate: Date = Date(),
+        processingTimeZone: TimeZone? = nil,
         fileManager: FileManager = .default
     ) throws -> MetadataPreviewResult {
+        if automation.hasActivatedTemplates && processingTimeZone == nil {
+            throw AppError.invalidConfiguration("Save a processing time zone before previewing activated templates.")
+        }
         let hasSecurityScope = folderURL.startAccessingSecurityScopedResource()
         defer {
             if hasSecurityScope { folderURL.stopAccessingSecurityScopedResource() }
@@ -105,6 +137,7 @@ enum MetadataPreviewService {
 
         var items: [MetadataPreviewItem] = []
         while let fileURL = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
             let values = try fileURL.resourceValues(forKeys: keys)
             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
 
@@ -161,20 +194,40 @@ enum MetadataPreviewService {
                 for: relativePath,
                 scheduledAt: scheduledAt
             ) {
+                var processing: MetadataProcessingResult?
+                // A failed read remains explicit and does not abort the folder or
+                // substitute empty values for unknown existing metadata.
+                let existing = try? MetadataWriter.existingFields(at: canonicalURL, relativePath: relativePath)
+                var detail: String?
                 let status: MetadataPreviewStatus
-                switch try? MetadataWriter.assess(
-                    assignment,
-                    at: canonicalURL,
-                    relativePath: relativePath
-                ) {
-                case .alreadyApplied:
-                    status = .alreadyApplied
-                case .existingMetadataPreserved:
-                    status = .existingMetadataPreserved
-                case .willApply, nil:
-                    // Keep unreadable files as attempts: the write path will report
-                    // the concrete metadata error if reprocessing is requested.
-                    status = .willApply
+                do {
+                    let resolved = try MetadataProcessingCoordinator.preparePerImage(
+                        assignment: assignment, fileURL: canonicalURL, relativePath: relativePath,
+                        processingDate: arrivalDate, processingTimeZone: processingTimeZone ?? TimeZone(secondsFromGMT: 0)!)
+                    processing = resolved
+                    if !resolved.resolutionComplete {
+                        status = .resolutionIncomplete
+                        detail = "Some fields could not be resolved. Review the omissions before reprocessing."
+                    } else if resolved.context != nil && !resolved.fields.values.contains(.proposed) {
+                        status = .noChanges
+                    } else {
+                        let assessment = try? MetadataWriter.assess(resolved.changes, at: canonicalURL, relativePath: relativePath)
+                        switch assessment {
+                        case .alreadyApplied: status = .alreadyApplied
+                        case .existingMetadataPreserved: status = .existingMetadataPreserved
+                        case .willApply: status = .willApply
+                        case nil:
+                            // Keep legacy preview behavior; active resolution must not
+                            // claim an assessed write when assessment failed.
+                            status = resolved.context == nil ? .willApply : .previewFailed
+                            if resolved.context != nil { detail = "The proposed metadata could not be assessed for this file." }
+                        }
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    status = .previewFailed
+                    detail = "Could not prepare metadata for this file: \(error.localizedDescription)"
                 }
                 items.append(MetadataPreviewItem(
                     relativePath: relativePath,
@@ -184,7 +237,11 @@ enum MetadataPreviewService {
                     photographerID: assignment.photographer.id,
                     photographerName: assignment.photographer.photographerName,
                     clipID: assignment.clip.id,
-                    clipName: assignment.clip.name
+                    clipName: assignment.clip.name,
+                    processing: processing,
+                    detail: detail,
+                    existingFields: existing,
+                    existingFieldsUnavailable: existing?.readable != true
                 ))
             } else {
                 items.append(MetadataPreviewItem(
@@ -209,6 +266,180 @@ enum MetadataPreviewService {
         return MetadataPreviewResult(items: items.sorted { lhs, rhs in
             lhs.relativePath.localizedStandardCompare(rhs.relativePath) == .orderedAscending
         })
+    }
+
+    /// Saved-job previews include every enabled stage, just like reprocessing.
+    /// Keep the runtime snapshot fixed for the entire folder operation.
+    static func previewLocalFolder(
+        at folderURL: URL,
+        savedJob job: SyncJob,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
+        service: MetadataGeocodingService? = nil,
+        arrivalDate: Date = Date()
+    ) async throws -> MetadataPreviewResult {
+        try Task.checkCancellation()
+        if let message = job.metadataFaceRecognitionRuntimeBlocker(
+            runtimeAvailable: faceRecognitionContext != nil
+        ) {
+            throw AppError.invalidConfiguration(message)
+        }
+        return try await previewLocalFolder(
+            at: folderURL, automation: job.metadataAutomation, geocoding: job.metadataGeocoding,
+            service: service, faceRecognition: job.metadataFaceRecognition,
+            faceRecognitionContext: faceRecognitionContext, filter: job.fileFilterForProgrammedHistory(),
+            arrivalDate: arrivalDate, processingTimeZone: try job.validatedMetadataProcessingTimeZone
+        )
+    }
+
+    /// Optional scheduling and independent geocoding share the production resolver.
+    /// Unlike the original draft-only API, this overload respects isEnabled.
+    static func previewLocalFolder(
+        at folderURL: URL, automation: MetadataAutomation?, geocoding: MetadataGeocodingSettings?,
+        service: MetadataGeocodingService? = nil,
+        services: MetadataProcessingServices = .shared,
+        faceRecognition: MetadataFaceRecognitionSettings? = nil,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil,
+        filter: FileFilter = FileFilter(), arrivalDate: Date = Date(), processingTimeZone: TimeZone? = nil
+    ) async throws -> MetadataPreviewResult {
+        try Task.checkCancellation()
+        if faceRecognition != nil, faceRecognitionContext == nil {
+            throw AppError.invalidConfiguration(SyncJob.unavailableFaceRecognitionRuntimeMessage)
+        }
+        guard geocoding?.isEnabled == true || faceRecognition != nil else {
+            guard let automation, automation.isEnabled else { return .init(items: []) }
+            return try previewLocalFolder(at: folderURL, automation: automation, filter: filter,
+                arrivalDate: arrivalDate, processingTimeZone: processingTimeZone)
+        }
+        try geocoding?.validate()
+        if geocoding?.isEnabled == true, processingTimeZone == nil {
+            throw AppError.invalidConfiguration("Save a processing time zone before previewing metadata enrichment.")
+        }
+        let effectiveProcessingTimeZone = processingTimeZone ?? TimeZone(secondsFromGMT: 0)!
+        let enabled = automation?.isEnabled == true ? automation : nil
+        if let message = enabled?.validationMessage { throw AppError.invalidConfiguration(message) }
+        let access = folderURL.startAccessingSecurityScopedResource()
+        defer { if access { folderURL.stopAccessingSecurityScopedResource() } }
+        let root = folderURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard try root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true else {
+            throw AppError.invalidConfiguration("Choose a local folder to preview.")
+        }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]
+        var enumerationError: Error?
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: Array(keys),
+            options: [.skipsPackageDescendants], errorHandler: { _, error in enumerationError = error; return false }) else {
+            throw AppError.folderPermissionLost("Could not read the preview folder.")
+        }
+        var items: [MetadataPreviewItem] = []
+        while let file = enumerator.nextObject() as? URL {
+            try Task.checkCancellation()
+            let canonical = file.standardizedFileURL.resolvingSymlinksInPath()
+            guard canonical.path.hasPrefix(root.path + "/") else { continue }
+            let path = String(canonical.path.dropFirst(root.path.count + 1))
+            guard PathSafety.isSafeRelativePath(path), !PathSafety.isInternalStagingPath(path) else { continue }
+            let attributes: URLResourceValues
+            do { attributes = try file.resourceValues(forKeys: keys) }
+            catch {
+                items.append(.init(relativePath: path, sourceModifiedAt: .distantPast, scheduledAt: nil,
+                    status: .previewFailed, photographerID: nil, photographerName: nil, clipID: nil, clipName: nil,
+                    detail: "Could not read this file's attributes."))
+                continue
+            }
+            guard attributes.isRegularFile == true, attributes.isSymbolicLink != true else { continue }
+            let modified = attributes.contentModificationDate ?? .distantPast
+            guard filter.includes(path: path, modifiedAt: modified, now: arrivalDate) else { continue }
+            let perFileGeocoding = MetadataProcessingServices.geocodingApplies(to: path, settings: geocoding) ? geocoding : nil
+            let perFileFaceRecognition = MetadataProcessingServices.faceRecognitionApplies(
+                to: path,
+                settings: faceRecognition
+            ) ? faceRecognition : nil
+            let photographer = enabled.flatMap { matchingPhotographer(for: path, in: $0.photographers) }
+            let scheduled = enabled.flatMap { MetadataWriter.schedulingDate(for: $0.timestampPolicy,
+                sourceModifiedAt: modified, localArrivalAt: arrivalDate, fileURL: canonical) }
+            let assignment = scheduled.flatMap { enabled?.assignment(for: path, scheduledAt: $0) }
+            var item = MetadataPreviewItem(relativePath: path, sourceModifiedAt: modified, scheduledAt: scheduled,
+                status: .noChanges, photographerID: photographer?.id, photographerName: photographer?.photographerName,
+                clipID: assignment?.clip.id, clipName: assignment?.clip.name)
+            if assignment == nil && perFileGeocoding == nil && perFileFaceRecognition == nil {
+                let status: MetadataPreviewStatus = enabled == nil ? .noChanges :
+                    (photographer == nil ? .noMatchingPhotographer : (scheduled == nil ? .captureTimeUnavailable : .noScheduledClip))
+                items.append(.init(relativePath: path, sourceModifiedAt: modified, scheduledAt: scheduled,
+                    status: status, photographerID: photographer?.id, photographerName: photographer?.photographerName,
+                    clipID: nil, clipName: nil))
+                continue
+            }
+            var processing: MetadataProcessingResult?
+            var status: MetadataPreviewStatus
+            var detail: String?
+            do {
+                // Resolution can suspend for a provider or model. Bind all displayed
+                // values to one content revision, including companion presence.
+                let needsMemo = try MetadataProcessingRequest(assignment: assignment)
+                    .requiredVariables(for: Set(MetadataWritableField.allCases)).contains(.voiceMemoTranscript)
+                let inputRevision = try previewInputRevision(at: canonical, relativePath: path, includeVoiceMemo: needsMemo)
+                item.existingFields = try? MetadataWriter.existingFields(at: canonical, relativePath: path)
+                item.existingFieldsUnavailable = item.existingFields?.readable != true
+                item.existingPlaces = try? MetadataWriter.existingPlaceFields(at: canonical, relativePath: path)
+                let resolved = try await MetadataProcessingCoordinator.prepare(assignment: assignment,
+                    geocoding: perFileGeocoding, service: service, services: services,
+                    faceRecognition: perFileFaceRecognition,
+                    faceRecognitionContext: faceRecognitionContext,
+                    fileURL: canonical, relativePath: path,
+                    processingDate: arrivalDate, processingTimeZone: effectiveProcessingTimeZone)
+                processing = resolved
+                if !resolved.resolutionComplete { status = .resolutionIncomplete }
+                else if !resolved.hasProposedChanges { status = .noChanges }
+                else {
+                    switch try MetadataWriter.assess(resolved.changes, at: canonical, relativePath: path) {
+                    case .willApply: status = .willApply
+                    case .alreadyApplied: status = .alreadyApplied
+                    case .existingMetadataPreserved: status = .existingMetadataPreserved
+                    }
+                }
+                if enabled != nil, scheduled == nil {
+                    detail = "Capture time was unavailable for scheduling. Independent location fields were still considered."
+                }
+                guard try previewInputRevision(at: canonical, relativePath: path, includeVoiceMemo: needsMemo) == inputRevision else {
+                    throw AppError.invalidConfiguration("The image or its sidecar changed during preview. Refresh the preview to use the updated file.")
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                status = .previewFailed
+                detail = "Could not prepare this file: \(error.localizedDescription)"
+                processing = nil
+                item.existingFields = nil
+                item.existingFieldsUnavailable = true
+                item.existingPlaces = nil
+            }
+            items.append(.init(relativePath: path, sourceModifiedAt: modified, scheduledAt: scheduled,
+                status: status, photographerID: item.photographerID, photographerName: item.photographerName,
+                clipID: item.clipID, clipName: item.clipName, processing: processing, detail: detail,
+                existingFields: item.existingFields, existingFieldsUnavailable: item.existingFieldsUnavailable,
+                existingPlaces: item.existingPlaces))
+        }
+        try Task.checkCancellation()
+        if let enumerationError { throw AppError.folderPermissionLost("Could not finish reading the preview folder: \(enumerationError.localizedDescription)") }
+        return .init(items: items.sorted { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending })
+    }
+
+    private static func previewInputRevision(at fileURL: URL, relativePath: String, includeVoiceMemo: Bool = false) throws -> String {
+        var artifacts = [MetadataProcessingFingerprint.OutputArtifact(
+            role: "primary", relativePath: relativePath, fileURL: fileURL
+        )]
+        if MetadataWriter.usesXMPSidecar(for: relativePath) {
+            let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+            if FileManager.default.fileExists(atPath: sidecar.path) {
+                artifacts.append(.init(role: "sidecar",
+                    relativePath: MetadataWriter.sidecarRelativePath(for: relativePath), fileURL: sidecar))
+            }
+        }
+        if includeVoiceMemo, let memo = try VoiceMemoCompanion.localURL(for: fileURL) {
+            let values = try memo.resourceValues(forKeys: [.fileSizeKey, .isSymbolicLinkKey, .isRegularFileKey])
+            if values.isRegularFile == true, values.isSymbolicLink != true,
+               let size = values.fileSize, size > 0, size <= VoiceMemoCompanion.maximumBytes {
+                artifacts.append(.init(role: "voice-memo", relativePath: memo.lastPathComponent, fileURL: memo))
+            }
+        }
+        return try MetadataProcessingFingerprint.outputRevision(artifacts)
     }
 
     private static func matchingPhotographer(

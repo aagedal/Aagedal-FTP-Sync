@@ -87,6 +87,12 @@ private struct AppPersistenceRollbackError: LocalizedError {
     }
 }
 
+enum AppPersistenceStartupError: Error, Equatable {
+    case recoveryRequired
+    case duplicateIdentity
+    case unsupportedStorage
+}
+
 @MainActor
 final class AppPersistenceCoordinator {
     private let jobRepository: JobRepository
@@ -96,6 +102,13 @@ final class AppPersistenceCoordinator {
     private let metadataAuditRepository: MetadataAuditRepository
     private let syncFailureRepository: SyncFailureRepository
     private let keychain: KeychainStore
+    /// Supplied from validated retained-store references by the future migration
+    /// driver. Never contains credential bytes; an empty set keeps legacy behavior.
+    private let retainedCredentialIDs: Set<String>
+    /// An unreadable retained backup has unknown reachability. In that case the
+    /// migration driver disables obsolete-credential collection, not rollback of
+    /// newly staged credentials from a failed save.
+    private let allowsCredentialGarbageCollection: Bool
 
     private var cachedPasswords: [String: String] = [:]
     private var loadedCredentialIDs = Set<String>()
@@ -107,7 +120,9 @@ final class AppPersistenceCoordinator {
         serverProfileRepository: ServerProfileRepository = ServerProfileRepository(),
         metadataAuditRepository: MetadataAuditRepository,
         syncFailureRepository: SyncFailureRepository,
-        keychain: KeychainStore
+        keychain: KeychainStore,
+        retainedCredentialIDs: Set<String> = [],
+        allowsCredentialGarbageCollection: Bool = true
     ) {
         self.jobRepository = jobRepository
         self.metadataPresetRepository = metadataPresetRepository
@@ -116,6 +131,38 @@ final class AppPersistenceCoordinator {
         self.metadataAuditRepository = metadataAuditRepository
         self.syncFailureRepository = syncFailureRepository
         self.keychain = keychain
+        self.retainedCredentialIDs = retainedCredentialIDs
+        self.allowsCredentialGarbageCollection = allowsCredentialGarbageCollection
+    }
+
+    /// Read a previously admitted v3 set without legacy startup migrations or
+    /// empty-state fallbacks. Full cross-store/storage validation and writer
+    /// exclusion belong to the caller. Backup selection requires explicit recovery
+    /// of the complete set, so a recovered individual store cannot escape here.
+    func loadForValidatedStartup() throws -> AppPersistenceLoadResult {
+        let profiles = try serverProfileRepository.loadResult()
+        let presets = try metadataPresetRepository.loadResult()
+        let photographers = try photographerProfileRepository.loadResult()
+        let jobs = try jobRepository.loadResult()
+        let audits = try metadataAuditRepository.loadResult()
+        let failures = try syncFailureRepository.loadResult()
+        guard !profiles.recoveredFromBackup, !presets.recoveredFromBackup,
+              !photographers.recoveredFromBackup, !jobs.recoveredFromBackup,
+              !audits.recoveredFromBackup, !failures.recoveredFromBackup else {
+            throw AppPersistenceStartupError.recoveryRequired
+        }
+        guard Set(jobs.jobs.map(\.id)).count == jobs.jobs.count,
+              Set(presets.presets.map(\.id)).count == presets.presets.count,
+              Set(photographers.photographers.map(\.id)).count == photographers.photographers.count else {
+            throw AppPersistenceStartupError.duplicateIdentity
+        }
+        let resolvedJobs = try jobs.jobs.map { try $0.resolvingServerProfiles(in: profiles.profiles) }
+        return AppPersistenceLoadResult(state: AppPersistentState(
+            jobs: resolvedJobs, metadataPresets: presets.presets,
+            photographerLibrary: photographers.photographers, serverProfiles: profiles.profiles,
+            metadataAuditEntries: Dictionary(grouping: audits.entries, by: \.jobID),
+            syncFailureEntries: Dictionary(grouping: failures.entries, by: \.jobID)),
+            jobsRecoveredFromBackup: false, serverProfilesRecoveredFromBackup: false, warnings: [])
     }
 
     func load() -> AppPersistenceLoadResult {
@@ -649,8 +696,9 @@ final class AppPersistenceCoordinator {
     }
 
     private func removeCredentials(_ credentialIDs: Set<String>) -> [String] {
+        guard allowsCredentialGarbageCollection else { return [] }
         var warnings: [String] = []
-        for credentialID in credentialIDs {
+        for credentialID in credentialIDs.subtracting(retainedCredentialIDs) {
             do {
                 try keychain.removePassword(for: credentialID)
                 cachedPasswords[credentialID] = nil

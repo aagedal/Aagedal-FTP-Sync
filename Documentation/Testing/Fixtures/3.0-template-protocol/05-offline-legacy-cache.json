@@ -1,0 +1,37 @@
+{
+  "status": "design-only; not executed; multi-session scenario",
+  "before": {
+    "legacyCalendarID": "22222222-2222-4222-8222-222222222222",
+    "cachedRevision": 18,
+    "cachedField": {
+      "headline": "Press {briefing}",
+      "description": "Literal 2.9 text",
+      "keywords": [
+        "News"
+      ]
+    }
+  },
+  "afterUpgrade": {
+    "newCalendarID": "33333333-3333-4333-8333-333333333333",
+    "newStorageNamespace": "v3",
+    "legacyCalendarChanged": false,
+    "templateStringsWrittenToLegacyStores": false
+  },
+  "offlineClientReconnect": {
+    "headers": {
+      "X-Aagedal-Protocol": "2"
+    },
+    "body": {
+      "action": "putCalendar",
+      "calendarID": "22222222-2222-4222-8222-222222222222",
+      "expectedRevision": 18,
+      "documentFixture": "Use the full actual v2 baseline with one literal edit; this object is scenario metadata, not a runnable request."
+    }
+  },
+  "expected": [
+    "The offline old client can still sync literal content to the legacy calendar.",
+    "The distinct v3 calendar revision, source and markers remain unchanged.",
+    "Old local jobs/sync snapshots/presets/photographers have never received activated source.",
+    "An old server-code rollback cannot query the separate v3 calendar table."
+  ]
+}

@@ -9,7 +9,8 @@ struct MetadataProgrammingPreview: Equatable, Sendable {
 typealias MetadataPreviewOperation = @Sendable (
     _ job: SyncJob,
     _ endpoint: Endpoint,
-    _ automation: MetadataAutomation
+    _ automation: MetadataAutomation,
+    _ faceRecognitionContext: MetadataFaceRecognitionContext?
 ) async throws -> MetadataProgrammingPreview
 
 struct PendingClipChange: Identifiable {
@@ -71,6 +72,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     @Published var snapMinutes = 15
     @Published var pendingClipChange: PendingClipChange?
     @Published var pendingReprocessScope: MetadataReprocessScope?
+    @Published var reprocessFilter: MetadataReprocessFilter = .staleOrIncomplete
     @Published var metadataPreview: MetadataPreviewResult?
     @Published var metadataPreviewFolderName = ""
     @Published var metadataPreviewError: String?
@@ -79,6 +81,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     let calendar: Calendar
 
     private let previewOperation: MetadataPreviewOperation
+    private var reprocessReview: SavedMetadataReprocessReview?
     private var autosaveTask: Task<Void, Never>?
     private var previewRequestID: UUID?
     private var previewTask: Task<Void, Never>?
@@ -129,29 +132,54 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func canReprocessMetadata(in store: AppStore) -> Bool {
-        guard let loadedJobID else { return false }
-        return draft.isEnabled
-            && draft.validationMessage == nil
-            && canEnableMetadata(for: selectedJob(in: store))
-            && draft.timestampPolicy != .localArrival
+        guard let loadedJobID, let job = selectedJob(in: store), job.id == loadedJobID,
+              !store.isSuspendedForExternalWriter,
+              store.metadataFaceRecognitionRuntimeBlocker(for: job) == nil else { return false }
+        return canReprocessMetadata(for: job, faceRecognitionRuntimeAvailable: store.faceRecognitionContext != nil)
             && !store.isJobBusy(loadedJobID)
     }
 
-    var previewValidationMessage: String? {
+    func canReprocessMetadata(for job: SyncJob, faceRecognitionRuntimeAvailable: Bool) -> Bool {
+        (draft.isEnabled || job.metadataGeocoding?.isEnabled == true || job.metadataFaceRecognition != nil)
+            && draft.validationMessage == nil
+            && canEnableMetadata(for: job)
+            && job.metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: faceRecognitionRuntimeAvailable) == nil
+            && (!draft.isEnabled || draft.timestampPolicy != .localArrival)
+    }
+
+    func previewValidationMessage(
+        for job: SyncJob?,
+        faceRecognitionRuntimeAvailable: Bool = false
+    ) -> String? {
+        if let blocker = job?.metadataFaceRecognitionRuntimeBlocker(
+            runtimeAvailable: faceRecognitionRuntimeAvailable
+        ) { return blocker }
         var enabledDraft = draft
         enabledDraft.isEnabled = true
         return enabledDraft.validationMessage
     }
 
-    func canPreviewMetadata(for job: SyncJob?) -> Bool {
+    func canPreviewMetadata(
+        for job: SyncJob?,
+        faceRecognitionRuntimeAvailable: Bool = false
+    ) -> Bool {
         loadedJobID != nil
             && metadataLocalEndpoint(for: job)?.bookmark != nil
-            && previewValidationMessage == nil
+            && previewValidationMessage(
+                for: job,
+                faceRecognitionRuntimeAvailable: faceRecognitionRuntimeAvailable
+            ) == nil
             && !isPreviewingMetadata
     }
 
-    func previewHelp(for job: SyncJob?) -> String {
-        if let previewValidationMessage {
+    func previewHelp(
+        for job: SyncJob?,
+        faceRecognitionRuntimeAvailable: Bool = false
+    ) -> String {
+        if let previewValidationMessage = previewValidationMessage(
+            for: job,
+            faceRecognitionRuntimeAvailable: faceRecognitionRuntimeAvailable
+        ) {
             return previewValidationMessage
         }
         guard let metadataLocalEndpoint = metadataLocalEndpoint(for: job) else {
@@ -162,7 +190,17 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 
     func isReprocessing(in store: AppStore) -> Bool {
         guard let loadedJobID else { return false }
-        return store.metadataReprocessPhases[loadedJobID] == .running
+        switch store.metadataReprocessPhases[loadedJobID] {
+        case .preflighting, .running, .cancelling:
+            return true
+        default:
+            return false
+        }
+    }
+
+    func isPreflighting(in store: AppStore) -> Bool {
+        guard let loadedJobID else { return false }
+        return store.metadataReprocessPhases[loadedJobID] == .preflighting
     }
 
     func reprocessStatusText(in store: AppStore) -> String? {
@@ -171,26 +209,50 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         switch phase {
         case .idle:
             return nil
+        case .preflighting:
+            return "Checking which files need reprocessing…"
+        case .ready(_, _, _, let result):
+            let conflicts = result.conflicts.isEmpty
+                ? ""
+                : ", including " + String(result.conflicts.count) + " edit conflicts"
+            return "Preflight: " + String(result.ready) + " ready, "
+                + String(result.skipped) + " skipped, " + String(result.failed)
+                + " with errors or incomplete data" + conflicts + "."
         case .running:
-            return "Scanning the local destination…"
+            return "Reprocessing the local destination…"
+        case .cancelling:
+            return "Stopping reprocessing…"
+        case .cancelled:
+            return "Reprocessing stopped. Files already completed remain updated."
         case .succeeded(_, let result):
-            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed."
+            let conflicts = result.conflicts.isEmpty ? "" : ", \(result.conflicts.count) edit conflicts preserved"
+            return "Reprocessed \(result.applied) of \(result.scanned) files; \(result.skipped) skipped, \(result.failed) failed\(conflicts)."
         case .failed(let message):
             return "Reprocessing failed: \(message)"
         }
     }
 
     var reprocessHelp: String {
-        if draft.timestampPolicy == .localArrival {
+        if draft.isEnabled && draft.timestampPolicy == .localArrival {
             return "Arrival timestamps were not recorded for existing files. Choose source modification or camera capture time."
         }
         if !draft.isEnabled {
-            return "Enable automatic metadata before reprocessing existing files."
+            return "Reprocess matching files using the saved geocoding and face recognition choices."
         }
-        return "Apply the saved schedule to matching files already in the local destination."
+        return "Apply the saved schedule and enabled geocoding and face recognition to matching files already in the local destination."
     }
 
-    func reprocessConfirmationMessage(for job: SyncJob?) -> String {
+    func reprocessConfirmationMessage(in store: AppStore) -> String {
+        if let loadedJobID, case .failed(let message) = store.metadataReprocessPhases[loadedJobID] {
+            return "Preflight failed: \(message)"
+        }
+        return reprocessConfirmationMessage(for: selectedJob(in: store), preflight: reprocessPreflight(in: store))
+    }
+
+    func reprocessConfirmationMessage(
+        for job: SyncJob?,
+        preflight: MetadataReprocessPreflight? = nil
+    ) -> String {
         let target = job?.localDestinationDisplayPath ?? "the local destination"
         let policyNote = draft.existingFieldPolicy.explanation
         let scopeDescription: String
@@ -206,7 +268,16 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         case .all, nil:
             scopeDescription = "Matching files"
         }
-        return "\(scopeDescription) in \(target) will be rewritten safely in place; the source is untouched and modification dates are retained. \(policyNote)"
+        let preflightSummary: String
+        if let result = preflight {
+            let conflictSummary = result.conflicts.isEmpty
+                ? "No edited-output conflicts were found."
+                : "\(result.conflicts.count) edited output\(result.conflicts.count == 1 ? " was" : "s were") found and will be preserved unless you explicitly include \(result.conflicts.count == 1 ? "it" : "them")."
+            preflightSummary = "Preflight checked \(result.scanned) files: \(result.ready) ready to update, \(result.skipped) skipped, and \(result.failed) with errors or incomplete data. \(conflictSummary)"
+        } else {
+            preflightSummary = "The preflight is checking the destination without changing files."
+        }
+        return "\(scopeDescription) in \(target) are using \(reprocessFilter.title.lowercased()). \(preflightSummary) The source is untouched and modification dates are retained. \(policyNote)"
     }
 
     var reprocessActionTitle: String {
@@ -220,19 +291,81 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         }
     }
 
+    func reprocessPreflight(in store: AppStore) -> MetadataReprocessPreflight? {
+        guard let loadedJobID, let review = reprocessReview,
+              selectedJob(in: store)?.id == loadedJobID,
+              pendingReprocessScope == review.scope,
+              draft == review.job.metadataAutomation else { return nil }
+        return review.result(currentJob: selectedJob(in: store), filter: reprocessFilter,
+                             phase: store.metadataReprocessPhases[loadedJobID])
+    }
+
+    /// Dismiss stale approval even while preflight is still running.
+    func invalidateReprocessingReviewIfNeeded(in store: AppStore) {
+        guard let review = reprocessReview else { return }
+        if selectedJob(in: store) != review.job || draft != review.job.metadataAutomation
+            || reprocessFilter != review.filter || pendingReprocessScope != review.scope
+            || store.isSuspendedForExternalWriter {
+            cancelPendingReprocessing(in: store)
+        }
+    }
+
     @discardableResult
-    func confirmReprocessing(in store: AppStore) -> Bool {
-        guard let scope = pendingReprocessScope,
-              save(in: store),
-              let loadedJobID else { return false }
-        store.reprocessExistingLocalFiles(loadedJobID, scope: scope)
+    func beginReprocessing(
+        _ scope: MetadataReprocessScope,
+        in store: AppStore
+    ) -> Bool {
+        guard canReprocessMetadata(in: store), save(in: store), let loadedJobID,
+              let job = selectedJob(in: store) else { return false }
+        guard store.preflightMetadataReprocess(
+            loadedJobID,
+            scope: scope,
+            filter: reprocessFilter
+        ) else { return false }
+        reprocessReview = SavedMetadataReprocessReview(job: job, filter: reprocessFilter, scope: scope)
+        pendingReprocessScope = scope
         return true
     }
 
-    func previewConfiguredLocalFolder(for job: SyncJob?) {
+    func cancelPendingReprocessing(in store: AppStore) {
+        if let loadedJobID { store.cancelMetadataReprocessPreflight(loadedJobID) }
+        pendingReprocessScope = nil
+        reprocessReview = nil
+    }
+
+    @discardableResult
+    func confirmReprocessing(
+        in store: AppStore,
+        conflictPolicy: MetadataReprocessConflictPolicy = .preserveEditedOutputs
+    ) -> Bool {
+        invalidateReprocessingReviewIfNeeded(in: store)
+        guard canReprocessMetadata(in: store), let scope = pendingReprocessScope,
+              let loadedJobID, reprocessPreflight(in: store) != nil else { return false }
+        pendingReprocessScope = nil
+        reprocessReview = nil
+        store.reprocessExistingLocalFiles(
+            loadedJobID,
+            scope: scope,
+            filter: reprocessFilter,
+            conflictPolicy: conflictPolicy
+        )
+        return true
+    }
+
+    func previewConfiguredLocalFolder(
+        for job: SyncJob?,
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
+    ) {
         guard let job,
+              previewValidationMessage(
+                for: job,
+                faceRecognitionRuntimeAvailable: faceRecognitionContext != nil
+              ) == nil,
               let metadataLocalEndpoint = metadataLocalEndpoint(for: job) else { return }
         let previewDraft = draft
+        var previewJob = job
+        previewJob.metadataAutomation = previewDraft
+        previewJob.filter = previewJob.fileFilterForProgrammingDay(selectedDate, calendar: calendar)
         let previewOperation = self.previewOperation
         previewTask?.cancel()
         let requestID = UUID()
@@ -241,7 +374,12 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         metadataPreviewError = nil
         previewTask = Task { [weak self] in
             do {
-                let preview = try await previewOperation(job, metadataLocalEndpoint, previewDraft)
+                let preview = try await previewOperation(
+                    previewJob,
+                    metadataLocalEndpoint,
+                    previewDraft,
+                    faceRecognitionContext
+                )
                 guard let self,
                       previewRequestID == requestID,
                       loadedJobID == job.id else { return }
@@ -436,6 +574,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     }
 
     func loadSelectedJob(from store: AppStore) {
+        cancelPendingReprocessing(in: store)
         // Save the loaded job before replacing its draft, even if selection already
         // changed elsewhere or SwiftUI has not scheduled the debounce yet.
         if let loadedJobID {
@@ -1206,21 +1345,38 @@ final class MetadataProgrammingCoordinator: ObservableObject {
 private func performMetadataPreview(
     job: SyncJob,
     endpoint: Endpoint,
-    automation: MetadataAutomation
+    automation: MetadataAutomation,
+    faceRecognitionContext: MetadataFaceRecognitionContext?
 ) async throws -> MetadataProgrammingPreview {
+    if let message = job.metadataFaceRecognitionRuntimeBlocker(
+        runtimeAvailable: faceRecognitionContext != nil
+    ) {
+        throw AppError.invalidConfiguration(message)
+    }
     let folderAccess = try BookmarkAccess(endpoint: endpoint)
     let folderURL = try MetadataPreviewService.localFolderURL(
         selectedRoot: folderAccess.url,
         usesManagedFolderStructure: job.usesManagedFolderStructure
     )
     let filter = job.filter
-    let result = try await Task.detached(priority: .userInitiated) {
+    let task = Task.detached(priority: .userInitiated) {
         _ = folderAccess
-        return try MetadataPreviewService.previewLocalFolder(
+        var enabledDraft = automation
+        enabledDraft.isEnabled = true
+        return try await MetadataPreviewService.previewLocalFolder(
             at: folderURL,
-            automation: automation,
-            filter: filter
+            automation: enabledDraft,
+            geocoding: job.metadataGeocoding,
+            faceRecognition: job.metadataFaceRecognition,
+            faceRecognitionContext: faceRecognitionContext,
+            filter: filter,
+            processingTimeZone: try job.validatedMetadataProcessingTimeZone
         )
-    }.value
+    }
+    let result = try await withTaskCancellationHandler {
+        try await task.value
+    } onCancel: {
+        task.cancel()
+    }
     return MetadataProgrammingPreview(folderName: folderURL.lastPathComponent, result: result)
 }

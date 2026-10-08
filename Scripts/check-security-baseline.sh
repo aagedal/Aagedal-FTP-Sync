@@ -5,6 +5,8 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(dirname -- "$script_dir")
 resolved="$repository_root/Aagedal FTP Sync.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
 signature_source="$repository_root/Vendor/swift-nio-ssh/Sources/NIOSSH/Keys And Signatures/NIOSSHSignature.swift"
+bigint_manifest="$repository_root/Vendor/BigInt/Package.swift"
+citadel_manifest="$repository_root/Vendor/Citadel/Package.swift"
 
 crypto_version=$(awk '
     /"identity" : "swift-crypto"/ { found = 1 }
@@ -29,9 +31,20 @@ fi
 
 if rg 'github\.com/Wellz26/swift-nio-ssh' \
     "$repository_root/project.yml" \
-    "$repository_root/Vendor/Citadel/Package.swift" \
+    "$citadel_manifest" \
     "$resolved" >/dev/null; then
     echo "security baseline failed: the build references the unpatched remote SSH fork" >&2
+    exit 1
+fi
+
+if rg 'github\.com/attaswift/BigInt' "$citadel_manifest" "$resolved" >/dev/null; then
+    echo "security baseline failed: the build references the warning-producing remote BigInt manifest" >&2
+    exit 1
+fi
+
+if ! rg --fixed-strings '.package(path: "../BigInt")' "$citadel_manifest" >/dev/null \
+    || ! rg --fixed-strings '.watchOS(.v9)' "$bigint_manifest" >/dev/null; then
+    echo "security baseline failed: the pinned local BigInt package is not admitted for Xcode 27" >&2
     exit 1
 fi
 

@@ -85,10 +85,8 @@ struct MetadataProgrammingView: View {
             windowHeader
             MetadataSyncStatusView(jobID: selectedJob?.id, beforeSync: { flushAutosave() }) {
                 flushAutosave()
-                store.settingsTab = .metadataSync
-                store.metadataSyncSettingsTab = .calendars
-                RegularWindowController.shared.prepareForOpening()
-                openSettings()
+                store.metadataSyncSettingsJobID = selectedJob?.id
+                openJobSettings(for: selectedJob)
             }
             Divider()
 
@@ -121,6 +119,7 @@ struct MetadataProgrammingView: View {
         )
         .onAppear(perform: loadSelectedJob)
         .onDisappear {
+            coordinator.cancelPendingReprocessing(in: store)
             flushAutosave()
             if let id = coordinator.loadedJobID { store.metadataDraftsBeingEdited.remove(id) }
         }
@@ -130,7 +129,17 @@ struct MetadataProgrammingView: View {
         .onChange(of: selectedJob?.metadataAutomation) { _, _ in
             coordinator.refreshSavedMetadata(in: store)
         }
+        .onChange(of: selectedJob) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        }
+        .onChange(of: coordinator.reprocessFilter) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        }
+        .onChange(of: store.isSuspendedForExternalWriter) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
+        }
         .onChange(of: draft) { _, _ in
+            coordinator.invalidateReprocessingReviewIfNeeded(in: store)
             scheduleAutosave()
         }
         .onChange(of: store.photographerLibrary) { _, _ in
@@ -154,6 +163,11 @@ struct MetadataProgrammingView: View {
 
     private var sheetContent: some View {
         mainContent
+        // A clip editor is modal. Explicitly remove its timeline background from
+        // the accessibility hierarchy while the sheet is open: on macOS 27 an
+        // XCTest snapshot of a nested variable sheet otherwise asks AppKit to
+        // resolve labels for the hidden compound clip controls and can recurse.
+        .accessibilityHidden(editingClipID != nil)
         .sheet(isPresented: Binding(
             get: { editingClipID != nil },
             set: { if !$0 { editingClipID = nil } }
@@ -249,20 +263,39 @@ struct MetadataProgrammingView: View {
         } message: { change in
             Text("Resizing \(change.clip.name) crosses midnight, so it will appear on more than one day’s timeline.")
         }
-        .confirmationDialog(
-            "Reprocess existing local files?",
-            isPresented: Binding(
-                get: { pendingReprocessScope != nil },
-                set: { if !$0 { pendingReprocessScope = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(reprocessActionTitle) {
-                coordinator.confirmReprocessing(in: store)
+        .sheet(isPresented: Binding(
+            get: { pendingReprocessScope != nil },
+            set: { if !$0 { coordinator.cancelPendingReprocessing(in: store) } }
+        )) {
+            MetadataReprocessReviewSheet {
+                Text(reprocessConfirmationMessage)
+            } actions: {
+                if let preflight = reprocessPreflight {
+                    Button(reprocessActionTitle) {
+                        coordinator.confirmReprocessing(in: store)
+                    }
+                    .disabled(preflight.ready == 0 || !coordinator.canReprocessMetadata(in: store))
+                    if !preflight.conflicts.isEmpty {
+                        Button(
+                            "Reprocess \(preflight.conflicts.count) Edited Output\(preflight.conflicts.count == 1 ? "" : "s")",
+                            role: .destructive
+                        ) {
+                            coordinator.confirmReprocessing(
+                                in: store,
+                                conflictPolicy: .processEditedOutputs(preflight.conflictOutputRevisions)
+                            )
+                        }
+                        .disabled(!coordinator.canReprocessMetadata(in: store))
+                    }
+                } else if coordinator.isPreflighting(in: store) {
+                    Button("Checking Files…") {}
+                        .disabled(true)
+                }
+                Button("Cancel", role: .cancel) {
+                    coordinator.cancelPendingReprocessing(in: store)
+                }
+                .keyboardShortcut(.cancelAction)
             }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(reprocessConfirmationMessage)
         }
     }
 
@@ -512,13 +545,14 @@ struct MetadataProgrammingView: View {
         }
     }
 
-    private func importMetadataProgramming(_ data: Data, _ password: String?) -> Bool {
+    private func importMetadataProgramming(_ data: Data, _ password: String?, _ allowAppleCoordinates: Bool) -> Bool {
         guard let metadataImportTargetJobID,
               let result = store.importConfiguration(
                   from: data,
                   password: password,
                   expectedScope: .metadata,
-                  metadataTargetJobID: metadataImportTargetJobID
+                  metadataTargetJobID: metadataImportTargetJobID,
+                  allowImportedAppleCoordinates: allowAppleCoordinates
               ) else {
             return false
         }
@@ -710,7 +744,7 @@ struct MetadataProgrammingView: View {
                                         photographerPendingDeletion = photographer
                                     },
                                     onReprocessPhotographer: {
-                                        pendingReprocessScope = .photographer(photographer.id)
+                                        coordinator.beginReprocessing(.photographer(photographer.id), in: store)
                                     },
                                     onBeginReordering: {
                                         draggedPhotographerID = photographer.id
@@ -724,7 +758,7 @@ struct MetadataProgrammingView: View {
                                     onResize: resizeClip,
                                     onResizeBoundary: resizeBoundary,
                                     onReprocessClip: { clip in
-                                        pendingReprocessScope = .clip(clip.id)
+                                        coordinator.beginReprocessing(.clip(clip.id), in: store)
                                     },
                                     onPlacePlayhead: placePlayhead,
                                     onPasteAtPlayhead: pasteClips
@@ -878,6 +912,18 @@ struct MetadataProgrammingView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let jobID = coordinator.loadedJobID, store.metadataReprocessPhases[jobID] == .running {
+                Button("Stop Reprocessing") { store.cancelMetadataReprocess(jobID) }
+                    .accessibilityIdentifier("stop-programming-reprocessing")
+            }
+            Picker("Reprocess", selection: $coordinator.reprocessFilter) {
+                ForEach(MetadataReprocessFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .help(coordinator.reprocessFilter.explanation)
             Button(action: previewConfiguredLocalFolder) {
                 if isPreviewingMetadata {
                     ProgressView()
@@ -890,7 +936,7 @@ struct MetadataProgrammingView: View {
             .disabled(!canPreviewMetadata)
             .help(previewHelp)
             Button {
-                pendingReprocessScope = .all
+                coordinator.beginReprocessing(.all, in: store)
             } label: {
                 if isReprocessing {
                     ProgressView()
@@ -938,11 +984,17 @@ struct MetadataProgrammingView: View {
     }
 
     private var canPreviewMetadata: Bool {
-        coordinator.canPreviewMetadata(for: selectedJob)
+        coordinator.canPreviewMetadata(
+            for: selectedJob,
+            faceRecognitionRuntimeAvailable: store.isFaceRecognitionRuntimeReady
+        )
     }
 
     private var previewHelp: String {
-        coordinator.previewHelp(for: selectedJob)
+        coordinator.previewHelp(
+            for: selectedJob,
+            faceRecognitionRuntimeAvailable: store.isFaceRecognitionRuntimeReady
+        )
     }
 
     private var isReprocessing: Bool {
@@ -958,7 +1010,11 @@ struct MetadataProgrammingView: View {
     }
 
     private var reprocessConfirmationMessage: String {
-        coordinator.reprocessConfirmationMessage(for: selectedJob)
+        coordinator.reprocessConfirmationMessage(in: store)
+    }
+
+    private var reprocessPreflight: MetadataReprocessPreflight? {
+        coordinator.reprocessPreflight(in: store)
     }
 
     private var reprocessActionTitle: String {
@@ -966,7 +1022,10 @@ struct MetadataProgrammingView: View {
     }
 
     private func previewConfiguredLocalFolder() {
-        coordinator.previewConfiguredLocalFolder(for: selectedJob)
+        coordinator.previewConfiguredLocalFolder(
+            for: selectedJob,
+            faceRecognitionContext: store.faceRecognitionContext
+        )
     }
 
     private var selectedPhotographer: PhotographerProfile? {

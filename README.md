@@ -1,8 +1,68 @@
-# Aagedal FTP Sync 2.9
+# Aagedal FTP Sync
 
 A native macOS menu-bar utility for getting newsroom files where they need to go quickly. It is designed for photojournalists who deliver directly from a camera to a server and for picture desks that need the newest JPEG and RAW files within seconds.
 
-Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports now retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
+Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
+
+This branch contains the in-development 3.0 implementation. It is not a beta or a
+shipping release: the bundle identifies itself as 3.0.0 (build 43). Face recognition
+uses Photo Agent defaults; the remaining
+native, supported-macOS, performance and release gates are tracked in the
+[3.0 readiness report](Documentation/3.0-Readiness.md). Use the latest tagged 2.9.x
+release for production work until a 3.0 candidate is published.
+
+## Version 3.0 preview
+
+The 3.0 source currently adds these guarded workflows:
+
+- A routine first launch creates an empty 3.0 store or copies unambiguous current
+  2.9 settings into a separate 3.0 store without an upgrade page. Original 2.9
+  files stay available for recovery. A backup-only or ambiguous inventory, damaged
+  current data, or another running copy still requires recovery attention. Jobs and
+  calendar sync remain paused after migration. In Settings → Sync Servers,
+  **Add Sync Server** starts sync and registers the pasted join string. Attach jobs from
+  Job settings → Metadata Sync; previously linked jobs can use **Resume Calendar Sync**. The menu-bar panel has no permanent recovery button.
+- Explicit variables in Headline, Description, Keywords and Copyright. Supported
+  variables include the processing date, capture date, photographer, GPS city/country
+  and people already present or accepted by recognition. Braces remain literal until
+  variables are enabled for that field; a missing value preserves the complete existing
+  field rather than publishing a partial result.
+- Per-job reverse geocoding through either an offline GeoNames database or Apple online, with named map polygons that override City and `{gps:city}` for GPS-tagged images inside those areas.
+  City and Country have independent disabled, fill-empty and overwrite policies. Apple
+  lookup requires explicit consent because image coordinates are sent to Apple; it does
+  not request the Mac's current location.
+- Template-enabled protocol-3 calendars in a server namespace separate from classic
+  2.x calendars. Migration creates and reviews a new calendar instead of rewriting the
+  classic one, and every participant in the new calendar needs version 3.
+- Import and exact export of immutable `.photoagentpeople` packages produced by Photo Agent; legacy `.aagedalpeople` packages remain importable.
+  Face recognition is local and appends only accepted names to Person Shown, with an
+  optional Keywords append and `{persons}` expansion. Uncertain or unavailable results
+  are omitted and remain visible in preview/audit evidence.
+- A bundled, local AuraFace-v1 Core ML model reconstructed from two hash-pinned
+  source parts, with compiled-weight verification and its separate Apache-2.0
+  notice. Recognition takes one immutable
+  runtime snapshot at startup. Metadata name tagging remains fail-closed until a
+  compatible People Library is selected. Relaunch after importing the library,
+  then enable recognition for the intended job. The policy uses Photo Agent defaults:
+  minimum similarity 0.32 (maximum cosine distance 0.68), runner-up gap 0.04 and
+  face quality 0.15. Detection uses one pass, confidence 0.70 and minimum face width
+  50 pixels. Missing quality and ambiguous matches are rejected; the runner-up
+  check also includes people outside the acceptance cutoff. These scores are not
+  identity probabilities or a guarantee against false matches.
+- Receipt-driven local reprocessing. The default scans stale or incomplete files,
+  previews counts without writing, skips current receipts and preserves destination
+  files edited since their last complete receipt. Replacing those edits requires a
+  separate confirmation tied to the exact paths found by that preflight.
+- Local MCP access to saved jobs, the shared photographer library and per-job
+  metadata clips. Codex, Claude Code and OpenCode share one stdio adapter;
+  additions are executed by the running app and use its metadata save path.
+  See the [Metadata Programming MCP guide](Tools/MetadataMCP/README.md).
+
+Preview, transfer and reprocessing use the same frozen per-image decisions. Processing
+receipts cover source evidence, settings, runtime dependencies and exact output content;
+incomplete enrichment cannot authorize source removal. See the
+[implementation plan](Documentation/3.0-Implementation-Plan.md) for the acceptance
+contract and open validation matrix.
 
 ## What is new
 
@@ -38,15 +98,19 @@ Version 2.9 adds optional metadata calendar sharing through a user-configured HT
 - Existing fields can be preserved or overwritten, while camera RAW files receive XMP sidecars without changing the original RAW data
 - A read-only local-folder preview, separate metadata outcome counts, and a per-file audit trail make automation decisions inspectable
 - Indexed, recoverable source signatures and atomic recovery keep rewritten destinations verifiable and safe when metadata processing fails
+- Retained reprocessing backups include a path manifest; follow the [recovery guide](Documentation/Metadata-Reprocessing-Recovery.md) to reconcile originals and concurrent edits
 - Successfully tagged files can use a custom processed folder or a managed main folder containing sibling `Synced Files` and `Processed Files` folders
 - Processed pictures can optionally be sorted into sanitized `Photographer Name (INITIALS)` sub-folders while preserving their source-relative paths
 - Sync jobs, their referenced server profiles, and metadata programming can be exported separately or together in `.aftpsync` packages, with password protection enabled by default
 
 ## Optional metadata calendar sync
 
-Calendar sharing uses a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, editor/read-only invitations, offline edits and explicit conflict resolution. Configure it under **Settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. See the [server installation and behavior guide](Server/MetadataSync/README.md) for deployment steps, date-range boundaries, limits and deployment verification.
+Calendar sharing uses a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, owner/editor/read-only invitations, offline edits and explicit conflict resolution. Owners can invite additional owner devices to manage members and invitations. Manage servers under **Settings → Sync Servers**, and attach calendars under **Job settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. Choose [Docker deployment](Server/MetadataSync/DOCKER.md) or [manual PHP/SQL setup](Server/MetadataSync/MANUAL-SETUP.md). See the [server reference](Server/MetadataSync/README.md) for date-range boundaries, limits and deployment verification.
 
-Saved metadata edits sync after a short pause in editing. Updates from other Macs are checked about every ten seconds while the app is open, even with automatic file transfers disabled. Open drafts pause calendar updates until saved or closed. The metadata window shows changes waiting to sync, connection failures, and the last successful sync; **Retry Now** requests another attempt. Saved offline edits stay on this Mac and sync automatically when the server becomes reachable. Requests made during another calendar operation are queued.
+Settings has separate **FTP Servers** (FTP, FTPS, and SFTP file transfer profiles) and **Sync Servers** (metadata calendars) lists. Sync servers appear in a left-hand list with **+** to add and **−** to remove the selected server. Removal detaches its jobs on this Mac while keeping their local metadata and files; remote calendars are unchanged. Add a named sync server by pasting its join string, or use **Initialize Sync server** for the first Mac. Existing unnamed servers display their URL and can be renamed without changing credentials or job links. In **Job settings → Metadata Sync**, choose a saved sync server and create or attach a calendar. Attaching saves the job settings and preserves existing metadata through the copy review when necessary. New calendars use 3.0 template-enabled sync. **Members & Invitations** shows invitation controls and automatically loaded member lists for the server selected in the sidebar. Servers with multiple calendars show a labeled section for each calendar, with invitation date limits and access management. Several jobs can share one server, and jobs on different servers keep syncing together. Each shared calendar can be linked to one job per Mac.
+
+
+Saved metadata edits sync after a short pause in editing. Updates from other Macs are checked about every ten seconds while the app is open, even with automatic file transfers disabled. Open drafts pause calendar updates until saved or closed. The metadata window shows changes waiting to sync, connection failures, and the last successful sync; **Retry Now** requests another attempt. Saved offline edits stay on this Mac. After connection failures, automatic retries back off from 10 seconds to at most five minutes per account; **Retry Now** bypasses that wait. A failed connection stops redundant requests to the same account for that pass, while other accounts continue. The available-calendar list refreshes once a minute during background polling; linked calendar updates still check about every ten seconds while reachable. Requests made during another calendar operation are queued.
 
 ## Modification times and watched folders
 
@@ -66,6 +130,13 @@ Adobe Bridge maintains its own [thumbnail and metadata cache](https://helpx.adob
 ## Build
 
 Open `Aagedal FTP Sync.xcodeproj` and select the `AagedalFTPSync` scheme. For signed builds, create `Configuration/Signing.local.xcconfig` with your own `DEVELOPMENT_TEAM = YOUR_TEAM_ID`, or pass that setting to `xcodebuild`. This optional file is ignored by Git; account-specific signing settings do not belong in the shared project. Then build and run.
+
+For a 3.0 candidate, the shared Xcode scheme reconstructs the pinned AuraFace
+`.mlpackage` before Core ML inspects it; a target build phase checks its hashes
+before compilation. Verify the exported app
+afterward with `python3 Tools/verify_bundled_auraface.py app
+/path/to/AagedalFTPSync.app`. The app contains the compiled model and separate
+`AuraFace-LICENSE.md` notice.
 
 The committed Xcode project is generated from [`project.yml`](project.yml) with [XcodeGen](https://github.com/yonaskolb/XcodeGen). Regenerate it after changing project structure:
 
@@ -94,6 +165,56 @@ xcodebuild test \
 
 UI automation requires a signed test runner, so do not add `CODE_SIGNING_ALLOWED=NO` to this command.
 
+To prepare a traceable Developer ID signed development candidate from committed,
+clean source, run:
+
+```sh
+python3 Scripts/build-3.0-candidate.py --team-id YOUR_TEAM_ID --register
+```
+
+The archive stays under `build/candidates/`; the workflow neither installs nor
+publishes it. Its signed Info.plist records the source commit and tree. The
+candidate record includes the executable SHA-256 and a new checklist ID, preserving
+previous result sets. Registration leaves its status `IMPLEMENTING` until the
+required acceptance evidence is complete. Notarization and final user acceptance
+remain separate steps. Never reuse the same build number for a changed candidate.
+
+Authorized real-image checks are opt-in. Create an ignored JSON manifest with
+`files` containing absolute image paths and `outputRoot` naming a new disposable
+directory, then run:
+
+```sh
+TEST_RUNNER_AAGEDAL_REAL_MEDIA_MANIFEST=/absolute/path/to/manifest.local.json \
+xcodebuild test -project 'Aagedal FTP Sync.xcodeproj' -scheme AagedalFTPSync \
+  -destination 'platform=macOS' -derivedDataPath build/real-media-tests \
+  CODE_SIGNING_ALLOWED=NO \
+  -only-testing:AagedalFTPSyncTests/AuthorizedMediaAcceptanceTests
+```
+
+Inputs remain read-only; transfer/reprocessing and managed-folder handoff use
+copies. The checks retain outputs for independent ExifTool/Photo Agent review.
+Bundled-model decoding and face detection are checked separately from labeled
+matching accuracy; detection success does not establish correct identities.
+
+Private face-reference evaluation uses `AuthorizedFaceEvaluationTests` with
+`TEST_RUNNER_AAGEDAL_FACE_EVALUATION_MANIFEST` (mode `scan`, absolute `files`,
+fresh `outputRoot` under this checkout's ignored `build/`). Review the production
+face crops visually before assigning pseudonyms. Do not use automatic clusters
+as ground truth or split RAW/JPEG variants of one capture across test roles.
+
+`AuthorizedFaceMatchingTests` accepts
+`TEST_RUNNER_AAGEDAL_FACE_MATCHING_MANIFEST` with hash-pinned records, reviewed
+labels and capture-disjoint `reference`, `calibration` and `heldOut` roles.
+Package generation additionally requires
+`TEST_RUNNER_AAGEDAL_FACE_REFERENCE_OUTPUT` and
+`TEST_RUNNER_AAGEDAL_FACE_REFERENCE_SOURCE_COMMIT`; the source must be clean at
+that exact current HEAD and each reference label must pin its reviewed
+`cropSHA256`. Run only `testOptInExportAuthorizedReferenceLibrary` when exporting
+an existing evaluation whose matching report already exists. The generated
+schema-3 `.photoagentpeople` package is a private test-helper reference library;
+it does not establish native Photo Agent producer interoperability. Keep all
+photos, names, vectors and local manifests out of Git.
+
 The scheduled integration workflow runs this suite on a trusted self-hosted macOS runner with an Apple Development identity. Give that runner the custom `signed-ui-tests` label and configure the repository variable `APPLE_DEVELOPMENT_TEAM` for its signing account; pull-request events never automatically dispatch code to it.
 
 Opt-in loopback FTP, trusted implicit-FTPS, and SFTP write/fault tests use OpenSSL plus the pinned Python packages in `Scripts/delivery-latency-requirements.txt`. Install the Python packages in an activated virtual environment, then run:
@@ -121,6 +242,8 @@ The menu-bar panel provides start/stop controls, status, one-click sync, and a p
 For a shared convention across app users, enable **Upload filenames → Add standard _aftpsync suffix**. `TA_001.JPG` becomes `TA_001_aftpsync.JPG`; with a custom `_EDITED` suffix, it becomes `TA_001_EDITED_aftpsync.JPG`. Local names stay unchanged, and RAW/XMP companions share the marker. A marker already at the end of the resulting filename stem is not duplicated. On download jobs, enable **File filter → Ignore _aftpsync uploads** to skip marked files from any user, ignoring capitalization. Both options are off by default, including for existing jobs.
 
 Under **File filter**, enter comma-separated **Photographer initials** to sync only filenames that start with one of those initials, matching the photographer library's prefix convention. Leave this blank for all photographers. **Ignore filename prefixes** and **Ignore filename suffixes** exclude matching names, even if their initials match. All these rules ignore capitalization and apply to the filename, not its folders. Suffixes match the stem before the extension. Type, hidden-file, and age filters still apply; filename rules also limit local cleanup and metadata reprocessing.
+
+For a one-way server-to-local job, enable **Use Metadata Programming photographers** to derive the filename prefixes from photographers on today's programmed track instead of entering a fixed list. A clip overlapping today also counts. An empty day selects no server files, and edits to the programming take effect on the next sync. Preview uses the selected programming day; cleanup and reprocessing can still see photographers assigned on earlier days. Export the combined jobs and metadata package to carry both the filter choice and its programming; a jobs-only export retains the choice but selects no files until programming is imported. Packages containing this choice use format 3 so older clients reject them. Existing jobs continue using their saved initials unless you enable the option.
 
 To download and upload using the same server folder, use two one-way jobs. For example, set the download job's initials to `TA, JAD` and its ignored suffixes to `_EDITED`. On the local-to-server job, set **Upload suffix** to `_EDITED`: `TA_001.JPG` uploads as `TA_001_EDITED.JPG`, and the download job ignores that returned copy. An upload prefix such as `EDITED_` can be used with the corresponding download prefix exclusion instead, or both can be combined. Initials alone do not exclude uploads that still start with those initials. These exclusions are configured on the download job; upload naming does not modify other jobs automatically.
 

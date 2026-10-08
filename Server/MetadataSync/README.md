@@ -1,5 +1,14 @@
 # Metadata calendar sync server
 
+## Choose an installation method
+
+- [Docker setup](DOCKER.md): build the Apache/PHP image, run MariaDB with persistent
+  storage, optionally enable automatic HTTPS, and use backup/restore helpers.
+- [Manual PHP/SQL setup](MANUAL-SETUP.md): step-by-step shared-hosting or custom
+  server installation, first-Mac setup, upgrades, and recovery.
+
+The remaining reference describes shared data, protocol rules, and app workflows.
+
 An optional, provider-independent PHP/MySQL service for Aagedal FTP Sync. Users enter their own HTTPS server address in **Settings → Metadata Sync**. Subdomains and subdirectories are supported; the app calls `index.php` below the selected URL. There is no default sync domain.
 
 The first implementation shares whole calendars or a date range, supports multiple editors and read-only invitations, and polls approximately every ten seconds while the Mac app is running. It needs no daemon, cron job, URL rewriting, Composer installation, WebSocket, or external login provider.
@@ -22,8 +31,8 @@ HTTPS protects transport. Calendar contents are stored as ordinary JSON in the d
 
 ## Install or upgrade
 
-1. Import `schema.sql` and `schema-live-sync.sql` into the dedicated database, using phpMyAdmin or the MySQL CLI. Both are additive and use `CREATE TABLE IF NOT EXISTS`. For an existing hosting-check installation, import only `schema-live-sync.sql`.
-2. Upload **both** `public/index.php` and `public/live.php` into the endpoint's public directory. Preserve any existing deployment-specific `$configPath` assignment in `index.php` when upgrading. Do not upload the repository, tests, SQL files, credentials or key files into that directory.
+1. Import `schema.sql`, `schema-live-sync.sql`, and then `schema-template-sync.sql` into the dedicated database, using phpMyAdmin or the MySQL CLI. All are additive and use `CREATE TABLE IF NOT EXISTS`. For an existing hosting-check installation, import both live-sync and template-sync migrations.
+2. Upload `public/index.php`, `public/live.php`, and `public/templates.php` into the endpoint's public directory. Preserve any existing deployment-specific `$configPath` assignment in `index.php` when upgrading. Do not upload the repository, tests, SQL files, credentials or key files into that directory.
 3. For a new installation, run `python3 create-config.py` locally. It prompts for the database connection and creates `config.php` and `hosting-check-key.txt` with owner-only permissions. They are ignored by Git. Existing installations keep their current config and key.
 4. Put `config.php` outside all public web roots. The generic layout is:
 
@@ -41,12 +50,16 @@ HTTPS protects transport. Calendar contents are stored as ordinary JSON in the d
 7. In **Calendar Sync**, enter the same URL and a device name. Expand **Server administrator: connect the first Mac**, paste the setup key, and choose **Connect First Mac**.
 8. Set both `bootstrap_enabled` and `hosting_checks_enabled` to `false` in the private configuration and re-upload it. The setup key is no longer used during normal sync. Do not send it to other participants.
 
-Public GET discovery remains protocol 1 (`stage: hosting-check`) for compatibility. Calendar requests select protocol 2 with an HTTP header. A successful hosting check alone does not establish that the new tables and API were installed.
+Public GET discovery remains protocol 1 (`stage: hosting-check`) for compatibility.
+Classic calendar requests select protocol 2 and template-enabled 3.0 requests select
+protocol 3 with an HTTP header. A successful hosting check alone does not establish
+that the calendar tables and APIs were installed; a 3.0 client also verifies the
+authenticated protocol-3 capability response before sending template content.
 
 ## Use in the app
 
 - **Activate a new calendar:** Select an existing local job, choose **New shared calendar from this job** under **Calendar to sync**, name it, optionally select dates, and choose **Activate Sync**. Only the shared metadata subset is transmitted. A job can link to one calendar. Saved edits synchronize automatically; unsaved or invalid editor drafts pause incoming updates for that job.
-- **Invite:** The owner selects a server calendar, editor/read-only permission and optional date range, then creates an invitation. Copy and privately share the server URL and invitation. Each invitation expires in 24 hours and can enroll one device. Make a separate invitation for each Mac, including additional Macs used by the owner.
+- **Invite:** The owner selects a server calendar, owner/editor/read-only permission and optional date range, then creates an invitation. Owner invitations grant full-calendar management access and cannot be date-limited. Copy and privately share the server URL and invitation. Each invitation expires in 24 hours and can enroll one device. Make a separate invitation for each Mac, including additional Macs used by the owner.
 - **Activate an existing calendar:** On the other Mac, paste the complete copied invitation into **Paste invitation** and choose **Join Calendar**. A code alone also works when the server URL is entered separately. Joining grants access; it does not yet link a job. Select the shared calendar under **Calendar to sync** and choose a local job, then choose **Activate Sync**. Editor access synchronizes saved changes both ways; read-only invitations only fetch changes. Empty metadata programming receives directly. If the job already has programming or a calendar link, the app offers **Duplicate & Activate Sync**. The confirmation names the original and new jobs before anything changes. The copy retains connections, folder bookmarks and local processing policies, and receives only the shared calendar content. The original retains its programming. Automatic running and startup at app launch are disabled on both jobs; review and enable the copy when ready. Transfer history stays with the original job. Cancelling the confirmation leaves it unchanged. After receiving, the Metadata window selects the linked job so the received calendar is visible.
 - **Monitor:** The Metadata window shows whether the selected job is linked, current fetching/sending activity, and errors or conflicts requiring attention. Click the status for details and the last successful sync. **Sync Now** retries the selected job; **Sync Activity…** opens the last 200 diagnostic entries, retained across restarts. Copied diagnostics omit calendar content, job names, server addresses, credentials and invitations. Diagnostic write failures do not stop calendar sync.
 - **Resolve:** Changes to different clips merge automatically. Competing changes to the same clip/profile/day rows, deletion versus edit, or a merged invalid schedule pause sync. The local job and remote version remain saved. Review both versions in settings and explicitly choose one. This choice replaces the shared portion as a whole; edit the chosen version afterward to incorporate other changes.
@@ -63,7 +76,7 @@ Independent edits to different clips or different fields of one clip merge autom
 
 The local job is the durable queue for saved edits; a separate persisted baseline supports three-way merging after reconnect/restart. Receiving into a duplicate saves an approved local receipt journal first, then saves the paused original and populated copy together in one jobs-file write. An interrupted link resumes using the same copy identifier, preserving later edits. Storage failures remain visible and a pending link can be retried or cancelled; cancelling a pending link retains any jobs already saved. Successful writes and lost responses are reconciled against server snapshots, so a retry cannot silently overwrite newer edits. Explicit deletion is represented by absence from the complete scoped document with a matching revision; it is not an unversioned omission.
 
-This is polling sync, not instant push. One request carries at most 1 MiB; one calendar supports up to 500 photographers, 2,000 clips and 5,000 day rows, with bounded text fields. Dates are milliseconds since Unix epoch, from 1970 through 2099. The server limits a device to 100 owned calendars and a calendar to 100 unexpired invitations. The app displays server rejections and retains local edits. Large calendars, archival cleanup, owner recovery, key rotation, member scope changes and end-to-end encryption remain future work. To change a member's scope, revoke it and issue a new invitation. If the received date range or calendar time zone changes, the app pauses the existing link and keeps local programming. Detach and receive again to review the new scope; populated jobs use the duplicate-and-receive flow.
+This is polling sync, not instant push. One request carries at most 1 MiB. The stored JSON document is limited to 1,000,000 bytes on both creation and updates (including the full document after a date-range edit); one calendar supports up to 500 photographers, 2,000 clips and 5,000 day rows, with bounded text fields. Dates are milliseconds since Unix epoch, from 1970 through 2099. The server limits a device to 100 owned calendars and a calendar to 100 unexpired invitations. The app displays server rejections and retains local edits. Large calendars, archival cleanup, owner recovery, key rotation, member scope changes and end-to-end encryption remain future work. To change a member's scope, revoke it and issue a new invitation. If the received date range or calendar time zone changes, the app pauses the existing link and keeps local programming. Detach and receive again to review the new scope; populated jobs use the duplicate-and-receive flow.
 
 A server revision older than the saved local baseline also pauses sync, including conflict resolution. Restore a current server backup, or detach and publish the retained local programming as a new calendar. This protects against silently rolling a Mac back to an older database snapshot.
 
@@ -75,13 +88,14 @@ Test this implementation with disposable programming before using it to drive li
 | --- | --- |
 | TLS error or redirect | Certificate and final HTTPS base URL; do not disable certificate checks. |
 | HTML instead of JSON | Document root and PHP execution. Remove files if PHP source is exposed. |
-| Hosting works, sync fails | Upload `live.php`, import the additive live schema, and check private configuration. |
+| Hosting works, sync fails | Upload `live.php` and `templates.php`, import both additive live/template schemas, and check private configuration. |
 | First-device setup rejected | Enable bootstrap, use the correct setup key, or use an invitation if an owner already registered. |
 | 401 | Correct device identity and Keychain credential. The setup key is not a device key. |
 | 403 | Role/range restriction, revoked membership or invalid invitation. |
 | 409 | The app merges a newer revision or shows a conflict. |
 | 422 | Invalid/overlapping schedule, duplicate initials or a server limit. |
-| 503 | PHP driver, private configuration, database permissions, InnoDB tables and server logs. |
+| 413 | Reduce calendar content: stored documents are limited to 1,000,000 bytes and complete requests to 1 MiB. Local edits remain saved. |
+| 429 / 5xx | Automatic sync backs off with jitter and respects Retry-After; Sync Now can retry immediately. For 503, check PHP, private configuration, all three API files, database permissions and schemas. |
 
 Responses and logs deliberately omit database credentials, hostnames, filesystem paths and raw PHP/PDO exceptions. Do not post credentials or `phpinfo()` publicly.
 
@@ -121,3 +135,86 @@ docker compose -p aftpsync-native -f Server/MetadataSync/tests/compose.yaml \
 ```
 
 This exercises invitation registration, receiving into a differently named job, offline edits from two independent coordinators, and a third editor with date-limited access. The test uses the production JSON encoder/decoder with a test-only loopback HTTP transport; normal app connections still require HTTPS. Run the cleanup command even if a test fails, and start fresh before rerunning because first-device registration is single-use.
+
+
+## Protocol 3 template namespace
+
+The server implements the protocol-three contract in
+`Documentation/Testing/3.0-M0-Template-Compatibility.md`. The 3.0 app can create and
+join template-enabled calendars and can explicitly migrate a linked classic calendar
+by reviewing its current snapshot, creating a new calendar UUID, and rebinding the
+local job only after creation is confirmed. Installing this server never migrates or
+activates a calendar automatically. Classic-calendar migration still requires native
+and live acceptance before the 3.0 release.
+
+Import the additive `schema-template-sync.sql` **after** the existing live schema
+and before uploading the upgraded PHP files. It creates separate
+`aftpsync_v3_calendars`, `aftpsync_v3_members`, and `aftpsync_v3_invites` tables.
+Device credentials are shared, but calendar contents, permissions and invitation
+tokens never fall back between namespaces. No existing calendar is upgraded in
+place. Create a new UUID, retain the old literal calendar unchanged, and bind only
+a capable client's converted local storage after successful creation. This keeps
+old offline caches and rolled-back server code away from activated sources.
+
+Every v3 request supplies `X-Aagedal-Protocol: 3` and JSON
+`capabilities: ["metadata-templates-v1"]`. Authenticate `getCapabilities` at the
+current endpoint before sending template content. It returns supported document
+schemas `[1,3]` and template languages `[1]` without a document; every v3 envelope
+includes the capability declaration. The schema must be installed for this probe
+to succeed. Protocol-two requests retain their existing literal payload shape.
+Each protocol lists only its own calendars.
+
+V3 create/put require `documentSchemaVersion: 3`. Snapshots and list summaries
+carry `documentSchemaVersion: 3`, `minimumClientProtocol: 3`, and
+`requiredCapabilities: ["metadata-templates-v1"]`. Those requirements stay fixed
+even when every field becomes literal. Explicit marker version 1 activates
+copyright (`copyrightTemplateVersion`) or headline/description/keywords
+(`templateVersions`). The server validates the same bounded brace/token syntax,
+keeps exact source strings and keyword arrays, and never resolves variables.
+Existing server field-byte and array-count limits still apply.
+
+### Upgrading a server for 3.0
+
+1. Back up the database and retain the deployed private `config.php` and its device
+   identities.
+2. Import `schema-template-sync.sql` after the existing `schema-live-sync.sql`. Do not
+   copy rows between the classic and template tables.
+3. Upload the matching `index.php`, `live.php`, and `templates.php`, preserving the
+   deployment's private `$configPath` assignment.
+4. Run Hosting Checks, then verify a 3.0 client can list **Template-enabled — requires
+   3.0** calendars. Keep existing jobs on **Classic — compatible with 2.x** until each
+   migration is deliberately reviewed.
+5. For a migration, use the app's calendar-migration review. The classic calendar,
+   memberships and invitations remain unchanged; invite each participant separately
+   to the newly created template calendar.
+
+Rolling the PHP files back leaves classic protocol-2 calendars available but makes the
+separate template namespace unavailable. Do not recreate a template calendar's UUID in
+the classic namespace during rollback. After re-upgrade, any cross-namespace UUID
+collision is quarantined as `namespace_collision` and needs reviewed recovery rather
+than table merging.
+
+For retained records, removing a marker requires a matching
+`templateDeactivations` entry with `recordKind` (`clip` or `photographer`),
+`recordID`, `field` (`headline`, `description`, `keywords`, or `copyrightNotice`),
+and `previousVersion: 1`. Missing, duplicate, or extra transitions fail with
+`template_activation_lost`. Whole-record deletion needs no transition. A matching
+revision, membership, role and range are still required.
+
+Compatibility gates precede snapshots, conflict payloads, invitation redemption,
+and create retries. Authorized incompatible clients receive document-free
+`client_upgrade_required`; unauthorized resource requests retain generic denial.
+Creation serializes across both namespaces to reject UUID reuse. If an old server
+creates a colliding legacy UUID during rollback, the upgraded server omits it
+from listings and quarantines v3 access with `namespace_collision`. Resolve such
+a collision through a reviewed migration; never merge tables or expose a SQL
+compatibility view.
+
+The disposable compose suite includes exact old PHP fixtures from commit
+`a9a5a14` on an internal-only rollback server. It checks v2 compatibility, v3
+capability and schema gates, marker validation and deactivation, range-preserving
+edits, rollback reads/writes/invitations, and collision quarantine. Eight concurrent
+creation races use different owners and four disposable PHP workers; a database
+barrier verifies both requests reached the shared lock before allowing one to win. No host port is
+published by the standard suite. Run results must be recorded separately; the
+presence of these fixtures is not a deployment or test-pass claim.

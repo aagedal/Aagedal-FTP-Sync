@@ -76,6 +76,21 @@ final class SharedMetadataCalendarTests: XCTestCase {
         XCTAssertTrue(result.clips.contains(remote.clips[0]))
     }
 
+    func testUnnamedSyncAccountRemainsReadableAndNamedAccountRoundTrips() throws {
+        let id = UUID()
+        let data = try JSONSerialization.data(withJSONObject: ["id": id.uuidString,
+            "address": "https://sync.example.org/", "registered": true])
+        var account = try JSONDecoder().decode(MetadataSyncAccount.self, from: data)
+        XCTAssertEqual(account.displayName, account.address)
+        let credentialID = account.credentialID
+        account.name = "Newsroom"
+        let reopened = try JSONDecoder().decode(MetadataSyncAccount.self, from: JSONEncoder().encode(account))
+        XCTAssertEqual(reopened.displayName, "Newsroom")
+        XCTAssertEqual(reopened.id, id)
+        XCTAssertEqual(reopened.credentialID, credentialID)
+        XCTAssertEqual(reopened.address, account.address)
+    }
+
     func testCorruptSyncStateIsNotSilentlyReplaced() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -93,10 +108,12 @@ private actor CalendarTransportFixture {
     var writes = 0
     var requests: [String] = []
     var offline = false
+    var serviceFailure: MetadataSyncFailure?
     private var suspendedAction: String?
     private var suspendedRequest: CheckedContinuation<Void, Never>?
     init(calendar: SharedMetadataCalendar) { self.calendar = calendar }
     func loseNextResponse() { failAfterCommit = true }
+    func setServiceFailure(_ value: MetadataSyncFailure?) { serviceFailure = value }
     func setOffline(_ value: Bool) { offline = value }
     func suspendNextRequest(_ action: String) { suspendedAction = action }
     var isSuspended: Bool { suspendedRequest != nil }
@@ -108,6 +125,7 @@ private actor CalendarTransportFixture {
             await withCheckedContinuation { suspendedRequest = $0 }
         }
         if offline { throw URLError(.notConnectedToInternet) }
+        if let serviceFailure { throw serviceFailure }
         if body.action == "listCalendars" {
             return MetadataCalendarResponse(service: "aagedal-metadata-sync", protocolVersion: 2, calendars: [])
         }
@@ -170,13 +188,65 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         return (root, store, sync, repository, calendar)
     }
 
+    func testSeveralJobsAcrossServersSyncIndependentlyOfSelectedServerAndSurviveRestart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try makeStore(root: root, job: SyncJob(name: "First"))
+        _ = store.addJob()
+        _ = store.addJob()
+        let accounts = [
+            MetadataSyncAccount(id: UUID(), address: "https://one.example.org/", registered: true),
+            MetadataSyncAccount(id: UUID(), address: "https://two.example.org/", registered: true)
+        ]
+        let bindings = store.jobs.enumerated().map { index, job in
+            MetadataCalendarBinding(accountID: accounts[index == 2 ? 1 : 0].id, jobID: job.id,
+                snapshot: SharedMetadataCalendar(id: UUID(), name: job.name, timeZone: "Etc/UTC", revision: 1,
+                    role: "editor", document: SharedMetadataDocument(MetadataAutomation())))
+        }
+        let servers = Dictionary(uniqueKeysWithValues: bindings.map { ($0.id, CalendarTransportFixture(calendar: $0.snapshot)) })
+        let repository = MetadataCalendarRepository(url: root.appendingPathComponent("sync.json"))
+        try repository.save(MetadataCalendarState(accounts: accounts, activeAccountID: accounts[0].id, bindings: bindings))
+        let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let transport: MetadataCalendarCoordinator.Transport = { body, address, id, _, _ in
+            XCTAssertEqual(address, accounts.first { $0.id == id }?.address)
+            if body.action == "listCalendars" {
+                return MetadataCalendarResponse(service: "aagedal-metadata-sync", protocolVersion: 2, calendars: [])
+            }
+            let binding = try XCTUnwrap(bindings.first { $0.id == body.calendarID })
+            XCTAssertEqual(id, binding.accountID)
+            return try await servers[binding.id]!.send(body)
+        }
+        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: transport)
+        sync.start(store: store, polling: false, observingChanges: false)
+        await sync.refresh()
+        for job in store.jobs { XCTAssertEqual(sync.activity(for: job.id).phase, .current) }
+        sync.selectAccount(accounts[1].id)
+        await Task.yield()
+        try await finishOperation(sync)
+        XCTAssertEqual(sync.account?.id, accounts[1].id)
+        XCTAssertEqual(sync.state.bindings.count, 3)
+        sync.stop()
+        let restarted = MetadataCalendarCoordinator(repository: repository, keychain: keychain, transport: transport)
+        restarted.start(store: store, polling: false, observingChanges: false)
+        await restarted.refresh()
+        XCTAssertEqual(restarted.state.accounts.count, 2)
+        for binding in bindings {
+            XCTAssertEqual(restarted.binding(for: binding.jobID)?.accountID, binding.accountID)
+            XCTAssertEqual(restarted.activity(for: binding.jobID).phase, .current)
+            let requests = await servers[binding.id]!.requests
+            XCTAssertGreaterThanOrEqual(requests.filter { $0 == "getCalendar" }.count, 2)
+        }
+        restarted.stop()
+    }
+
     private func finishOperation(_ sync: MetadataCalendarCoordinator) async throws {
         let deadline = Date().addingTimeInterval(5)
         while sync.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(sync.busy, "The receive operation should finish")
     }
 
-    private func liveFixture() throws -> (URL, AppStore, MetadataCalendarCoordinator, CalendarTransportFixture) {
+    private func liveFixture(now: @escaping () -> Date = Date.init,
+                             waitForChangeDebounce: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) throws -> (URL, AppStore, MetadataCalendarCoordinator, CalendarTransportFixture) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let profile = PhotographerProfile(name: "Example", filenamePrefix: "EX", creator: "Example", copyrightNotice: "")
@@ -193,7 +263,7 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
             bindings: [MetadataCalendarBinding(accountID: account.id, jobID: job.id, snapshot: calendar)]))
         let server = CalendarTransportFixture(calendar: calendar)
         let keychain = KeychainStore(passwordReader: { _ in String(repeating: "a", count: 64) }, passwordWriter: { _, _ in }, passwordRemover: { _ in })
-        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, changeDebounce: .milliseconds(100),
+        let sync = MetadataCalendarCoordinator(repository: repository, keychain: keychain, changeDebounce: .milliseconds(100), waitForChangeDebounce: waitForChangeDebounce, now: now,
             transport: { body, _, _, _, _ in try await server.send(body) })
         sync.start(store: store, polling: false)
         return (root, store, sync, server)
@@ -229,6 +299,41 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         let requests = await server.requests
         XCTAssertEqual(requests, ["getCalendar", "getCalendar", "putCalendar"], "Applying sync results must not create an echo request")
+    }
+
+    func testManualRefreshDuringEditDebounceDoesNotProduceDelayedEcho() async throws {
+        let delay = CalendarDebounceGate()
+        let (root, store, sync, server) = try liveFixture(waitForChangeDebounce: { _ in await delay.wait() })
+        defer {
+            sync.stop()
+            Task { await delay.release() }
+            try? FileManager.default.removeItem(at: root)
+        }
+        let id = store.jobs[0].id
+        await sync.refresh(jobID: id)
+        var edited = store.jobs[0].metadataAutomation!
+        edited.clips[0].name = "Manual refresh commits this edit"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await eventually {
+            let waiting = await delay.waitingCount
+            return sync.activity(for: id).phase == .pending && waiting > 0
+        }
+        // The gate makes this ordering independent of machine speed: the edit's
+        // debounce cannot dispatch while the explicit refresh updates its baseline.
+        await sync.refresh(jobID: id)
+        let committed = await server.calendar
+        XCTAssertEqual(committed.document.clips[0].name, edited.clips[0].name)
+        XCTAssertEqual(sync.state.bindings[0].snapshot, committed)
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
+        let beforeRelease = await server.requests
+        XCTAssertEqual(beforeRelease, ["getCalendar", "getCalendar", "putCalendar"])
+        await delay.release()
+        try await eventually { await delay.allReturned }
+        // No follow-up request should appear after all held debounce calls return.
+        try await Task.sleep(for: .milliseconds(200))
+        let afterRelease = await server.requests
+        XCTAssertEqual(afterRelease, beforeRelease, "A completed edit must be re-evaluated after debounce, not fetched again")
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
     }
 
     func testLocalProcessingPolicyChangesDoNotTriggerCalendarRequests() async throws {
@@ -345,6 +450,134 @@ final class MetadataCalendarCoordinatorTests: XCTestCase {
         XCTAssertNil(sync.state.bindings[0].conflict)
         let remote = await server.calendar
         XCTAssertEqual(remote.document.clips[0].name, "Saved offline")
+    }
+
+    func testOfflinePollingSkipsRedundantRequestsAndBacksOff() async throws {
+        var time = Date(timeIntervalSince1970: 1_800_000_000)
+        let (root, store, sync, server) = try liveFixture(now: { time })
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        await server.setOffline(true)
+        let id = store.jobs[0].id
+        await sync.refresh(automatic: true)
+        var requests = await server.requests
+        XCTAssertEqual(requests, ["listCalendars"], "Do not fetch from an account whose connection just failed")
+        XCTAssertEqual(sync.activity(for: id).phase, .offline)
+        XCTAssertEqual(sync.events.filter(\.isError).count, 1)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 1)
+        time = time.addingTimeInterval(10)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 2)
+        time = time.addingTimeInterval(10)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 2, "Second failure must wait 20 seconds")
+        time = time.addingTimeInterval(10)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(sync.events.filter(\.isError).count, 1)
+        XCTAssertEqual(sync.events.last?.occurrences, 3)
+        await server.setOffline(false)
+        await sync.refresh(jobID: id) // Explicit Retry Now bypasses the 40-second delay.
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
+        requests = await server.requests
+        XCTAssertEqual(requests.last, "getCalendar")
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(Array(requests.suffix(2)), ["listCalendars", "getCalendar"], "Success restores normal automatic polling")
+    }
+
+    func testHTTPServiceFailureCoalescesAndHonorsRetryAfterWithManualOverride() async throws {
+        var time = Date(timeIntervalSince1970: 1_800_000_000)
+        let (root, store, sync, server) = try liveFixture(now: { time })
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        await server.setServiceFailure(.init(message: "Unavailable", httpStatus: 503, retryAfter: 90))
+        await sync.refresh(automatic: true)
+        var requests = await server.requests
+        XCTAssertEqual(requests, ["listCalendars"])
+        time = time.addingTimeInterval(89)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 1)
+        time = time.addingTimeInterval(1)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(requests.count, 2)
+        await server.setServiceFailure(nil)
+        await sync.refresh(jobID: store.jobs[0].id)
+        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .current)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(Array(requests.suffix(2)), ["listCalendars", "getCalendar"])
+    }
+
+    func testHealthyPollingFetchesUpdatesWithoutListingEveryTenSeconds() async throws {
+        var time = Date(timeIntervalSince1970: 1_800_000_000)
+        let (root, store, sync, server) = try liveFixture(now: { time })
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        await sync.refresh(automatic: true)
+        time = time.addingTimeInterval(10)
+        await sync.refresh(automatic: true)
+        var requests = await server.requests
+        XCTAssertEqual(requests, ["listCalendars", "getCalendar", "getCalendar"])
+        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .current)
+        time = time.addingTimeInterval(50)
+        await sync.refresh(automatic: true)
+        requests = await server.requests
+        XCTAssertEqual(Array(requests.suffix(2)), ["listCalendars", "getCalendar"])
+    }
+
+    func testSelectingAccountInvalidatesTheClearedCalendarPicker() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        await sync.refresh(automatic: true)
+        sync.selectAccount(sync.state.activeAccountID!)
+        await sync.refresh(automatic: true)
+        let requests = await server.requests
+        XCTAssertEqual(requests.filter { $0 == "listCalendars" }.count, 2)
+        XCTAssertEqual(sync.activity(for: store.jobs[0].id).phase, .current)
+    }
+
+    func testQueuedManualRetryBypassesAnAutomaticRefreshCooldown() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        await server.setOffline(true)
+        await server.suspendNextRequest("listCalendars")
+        let running = Task { await sync.refresh(automatic: true) }
+        try await eventually { await server.isSuspended }
+        await sync.refresh(automatic: true)
+        await sync.refresh(jobID: store.jobs[0].id)
+        await server.resumeRequest()
+        await running.value
+        try await eventually { await server.requests.count == 2 && !sync.busy }
+        let requests = await server.requests
+        XCTAssertEqual(requests, ["listCalendars", "getCalendar"], "Queued Retry Now must survive a coalesced automatic refresh")
+    }
+
+    func testFetchNetworkFailureHasOneEventAndSavedEditsRespectCooldown() async throws {
+        let (root, store, sync, server) = try liveFixture()
+        defer { sync.stop(); try? FileManager.default.removeItem(at: root) }
+        let id = store.jobs[0].id
+        await server.setOffline(true)
+        await sync.refresh(jobID: id)
+        XCTAssertEqual(sync.events.filter(\.isError).count, 1)
+        XCTAssertEqual(sync.events.last?.operation, "Fetch calendar")
+        var edited = store.jobs[0].metadataAutomation!
+        edited.clips[0].name = "Keep this edit through cooldown"
+        XCTAssertTrue(store.saveMetadataAutomation(edited, for: id))
+        try await Task.sleep(for: .milliseconds(250))
+        let requests = await server.requests
+        XCTAssertEqual(requests, ["getCalendar"])
+        let saved = try JobRepository(fileURL: root.appendingPathComponent("jobs.json")).load()
+        XCTAssertEqual(saved[0].metadataAutomation?.clips[0].name, edited.clips[0].name)
+        await server.setOffline(false)
+        await sync.refresh(jobID: id)
+        let remote = await server.calendar
+        XCTAssertEqual(remote.document.clips[0].name, edited.clips[0].name)
+        XCTAssertEqual(sync.activity(for: id).phase, .current)
     }
 
     private func assertUnsafeRemotePreservesLocal(
@@ -788,12 +1021,32 @@ private final class ReceiveSaveGate: @unchecked Sendable {
 }
 
 final class MetadataSyncFeedbackTests: XCTestCase {
+    func testCopiedInvitationRoundTripsWithAndWithoutServerURL() throws {
+        let token = String(repeating: "b", count: 64)
+        for version in [MetadataCalendarProtocol.legacy, .templates] {
+            for address in [nil, "https://sync.example.org/calendar/"] as [String?] {
+                let text = MetadataSyncInvitation.copyText(token: token, address: address, protocolVersion: version)
+                let parsed = try MetadataSyncInvitation(text)
+                XCTAssertEqual(parsed.token, token)
+                XCTAssertEqual(parsed.address, address)
+                XCTAssertEqual(parsed.protocolVersion, version == .templates ? .templates : nil)
+            }
+        }
+    }
+
     func testInvitationAcceptsCopiedTextAndWhitespaceWithoutRelaxingServerValidation() throws {
         let token = String(repeating: "a", count: 64)
         let parsed = try MetadataSyncInvitation("Server: https://SYNC.example.org/calendar/\r\nInvitation: \(token)\r\n")
         XCTAssertEqual(parsed.address, "https://sync.example.org/calendar/")
         XCTAssertEqual(parsed.token, token)
         XCTAssertEqual(try MetadataSyncInvitation(" \(token)\n").token, token)
+        XCTAssertNil(parsed.protocolVersion)
+        let template = try MetadataSyncInvitation("Aagedal template calendar invitation\nServer: https://SYNC.example.org/calendar/\nInvitation: \(token)")
+        XCTAssertEqual(template.protocolVersion, .templates)
+        XCTAssertEqual(template.address, parsed.address)
+        XCTAssertEqual(template.token, token)
+        XCTAssertEqual(try MetadataSyncInvitation("Aagedal template calendar invitation\r\nServer: https://SYNC.example.org/calendar/\r\nInvitation: \(token)\r\n").protocolVersion, .templates)
+        XCTAssertThrowsError(try MetadataSyncInvitation("Aagedal template calendar invitation v4\nInvitation: \(token)"))
         XCTAssertThrowsError(try MetadataSyncInvitation("Server: http://sync.example.org/\nInvitation: \(token)"))
         XCTAssertThrowsError(try MetadataSyncInvitation("not an invitation"))
     }
@@ -1123,5 +1376,28 @@ extension SharedMetadataCalendarTests {
         let result = try MetadataCalendarMerge.plan(base: wire, local: document, remote: wire, readOnly: true)
         XCTAssertTrue(result.conflicts.isEmpty)
         XCTAssertEqual(try result.resolved(), document)
+    }
+}
+
+
+private actor CalendarDebounceGate {
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private(set) var startedCount = 0
+    private(set) var completedCount = 0
+    var waitingCount: Int { continuations.count }
+    var allReturned: Bool { completedCount == startedCount }
+
+    func wait() async {
+        startedCount += 1
+        if !released { await withCheckedContinuation { continuations.append($0) } }
+        completedCount += 1
+    }
+
+    func release() {
+        released = true
+        let pending = continuations
+        continuations.removeAll()
+        for continuation in pending { continuation.resume() }
     }
 }

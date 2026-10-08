@@ -1,8 +1,10 @@
 import AppKit
 import SwiftUI
+import MetadataTemplates
 
 struct MetadataFolderPreviewView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var selectedItemID: String?
 
     let folderName: String
     let timestampPolicy: MetadataTimestampPolicy
@@ -30,6 +32,10 @@ struct MetadataFolderPreviewView: View {
                     .labelStyle(AccessibleStatusLabelStyle(symbolColor: .blue))
                 Label("\(result.skipped) skipped", systemImage: "minus.circle.fill")
                     .foregroundStyle(.secondary)
+                if result.needsAttention > 0 {
+                    Label("\(result.needsAttention) need review", systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                }
                 Spacer()
                 Text("Read-only preview — no files were changed")
                     .font(.caption)
@@ -43,7 +49,7 @@ struct MetadataFolderPreviewView: View {
                     description: Text("The selected job’s file filter found nothing to preview in this folder.")
                 )
             } else {
-                Table(result.items) {
+                Table(result.items, selection: $selectedItemID) {
                     TableColumn("File") { item in
                         Text(item.relativePath)
                             .lineLimit(1)
@@ -76,11 +82,229 @@ struct MetadataFolderPreviewView: View {
                     }
                     .width(min: 160, ideal: 190)
                 }
+                if let item = result.items.first(where: { $0.id == selectedItemID }) {
+                    previewDetails(item)
+                } else {
+                    Text("Select a file to inspect proposed values and omissions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .padding(20)
         .frame(minWidth: 960, minHeight: 520)
     }
+
+    @ViewBuilder
+    private func previewDetails(_ item: MetadataPreviewItem) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.relativePath).font(.headline)
+                if let detail = item.detail { Text(detail).foregroundStyle(.secondary) }
+                if let note = item.processing?.voiceMemoNote { Text(note).foregroundStyle(.secondary) }
+                if let processing = item.processing {
+                    if let context = processing.context {
+                        Text("Frozen processing time: \(context.processingDate.formatted(Date.FormatStyle(date: .abbreviated, time: .standard, timeZone: context.processingTimeZone))) · \(context.processingTimeZone.identifier)")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(captureAssumption(context.captureDate))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if processing.geocoding != .notRequested {
+                        Text(geocodingDetail(processing.geocoding) +
+                             (processing.geofenceMatched ? " Named area supplied City." : ""))
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let identity = processing.geocodingProviderIdentity {
+                            Text("Provider: \(identity.provider) · \(identity.version) · \(processing.geocodingLocaleIdentifier ?? "")")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    if let resolution = processing.coordinateResolution {
+                        Text(MetadataAuditEvidencePresentation.coordinateDecision(.init(resolution)))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let recognition = processing.recognitionEvidence {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(MetadataAuditEvidencePresentation.recognitionDecision(recognition))
+                                .foregroundStyle(recognition.status == .completed ? Color.secondary : Color.orange)
+                            HStack(alignment: .top) {
+                                Text("Person Shown").fontWeight(.medium).frame(width: 100, alignment: .leading)
+                                Text(personNamesDetail(
+                                    item.existingPersonNames,
+                                    empty: String(localized: "No existing names")
+                                ))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(personNamesProposalDetail(item: item, processing: processing))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            if processing.changes.faceNames?.appendToKeywords == true,
+                               !(processing.changes.faceNames?.names.isEmpty ?? true) {
+                                Text("Accepted new names will also be appended to Keywords without removing existing keywords.")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .font(.caption)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel("Recognition preview for \(item.relativePath)")
+                    }
+                    HStack {
+                        Text("Field").frame(width: 100, alignment: .leading)
+                        Text("Existing value").frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Proposed value or outcome").frame(maxWidth: .infinity, alignment: .leading)
+                    }.font(.caption.bold())
+                    ForEach(MetadataWritableField.allCases) { field in
+                        if let outcome = processing.fields[field] {
+                            HStack(alignment: .top) {
+                                Text(field.title).fontWeight(.medium).frame(width: 100, alignment: .leading)
+                                Text(existingDetail(field, item: item))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(fieldDetail(field, outcome: outcome, processing: processing))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    ForEach(MetadataPlaceField.allCases, id: \.self) { field in
+                        if let outcome = processing.places[field] {
+                            HStack(alignment: .top) {
+                                Text(field.title).fontWeight(.medium).frame(width: 100, alignment: .leading)
+                                Text(existingPlaceDetail(field, item: item))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                                Text(placeDetail(field, outcome: outcome, processing: processing))
+                                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+        }.frame(maxHeight: 170)
+    }
+
+    private func existingPlaceDetail(_ field: MetadataPlaceField, item: MetadataPreviewItem) -> String {
+        guard let snapshot = item.existingPlaces, snapshot.readable else { return "Existing value unavailable" }
+        let values = snapshot.carriers.compactMap { carrier -> String? in
+            guard let value = field == .city ? carrier.city : carrier.country, !value.isEmpty else { return nil }
+            return carrier.name + ": " + value
+        }
+        return values.isEmpty ? "No existing value" : values.joined(separator: "\n")
+    }
+
+    private func personNamesDetail(_ names: [String], empty: String) -> String {
+        names.isEmpty ? empty : names.map { "• " + $0 }.joined(separator: "\n")
+    }
+
+    private func personNamesProposalDetail(
+        item: MetadataPreviewItem,
+        processing: MetadataProcessingResult
+    ) -> String {
+        guard processing.recognitionEvidence?.status == .completed else {
+            return String(localized: "Existing names preserved; recognition did not complete")
+        }
+        guard !(processing.changes.faceNames?.names.isEmpty ?? true) else {
+            return String(localized: "No accepted new names; existing names preserved")
+        }
+        return personNamesDetail(
+            item.proposedPersonNames,
+            empty: String(localized: "No names proposed")
+        )
+    }
+
+    private func placeDetail(_ field: MetadataPlaceField, outcome: MetadataProcessingPlaceOutcome,
+                             processing: MetadataProcessingResult) -> String {
+        switch outcome {
+        case .notRequested: return "Disabled"
+        case .preservedByPolicy: return "Existing value preserved by field policy"
+        case .unavailable: return "No usable location name; existing value preserved"
+        case .proposed: return (field == .city ? processing.changes.places?.city : processing.changes.places?.country) ?? "No value proposed"
+        case .invalidValue(let reason):
+            switch reason {
+            case .writerByteLimit(let maximum): return "Omitted: exceeds the \(maximum)-byte field limit"
+            case .invalidXMLCharacter: return "Omitted: unsupported XML character"
+            case .invalidGPSPosition: return "Omitted: invalid location"
+            case .template: return "Omitted: location name could not be resolved safely"
+            }
+        }
+    }
+
+    private func geocodingDetail(_ stage: MetadataProcessingGeocodingOutcome) -> String {
+        switch stage {
+        case .notRequested: return "Location lookup was not needed."
+        case .missingCoordinates: return "Location lookup unavailable: no valid coordinates."
+        case .lookup(let outcome):
+            switch outcome {
+            case .found(let place, let identity):
+                let distance = place.distanceMeters.map { String(format: " · %.0f m from the matched place", $0) } ?? ""
+                return "Location lookup: \(identity.provider) · \(place.source)\(distance)"
+            case .noResult: return "Location lookup found no place."
+            case .tooDistant: return "Nearest place exceeded the configured distance limit."
+            case .invalidProviderResult: return "Location lookup returned an invalid result."
+            case .providerFailure: return "Location lookup failed."
+            case .backoff: return "Location lookup is waiting after a provider failure."
+            case .overloaded: return "Location lookup queue is full."
+            case .deadlineExceeded: return "Location lookup exceeded its deadline."
+            case .cancelled: return "Location lookup was cancelled."
+            }
+        }
+    }
+
+    private func existingDetail(_ field: MetadataWritableField, item: MetadataPreviewItem) -> String {
+        guard !item.existingFieldsUnavailable, let snapshot = item.existingFields else { return "Unavailable: metadata could not be read" }
+        let values = snapshot.carriers.compactMap { carrier -> String? in
+            guard let value = carrier.fields[field] else { return nil }
+            let text: String
+            switch value {
+            case .text(let source): text = source
+            case .list(let sources): text = sources.map { "• " + $0 }.joined(separator: "\n")
+            case .position(let position):
+                text = "\(position.latitude), \(position.longitude)" + (position.altitudeMeters.map { " · \($0) m" } ?? "")
+            }
+            return carrier.name + ": " + text
+        }
+        return values.isEmpty ? "No existing value" : values.joined(separator: "\n")
+    }
+
+    private func captureAssumption(_ capture: MetadataCaptureDate?) -> String {
+        guard let capture else { return "Capture date was not needed or could not be resolved; no resolved capture-date assumption is available." }
+        switch capture.zoneSource {
+        case .explicitOffset(let seconds):
+            let absolute = abs(seconds)
+            let offset = String(format: "%@%02d:%02d", seconds < 0 ? "−" : "+", absolute / 3600, (absolute % 3600) / 60)
+            return "Capture date uses the image's explicit UTC offset \(offset)."
+        case .persistedFallback(let identifier):
+            return "Capture date had no offset; saved fallback zone assumed: \(identifier)."
+        }
+    }
+
+    private func fieldDetail(_ field: MetadataWritableField, outcome: MetadataProcessingFieldOutcome,
+                             processing: MetadataProcessingResult) -> String {
+        switch outcome {
+        case .notRequested: return "No value proposed"
+        case .preservedByPolicy: return "Existing value preserved by field policy"
+        case .omitted(let reason):
+            switch reason {
+            case .invalidGPSPosition: return "Omitted: invalid scheduled GPS position"
+            case .invalidXMLCharacter: return "Omitted: unsupported XML character"
+            case .writerByteLimit(let maximum): return "Omitted: exceeds the writer's \(maximum)-byte limit"
+            case .template(let reason):
+                switch reason {
+                case .missingValues(let variables): return "Omitted: missing " + variables.map(\.rawValue).sorted().joined(separator: ", ")
+                case .invalidDate(let variable): return "Omitted: invalid " + variable.rawValue
+                case .outputLimitExceeded(let maximum): return "Omitted: exceeds the \(maximum)-byte output limit"
+                case .keywordEntryLimitExceeded(let maximum): return "Omitted: exceeds the \(maximum)-keyword limit"
+                }
+            }
+        case .proposed:
+            let values = processing.changes
+            switch field {
+            case .headline: return values.headline
+            case .description: return values.description
+            case .keywords: return values.keywords.joined(separator: " · ")
+            case .creator: return values.creator
+            case .copyright: return values.copyright
+            case .gpsPosition:
+                guard let gps = values.gpsPosition else { return "No position proposed" }
+                return "\(gps.latitude), \(gps.longitude)"
+            }
+        }
+    }
+
 }
 
 struct ProgrammingMonthCalendar: View {
@@ -383,6 +607,9 @@ private extension MetadataPreviewStatus {
     var symbolName: String {
         switch self {
         case .willApply: "checkmark.circle.fill"
+        case .resolutionIncomplete: "exclamationmark.triangle.fill"
+        case .previewFailed: "xmark.octagon.fill"
+        case .noChanges: "minus.circle"
         case .alreadyApplied: "checkmark.seal.fill"
         case .existingMetadataPreserved: "lock.circle.fill"
         case .noMatchingPhotographer: "person.crop.circle.badge.questionmark"
@@ -394,6 +621,9 @@ private extension MetadataPreviewStatus {
     var color: Color {
         switch self {
         case .willApply: .green
+        case .resolutionIncomplete: .orange
+        case .previewFailed: .red
+        case .noChanges: .secondary
         case .alreadyApplied: .blue
         case .existingMetadataPreserved,
              .noMatchingPhotographer,

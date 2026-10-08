@@ -7,6 +7,36 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     private let fileManager = FileManager.default
     private let holdingURLFactory: @Sendable (URL) -> URL
     private let holdingRemoval: @Sendable (URL) throws -> Void
+    private let matchingRecoveryRemoval: @Sendable (URL) throws -> Void
+    enum MatchingImportPhase: Sendable { case prepared, originalsHeld, published(Int), beforeCommit }
+    private let matchingImportHook: @Sendable (MatchingImportPhase) throws -> Void
+
+    enum MeasuredOperation: String, CaseIterable, Sendable {
+        case listing, recoveryAdmission, fileLookup, snapshotExport, snapshotValidation, matchingPublication
+    }
+    /// Opt-in diagnostics for the benchmark harness. No filenames or file contents
+    /// are reported, and ordinary sessions do not read the measurement clock.
+    private let operationMeasurement: (@Sendable (MeasuredOperation, Duration) -> Void)?
+
+    /// Immutable path map, written before moving originals. File presence must be
+    /// inspected during recovery: this is not a commit marker or an automatic replay log.
+    struct MatchingRecoveryManifest: Codable {
+        struct Original: Codable {
+            let relativePath: String
+            let snapshotFilename: String
+            let heldFilename: String
+            let isReplaced: Bool
+        }
+        struct Output: Codable {
+            let relativePath: String
+            let stagedFilename: String
+            let snapshotFilename: String
+            let rollbackFilename: String
+        }
+        let schemaVersion: Int
+        let originals: [Original]
+        let outputs: [Output]
+    }
 
     init(
         endpoint: Endpoint,
@@ -18,11 +48,19 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         },
         holdingRemoval: @escaping @Sendable (URL) throws -> Void = {
             try FileManager.default.removeItem(at: $0)
-        }
+        },
+        matchingRecoveryRemoval: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
+        },
+        matchingImportHook: @escaping @Sendable (MatchingImportPhase) throws -> Void = { _ in },
+        operationMeasurement: (@Sendable (MeasuredOperation, Duration) -> Void)? = nil
     ) throws {
         access = try BookmarkAccess(endpoint: endpoint)
         self.holdingURLFactory = holdingURLFactory
         self.holdingRemoval = holdingRemoval
+        self.matchingImportHook = matchingImportHook
+        self.matchingRecoveryRemoval = matchingRecoveryRemoval
+        self.operationMeasurement = operationMeasurement
         if let managedFolder {
             rootURL = try managedFolder.url(inside: access.url, createIfNeeded: true)
         } else {
@@ -31,12 +69,31 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func listFiles() async throws -> [String: SyncFile] {
-        let root = rootURL
-        let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey, .isHiddenKey]
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.listing, measurementStart.duration(to: .now))
+            }
+        }
+        try Task.checkCancellation()
+        // Foundation may expose the admitted root as /var while the enumerator
+        // returns /private/var. Resolve that spelling once, not once per file.
+        let rootPath = try rootURL.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath ?? rootURL.path
+        let root = URL(fileURLWithPath: rootPath)
+        guard root.resolvingSymlinksInPath().path == rootURL.path else {
+            throw AppError.folderPermissionLost("The selected folder changed through a symbolic link: \(rootURL.path).")
+        }
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
+        var enumerationError: Error?
         guard let enumerator = fileManager.enumerator(
             at: root,
-            includingPropertiesForKeys: keys,
-            options: [.skipsPackageDescendants]
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsPackageDescendants],
+            errorHandler: { _, error in
+                enumerationError = error
+                return false
+            }
         ) else {
             throw AppError.folderPermissionLost("Could not read \(root.path).")
         }
@@ -44,11 +101,15 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         var files: [String: SyncFile] = [:]
         while let url = enumerator.nextObject() as? URL {
             try Task.checkCancellation()
-            let values = try url.resourceValues(forKeys: Set(keys))
+            let values = try url.resourceValues(forKeys: keys)
             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
-            let canonicalURL = url.standardizedFileURL.resolvingSymlinksInPath()
-            guard canonicalURL.path.hasPrefix(root.path + "/") else { continue }
-            let relative = String(canonicalURL.path.dropFirst(root.path.count + 1))
+            // The root is canonicalized at admission and DirectoryEnumerator does
+            // not descend through symbolic links. Keep its lexical path instead of
+            // resolving every ancestor again for every file in a large folder.
+            // Actual reads/writes still revalidate all ancestors through safeURL.
+            let path = url.path
+            guard path.hasPrefix(rootPrefix) else { continue }
+            let relative = String(path.dropFirst(rootPrefix.count))
             guard !relative.isEmpty, !PathSafety.isInternalStagingPath(relative) else { continue }
             if let existing = files[relative],
                !PathSafety.hasIdenticalRepresentation(existing.relativePath, relative) {
@@ -62,10 +123,18 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                 modifiedAt: values.contentModificationDate ?? .distantPast
             )
         }
+        try Task.checkCancellation()
+        if let enumerationError { throw enumerationError }
         return files
     }
 
     func fileInfo(relativePath: String) async throws -> SyncFile? {
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.fileLookup, measurementStart.duration(to: .now))
+            }
+        }
         guard PathSafety.isSafeRelativePath(relativePath) else {
             throw AppError.transferFailed("A file contained an unsafe relative path and was skipped.")
         }
@@ -108,6 +177,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
     }
 
     func exportFile(_ file: SyncFile, to temporaryURL: URL) async throws {
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.snapshotExport, measurementStart.duration(to: .now))
+            }
+        }
         let source = try safeURL(for: file.relativePath)
         try fileManager.copyItem(at: source, to: temporaryURL)
     }
@@ -216,6 +291,257 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             if publicationError is CancellationError { throw CancellationError() }
             throw publicationError
         }
+    }
+
+    static func isRecoveryArtifact(named name: String) -> Bool {
+        return (name.hasPrefix(".aagedal-sync-reset-") && name.hasSuffix(".trash"))
+            || (name.hasPrefix(".aagedal-sync-") && name.hasSuffix(".transaction"))
+    }
+
+    /// A retained transaction may contain files absent from the visible listing.
+    /// Require reconciliation before treating that listing as a complete batch.
+    func validateMetadataRecoveryIsResolved() throws {
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.recoveryAdmission, measurementStart.duration(to: .now))
+            }
+        }
+        try Task.checkCancellation()
+        // Recheck every boundary without retaining an array of every child name.
+        // Do not cache this result: another operation can leave recovery behind
+        // while metadata resolution is suspended. Include hidden names and links.
+        guard let directory = opendir(rootURL.path) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        defer { closedir(directory) }
+        var entriesUntilCancellationCheck = 0
+        while true {
+            // A cancellation check for every ordinary filename dominates repeated
+            // scans of large folders. Check once per small batch, including before
+            // the first read and after EOF; every admission still reads the entire
+            // directory and inspects every hidden name.
+            if entriesUntilCancellationCheck == 0 {
+                try Task.checkCancellation()
+                entriesUntilCancellationCheck = 256
+            }
+            errno = 0
+            guard let entry = readdir(directory) else {
+                let error = errno
+                guard error == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(error))
+                }
+                break
+            }
+            entriesUntilCancellationCheck -= 1
+            // All recovery artifacts start with ".aagedal-sync-" and have at
+            // least 26 UTF-8 bytes. Reject ordinary and unrelated hidden names
+            // before constructing a Swift String at each admission boundary.
+            guard entry.pointee.d_namlen >= 26,
+                  entry.pointee.d_name.0 == 46 else { continue } // ASCII "."
+            guard let name = withUnsafePointer(to: &entry.pointee.d_name, { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { bytes -> String? in
+                    guard bytes[1] == 97, bytes[2] == 97 else { return nil } // ASCII "aa"
+                    return String(cString: bytes)
+                }
+            }) else { continue }
+            if Self.isRecoveryArtifact(named: name) {
+                let recovery = rootURL.appendingPathComponent(name)
+                throw AppError.transferFailed(
+                    "A recovery folder from an earlier operation remains at \(recovery.path). Recover the retained files and remove the resolved hidden folder before retrying sync or metadata reprocessing."
+                )
+            }
+        }
+        try Task.checkCancellation()
+    }
+
+    /// Check the snapshot used by metadata resolution without changing the destination.
+    func validateMetadataSnapshot(primary: EndpointFileImport, sidecar: EndpointFileImport?,
+                                  absentSidecarPath: String?) throws {
+        try validateMetadataRecoveryIsResolved()
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.snapshotValidation, measurementStart.duration(to: .now))
+            }
+        }
+        for original in [primary, sidecar].compactMap({ $0 }) {
+            try Task.checkCancellation()
+            let destination = try safeURL(for: original.file.relativePath)
+            _ = try regularIdentity(destination)
+            guard fileManager.contentsEqual(atPath: destination.path, andPath: original.localURL.path) else {
+                throw AppError.transferFailed("The destination changed during metadata processing. Review it and retry.")
+            }
+        }
+        if let absentSidecarPath {
+            let destination = try safeURL(for: absentSidecarPath)
+            var info = stat()
+            guard lstat(destination.path, &info) != 0, errno == ENOENT else {
+                throw AppError.transferFailed("A sidecar appeared during metadata processing. Review the destination and retry.")
+            }
+        }
+    }
+
+    /// Per-image publication (image and optional sidecar). Originals are held by
+    /// exclusive rename, then compared by bytes, never just size/date. Conflicting
+    /// edits and originals that cannot be restored are retained in the recovery
+    /// directory. This is not filesystem isolation from already-open writer FDs.
+    func importFilesTransactionallyMatching(
+        _ imports: [EndpointFileImport], replacing originals: [EndpointFileImport],
+        preserveDate: Bool, verifySize: Bool
+    ) async throws {
+        guard !imports.isEmpty, imports.count <= 2, !originals.isEmpty, originals.count <= 2,
+              Set(imports.map(\.file.relativePath)).count == imports.count,
+              Set(originals.map(\.file.relativePath)).count == originals.count else {
+            throw AppError.transferFailed("Byte-matched publication requires one image and at most one sidecar, with unique paths.")
+        }
+        try validateMetadataRecoveryIsResolved()
+        let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
+        defer {
+            if let measurementStart {
+                operationMeasurement?(.matchingPublication, measurementStart.duration(to: .now))
+            }
+        }
+        struct Original { let destination: URL; let held: URL; let expected: URL; let replaced: Bool }
+        struct Output { let destination: URL; let staged: URL; let expected: URL; let identity: FileIdentity }
+        let recovery = rootURL.appendingPathComponent(".aagedal-sync-\(UUID().uuidString).transaction", isDirectory: true)
+        try fileManager.createDirectory(at: recovery, withIntermediateDirectories: false,
+                                        attributes: [.posixPermissions: 0o700])
+        var originalsPrepared: [Original] = [], outputs: [Output] = []
+        var heldIndices: [Int] = [], publishedIndices: [Int] = []
+        var retainRecovery = false
+        do {
+            // Freeze caller-owned immutable inputs before altering any destination.
+            for (index, original) in originals.enumerated() {
+                try Task.checkCancellation()
+                let destination = try safeURL(for: original.file.relativePath)
+                _ = try regularIdentity(destination)
+                _ = try regularIdentity(original.localURL)
+                let expected = recovery.appendingPathComponent("original-copy-\(index)")
+                try fileManager.copyItem(at: original.localURL, to: expected)
+                try SourceRemovalVerification.validate(expected, matches: original.localURL)
+                originalsPrepared.append(Original(destination: destination,
+                    held: recovery.appendingPathComponent("original-held-\(index)"), expected: expected,
+                    replaced: imports.contains { $0.file.relativePath == original.file.relativePath }))
+            }
+            for (index, item) in imports.enumerated() {
+                try Task.checkCancellation()
+                let destination = try safeURL(for: item.file.relativePath)
+                try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                _ = try regularIdentity(item.localURL)
+                let staged = recovery.appendingPathComponent("output-stage-\(index)")
+                let expected = recovery.appendingPathComponent("output-copy-\(index)")
+                try fileManager.copyItem(at: item.localURL, to: staged)
+                if verifySize {
+                    let size = try fileManager.attributesOfItem(atPath: staged.path)[.size] as? NSNumber
+                    guard size?.int64Value == item.file.size else { throw AppError.transferFailed("The staged replacement size did not match its expected size.") }
+                }
+                try SourceRemovalVerification.validate(staged, matches: item.localURL)
+                try fileManager.setAttributes([.modificationDate: preserveDate ? item.file.modifiedAt : Date()], ofItemAtPath: staged.path)
+                try fileManager.copyItem(at: staged, to: expected)
+                outputs.append(Output(destination: destination, staged: staged, expected: expected,
+                                      identity: try regularIdentity(staged)))
+            }
+            // Keep the map beside the backups so a process interruption cannot
+            // leave numbered holdings with no record of their nested destination.
+            let manifest = MatchingRecoveryManifest(
+                schemaVersion: 1,
+                originals: originals.enumerated().map { index, item in
+                    .init(relativePath: item.file.relativePath,
+                          snapshotFilename: originalsPrepared[index].expected.lastPathComponent,
+                          heldFilename: originalsPrepared[index].held.lastPathComponent,
+                          isReplaced: originalsPrepared[index].replaced)
+                },
+                outputs: imports.enumerated().map { index, item in
+                    .init(relativePath: item.file.relativePath,
+                          stagedFilename: outputs[index].staged.lastPathComponent,
+                          snapshotFilename: outputs[index].expected.lastPathComponent,
+                          rollbackFilename: "rollback-output-\(index)")
+                })
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(manifest).write(to: recovery.appendingPathComponent("recovery.json"), options: .atomic)
+            try matchingImportHook(.prepared)
+            for (index, original) in originalsPrepared.enumerated() {
+                try Task.checkCancellation()
+                try moveExclusively(from: original.destination, to: original.held)
+                heldIndices.append(index)
+            }
+            try matchingImportHook(.originalsHeld)
+            for original in originalsPrepared { try SourceRemovalVerification.validate(original.held, matches: original.expected) }
+            for (index, output) in outputs.enumerated() {
+                try Task.checkCancellation()
+                try moveExclusively(from: output.staged, to: output.destination)
+                publishedIndices.append(index)
+                try matchingImportHook(.published(index))
+            }
+            try matchingImportHook(.beforeCommit)
+            try Task.checkCancellation()
+            for original in originalsPrepared { try SourceRemovalVerification.validate(original.held, matches: original.expected) }
+            for output in outputs {
+                guard try regularIdentity(output.destination) == output.identity else {
+                    throw AppError.transferFailed("A published replacement changed before commit.")
+                }
+                try SourceRemovalVerification.validate(output.destination, matches: output.expected)
+            }
+            // Guard-only RAW inputs return via rename: bytes, inode and date survive.
+            for index in heldIndices.reversed() where !originalsPrepared[index].replaced {
+                let original = originalsPrepared[index]
+                try moveExclusively(from: original.held, to: original.destination)
+                heldIndices.removeAll { $0 == index }
+            }
+        } catch {
+            let failure = error
+            // Revoke only our unchanged output. A replacement or edited inode is
+            // restored exclusively or retained; never unlink a concurrently edited path.
+            for index in publishedIndices.reversed() {
+                let output = outputs[index]
+                let quarantine = recovery.appendingPathComponent("rollback-output-\(index)")
+                do {
+                    try moveExclusively(from: output.destination, to: quarantine)
+                    if try regularIdentity(quarantine) == output.identity,
+                       fileManager.contentsEqual(atPath: quarantine.path, andPath: output.expected.path) {
+                        try fileManager.removeItem(at: quarantine)
+                    } else {
+                        try moveExclusively(from: quarantine, to: output.destination)
+                    }
+                } catch { retainRecovery = true }
+            }
+            for index in heldIndices.reversed() {
+                let original = originalsPrepared[index]
+                do { try moveExclusively(from: original.held, to: original.destination) }
+                catch { retainRecovery = true }
+            }
+            if retainRecovery {
+                throw AppError.transferFailed("Replacement stopped; concurrent edits were not overwritten. Recover retained files at \(recovery.path). Cause: \(failure.localizedDescription)")
+            }
+            do { try matchingRecoveryRemoval(recovery) }
+            catch {
+                throw AppError.transferFailed("Replacement stopped and originals were preserved or restored, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(failure.localizedDescription). Cleanup: \(error.localizedDescription)")
+            }
+            throw failure
+        }
+        // Publication has committed. A cleanup failure retains the remaining old
+        // originals; do not attempt a partial rollback after deleting any backup.
+        for index in heldIndices {
+            do { try fileManager.removeItem(at: originalsPrepared[index].held) }
+            catch {
+                throw AppError.transferFailed("Replacement was published, but original backup cleanup failed. Retained files: \(recovery.path)")
+            }
+        }
+        do { try matchingRecoveryRemoval(recovery) }
+        catch {
+            throw AppError.transferFailed("Replacement was published, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(error.localizedDescription)")
+        }
+    }
+
+    private struct FileIdentity: Equatable { let device: dev_t; let inode: ino_t }
+    private func regularIdentity(_ url: URL) throws -> FileIdentity {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, info.st_nlink == 1 else {
+            throw AppError.transferFailed("Byte-matched replacement requires regular files without symbolic or hard links.")
+        }
+        return FileIdentity(device: info.st_dev, inode: info.st_ino)
     }
 
     private func moveExclusively(from source: URL, to destination: URL) throws {
@@ -678,15 +1004,23 @@ actor JobResetService {
             jobID: job.id,
             destinationEndpoint: destination
         )
-        if job.usesManagedFolderStructure {
-            guard fileManager.fileExists(atPath: rootURL.path) else {
-                return ResetPlan(rootURL: rootURL, items: [], fileCount: 0, manifestPaths: manifestPaths)
-            }
-            let children = try fileManager.contentsOfDirectory(
-                at: rootURL,
-                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
-                options: []
+        if job.usesManagedFolderStructure, !fileManager.fileExists(atPath: rootURL.path) {
+            return ResetPlan(rootURL: rootURL, items: [], fileCount: 0, manifestPaths: manifestPaths)
+        }
+        let children = try fileManager.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: []
+        )
+        // A managed folder is wholly owned by the job, but retained originals
+        // still require recovery. Neither reset mode may delete them or clear
+        // their download history before the user resolves the failed operation.
+        if let recovery = children.first(where: { LocalEndpointSession.isRecoveryArtifact(named: $0.lastPathComponent) }) {
+            throw AppError.transferFailed(
+                "A recovery folder from an earlier operation remains at \(recovery.path). Recover or remove that hidden folder before retrying Reset Job so retained files and download history are preserved."
             )
+        }
+        if job.usesManagedFolderStructure {
             let fileCount = children.reduce(into: 0) { count, child in
                 count += Self.fileCount(at: child, fileManager: fileManager)
             }
@@ -698,19 +1032,6 @@ actor JobResetService {
             )
         }
 
-        let children = try fileManager.contentsOfDirectory(
-            at: rootURL,
-            includingPropertiesForKeys: nil,
-            options: []
-        )
-        if children.contains(where: {
-            $0.lastPathComponent.hasPrefix(".aagedal-sync-reset-")
-                && $0.lastPathComponent.hasSuffix(".trash")
-        }) {
-            throw AppError.transferFailed(
-                "A recovery folder from an earlier Reset Job attempt remains inside \(rootURL.path). Recover or remove that hidden folder before retrying so download history is not cleared prematurely."
-            )
-        }
         guard !manifestPaths.isEmpty || children.isEmpty else {
             throw AppError.invalidConfiguration(
                 "This ordinary download folder has no ownership manifest. Reset Job will not delete its contents. Move the job to the managed Synced Files structure, or remove the files manually."

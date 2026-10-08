@@ -3,6 +3,22 @@ import XCTest
 @testable import AagedalFTPSync
 
 final class SyncJobValidationTests: XCTestCase {
+    func testProgrammedFilenameFilterIsLimitedToOneWayServerDownloads() {
+        var job = validJob(direction: .leftToRight)
+        job.filter.usesMetadataProgrammingPhotographers = true
+        // The job can be saved before its first day is programmed; that day
+        // simply selects no files until a track or clip is added.
+        XCTAssertNil(job.validationMessage)
+        job.direction = .bidirectional
+        XCTAssertEqual(job.validationMessage,
+            "Metadata Programming filename filtering requires a one-way server-to-local download job.")
+        job.direction = .rightToLeft
+        XCTAssertEqual(job.validationMessage,
+            "Metadata Programming filename filtering requires a one-way server-to-local download job.")
+        job.filter.usesMetadataProgrammingPhotographers = false
+        XCTAssertNil(job.validationMessage)
+    }
+
     func testMinimumCheckIntervalIsFiveSeconds() {
         var job = validJob(direction: .leftToRight)
         job.intervalSeconds = 4

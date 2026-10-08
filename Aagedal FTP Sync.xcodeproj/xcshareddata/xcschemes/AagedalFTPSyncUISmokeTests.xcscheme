@@ -6,6 +6,24 @@
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES"
       runPostActionsOnFailure = "NO">
+      <PreActions>
+         <ExecutionAction
+            ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+            <ActionContent
+               title = "Reassemble Pinned AuraFace Weights"
+               scriptText = "python3 &quot;$PROJECT_DIR/Tools/prepare_bundled_auraface.py&quot;">
+               <EnvironmentBuildable>
+                  <BuildableReference
+                     BuildableIdentifier = "primary"
+                     BlueprintIdentifier = "4FE974EC87357819456A941D"
+                     BuildableName = "Aagedal FTP Sync.app"
+                     BlueprintName = "Aagedal FTP Sync"
+                     ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
+                  </BuildableReference>
+               </EnvironmentBuildable>
+            </ActionContent>
+         </ExecutionAction>
+      </PreActions>
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
@@ -15,9 +33,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "1C493DABAD34DF55272221B5"
-               BuildableName = "AagedalFTPSync.app"
-               BlueprintName = "AagedalFTPSync"
+               BlueprintIdentifier = "4FE974EC87357819456A941D"
+               BuildableName = "Aagedal FTP Sync.app"
+               BlueprintName = "Aagedal FTP Sync"
                ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -46,9 +64,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1C493DABAD34DF55272221B5"
-            BuildableName = "AagedalFTPSync.app"
-            BlueprintName = "AagedalFTPSync"
+            BlueprintIdentifier = "4FE974EC87357819456A941D"
+            BuildableName = "Aagedal FTP Sync.app"
+            BlueprintName = "Aagedal FTP Sync"
             ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -82,9 +100,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1C493DABAD34DF55272221B5"
-            BuildableName = "AagedalFTPSync.app"
-            BlueprintName = "AagedalFTPSync"
+            BlueprintIdentifier = "4FE974EC87357819456A941D"
+            BuildableName = "Aagedal FTP Sync.app"
+            BlueprintName = "Aagedal FTP Sync"
             ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -99,9 +117,9 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "1C493DABAD34DF55272221B5"
-            BuildableName = "AagedalFTPSync.app"
-            BlueprintName = "AagedalFTPSync"
+            BlueprintIdentifier = "4FE974EC87357819456A941D"
+            BuildableName = "Aagedal FTP Sync.app"
+            BlueprintName = "Aagedal FTP Sync"
             ReferencedContainer = "container:Aagedal FTP Sync.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

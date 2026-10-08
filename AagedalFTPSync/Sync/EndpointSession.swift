@@ -280,6 +280,12 @@ protocol EndpointSession: Sendable {
         preserveDate: Bool,
         verifySize: Bool
     ) async throws
+    /// Replace a bounded local output group only if every supplied original still
+    /// matches its immutable staged bytes. Unsupported locations must fail closed.
+    func importFilesTransactionallyMatching(
+        _ imports: [EndpointFileImport], replacing originals: [EndpointFileImport],
+        preserveDate: Bool, verifySize: Bool
+    ) async throws
     func importFilesTransactionallyIfAbsent(
         _ imports: [EndpointFileImport],
         preserveDate: Bool,
@@ -461,6 +467,13 @@ extension EndpointSession {
         verifySize: Bool
     ) async throws {
         throw AppError.invalidConfiguration("Collision-safe processed-file import is not supported by this location.")
+    }
+
+    func importFilesTransactionallyMatching(
+        _ imports: [EndpointFileImport], replacing originals: [EndpointFileImport],
+        preserveDate: Bool, verifySize: Bool
+    ) async throws {
+        throw AppError.invalidConfiguration("Byte-matched replacement is not supported by this location.")
     }
 
     func importFilesTransactionallyIfAbsent(

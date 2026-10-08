@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import Darwin
 
 struct SourceFileSignature: Codable, Equatable, Sendable {
     let size: Int64
@@ -16,7 +17,10 @@ struct SourceFileSignature: Codable, Equatable, Sendable {
 
     func matches(_ file: SyncFile, timestampTolerance: TimeInterval = 1.5) -> Bool {
         size == file.size
-            && abs(modifiedAt.timeIntervalSince(file.modifiedAt)) <= timestampTolerance
+            // SQLite persists Unix-epoch doubles. Compare in that same representation:
+            // converting back to Date's 2001 epoch can round sub-microsecond values and
+            // otherwise make an unchanged source fail a zero-tolerance receipt check.
+            && abs(modifiedAt.timeIntervalSince1970 - file.modifiedAt.timeIntervalSince1970) <= timestampTolerance
     }
 }
 
@@ -104,22 +108,23 @@ actor SourceSignatureRepository {
 
     private let databaseURL: URL
     private let legacyFileURL: URL
+    private let storageFormat: AppStorageFormat
     private var databaseHandle: DatabaseHandle?
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
+        storageFormat = storage.storageFormat
         if let fileURL {
             // A supplied URL remains the store location so test and portable app
             // environments do not need a second configuration value. If it contains
-            // v1 JSON, it is atomically replaced with the SQLite database on first use.
+            // v1 JSON in legacy mode, it is atomically replaced with SQLite on
+            // first use. Explicit version3 mode never migrates or creates it.
             databaseURL = fileURL
             legacyFileURL = fileURL
         } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-            databaseURL = base.appendingPathComponent("original-source-signatures-v2.sqlite3")
-            legacyFileURL = base.appendingPathComponent("original-source-signatures-v1.json")
+            databaseURL = storage.sourceSignatures
+            legacyFileURL = storage.legacySourceSignatures
         }
     }
 
@@ -168,6 +173,7 @@ actor SourceSignatureRepository {
         sourceEndpoint: Endpoint,
         relativePaths: some Collection<String>
     ) throws -> [String: SourceFileSignature] {
+        if storageFormat == .version3 { _ = try openDatabaseIfNeeded() }
         guard !relativePaths.isEmpty else { return [:] }
         let database = try openDatabaseIfNeeded()
         return try inTransaction(database, operation: "load") {
@@ -177,13 +183,16 @@ actor SourceSignatureRepository {
                 database: database,
                 operation: "load"
             )
+            // Keep requested paths as the outer loop. An ordinary join can scan
+            // all history for this job/source before testing the requested set.
+            // CROSS JOIN preserves indexed point lookups for small batches too.
             let statement = try prepare(
                 """
                 SELECT signatures.relative_path, signatures.size, signatures.modified_at
-                FROM source_signatures AS signatures
-                INNER JOIN requested_signature_paths AS requested
-                    ON requested.relative_path = signatures.relative_path
+                FROM requested_signature_paths AS requested
+                CROSS JOIN source_signatures AS signatures
                 WHERE signatures.job_id = ? AND signatures.source_key = ?
+                    AND signatures.relative_path = requested.relative_path
                 """,
                 in: database
             )
@@ -199,6 +208,7 @@ actor SourceSignatureRepository {
     }
 
     func record(_ files: [SyncFile], jobID: UUID, sourceEndpoint: Endpoint) throws {
+        if storageFormat == .version3 { _ = try openDatabaseIfNeeded() }
         guard !files.isEmpty else { return }
         let database = try openDatabaseIfNeeded()
         let sourceKey = SourceIdentity(endpoint: sourceEndpoint).databaseKey
@@ -344,8 +354,225 @@ actor SourceSignatureRepository {
         try stepToCompletion(statement, in: database, operation: "remove")
     }
 
+    enum SnapshotError: Error, Equatable {
+        case databaseNotOpen, invalidOptions, unsafeDestination, destinationExists
+        case deadlineExceeded, sizeLimitExceeded, invalidSnapshot
+        case fileSystem(Int32)
+    }
+
+    struct SnapshotReceipt: Equatable, Sendable {
+        let schemaVersion: Int
+        let recordCount: Int64
+        let byteCount: Int64
+    }
+
+    private final class SnapshotDeadline {
+        let expires: UInt64
+        init(timeout: TimeInterval) {
+            expires = DispatchTime.now().uptimeNanoseconds + UInt64(timeout * 1_000_000_000)
+        }
+        var expired: Bool { DispatchTime.now().uptimeNanoseconds >= expires }
+        func check() throws {
+            if expired { throw SnapshotError.deadlineExceeded }
+            try Task.checkCancellation()
+        }
+    }
+
+    /// Exports the already-open repository's committed read snapshot, including WAL
+    /// records, without checkpointing, reopening or migrating the source. The caller
+    /// must first reconcile legacy storage normally and exclude ALL app writers for
+    /// a consistent multi-store migration; actor exclusion covers this repository only.
+    ///
+    /// The destination must be absent in an existing trusted, stable, non-symlinked
+    /// directory (including its ancestors). This does not defend against a malicious
+    /// same-user process renaming those ancestors concurrently. A private stage is
+    /// validated, closed and synchronized before exclusive publication. Never replace
+    /// an existing destination or companions. No normal startup path calls this API.
+    ///
+    /// The deadline bounds SQLite work/retries, with checks between filesystem calls;
+    /// it cannot interrupt a kernel filesystem operation. A failure after publication
+    /// (e.g. parent fsync) can leave the complete destination; it is never erased.
+    func snapshot(
+        to destinationURL: URL,
+        timeout: TimeInterval = 5,
+        maximumBytes: Int64 = 256 * 1024 * 1024
+    ) throws -> SnapshotReceipt {
+        guard timeout.isFinite, timeout > 0, timeout <= 60, maximumBytes > 0 else {
+            throw SnapshotError.invalidOptions
+        }
+        guard let source = databaseHandle?.pointer else { throw SnapshotError.databaseNotOpen }
+        let deadline = SnapshotDeadline(timeout: timeout)
+        try deadline.check()
+        try validateSnapshotDestination(destinationURL)
+        let parent = destinationURL.deletingLastPathComponent()
+        let stage = parent.appendingPathComponent(".source-signature-snapshot-\(UUID().uuidString)", isDirectory: true)
+        guard mkdir(stage.path, 0o700) == 0 else { throw SnapshotError.fileSystem(errno) }
+        defer { try? FileManager.default.removeItem(at: stage) }
+        let stagedURL = stage.appendingPathComponent("snapshot.sqlite3")
+        let descriptor = Darwin.open(stagedURL.path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw SnapshotError.fileSystem(errno) }
+        defer { Darwin.close(descriptor) }
+
+        var opened: OpaquePointer?
+        let result = sqlite3_open_v2(stagedURL.path, &opened, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil)
+        guard result == SQLITE_OK, let destination = opened else {
+            if let opened { sqlite3_close_v2(opened) }
+            throw SnapshotError.invalidSnapshot
+        }
+        var destinationClosed = false
+        defer { if !destinationClosed { sqlite3_close_v2(destination) } }
+        let context = Unmanaged.passUnretained(deadline).toOpaque()
+        for connection in [source, destination] {
+            sqlite3_busy_timeout(connection, 0)
+            sqlite3_progress_handler(connection, 1000, { context in
+                guard let context else { return 1 }
+                return Unmanaged<SnapshotDeadline>.fromOpaque(context).takeUnretainedValue().expired
+                    || Task<Never, Never>.isCancelled ? 1 : 0
+            }, context)
+        }
+        defer {
+            sqlite3_progress_handler(source, 0, nil, nil)
+            sqlite3_busy_timeout(source, 5000)
+            if !destinationClosed { sqlite3_progress_handler(destination, 0, nil, nil) }
+            // Keep the callback context alive until both handlers have been removed.
+            withExtendedLifetime(deadline) {}
+        }
+        do {
+            try execute("BEGIN", in: source, operation: "begin snapshot of")
+            defer {
+                // The read transaction never changes source data. Disable timeout
+                // interruption before releasing it even on cancellation/failure.
+                sqlite3_progress_handler(source, 0, nil, nil)
+                try? execute("ROLLBACK", in: source, operation: "finish snapshot of")
+            }
+            // The first read pins the WAL snapshot before backup steps; outside
+            // writers cannot make the incremental backup restart indefinitely.
+            guard try snapshotInteger("PRAGMA user_version", in: source) == expectedSchemaVersion else {
+                throw SnapshotError.invalidSnapshot
+            }
+            let pages = try snapshotInteger("PRAGMA page_count", in: source)
+            let pageSize = try snapshotInteger("PRAGMA page_size", in: source)
+            guard pages > 0, pageSize > 0, pages <= maximumBytes / pageSize else {
+                throw SnapshotError.sizeLimitExceeded
+            }
+            try deadline.check()
+            guard let backup = sqlite3_backup_init(destination, "main", source, "main") else {
+                throw sqliteError(operation: "snapshot", database: destination)
+            }
+            var backupFinished = false
+            defer { if !backupFinished { sqlite3_backup_finish(backup) } }
+            while true {
+                try deadline.check()
+                let step = sqlite3_backup_step(backup, 128)
+                guard Int64(sqlite3_backup_pagecount(backup)) <= maximumBytes / pageSize else {
+                    throw SnapshotError.sizeLimitExceeded
+                }
+                if step == SQLITE_DONE { break }
+                guard step == SQLITE_OK || step == SQLITE_BUSY || step == SQLITE_LOCKED else {
+                    throw sqliteError(operation: "snapshot", database: destination)
+                }
+                if step != SQLITE_OK { sqlite3_sleep(10) }
+            }
+            let finish = sqlite3_backup_finish(backup)
+            backupFinished = true
+            guard finish == SQLITE_OK else { throw sqliteError(operation: "snapshot", database: destination) }
+            try deadline.check()
+            try execute("PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL", in: destination, operation: "seal snapshot of")
+            let count = try validateSignatureSnapshot(destination)
+            try deadline.check()
+            sqlite3_progress_handler(destination, 0, nil, nil)
+            guard sqlite3_close(destination) == SQLITE_OK else {
+                throw sqliteError(operation: "close snapshot of", database: destination)
+            }
+            destinationClosed = true
+            var info = stat()
+            guard fstat(descriptor, &info) == 0 else { throw SnapshotError.fileSystem(errno) }
+            guard info.st_size > 0, info.st_size <= maximumBytes else { throw SnapshotError.sizeLimitExceeded }
+            guard fsync(descriptor) == 0 else { throw SnapshotError.fileSystem(errno) }
+            try deadline.check()
+            try validateSnapshotDestination(destinationURL)
+            guard renamex_np(stagedURL.path, destinationURL.path, UInt32(RENAME_EXCL)) == 0 else {
+                if errno == EEXIST { throw SnapshotError.destinationExists }
+                throw SnapshotError.fileSystem(errno)
+            }
+            // Synchronize both sides of the rename before deleting our empty stage.
+            for directory in [stage, parent] {
+                let fd = Darwin.open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard fd >= 0 else { throw SnapshotError.fileSystem(errno) }
+                let syncResult = fsync(fd)
+                let failure = errno
+                Darwin.close(fd)
+                guard syncResult == 0 else { throw SnapshotError.fileSystem(failure) }
+            }
+            return SnapshotReceipt(schemaVersion: Int(expectedSchemaVersion), recordCount: count, byteCount: info.st_size)
+        } catch {
+            try deadline.check()
+            throw error
+        }
+    }
+
+    private func validateSnapshotDestination(_ url: URL) throws {
+        guard url.isFileURL, url.host == nil || url.host == "" || url.host == "localhost",
+              url.query == nil, url.fragment == nil, !url.path.utf8.contains(0),
+              !url.lastPathComponent.isEmpty, url.lastPathComponent != "/",
+              !url.pathComponents.contains(".."), !url.pathComponents.contains(".") else {
+            throw SnapshotError.unsafeDestination
+        }
+        var ancestor = url.deletingLastPathComponent()
+        while true {
+            var info = stat()
+            guard lstat(ancestor.path, &info) == 0,
+                  info.st_mode & S_IFMT == S_IFDIR else { throw SnapshotError.unsafeDestination }
+            if ancestor.path == "/" { break }
+            ancestor.deleteLastPathComponent()
+        }
+        for path in [url.path, url.path + "-wal", url.path + "-shm", url.path + "-journal"] {
+            var info = stat()
+            if lstat(path, &info) == 0 { throw SnapshotError.destinationExists }
+            guard errno == ENOENT else { throw SnapshotError.fileSystem(errno) }
+        }
+    }
+
+    private func snapshotInteger(_ sql: String, in database: OpaquePointer) throws -> Int64 {
+        let statement = try prepare(sql, in: database)
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              sqlite3_column_type(statement, 0) == SQLITE_INTEGER else { throw SnapshotError.invalidSnapshot }
+        let result = sqlite3_column_int64(statement, 0)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw SnapshotError.invalidSnapshot }
+        return result
+    }
+
+    private var expectedSchemaVersion: Int64 { storageFormat == .version3 ? 3 : 2 }
+
+    private func validateSignatureSnapshot(_ database: OpaquePointer) throws -> Int64 {
+        if storageFormat == .version3 { try validateVersion3Schema(database) }
+        guard try snapshotInteger("PRAGMA user_version", in: database) == expectedSchemaVersion else {
+            throw SnapshotError.invalidSnapshot
+        }
+        let integrity = try prepare("PRAGMA integrity_check", in: database)
+        defer { sqlite3_finalize(integrity) }
+        guard sqlite3_step(integrity) == SQLITE_ROW,
+              let bytes = sqlite3_column_text(integrity, 0), String(cString: bytes) == "ok",
+              sqlite3_step(integrity) == SQLITE_DONE else { throw SnapshotError.invalidSnapshot }
+        let columns = try prepare("PRAGMA table_info(source_signatures)", in: database)
+        defer { sqlite3_finalize(columns) }
+        let expected = [("job_id", "TEXT", 1), ("source_key", "TEXT", 2), ("relative_path", "TEXT", 3),
+                        ("size", "INTEGER", 0), ("modified_at", "REAL", 0), ("last_seen_at", "REAL", 0)]
+        for (name, type, primaryKey) in expected {
+            guard sqlite3_step(columns) == SQLITE_ROW,
+                  let nameBytes = sqlite3_column_text(columns, 1), String(cString: nameBytes) == name,
+                  let typeBytes = sqlite3_column_text(columns, 2), String(cString: typeBytes) == type,
+                  sqlite3_column_int(columns, 3) == 1,
+                  sqlite3_column_int(columns, 5) == primaryKey else { throw SnapshotError.invalidSnapshot }
+        }
+        guard sqlite3_step(columns) == SQLITE_DONE else { throw SnapshotError.invalidSnapshot }
+        return try snapshotInteger("SELECT count(*) FROM source_signatures", in: database)
+    }
+
     private func openDatabaseIfNeeded() throws -> OpaquePointer {
         if let databaseHandle { return databaseHandle.pointer }
+        if storageFormat == .version3 { return try openVersion3Database() }
         try prepareStorageIfNeeded()
         let directory = databaseURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -373,6 +600,177 @@ actor SourceSignatureRepository {
         }
         databaseHandle = DatabaseHandle(database)
         return database
+    }
+
+    enum Version3OpenError: Error, Equatable {
+        case missingDatabase, unsafeDatabase, invalidDatabase, incompatibleSchema, inspectionTimedOut
+        case applicationIDMismatch(Int64), unsupportedSchemaVersion(Int64)
+    }
+
+    static let version3ApplicationID: Int64 = 0x41465333 // "AFS3", source-signature store in the v3 boundary.
+    static let version3TableSQL = """
+        CREATE TABLE source_signatures (
+            job_id TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            relative_path TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            modified_at REAL NOT NULL,
+            last_seen_at REAL NOT NULL,
+            PRIMARY KEY (job_id, source_key, relative_path)
+        ) WITHOUT ROWID
+        """
+    static let version3IndexSQL = "CREATE INDEX source_signatures_last_seen ON source_signatures (job_id, source_key, last_seen_at)"
+
+    /// Converter contract, not an automatic initializer: execute only in a newly
+    /// created, empty disposable migration stage whose ownership was established
+    /// separately. Then insert validated legacy records and validate/close/fsync
+    /// that stage before installation. Existing v2 files require an explicit
+    /// converter; changing their marker in place is not a supported upgrade.
+    static let version3InitializationSQL = """
+        \(version3TableSQL);
+        \(version3IndexSQL);
+        PRAGMA application_id = \(version3ApplicationID);
+        PRAGMA user_version = 3;
+        """
+
+    /// Strict admission is opt-in. Its directory/ancestors and companion files must
+    /// be trusted and stable; callers must exclude other app processes/migrations
+    /// for the repository lifetime. Admission validates newly opened handles, not
+    /// external replacement/schema changes while the cached live handle is open.
+    /// Read-only inspection sees committed WAL contents and never checkpoints or
+    /// runs legacy repair. SQLite may maintain its shared-memory coordination file;
+    /// the database and WAL records remain read-only during rejected admission.
+    private func openVersion3Database() throws -> OpaquePointer {
+        try validateVersion3Paths()
+        let inspection = try openExistingVersion3Connection(readOnly: true)
+        do {
+            try inspectVersion3Schema(inspection)
+        } catch {
+            sqlite3_close_v2(inspection)
+            throw error
+        }
+        sqlite3_close_v2(inspection)
+        // Revalidate using the actual writable handle before write PRAGMAs. This
+        // catches observed replacement, but is not a cross-process writer lock.
+        try validateVersion3Paths()
+        let database = try openExistingVersion3Connection(readOnly: false)
+        do {
+            try inspectVersion3Schema(database)
+            try execute("PRAGMA journal_mode = WAL", in: database, operation: "configure")
+            try execute("PRAGMA synchronous = FULL", in: database, operation: "configure")
+            try execute("PRAGMA busy_timeout = 5000", in: database, operation: "configure")
+        } catch {
+            sqlite3_close_v2(database)
+            throw error
+        }
+        databaseHandle = DatabaseHandle(database)
+        return database
+    }
+
+    private func openExistingVersion3Connection(readOnly: Bool) throws -> OpaquePointer {
+        var connection: OpaquePointer?
+        let result = sqlite3_open_v2(databaseURL.path, &connection,
+            (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE) | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nil)
+        guard result == SQLITE_OK, let connection else {
+            if let connection { sqlite3_close_v2(connection) }
+            throw Version3OpenError.invalidDatabase
+        }
+        return connection
+    }
+
+    private func inspectVersion3Schema(_ database: OpaquePointer) throws {
+        // Schema inspection has no busy retries and bounds both metadata size and
+        // VM work. A locked/oversized/unreadable store fails rather than being fixed.
+        let deadline = SnapshotDeadline(timeout: 5)
+        let priorLength = sqlite3_limit(database, SQLITE_LIMIT_LENGTH, 1_048_576)
+        defer { sqlite3_limit(database, SQLITE_LIMIT_LENGTH, priorLength) }
+        sqlite3_progress_handler(database, 1000, { context in
+            guard let context else { return 1 }
+            return Unmanaged<SnapshotDeadline>.fromOpaque(context).takeUnretainedValue().expired ? 1 : 0
+        }, Unmanaged.passUnretained(deadline).toOpaque())
+        defer {
+            sqlite3_progress_handler(database, 0, nil, nil)
+            try? execute("ROLLBACK", in: database, operation: "finish inspection of")
+            withExtendedLifetime(deadline) {}
+        }
+        do {
+            try execute("BEGIN", in: database, operation: "inspect")
+            try validateVersion3Schema(database)
+        } catch {
+            if deadline.expired { throw Version3OpenError.inspectionTimedOut }
+            if let typed = error as? Version3OpenError { throw typed }
+            throw Version3OpenError.invalidDatabase
+        }
+    }
+
+    private func validateVersion3Schema(_ database: OpaquePointer) throws {
+        let applicationID = try snapshotInteger("PRAGMA application_id", in: database)
+        guard applicationID == Self.version3ApplicationID else { throw Version3OpenError.applicationIDMismatch(applicationID) }
+        let version = try snapshotInteger("PRAGMA user_version", in: database)
+        guard version == 3 else { throw Version3OpenError.unsupportedSchemaVersion(version) }
+        let statement = try prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY name LIMIT 3", in: database)
+        defer { sqlite3_finalize(statement) }
+        let expected = [("table", "source_signatures", Self.version3TableSQL),
+                        ("index", "source_signatures_last_seen", Self.version3IndexSQL)]
+        for (type, name, sql) in expected {
+            guard sqlite3_step(statement) == SQLITE_ROW else { throw Version3OpenError.incompatibleSchema }
+            var columns: [String] = []
+            for index: Int32 in 0..<4 {
+                guard let value = sqlite3_column_text(statement, index) else { throw Version3OpenError.incompatibleSchema }
+                columns.append(String(cString: value))
+            }
+            // Deliberately require the converter's exact schema (ignoring only
+            // casing/whitespace/statement terminators), including primary/index
+            // column order, affinity, collation, constraints and WITHOUT ROWID.
+            guard columns[0] == type, columns[1] == name, columns[2] == "source_signatures",
+                  Self.canonicalSchemaTokens(columns[3]) == Self.canonicalSchemaTokens(sql) else { throw Version3OpenError.incompatibleSchema }
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw Version3OpenError.incompatibleSchema }
+    }
+
+    static func canonicalSchemaTokens(_ sql: String) -> [String]? {
+        // The converter schema is ASCII. Unicode "whitespace" can be an
+        // SQLite identifier character, so it must never disappear here.
+        guard sql.utf8.allSatisfy({ $0 < 128 }) else { return nil }
+        var tokens: [String] = []
+        var word = ""
+        for scalar in sql.lowercased().unicodeScalars {
+            if (97...122).contains(scalar.value) || (48...57).contains(scalar.value) || scalar == "_" {
+                word.unicodeScalars.append(scalar)
+            } else {
+                if !word.isEmpty { tokens.append(word); word = "" }
+                if !CharacterSet.whitespacesAndNewlines.contains(scalar) { tokens.append(String(scalar)) }
+            }
+        }
+        if !word.isEmpty { tokens.append(word) }
+        if tokens.last == ";" { tokens.removeLast() }
+        return tokens
+    }
+
+    private func validateVersion3Paths() throws {
+        guard databaseURL.isFileURL, !databaseURL.path.utf8.contains(0),
+              databaseURL.host == nil || databaseURL.host == "" || databaseURL.host == "localhost",
+              databaseURL.query == nil, databaseURL.fragment == nil,
+              !databaseURL.pathComponents.contains(".."), !databaseURL.pathComponents.contains(".") else {
+            throw Version3OpenError.unsafeDatabase
+        }
+        var info = stat()
+        guard lstat(databaseURL.path, &info) == 0 else {
+            if errno == ENOENT { throw Version3OpenError.missingDatabase }
+            throw Version3OpenError.unsafeDatabase
+        }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Version3OpenError.unsafeDatabase }
+        var directory = databaseURL.deletingLastPathComponent()
+        while true {
+            guard lstat(directory.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { throw Version3OpenError.unsafeDatabase }
+            if directory.path == "/" { break }
+            directory.deleteLastPathComponent()
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            if lstat(databaseURL.path + suffix, &info) == 0 {
+                guard info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw Version3OpenError.unsafeDatabase }
+            } else if errno != ENOENT { throw Version3OpenError.unsafeDatabase }
+        }
     }
 
     private func createSchema(in database: OpaquePointer) throws {

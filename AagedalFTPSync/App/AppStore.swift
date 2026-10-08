@@ -4,16 +4,20 @@ import Foundation
 import ServiceManagement
 
 enum AppSettingsTab: Hashable {
-    case servers, photographers, metadataSync
+    case servers, photographers, metadataSync, peopleLibrary, voiceMemos
 }
 
 enum MetadataSyncSettingsTab: Hashable {
-    case calendars, hostingChecks
+    case calendars, members, hostingChecks
 }
 
 enum MetadataReprocessPhase: Equatable, Sendable {
     case idle
+    case preflighting
+    case ready(Date, MetadataReprocessScope, MetadataReprocessFilter, MetadataReprocessPreflight)
     case running
+    case cancelling
+    case cancelled
     case succeeded(Date, MetadataReprocessResult)
     case failed(String)
 }
@@ -35,6 +39,7 @@ struct MetadataClipPositionUpdate: Equatable, Sendable {
 @MainActor
 final class AppStore: ObservableObject {
     @Published var settingsTab: AppSettingsTab = .servers
+    @Published var metadataSyncSettingsJobID: UUID?
     @Published var metadataSyncSettingsTab: MetadataSyncSettingsTab = .calendars
     @Published var metadataDraftsBeingEdited: Set<UUID> = []
     @Published private(set) var jobs: [SyncJob]
@@ -57,13 +62,18 @@ final class AppStore: ObservableObject {
     private let persistenceCoordinator: AppPersistenceCoordinator
     private let configurationTransferCoordinator = ConfigurationTransferCoordinator()
     private let metadataLibraryCoordinator: MetadataLibraryCoordinator
+    private let metadataCalendarRepository: MetadataCalendarRepository?
+    let peopleLibraryController: PeopleLibraryController?
     private let launchAtLoginCoordinator: any LaunchAtLoginCoordinating
     private let sourceSignatureRepository: SourceSignatureRepository
     private let downloadManifestRepository: DownloadManifestRepository
     private let jobResetService: JobResetService
     private let engine: SyncEngine
+    let faceRecognitionContext: MetadataFaceRecognitionContext?
     private let syncConcurrencyController: SyncConcurrencyController
     private let failureNotificationCoordinator: SyncFailureNotificationCoordinator
+    @Published private(set) var isSuspendedForExternalWriter = false
+
     private let scheduler: SyncScheduler
     private let jobDraftTemplate: SyncJob?
     private var metadataReprocessTasks: [UUID: Task<Void, Never>] = [:]
@@ -86,7 +96,15 @@ final class AppStore: ObservableObject {
         syncConcurrencyController: SyncConcurrencyController = SyncConcurrencyController(),
         failureNotificationCoordinator: SyncFailureNotificationCoordinator = SyncFailureNotificationCoordinator(),
         launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator(),
-        jobDraftTemplate: SyncJob? = nil
+        jobDraftTemplate: SyncJob? = nil,
+        retainedCredentialIDs: Set<String> = [],
+        allowsCredentialGarbageCollection: Bool = true,
+        preloadedPersistence: AppPersistenceLoadResult? = nil,
+        startsJobsOnInitialization: Bool = true,
+        metadataCalendarRepository: MetadataCalendarRepository? = nil,
+        peopleLibraryRepository: PeopleLibraryRepository? = nil,
+        peopleLibraryPackageService: PeopleLibraryPackageService = PeopleLibraryPackageService(),
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
     ) {
         let persistenceCoordinator = AppPersistenceCoordinator(
             jobRepository: repository,
@@ -95,18 +113,31 @@ final class AppStore: ObservableObject {
             serverProfileRepository: serverProfileRepository,
             metadataAuditRepository: metadataAuditRepository,
             syncFailureRepository: syncFailureRepository,
-            keychain: keychain
+            keychain: keychain,
+            retainedCredentialIDs: retainedCredentialIDs,
+            allowsCredentialGarbageCollection: allowsCredentialGarbageCollection
         )
         self.persistenceCoordinator = persistenceCoordinator
+        self.metadataCalendarRepository = metadataCalendarRepository
+        peopleLibraryController = peopleLibraryRepository.map {
+            PeopleLibraryController(repository: $0, packageService: peopleLibraryPackageService)
+        }
         metadataLibraryCoordinator = MetadataLibraryCoordinator(
-            persistenceCoordinator: persistenceCoordinator
+            persistenceCoordinator: persistenceCoordinator,
+            validateActivation: { jobs, photographers in
+                try Self.validateMetadataActivation(jobs: jobs,
+                    hasActivatedLibraryValues: photographers.contains(where: \.hasActivatedTemplates),
+                    calendarRepository: metadataCalendarRepository)
+            }
         )
         self.sourceSignatureRepository = sourceSignatureRepository
         self.downloadManifestRepository = downloadManifestRepository
+        self.faceRecognitionContext = faceRecognitionContext
         self.jobResetService = jobResetService ?? JobResetService(
             downloadManifestRepository: downloadManifestRepository
         )
         self.engine = engine ?? SyncEngine(
+            faceRecognitionContext: faceRecognitionContext,
             sourceSignatureRepository: sourceSignatureRepository,
             downloadManifestRepository: downloadManifestRepository
         )
@@ -115,7 +146,7 @@ final class AppStore: ObservableObject {
         self.launchAtLoginCoordinator = launchAtLoginCoordinator
         self.jobDraftTemplate = jobDraftTemplate
         scheduler = SyncScheduler()
-        let persistenceLoad = persistenceCoordinator.load()
+        let persistenceLoad = preloadedPersistence ?? persistenceCoordinator.load()
         jobs = persistenceLoad.state.jobs
         metadataPresets = persistenceLoad.state.metadataPresets
         photographerLibrary = persistenceLoad.state.photographerLibrary
@@ -134,13 +165,57 @@ final class AppStore: ObservableObject {
                 || jobs[index].right.serverProfileID != nil
             let requiresRecoveredConfigurationReview = persistenceLoad.jobsRecoveredFromBackup
                 || (persistenceLoad.serverProfilesRecoveredFromBackup && usesServerProfile)
-            let shouldStart = !requiresRecoveredConfigurationReview && configuredToStart
+            let runtimeBlocked = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) != nil
+            let shouldStart = startsJobsOnInitialization && !requiresRecoveredConfigurationReview
+                && !runtimeBlocked && configuredToStart
             jobs[index].startOnAppLaunch = configuredToStart
             jobs[index].isEnabled = shouldStart
             phases[jobs[index].id] = .stopped
         }
         scheduler.delegate = self
-        scheduler.restart(with: jobs)
+        if startsJobsOnInitialization { scheduler.restart(with: jobs) }
+    }
+
+    /// Construct a paused runtime only AFTER the complete v3 root has passed
+    /// migration/current-store admission under writer exclusion. Calendar
+    /// construction, lifetime ownership and explicit start/recovery policy remain
+    /// the bootstrap coordinator and startup controller's job.
+    /// The strict load throws before any AppStore or scheduler exists; all eight
+    /// repositories, the default engine and reset service use this one layout.
+    static func makePausedForValidatedStorage(
+        _ storage: AppStorageLayout,
+        retainedCredentialIDs: Set<String>,
+        allowsCredentialGarbageCollection: Bool,
+        keychain: KeychainStore = KeychainStore(),
+        launchAtLoginCoordinator: any LaunchAtLoginCoordinating = LaunchAtLoginCoordinator(),
+        faceRecognitionContext: MetadataFaceRecognitionContext? = nil
+    ) throws -> AppStore {
+        guard storage.storageFormat == .version3 else { throw AppPersistenceStartupError.unsupportedStorage }
+        let jobs = JobRepository(storage: storage)
+        let presets = MetadataPresetRepository(storage: storage)
+        let photographers = PhotographerProfileRepository(storage: storage)
+        let profiles = ServerProfileRepository(storage: storage)
+        let audits = MetadataAuditRepository(storage: storage)
+        let failures = SyncFailureRepository(storage: storage)
+        let coordinator = AppPersistenceCoordinator(
+            jobRepository: jobs, metadataPresetRepository: presets,
+            photographerProfileRepository: photographers, serverProfileRepository: profiles,
+            metadataAuditRepository: audits, syncFailureRepository: failures, keychain: keychain,
+            retainedCredentialIDs: retainedCredentialIDs,
+            allowsCredentialGarbageCollection: allowsCredentialGarbageCollection)
+        let loaded = try coordinator.loadForValidatedStartup()
+        return AppStore(repository: jobs, metadataPresetRepository: presets,
+            photographerProfileRepository: photographers, serverProfileRepository: profiles,
+            metadataAuditRepository: audits, syncFailureRepository: failures,
+            sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+            downloadManifestRepository: DownloadManifestRepository(storage: storage),
+            keychain: keychain, launchAtLoginCoordinator: launchAtLoginCoordinator,
+            retainedCredentialIDs: retainedCredentialIDs,
+            allowsCredentialGarbageCollection: allowsCredentialGarbageCollection,
+            preloadedPersistence: loaded, startsJobsOnInitialization: false,
+            metadataCalendarRepository: MetadataCalendarRepository(storage: storage),
+            peopleLibraryRepository: PeopleLibraryRepository(root: storage.peopleLibraryDirectory),
+            faceRecognitionContext: faceRecognitionContext)
     }
 
     deinit {
@@ -173,14 +248,24 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) -> Bool {
-        let resolvedJob: SyncJob
+        var resolvedJob: SyncJob
         do {
             resolvedJob = try job.resolvingServerProfiles(in: serverProfiles)
+            if resolvedJob.metadataAutomation?.hasActivatedTemplates == true || resolvedJob.metadataGeocoding?.isEnabled == true,
+               resolvedJob.metadataProcessingTimeZoneIdentifier == nil {
+                resolvedJob.metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+            }
+            try resolvedJob.validateMetadataTemplateActivationContext()
+            try Self.validateMetadataActivation(jobs: [resolvedJob], calendarRepository: metadataCalendarRepository)
         } catch {
             alertMessage = error.localizedDescription
             return false
         }
         if let message = resolvedJob.validationMessage {
+            alertMessage = message
+            return false
+        }
+        if let message = metadataFaceRecognitionSchedulingBlocker(for: resolvedJob) {
             alertMessage = message
             return false
         }
@@ -335,11 +420,36 @@ final class AppStore: ObservableObject {
 
     /// A received calendar only updates its linked job, not the global photographer library.
     @discardableResult
-    func applySyncedMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
+    func applySyncedMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID,
+                                      protocolVersion: MetadataCalendarProtocol = .legacy) -> Bool {
+        do {
+            try MetadataCalendarNamespaceGate.validate(automation, for: protocolVersion)
+            if let metadataCalendarRepository {
+                if protocolVersion == .templates, metadataCalendarRepository.storageFormat != .version3 {
+                    throw MetadataTemplateRecordError.invalidSource
+                }
+                let state = try metadataCalendarRepository.load()
+                let bindings = state.bindings.filter { $0.jobID == jobID }
+                guard bindings.count <= 1,
+                      bindings.allSatisfy({ $0.snapshot.compatibility.protocolVersion == protocolVersion }),
+                      protocolVersion != .templates || bindings.count == 1,
+                      !state.pendingMigrations.contains(where: { $0.source.jobID == jobID && $0.isPending }) else {
+                    throw MetadataTemplateRecordError.invalidSource
+                }
+            } else if protocolVersion == .templates {
+                throw MetadataTemplateRecordError.invalidSource
+            }
+        }
+        catch { alertMessage = error.localizedDescription; return false }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }), automation.validationMessage == nil else { return false }
-        if jobs[index].metadataAutomation == automation { return true }
         var updated = jobs
         updated[index].metadataAutomation = automation
+        if automation.hasActivatedTemplates, updated[index].metadataProcessingTimeZoneIdentifier == nil {
+            updated[index].metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+        }
+        do { try updated[index].validateMetadataTemplateActivationContext() }
+        catch { alertMessage = error.localizedDescription; return false }
+        if jobs[index] == updated[index] { return true }
         return persistAndPublishJobs(updated, errorPrefix: "Synced metadata could not be saved")
     }
 
@@ -485,7 +595,8 @@ final class AppStore: ObservableObject {
         from data: Data,
         password: String?,
         expectedScope: ConfigurationTransferScope? = nil,
-        metadataTargetJobID: UUID? = nil
+        metadataTargetJobID: UUID? = nil,
+        allowImportedAppleCoordinates: Bool = false
     ) -> ConfigurationImportResult? {
         do {
             let prepared = try configurationTransferCoordinator.prepareImport(
@@ -495,10 +606,35 @@ final class AppStore: ObservableObject {
                 expectedScope: expectedScope,
                 metadataTargetJobID: metadataTargetJobID
             )
+            // Consent recorded on another installation does not authorize this receiving user.
+            // Metadata-only imports never create job IDs or replace job-local provider settings.
+            let newJobIDs = Set(prepared.importedJobIDs.values)
+            if !allowImportedAppleCoordinates,
+               prepared.state.jobs.contains(where: {
+                   newJobIDs.contains($0.id) && $0.metadataGeocoding?.provider == .apple
+               }) {
+                throw AppError.invalidConfiguration(
+                    "This package includes Apple online geocoding. Confirm that image coordinates may be sent to Apple before importing these jobs. Network access is required; device location is not requested."
+                )
+            }
+            var importedJobs = prepared.state.jobs
+            let previousJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+            for index in importedJobs.indices where previousJobs[importedJobs[index].id] != importedJobs[index] {
+                if importedJobs[index].metadataAutomation?.hasActivatedTemplates == true || importedJobs[index].metadataGeocoding?.isEnabled == true,
+                   importedJobs[index].metadataProcessingTimeZoneIdentifier == nil {
+                    importedJobs[index].metadataProcessingTimeZoneIdentifier = TimeZone.current.identifier
+                }
+                try importedJobs[index].validateMetadataTemplateActivationContext()
+            }
+            try Self.validateMetadataActivation(
+                jobs: importedJobs.filter { previousJobs[$0.id] != $0 },
+                hasActivatedLibraryValues: prepared.state.photographers.contains(where: \.hasActivatedTemplates)
+                    || prepared.state.metadataPresets.contains(where: \.hasActivatedTemplates),
+                calendarRepository: metadataCalendarRepository)
             try persistenceCoordinator.saveConfiguration(
                 previous: currentPersistentState,
                 updated: AppPersistentState(
-                    jobs: prepared.state.jobs,
+                    jobs: importedJobs,
                     metadataPresets: prepared.state.metadataPresets,
                     photographerLibrary: prepared.state.photographers,
                     serverProfiles: prepared.state.serverProfiles,
@@ -507,7 +643,7 @@ final class AppStore: ObservableObject {
                 )
             )
             serverProfiles = prepared.state.serverProfiles
-            jobs = prepared.state.jobs
+            jobs = importedJobs
             metadataPresets = prepared.state.metadataPresets
             photographerLibrary = prepared.state.photographers
             for importedID in prepared.importedJobIDs.values {
@@ -558,6 +694,10 @@ final class AppStore: ObservableObject {
     @discardableResult
     func saveMetadataPreset(_ preset: MetadataPreset) -> Bool {
         let normalized = preset.normalized()
+        do {
+            try Self.validateMetadataActivation(jobs: [], hasActivatedLibraryValues: normalized.hasActivatedTemplates,
+                calendarRepository: metadataCalendarRepository)
+        } catch { alertMessage = error.localizedDescription; return false }
         if let message = normalized.validationMessage {
             alertMessage = message
             return false
@@ -640,7 +780,12 @@ final class AppStore: ObservableObject {
     }
 
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        if enabled, let message = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) {
+            alertMessage = message
+            return
+        }
         let wasEnabled = jobs[index].isEnabled
         var updatedJobs = jobs
         updatedJobs[index].isEnabled = enabled
@@ -692,6 +837,7 @@ final class AppStore: ObservableObject {
     }
 
     func runNow(_ jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         guard !isJobBusy(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return }
         scheduler.runNow(job)
@@ -699,15 +845,58 @@ final class AppStore: ObservableObject {
 
     func reprocessExistingLocalFiles(
         _ jobID: UUID,
-        scope: MetadataReprocessScope = .all
+        scope: MetadataReprocessScope = .all,
+        filter: MetadataReprocessFilter = .staleOrIncomplete,
+        conflictPolicy: MetadataReprocessConflictPolicy = .preserveEditedOutputs
     ) {
-        guard !isJobBusy(jobID) else { return }
+        guard !isSuspendedForExternalWriter, !isJobBusy(jobID) else { return }
+        metadataReprocessPhases[jobID] = .running
         let task = Task { [weak self] in
             guard let self else { return }
-            await self.performMetadataReprocess(jobID, scope: scope)
+            await self.performMetadataReprocess(
+                jobID,
+                scope: scope,
+                filter: filter,
+                conflictPolicy: conflictPolicy
+            )
+            // Busy-state consumers must refresh after the final lease has drained.
+            self.objectWillChange.send()
             self.metadataReprocessTasks[jobID] = nil
         }
         metadataReprocessTasks[jobID] = task
+    }
+
+    @discardableResult
+    func preflightMetadataReprocess(
+        _ jobID: UUID,
+        scope: MetadataReprocessScope = .all,
+        filter: MetadataReprocessFilter = .staleOrIncomplete
+    ) -> Bool {
+        guard !isSuspendedForExternalWriter, !isJobBusy(jobID) else { return false }
+        metadataReprocessPhases[jobID] = .preflighting
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performMetadataReprocessPreflight(jobID, scope: scope, filter: filter)
+            // Busy-state consumers must refresh after the final lease has drained.
+            self.objectWillChange.send()
+            self.metadataReprocessTasks[jobID] = nil
+        }
+        metadataReprocessTasks[jobID] = task
+        return true
+    }
+
+    func cancelMetadataReprocessPreflight(_ jobID: UUID) {
+        guard metadataReprocessPhases[jobID] == .preflighting else { return }
+        metadataReprocessTasks[jobID]?.cancel()
+        metadataReprocessPhases[jobID] = .idle
+    }
+
+    /// Keep the operation registered until its task and concurrency lease drain.
+    func cancelMetadataReprocess(_ jobID: UUID) {
+        guard metadataReprocessPhases[jobID] == .running,
+              let task = metadataReprocessTasks[jobID] else { return }
+        metadataReprocessPhases[jobID] = .cancelling
+        task.cancel()
     }
 
     func isJobBusy(_ jobID: UUID) -> Bool {
@@ -718,6 +907,7 @@ final class AppStore: ObservableObject {
     }
 
     func resetJob(_ jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         guard !isJobBusy(jobID),
               let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         let job = jobs[index]
@@ -740,7 +930,11 @@ final class AppStore: ObservableObject {
 
         let task = Task { [weak self] in
             guard let self else { return }
-            defer { resettingJobs.remove(jobID) }
+            defer {
+                resettingJobs.remove(jobID)
+                resetTasks[jobID] = nil
+            }
+            guard !isSuspendedForExternalWriter, !Task.isCancelled else { return }
             do {
                 let result = try await jobResetService.resetDownloads(for: job)
                 try await sourceSignatureRepository.removeSignatures(jobID: jobID)
@@ -758,7 +952,6 @@ final class AppStore: ObservableObject {
             } catch {
                 appendAlert("“\(job.name)” could not be fully reset: \(error.localizedDescription)")
             }
-            resetTasks[jobID] = nil
         }
         resetTasks[jobID] = task
     }
@@ -840,6 +1033,7 @@ final class AppStore: ObservableObject {
     }
 
     private func scheduleSourceSignatureMaintenance(jobID: UUID) {
+        guard !isSuspendedForExternalWriter else { return }
         sourceSignatureMaintenanceTasks[jobID]?.cancel()
         sourceSignatureMaintenanceTasks[jobID] = Task { [weak self] in
             guard let self else { return }
@@ -894,15 +1088,74 @@ final class AppStore: ObservableObject {
         launchAtLoginCoordinator.openSettings()
     }
 
+    /// Stop admitting work after another app copy is observed. Cancellation is
+    /// cooperative: in-flight file I/O may still finish, so this is not a drain
+    /// barrier and never authorizes releasing the storage lease. No saved launch
+    /// choices are changed; the suspension lasts until this process is closed.
+    func suspendForExternalWriter() {
+        guard !isSuspendedForExternalWriter else { return }
+        isSuspendedForExternalWriter = true
+        peopleLibraryController?.suspend()
+        scheduler.cancelAll()
+        for task in metadataReprocessTasks.values { task.cancel() }
+        for task in resetTasks.values { task.cancel() }
+        for task in sourceSignatureMaintenanceTasks.values { task.cancel() }
+        alertMessage = "Another copy of Aagedal FTP Sync was detected. New work is blocked and active operations are being cancelled. Quit the other copy, then quit and reopen this app before continuing."
+    }
+
+    struct LaunchRestoration: Equatable {
+        let startedJobNames: [String]
+        let blockedJobNames: [String]
+    }
+
+    /// Restore the normal per-job launch policy only after the caller has admitted
+    /// the complete v3 runtime and revalidated writer exclusion. The paused v3
+    /// constructor deliberately leaves every job disabled, so first migration and
+    /// prepared-copy recovery can remain review-only while later committed opens
+    /// regain unattended operation. This is a runtime decision and does not rewrite
+    /// the saved jobs merely because the app launched.
+    @discardableResult
+    func restoreConfiguredLaunchJobs() -> LaunchRestoration {
+        guard !isSuspendedForExternalWriter else {
+            return LaunchRestoration(startedJobNames: [], blockedJobNames: [])
+        }
+        var started: [String] = []
+        var blocked: [String] = []
+        for index in jobs.indices {
+            let configuredToStart = jobs[index].startsOnAppLaunch
+            let runtimeBlocked = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) != nil
+            jobs[index].isEnabled = configuredToStart && !runtimeBlocked
+            if configuredToStart {
+                if runtimeBlocked { blocked.append(jobs[index].name) }
+                else { started.append(jobs[index].name) }
+            }
+        }
+        scheduler.restart(with: jobs)
+        if !blocked.isEmpty {
+            alertMessage = "Face recognition is not ready, so these launch jobs remain stopped: \(blocked.joined(separator: ", ")). Disable face recognition to run them without it."
+        }
+        return LaunchRestoration(startedJobNames: started, blockedJobNames: blocked)
+    }
+
     func startAll() {
+        guard !isSuspendedForExternalWriter else { return }
         var updatedJobs = jobs
-        let newlyEnabledJobIDs = updatedJobs.compactMap { $0.isEnabled ? nil : $0.id }
+        let blockedJobs = updatedJobs.filter { metadataFaceRecognitionRuntimeBlocker(for: $0) != nil }
+        let newlyEnabledJobIDs = updatedJobs.compactMap {
+            $0.isEnabled || metadataFaceRecognitionRuntimeBlocker(for: $0) != nil ? nil : $0.id
+        }
         for index in updatedJobs.indices {
-            updatedJobs[index].isEnabled = true
+            if metadataFaceRecognitionRuntimeBlocker(for: updatedJobs[index]) == nil {
+                updatedJobs[index].isEnabled = true
+            }
         }
         guard persistAndPublishJobs(updatedJobs) else { return }
         for jobID in newlyEnabledJobIDs { transferTotals.reset(jobID: jobID) }
         scheduler.restart(with: jobs)
+        if !blockedJobs.isEmpty {
+            let names = blockedJobs.map(\.name).joined(separator: ", ")
+            alertMessage = "Face recognition is not ready, so these jobs remain stopped: \(names). Disable face recognition to run them without it."
+        }
     }
 
     func stopAll() {
@@ -922,6 +1175,16 @@ final class AppStore: ObservableObject {
 
     var activeCount: Int { jobs.filter(\.isEnabled).count }
     var isSyncing: Bool { phases.values.contains(.syncing) }
+
+    var isFaceRecognitionRuntimeReady: Bool { faceRecognitionContext != nil }
+
+    func metadataFaceRecognitionRuntimeBlocker(for job: SyncJob) -> String? {
+        job.metadataFaceRecognitionRuntimeBlocker(runtimeAvailable: isFaceRecognitionRuntimeReady)
+    }
+
+    func metadataFaceRecognitionSchedulingBlocker(for job: SyncJob) -> String? {
+        job.metadataFaceRecognitionSchedulingBlocker(runtimeAvailable: isFaceRecognitionRuntimeReady)
+    }
 
     func transferredFileCount(for jobID: UUID? = nil) -> Int {
         if let jobID {
@@ -974,7 +1237,7 @@ final class AppStore: ObservableObject {
     }
 
     private func performSync(_ jobID: UUID) async -> SyncAttempt {
-        guard !scheduler.isRunning(jobID),
+        guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
               let savedJob = jobs.first(where: { $0.id == jobID }) else { return .skipped }
         let job: SyncJob
         do {
@@ -1060,10 +1323,19 @@ final class AppStore: ObservableObject {
 
     private func performMetadataReprocess(
         _ jobID: UUID,
-        scope: MetadataReprocessScope
+        scope: MetadataReprocessScope,
+        filter: MetadataReprocessFilter,
+        conflictPolicy: MetadataReprocessConflictPolicy
     ) async {
-        guard !scheduler.isRunning(jobID),
-              let savedJob = jobs.first(where: { $0.id == jobID }) else { return }
+        if Task.isCancelled {
+            metadataReprocessPhases[jobID] = .cancelled
+            return
+        }
+        guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
+              let savedJob = jobs.first(where: { $0.id == jobID }) else {
+            metadataReprocessPhases[jobID] = .idle
+            return
+        }
         let job: SyncJob
         do {
             job = try savedJob.resolvingServerProfiles(in: serverProfiles)
@@ -1079,12 +1351,86 @@ final class AppStore: ObservableObject {
                 hosts: SyncRemoteHost.hosts(for: job)
             )
         } catch is CancellationError {
-            metadataReprocessPhases[jobID] = .idle
+            metadataReprocessPhases[jobID] = .cancelled
             return
         } catch {
             let message = error.localizedDescription
             metadataReprocessPhases[jobID] = .failed(message)
             alertMessage = message
+            return
+        }
+        if Task.isCancelled {
+            await syncConcurrencyController.release(leaseID)
+            metadataReprocessPhases[jobID] = .cancelled
+            return
+        }
+        guard scheduler.beginRunning(jobID) else {
+            metadataReprocessPhases[jobID] = .idle
+            await syncConcurrencyController.release(leaseID)
+            return
+        }
+
+        metadataReprocessPhases[jobID] = .running
+
+        do {
+            let needsSource = job.metadataAutomation?.isEnabled == true
+                && job.metadataAutomation?.timestampPolicy == .sourceModification
+            let leftPassword = needsSource ? try persistenceCoordinator.password(for: job.left) : nil
+            let rightPassword = needsSource ? try persistenceCoordinator.password(for: job.right) : nil
+            let result = try await engine.reprocessExistingLocalFiles(
+                job: job,
+                scope: scope,
+                filter: filter,
+                conflictPolicy: conflictPolicy,
+                latestOutcomes: latestMetadataAuditOutcomes(for: jobID),
+                leftPassword: leftPassword,
+                rightPassword: rightPassword
+            )
+            recordMetadataAudit(result.metadataReport, jobID: jobID)
+            metadataReprocessPhases[jobID] = Task.isCancelled ? .cancelled : .succeeded(Date(), result)
+        } catch let cancellation as MetadataReprocessCancellation {
+            recordMetadataAudit(cancellation.metadataReport, jobID: jobID)
+            metadataReprocessPhases[jobID] = .cancelled
+        } catch let failure as MetadataReprocessFailure {
+            recordMetadataAudit(failure.metadataReport, jobID: jobID)
+            let message = failure.localizedDescription
+            metadataReprocessPhases[jobID] = .failed(message)
+            appendAlert(message)
+        } catch is CancellationError {
+            metadataReprocessPhases[jobID] = .cancelled
+        } catch {
+            let message = error.localizedDescription
+            metadataReprocessPhases[jobID] = .failed(message)
+            alertMessage = message
+        }
+        scheduler.endRunning(jobID)
+        await syncConcurrencyController.release(leaseID)
+    }
+
+    private func performMetadataReprocessPreflight(
+        _ jobID: UUID,
+        scope: MetadataReprocessScope,
+        filter: MetadataReprocessFilter
+    ) async {
+        guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
+              let savedJob = jobs.first(where: { $0.id == jobID }) else { return }
+        let job: SyncJob
+        do {
+            job = try savedJob.resolvingServerProfiles(in: serverProfiles)
+        } catch {
+            let message = error.localizedDescription
+            metadataReprocessPhases[jobID] = .failed(message)
+            return
+        }
+        let leaseID: UUID
+        do {
+            leaseID = try await syncConcurrencyController.acquire(hosts: SyncRemoteHost.hosts(for: job))
+        } catch is CancellationError {
+            metadataReprocessPhases[jobID] = .idle
+            return
+        } catch {
+            let message = error.localizedDescription
+            metadataReprocessPhases[jobID] = .failed(message)
             return
         }
         if Task.isCancelled {
@@ -1097,28 +1443,33 @@ final class AppStore: ObservableObject {
             return
         }
 
-        metadataReprocessPhases[jobID] = .running
-
         do {
-            let leftPassword = try persistenceCoordinator.password(for: job.left)
-            let rightPassword = try persistenceCoordinator.password(for: job.right)
-            let result = try await engine.reprocessExistingLocalFiles(
+            let needsSource = job.metadataAutomation?.isEnabled == true
+                && job.metadataAutomation?.timestampPolicy == .sourceModification
+            let leftPassword = needsSource ? try persistenceCoordinator.password(for: job.left) : nil
+            let rightPassword = needsSource ? try persistenceCoordinator.password(for: job.right) : nil
+            let result = try await engine.preflightExistingLocalFiles(
                 job: job,
                 scope: scope,
+                filter: filter,
+                latestOutcomes: latestMetadataAuditOutcomes(for: jobID),
                 leftPassword: leftPassword,
                 rightPassword: rightPassword
             )
-            recordMetadataAudit(result.metadataReport, jobID: jobID)
-            metadataReprocessPhases[jobID] = .succeeded(Date(), result)
+            try Task.checkCancellation()
+            metadataReprocessPhases[jobID] = .ready(Date(), scope, filter, result)
         } catch is CancellationError {
             metadataReprocessPhases[jobID] = .idle
         } catch {
             let message = error.localizedDescription
             metadataReprocessPhases[jobID] = .failed(message)
-            alertMessage = message
         }
         scheduler.endRunning(jobID)
         await syncConcurrencyController.release(leaseID)
+    }
+
+    private func latestMetadataAuditOutcomes(for jobID: UUID) -> [String: MetadataAuditEntry] {
+        MetadataRunReport(entries: metadataAuditEntries[jobID, default: []]).latestOutcomes
     }
 
     private var currentPersistentState: AppPersistentState {
@@ -1130,6 +1481,40 @@ final class AppStore: ObservableObject {
             metadataAuditEntries: metadataAuditEntries,
             syncFailureEntries: syncFailureEntries
         )
+    }
+
+    /// Admission reads the durable calendar state even while its coordinator is
+    /// paused. It does not alter bindings or start sync, and never guesses a root.
+    private static func validateMetadataActivation(
+        jobs: [SyncJob], hasActivatedLibraryValues: Bool = false,
+        calendarRepository: MetadataCalendarRepository?
+    ) throws {
+        let activeJobs = jobs.filter { $0.metadataAutomation?.hasActivatedTemplates == true }
+        guard hasActivatedLibraryValues || !activeJobs.isEmpty else { return }
+        guard let calendarRepository, calendarRepository.storageFormat == .version3 else {
+            throw AppError.invalidConfiguration("Open version 3 storage before saving metadata variables. Your draft has not been saved.")
+        }
+        guard !activeJobs.isEmpty else { return }
+        let state: MetadataCalendarState
+        do { state = try calendarRepository.load() }
+        catch {
+            throw AppError.invalidConfiguration("Calendar links could not be checked. Resolve calendar storage recovery before saving metadata variables. Your draft has not been saved.")
+        }
+        for job in activeJobs {
+            if state.pendingMigrations.contains(where: { $0.source.jobID == job.id && $0.isPending }) {
+                throw AppError.invalidConfiguration("Finish calendar migration recovery before changing metadata variables. Your draft has not been saved.")
+            }
+            if let pending = state.pendingReceive, pending.source.id == job.id || pending.duplicate.id == job.id {
+                throw AppError.invalidConfiguration("Finish or cancel the pending calendar link before changing metadata variables. Your draft has not been saved.")
+            }
+            let bindings = state.bindings.filter { $0.jobID == job.id }
+            if bindings.contains(where: { $0.snapshot.compatibility != .templates }) {
+                throw AppError.invalidConfiguration("Metadata variables require a newer calendar sharing protocol. Detach the linked calendar and keep the programming in a local copy, then create a template-enabled calendar on an upgraded server. Your draft has not been saved.")
+            }
+            if bindings.contains(where: { $0.snapshot.revision <= 0 }) {
+                throw AppError.invalidConfiguration("Wait for the server to confirm the new template-enabled calendar before changing metadata variables. Your draft has not been saved.")
+            }
+        }
     }
 
     private var metadataLibraryState: MetadataLibraryState {
@@ -1201,7 +1586,8 @@ final class AppStore: ObservableObject {
 
 extension AppStore: SyncSchedulerDelegate {
     func syncSchedulerJob(_ jobID: UUID) -> SyncJob? {
-        jobs.first(where: { $0.id == jobID })
+        guard !isSuspendedForExternalWriter else { return nil }
+        return jobs.first(where: { $0.id == jobID })
     }
 
     func syncSchedulerPerformSync(_ jobID: UUID) async -> SyncAttempt {

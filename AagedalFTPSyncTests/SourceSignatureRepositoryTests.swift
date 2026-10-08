@@ -407,6 +407,21 @@ final class SourceSignatureRepositoryTests: XCTestCase {
 
         XCTAssertEqual(selected, [files[7].relativePath: SourceFileSignature(file: files[7])])
         XCTAssertEqual(try databaseHeader(at: fixture.fileURL), Data("SQLite format 3\0".utf8))
+        let otherJob = UUID()
+        let otherEndpoint = Endpoint(kind: .sftp, host: "other.example.com", username: "desk")
+        let otherFile = SyncFile(relativePath: files[7].relativePath, size: 999,
+            modifiedAt: Date(timeIntervalSince1970: 999))
+        try await repository.record(otherFile, jobID: otherJob, sourceEndpoint: endpoint)
+        try await repository.record(otherFile, jobID: jobID, sourceEndpoint: otherEndpoint)
+        let repeated = try await repository.signatures(jobID: jobID, sourceEndpoint: endpoint,
+            relativePaths: [files[7].relativePath, files[7].relativePath, "not-present.jpg"])
+        XCTAssertEqual(repeated, selected, "Point lookups must retain job and endpoint isolation and deduplicate paths")
+        let empty = try await repository.signatures(jobID: jobID, sourceEndpoint: endpoint, relativePaths: [String]())
+        XCTAssertTrue(empty.isEmpty)
+        let changed = try await repository.signatures(jobID: jobID, sourceEndpoint: endpoint,
+            relativePaths: [files[8].relativePath])
+        XCTAssertEqual(changed, [files[8].relativePath: SourceFileSignature(file: files[8])],
+            "A later request must not retain paths from the earlier batch")
     }
 
     func testReconciliationPrunesIrrelevantPathsAndRetainsTemporaryDisappearances() async throws {
@@ -479,13 +494,22 @@ final class SourceSignatureRepositoryTests: XCTestCase {
         }
 
         let requested = ["archive/0000000.jpg", "archive/0500000.jpg", "archive/0999999.jpg"]
-        let signatures = try await repository.signatures(
-            jobID: jobID,
-            sourceEndpoint: endpoint,
-            relativePaths: requested
-        )
-        XCTAssertEqual(signatures.count, requested.count)
-        XCTAssertEqual(signatures[requested[1]]?.size, 500_000)
+        let clock = ContinuousClock()
+        var samples: [Double] = []
+        for _ in 0..<20 {
+            let start = clock.now
+            let signatures = try await repository.signatures(
+                jobID: jobID,
+                sourceEndpoint: endpoint,
+                relativePaths: requested
+            )
+            let duration = start.duration(to: clock.now).components
+            samples.append(Double(duration.seconds) + Double(duration.attoseconds) / 1e18)
+            XCTAssertEqual(signatures.count, requested.count)
+            XCTAssertEqual(signatures[requested[1]]?.size, 500_000)
+        }
+        samples.sort()
+        print("SOURCE_SIGNATURE_LOOKUP_BENCHMARK history=1000000 requested=3 samples=20 medianSeconds=\(samples[10]) p95Seconds=\(samples[18])")
     }
 
     private func makeFixture() -> (fileURL: URL, cleanUp: () -> Void) {

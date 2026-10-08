@@ -2,9 +2,22 @@
 declare(strict_types=1);
 
 // Loaded by index.php after its private configuration. No secrets in this file.
+require_once __DIR__ . '/templates.php';
+function liveProtocol(): int { return ($_SERVER['HTTP_X_AAGEDAL_PROTOCOL'] ?? '') === '3' ? 3 : 2; }
+function liveCapable(array $request): bool {
+    return liveProtocol() === 3 && ($request['capabilities'] ?? null) === ['metadata-templates-v1'];
+}
+function liveCompatibility(): array {
+    return ['documentSchemaVersion' => 3, 'minimumClientProtocol' => 3,
+        'requiredCapabilities' => ['metadata-templates-v1']];
+}
+function liveCollision(PDO $pdo, string $id): bool {
+    return (bool) liveQuery($pdo, 'SELECT a.id FROM aftpsync_calendars a JOIN aftpsync_v3_calendars b ON a.id = b.id WHERE a.id = ?', [$id])->fetchColumn();
+}
 function liveReply(int $status, array $data = []): never {
     http_response_code($status);
-    echo json_encode(['service' => 'aagedal-metadata-sync', 'protocolVersion' => 2] + $data,
+    echo json_encode(['service' => 'aagedal-metadata-sync', 'protocolVersion' => liveProtocol()]
+        + (liveProtocol() === 3 ? ['capabilities' => ['metadata-templates-v1']] : []) + $data,
         JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
     exit;
 }
@@ -42,13 +55,18 @@ function liveDocument(mixed $input): array {
     $photos = []; $prefixes = [];
     foreach (liveArray($input['photographers'] ?? null, 500) as $p) {
         if (!is_array($p)) { failLive(400, 'invalid_photographer'); }
-        liveKeys($p, ['id', 'name', 'filenamePrefix', 'creator', 'copyrightNotice']);
+        liveKeys($p, array_merge(['id', 'name', 'filenamePrefix', 'creator', 'copyrightNotice'], liveProtocol() === 3 ? ['copyrightTemplateVersion'] : []));
         $id = liveID($p['id'] ?? null);
         if (isset($photos[$id])) { failLive(400, 'duplicate_id'); }
         $photos[$id] = ['id' => $id, 'name' => liveText($p['name'] ?? null, 400),
             'filenamePrefix' => liveText($p['filenamePrefix'] ?? null, 400),
             'creator' => liveText($p['creator'] ?? null, 400),
             'copyrightNotice' => liveText($p['copyrightNotice'] ?? null, 2000)];
+        if (liveProtocol() === 3 && array_key_exists('copyrightTemplateVersion', $p)) {
+            if ($p['copyrightTemplateVersion'] !== 1) { failLive(422, 'invalid_template_marker'); }
+            liveTemplateSource($photos[$id]['copyrightNotice']);
+            $photos[$id]['copyrightTemplateVersion'] = 1;
+        }
         foreach (explode(',', $p['filenamePrefix']) as $prefix) {
             $prefix = strtoupper(trim($prefix));
             if ($prefix !== '' && isset($prefixes[$prefix]) && $prefixes[$prefix] !== $id) { failLive(422, 'duplicate_prefix'); }
@@ -65,10 +83,12 @@ function liveDocument(mixed $input): array {
         if ($end <= $start) { failLive(422, 'invalid_interval'); }
         $fields = $c['fields'] ?? null;
         if (!is_array($fields)) { failLive(400, 'invalid_fields'); }
-        liveKeys($fields, ['headline', 'description', 'keywords']);
+        liveKeys($fields, array_merge(['headline', 'description', 'keywords'], liveProtocol() === 3 ? ['templateVersions'] : []));
+        $sourceFields = $fields;
         $fields = ['headline' => liveText($fields['headline'] ?? null, 4000),
             'description' => liveText($fields['description'] ?? null, 16000),
             'keywords' => array_map(fn($k) => liveText($k, 400), liveArray($fields['keywords'] ?? null, 100))];
+        if (liveProtocol() === 3) { liveTemplateMarkers($sourceFields, $fields); }
         $clip = ['id' => $id, 'photographerID' => $pid, 'name' => liveText($c['name'] ?? null, 1000, true),
             'startsAt' => $start, 'endsAt' => $end, 'fields' => $fields];
         if (isset($c['gpsPosition'])) {
@@ -107,6 +127,11 @@ function liveDocument(mixed $input): array {
     ksort($photos); ksort($clips);
     return ['photographers' => array_values($photos), 'photographerTracks' => $tracks, 'clips' => array_values($clips)];
 }
+function liveEncodeDocument(array $document): string {
+    $encoded = json_encode($document, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+    if (strlen($encoded) > 1000000) { failLive(413, 'calendar_too_large'); }
+    return $encoded;
+}
 function trackVisible(array $t, array $member, string $zone): bool {
     if ($member['range_start'] === null) { return true; }
     $d = $t['date'];
@@ -124,13 +149,19 @@ function visibleDocument(array $doc, array $member, string $zone): array {
     return $doc;
 }
 function snapshot(array $calendar, array $member): array {
-    return ['id' => $calendar['id'], 'name' => $calendar['name'], 'timeZone' => $calendar['time_zone'],
+    $document = json_decode($calendar['document'], true, 32, JSON_THROW_ON_ERROR);
+    if (liveProtocol() === 3) { $document = liveDocument($document); }
+    return (liveProtocol() === 3 ? liveCompatibility() : []) + ['id' => $calendar['id'], 'name' => $calendar['name'], 'timeZone' => $calendar['time_zone'],
         'revision' => (int) $calendar['revision'], 'role' => $member['role'],
         'rangeStart' => $member['range_start'] === null ? null : (int) $member['range_start'],
         'rangeEnd' => $member['range_end'] === null ? null : (int) $member['range_end'],
-        'document' => visibleDocument(json_decode($calendar['document'], true, 32, JSON_THROW_ON_ERROR), $member, $calendar['time_zone'])];
+        'document' => visibleDocument($document, $member, $calendar['time_zone'])];
 }
 function liveQuery(PDO $pdo, string $sql, array $params = []): PDOStatement {
+    if (liveProtocol() === 3 && !str_contains($sql, 'aftpsync_v3_')) {
+        $sql = strtr($sql, ['aftpsync_calendars' => 'aftpsync_v3_calendars',
+            'aftpsync_members' => 'aftpsync_v3_members', 'aftpsync_invites' => 'aftpsync_v3_invites']);
+    }
     $q = $pdo->prepare($sql); $q->execute($params); return $q;
 }
 function liveRun(array $config): never {
@@ -156,6 +187,21 @@ function liveRun(array $config): never {
         $hash = hash('sha256', $token);
         $device = liveQuery($pdo, 'SELECT * FROM aftpsync_devices WHERE id = ?', [$id])->fetch(PDO::FETCH_ASSOC);
         if ($device && !hash_equals($device['token_hash'], $hash)) { failLive(401, 'unauthorized'); }
+        if (liveProtocol() === 3 && !liveCapable($r)
+            && in_array($r['action'], ['bootstrap', 'getCapabilities', 'listCalendars'], true)) {
+            if (!$device) { failLive(401, 'unauthorized'); }
+            failLive(426, 'client_upgrade_required');
+        }
+        if ($r['action'] === 'getCapabilities') {
+            if (!$device) { failLive(401, 'unauthorized'); }
+            if (liveProtocol() !== 3) { failLive(400, 'unknown_action'); }
+            // Probe schema readiness before promising support; no document is read.
+            foreach (['aftpsync_v3_calendars', 'aftpsync_v3_members', 'aftpsync_v3_invites'] as $table) {
+                liveQuery($pdo, 'SELECT 1 FROM ' . $table . ' LIMIT 0');
+            }
+            liveReply(200, ['capabilities' => ['metadata-templates-v1'],
+                'documentSchemaVersions' => [1, 3], 'templateLanguageVersions' => [1]]);
+        }
         if ($r['action'] === 'bootstrap') {
             $pdo->beginTransaction();
             $owner = liveQuery($pdo, 'SELECT device_id FROM aftpsync_bootstrap WHERE id = 1 FOR UPDATE')->fetchColumn();
@@ -174,11 +220,17 @@ function liveRun(array $config): never {
             if (!is_string($inviteToken) || !preg_match('/\A[a-f0-9]{64}\z/', $inviteToken)) { failLive(401, 'invalid_invite'); }
             $pdo->beginTransaction();
             $invitedCalendar = liveQuery($pdo, 'SELECT calendar_id FROM aftpsync_invites WHERE token_hash = ?', [hash('sha256', $inviteToken)])->fetchColumn();
+            if (!$invitedCalendar && liveProtocol() === 2) {
+                $v3Invite = liveQuery($pdo, 'SELECT * FROM aftpsync_v3_invites WHERE token_hash = ?', [hash('sha256', $inviteToken)])->fetch(PDO::FETCH_ASSOC);
+                if ($v3Invite && ($v3Invite['redeemed_by'] === $id || ($v3Invite['redeemed_by'] === null && $v3Invite['expires_at'] >= time()))) { failLive(426, 'client_upgrade_required'); }
+            }
             if (!$invitedCalendar) { failLive(403, 'invalid_invite'); }
             liveQuery($pdo, 'SELECT id FROM aftpsync_calendars WHERE id = ? FOR UPDATE', [$invitedCalendar]);
             $invite = liveQuery($pdo, 'SELECT * FROM aftpsync_invites WHERE token_hash = ? FOR UPDATE', [hash('sha256', $inviteToken)])->fetch(PDO::FETCH_ASSOC);
             if (!$invite || ($invite['redeemed_by'] !== null && $invite['redeemed_by'] !== $id)
                 || ($invite['redeemed_by'] === null && $invite['expires_at'] < time())) { failLive(403, 'invalid_invite'); }
+            if (liveProtocol() === 3 && !liveCapable($r)) { failLive(426, 'client_upgrade_required'); }
+            if (liveCollision($pdo, $invitedCalendar)) { failLive(409, 'namespace_collision'); }
             if ($invite['redeemed_by'] === $id && $device) { $pdo->commit(); liveReply(200); }
             if (!$device) { liveQuery($pdo, 'INSERT INTO aftpsync_devices (id, token_hash, name) VALUES (?, ?, ?)', [$id, $hash, liveText($r['deviceName'] ?? '', 100, true)]); }
             if (liveQuery($pdo, 'SELECT role FROM aftpsync_members WHERE calendar_id = ? AND device_id = ?', [$invite['calendar_id'], $id])->fetchColumn()) { failLive(409, 'already_member'); }
@@ -188,22 +240,36 @@ function liveRun(array $config): never {
         }
         if (!$device) { failLive(401, 'unauthorized'); }
         if ($r['action'] === 'listCalendars') {
-            $rows = liveQuery($pdo, 'SELECT c.id, c.name, c.time_zone AS timeZone, m.role FROM aftpsync_calendars c JOIN aftpsync_members m ON m.calendar_id = c.id WHERE m.device_id = ? ORDER BY c.name', [$id])->fetchAll(PDO::FETCH_ASSOC);
+            $rows = liveQuery($pdo, 'SELECT c.id, c.name, c.time_zone AS timeZone, m.role, m.range_start AS rangeStart, m.range_end AS rangeEnd FROM aftpsync_calendars c JOIN aftpsync_members m ON m.calendar_id = c.id WHERE m.device_id = ? ORDER BY c.name', [$id])->fetchAll(PDO::FETCH_ASSOC);
+            $rows = array_values(array_filter($rows, fn($row) => !liveCollision($pdo, $row['id'])));
+            if (liveProtocol() === 3) { $rows = array_map(fn($row) => $row + liveCompatibility(), $rows); }
             liveReply(200, ['calendars' => $rows]);
         }
         $cid = liveID($r['calendarID'] ?? null);
+        if (liveProtocol() === 2 && liveQuery($pdo, 'SELECT role FROM aftpsync_v3_members WHERE calendar_id = ? AND device_id = ?', [$cid, $id])->fetchColumn()) {
+            failLive(426, 'client_upgrade_required');
+        }
         if ($r['action'] === 'createCalendar') {
+            if (liveProtocol() === 3 && !liveCapable($r)) { failLive(426, 'client_upgrade_required'); }
+            if (liveProtocol() === 3 && ($r['documentSchemaVersion'] ?? null) !== 3) { failLive(422, 'invalid_document_schema'); }
             $doc = liveDocument($r['document'] ?? null);
+            $encoded = liveEncodeDocument($doc);
             $name = liveText($r['name'] ?? null, 100, true); $zone = liveText($r['timeZone'] ?? null, 100, true);
             if (!in_array($zone, DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC), true)) { failLive(400, 'invalid_time_zone'); }
             $pdo->beginTransaction();
+            // Serialize cross-namespace creation across every device, including retries.
+            liveQuery($pdo, 'SELECT device_id FROM aftpsync_bootstrap WHERE id = 1 FOR UPDATE');
+            $otherTable = liveProtocol() === 3 ? 'aftpsync_calendars' : 'aftpsync_v3_calendars';
+            $check = $pdo->prepare('SELECT id FROM ' . $otherTable . ' WHERE id = ?');
+            $check->execute([$cid]);
+            if ($check->fetchColumn()) { failLive(409, 'id_in_use'); }
             // Serialize creation per device, including retries after an uncertain response.
             liveQuery($pdo, 'SELECT id FROM aftpsync_devices WHERE id = ? FOR UPDATE', [$id]);
             $existing = liveQuery($pdo, 'SELECT role FROM aftpsync_members WHERE calendar_id = ? AND device_id = ?', [$cid, $id])->fetchColumn();
             if ($existing !== 'owner') {
                 if ($existing || liveQuery($pdo, 'SELECT id FROM aftpsync_calendars WHERE id = ?', [$cid])->fetchColumn()) { failLive(409, 'id_in_use'); }
                 if ((int) liveQuery($pdo, "SELECT COUNT(*) FROM aftpsync_members WHERE device_id = ? AND role = 'owner'", [$id])->fetchColumn() >= 100) { failLive(422, 'calendar_limit'); }
-                liveQuery($pdo, 'INSERT INTO aftpsync_calendars (id, name, time_zone, document) VALUES (?, ?, ?, ?)', [$cid, $name, $zone, json_encode($doc, JSON_THROW_ON_ERROR)]);
+                liveQuery($pdo, 'INSERT INTO aftpsync_calendars (id, name, time_zone, document) VALUES (?, ?, ?, ?)', [$cid, $name, $zone, $encoded]);
                 liveQuery($pdo, "INSERT INTO aftpsync_members VALUES (?, ?, 'owner', NULL, NULL)", [$cid, $id]);
             }
             $pdo->commit();
@@ -213,10 +279,13 @@ function liveRun(array $config): never {
         $calendar = liveQuery($pdo, 'SELECT * FROM aftpsync_calendars WHERE id = ? FOR UPDATE', [$cid])->fetch(PDO::FETCH_ASSOC);
         $member = liveQuery($pdo, 'SELECT * FROM aftpsync_members WHERE calendar_id = ? AND device_id = ?', [$cid, $id])->fetch(PDO::FETCH_ASSOC);
         if (!$calendar || !$member) { failLive(403, 'access_denied'); }
+        if (liveProtocol() === 3 && !liveCapable($r)) { failLive(426, 'client_upgrade_required'); }
+        if (liveCollision($pdo, $cid)) { failLive(409, 'namespace_collision'); }
         if ($r['action'] === 'getCalendar' || $r['action'] === 'createCalendar') {
             $pdo->commit(); liveReply(200, ['calendar' => snapshot($calendar, $member)]);
         }
         if ($r['action'] === 'putCalendar') {
+            if (liveProtocol() === 3 && ($r['documentSchemaVersion'] ?? null) !== 3) { failLive(422, 'invalid_document_schema'); }
             if ($member['role'] === 'reader') { failLive(403, 'read_only'); }
             if (!is_int($r['expectedRevision'] ?? null) || $r['expectedRevision'] !== (int) $calendar['revision']) {
                 $pdo->commit(); liveReply(409, ['error' => 'revision_conflict', 'calendar' => snapshot($calendar, $member)]);
@@ -234,8 +303,10 @@ function liveRun(array $config): never {
                 $next = liveDocument(['photographers' => $full['photographers'], 'clips' => array_merge($hidden, $next['clips']),
                     'photographerTracks' => array_merge(array_values(array_filter($full['photographerTracks'], fn($t) => !trackVisible($t, $member, $calendar['time_zone']))), $next['photographerTracks'])]);
             }
-            $encoded = json_encode($next, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
-            if (strlen($encoded) > 1000000) { failLive(413, 'calendar_too_large'); }
+            if (liveProtocol() === 3) {
+                liveTemplateTransitions(json_decode($calendar['document'], true, 32, JSON_THROW_ON_ERROR), $next, array_key_exists('templateDeactivations', $r) ? $r['templateDeactivations'] : []);
+            }
+            $encoded = liveEncodeDocument($next);
             liveQuery($pdo, 'UPDATE aftpsync_calendars SET document = ?, revision = revision + 1 WHERE id = ?', [$encoded, $cid]);
             $calendar['document'] = $encoded; $calendar['revision']++;
             $pdo->commit(); liveReply(200, ['calendar' => snapshot($calendar, $member)]);
@@ -243,10 +314,11 @@ function liveRun(array $config): never {
         if ($member['role'] !== 'owner') { failLive(403, 'owner_required'); }
         if ($r['action'] === 'createInvite') {
             $role = $r['role'] ?? '';
-            if (!in_array($role, ['editor', 'reader'], true)) { failLive(400, 'invalid_role'); }
+            if (!in_array($role, ['owner', 'editor', 'reader'], true)) { failLive(400, 'invalid_role'); }
             $start = isset($r['rangeStart']) ? liveDate($r['rangeStart']) : null;
             $end = isset($r['rangeEnd']) ? liveDate($r['rangeEnd']) : null;
             if (($start === null) !== ($end === null) || ($start !== null && $end <= $start)) { failLive(400, 'invalid_range'); }
+            if ($role === 'owner' && ($start !== null || $end !== null)) { failLive(400, 'invalid_range'); }
             liveQuery($pdo, 'DELETE FROM aftpsync_invites WHERE calendar_id = ? AND expires_at < ?', [$cid, time()]);
             if ((int) liveQuery($pdo, 'SELECT COUNT(*) FROM aftpsync_invites WHERE calendar_id = ?', [$cid])->fetchColumn() >= 100) { failLive(422, 'invite_limit'); }
             $invite = bin2hex(random_bytes(32));

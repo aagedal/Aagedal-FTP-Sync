@@ -1,15 +1,6 @@
 {
   "pins" : [
     {
-      "identity" : "bigint",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/attaswift/BigInt.git",
-      "state" : {
-        "revision" : "e07e00fa1fd435143a2dcf8b7eec9a7710b2fdfe",
-        "version" : "5.7.0"
-      }
-    },
-    {
       "identity" : "swift-asn1",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-asn1.git",
@@ -77,8 +68,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/aagedal/SwiftMediaMetadata.git",
       "state" : {
-        "revision" : "94c34f1a2562a8679694eed8ea7113e524cbd2e4",
-        "version" : "2.0.0"
+        "revision" : "8662054299a3e13c49c65f74c564360559d1bf7f",
+        "version" : "3.0.1"
       }
     }
   ],

@@ -1,0 +1,1 @@
+Exact protocol-two server files from repository commit a9a5a14, retained as executable rollback fixtures. Do not modernize these files. Disposable compose tests give this server the same migrated database while checking that old queries never expose protocol-three records.

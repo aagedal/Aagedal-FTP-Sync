@@ -23,21 +23,16 @@ enum ServerProfileRepositoryError: LocalizedError, Equatable {
 }
 
 struct ServerProfileRepository: Sendable {
+    private let codec: VersionedStoreCodec
     private let fileURL: URL
 
     private var backupURL: URL {
         fileURL.appendingPathExtension("backup")
     }
 
-    init(fileURL: URL? = nil) {
-        if let fileURL {
-            self.fileURL = fileURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            self.fileURL = base
-                .appendingPathComponent("AagedalFTPSync", isDirectory: true)
-                .appendingPathComponent("server-profiles-v1.json")
-        }
+    init(fileURL: URL? = nil, storage: AppStorageLayout = .legacy) {
+        self.codec = VersionedStoreCodec(format: storage.storageFormat, store: .serverProfiles)
+        self.fileURL = fileURL ?? storage.serverProfiles
     }
 
     func load() throws -> [ServerProfile] {
@@ -45,7 +40,9 @@ struct ServerProfileRepository: Sendable {
     }
 
     func loadResult() throws -> ServerProfileLoadResult {
+        try codec.validateExistingStore(at: fileURL)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            try codec.validateExistingStore(at: fileURL)
             return ServerProfileLoadResult(profiles: [], recoveredFromBackup: false)
         }
 
@@ -55,6 +52,7 @@ struct ServerProfileRepository: Sendable {
                 recoveredFromBackup: false
             )
         } catch let primaryError {
+            guard VersionedStoreCodec.permitsBackupRecovery(after: primaryError) else { throw primaryError }
             guard FileManager.default.fileExists(atPath: backupURL.path) else {
                 throw primaryError
             }
@@ -64,6 +62,7 @@ struct ServerProfileRepository: Sendable {
                     recoveredFromBackup: true
                 )
             } catch {
+                guard VersionedStoreCodec.permitsBackupRecovery(after: error) else { throw error }
                 throw primaryError
             }
         }
@@ -71,9 +70,11 @@ struct ServerProfileRepository: Sendable {
 
     func save(_ profiles: [ServerProfile]) throws {
         try Self.validate(profiles)
+        try codec.validateExistingStore(at: fileURL)
+        try codec.validateExistingStore(at: backupURL, required: false)
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let data = try JSONEncoder.serverProfileConfigured.encode(profiles)
+        let data = try codec.encode(profiles, encoder: JSONEncoder.serverProfileConfigured)
 
         if FileManager.default.fileExists(atPath: fileURL.path),
            let existingData = try? Data(contentsOf: fileURL),
@@ -87,7 +88,7 @@ struct ServerProfileRepository: Sendable {
     }
 
     private func decode(_ data: Data) throws -> [ServerProfile] {
-        let profiles = try JSONDecoder.serverProfileConfigured.decode([ServerProfile].self, from: data)
+        let profiles = try codec.decode([ServerProfile].self, from: data, decoder: JSONDecoder.serverProfileConfigured)
         try Self.validate(profiles)
         return profiles
     }

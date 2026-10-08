@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "aagedal-metadata": {
+      "type": "local",
+      "command": ["python3", "Tools/MetadataMCP/metadata_mcp.py"],
+      "cwd": ".",
+      "enabled": true
+    }
+  }
+}

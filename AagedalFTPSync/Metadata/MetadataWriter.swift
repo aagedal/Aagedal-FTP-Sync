@@ -1,7 +1,11 @@
 import Foundation
+import CryptoKit
 import SwiftMediaMetadata
 
 enum MetadataWriter {
+    // Keep aligned with the exact SwiftPM pin; receipts must become stale after a writer upgrade.
+    static let dependencyRevision = "SwiftMediaMetadata-3.0.1"
+
     enum ApplicationAssessment: Equatable, Sendable {
         case willApply
         case alreadyApplied
@@ -19,6 +23,21 @@ enum MetadataWriter {
         }
     }
 
+    // Legacy callers freeze their literal source at this boundary. New processing
+    // paths can pass the same ResolvedMetadataChanges to assess and apply.
+    static func assess(_ assignment: MetadataAssignment, at fileURL: URL, relativePath: String) throws -> ApplicationAssessment {
+        try assess(.literal(assignment), at: fileURL, relativePath: relativePath)
+    }
+
+    @discardableResult
+    static func apply(_ assignment: MetadataAssignment, to fileURL: URL) throws -> [String] {
+        try apply(.literal(assignment), to: fileURL)
+    }
+
+    static func apply(_ assignment: MetadataAssignment, to fileURL: URL, relativePath: String) throws -> WriteResult {
+        try apply(.literal(assignment), to: fileURL, relativePath: relativePath)
+    }
+
     static func usesXMPSidecar(for relativePath: String) -> Bool {
         guard let rawExtensions = FilterPreset.raw.extensions else { return false }
         return rawExtensions.contains(
@@ -28,6 +47,272 @@ enum MetadataWriter {
 
     static func sidecarRelativePath(for relativePath: String) -> String {
         (relativePath as NSString).deletingPathExtension + ".xmp"
+    }
+
+    /// In-memory preview values only. Keep carriers separate when embedded IPTC
+    /// and XMP disagree; neither is silently presented as the sole existing value.
+    struct ExistingFieldsSnapshot: Equatable, Sendable {
+        enum Value: Equatable, Sendable {
+            case text(String), list([String]), position(ScheduledGPSPosition)
+        }
+        struct Carrier: Equatable, Sendable {
+            let name: String
+            let fields: [MetadataWritableField: Value]
+            let personInImage: [String]
+
+            init(name: String, fields: [MetadataWritableField: Value], personInImage: [String] = []) {
+                self.name = name
+                self.fields = fields
+                self.personInImage = personInImage
+            }
+        }
+        let carriers: [Carrier]
+        let readable: Bool
+    }
+
+    static func existingFields(at fileURL: URL, relativePath: String) throws -> ExistingFieldsSnapshot {
+        func xmpFields(_ xmp: XMPData) -> [MetadataWritableField: ExistingFieldsSnapshot.Value] {
+            var fields: [MetadataWritableField: ExistingFieldsSnapshot.Value] = [:]
+            if let value = xmp.headline, !value.isEmpty { fields[.headline] = .text(value) }
+            if let value = xmp.description, !value.isEmpty { fields[.description] = .text(value) }
+            if !xmp.subject.isEmpty { fields[.keywords] = .list(xmp.subject) }
+            if !xmp.creator.isEmpty { fields[.creator] = .list(xmp.creator) }
+            if let value = xmp.rights, !value.isEmpty { fields[.copyright] = .text(value) }
+            if let value = MetadataCoordinateReader.xmpPosition(in: xmp) { fields[.gpsPosition] = .position(value) }
+            return fields
+        }
+        if usesXMPSidecar(for: relativePath) {
+            let existing = try rawPolicyMetadata(at: fileURL)
+            let embedded = try? ImageMetadata.read(from: fileURL)
+            var fields = xmpFields(existing.xmp)
+            let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+            if !FileManager.default.fileExists(atPath: sidecar.path) {
+                // Keep the legacy text seed while displaying GPS only from strict
+                // original carriers, never the legacy parser's fabricated zero.
+                let gps = embedded?.xmp.flatMap { MetadataCoordinateReader.xmpPosition(in: $0) }
+                    ?? embedded.flatMap { MetadataCoordinateReader.embeddedPosition(in: $0) }
+                fields[.gpsPosition] = gps.map { .position($0) }
+            }
+            var carriers: [ExistingFieldsSnapshot.Carrier] = [
+                .init(name: existing.origin, fields: fields, personInImage: existing.xmp.personInImage)
+            ]
+            if let embedded, let gps = MetadataCoordinateReader.embeddedPosition(in: embedded) {
+                carriers.append(.init(name: "Embedded EXIF", fields: [.gpsPosition: .position(gps)]))
+            }
+            return ExistingFieldsSnapshot(carriers: carriers, readable: existing.readable)
+        }
+        let metadata = try ImageMetadata.read(from: fileURL)
+        var iptc: [MetadataWritableField: ExistingFieldsSnapshot.Value] = [:]
+        if let value = metadata.iptc.headline, !value.isEmpty { iptc[.headline] = .text(value) }
+        if let value = metadata.iptc.caption, !value.isEmpty { iptc[.description] = .text(value) }
+        if !metadata.iptc.keywords.isEmpty { iptc[.keywords] = .list(metadata.iptc.keywords) }
+        if let value = metadata.iptc.byline, !value.isEmpty { iptc[.creator] = .text(value) }
+        if let value = metadata.iptc.copyright, !value.isEmpty { iptc[.copyright] = .text(value) }
+        var carriers: [ExistingFieldsSnapshot.Carrier] = [.init(name: "Embedded IPTC", fields: iptc)]
+        if let xmp = metadata.xmp {
+            carriers.append(.init(name: "Embedded XMP", fields: xmpFields(xmp), personInImage: xmp.personInImage))
+        }
+        if let gps = MetadataCoordinateReader.embeddedPosition(in: metadata) { carriers.append(.init(name: "Embedded EXIF", fields: [.gpsPosition: .position(gps)])) }
+        return ExistingFieldsSnapshot(carriers: carriers, readable: true)
+    }
+
+    private static let descriptionNamespace = "https://aagedal.no/ftp-sync/description/1.0/"
+
+    /// Retain the original caption with a digest of the exact generated caption. Reprocessing
+    /// then expands from the original instead of appending a second memo. External edits break
+    /// the digest match and become the new baseline. This travels with embedded XMP/RAW sidecars.
+    static func descriptionForTemplate(at fileURL: URL, relativePath: String) throws -> String? {
+        let snapshot = try existingFields(at: fileURL, relativePath: relativePath)
+        guard snapshot.readable else { return nil }
+        let values = Set(snapshot.carriers.compactMap { carrier -> String? in
+            if case .text(let value) = carrier.fields[.description] { return value }
+            return nil
+        })
+        guard values.count <= 1 else { return nil }
+        let current = values.first ?? ""
+        let xmp = usesXMPSidecar(for: relativePath)
+            ? try rawPolicyMetadata(at: fileURL).xmp : try ImageMetadata.read(from: fileURL).xmp
+        if xmp?.simpleValue(namespace: descriptionNamespace, property: "outputSHA256") == descriptionDigest(current),
+           let baseline = xmp?.simpleValue(namespace: descriptionNamespace, property: "original") {
+            return baseline
+        }
+        return current
+    }
+
+    private static func descriptionDigest(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func recordDescriptionBaseline(_ baseline: String?, output: String, in xmp: inout XMPData) {
+        if let baseline {
+            xmp.setValue(.simple(baseline), namespace: descriptionNamespace, property: "original")
+            xmp.setValue(.simple(descriptionDigest(output)), namespace: descriptionNamespace, property: "outputSHA256")
+        } else {
+            xmp.removeValue(namespace: descriptionNamespace, property: "original")
+            xmp.removeValue(namespace: descriptionNamespace, property: "outputSHA256")
+        }
+    }
+
+    /// Existing Person Shown values participate in `{persons}` expansion even
+    /// when recognition adds no new name. Carrier order is stable and duplicate
+    /// names use the same locale-independent normalization as recognition writes.
+    static func existingPersonNames(at fileURL: URL, relativePath: String) throws -> [String] {
+        let snapshot = try existingFields(at: fileURL, relativePath: relativePath)
+        return ResolvedFaceNameChanges(
+            names: snapshot.carriers.flatMap(\.personInImage)
+        ).names
+    }
+
+    private static func rawPolicyMetadata(at fileURL: URL) throws -> (xmp: XMPData, origin: String, readable: Bool) {
+        let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+        if FileManager.default.fileExists(atPath: sidecar.path) {
+            return (try XMPSidecar.read(from: sidecar), "Existing XMP sidecar", true)
+        }
+        if var embedded = try? ImageMetadata.read(from: fileURL) {
+            embedded.syncIPTCToXMP()
+            var xmp = embedded.xmp ?? XMPData()
+            if xmpGPSPosition(xmp) == nil, let position = embeddedGPSPosition(embedded) { setGPS(position, on: &xmp) }
+            return (xmp, "Embedded metadata used to seed a new sidecar", true)
+        }
+        return (XMPData(), "No readable embedded metadata or sidecar", false)
+    }
+
+    struct ExistingPlaceFieldsSnapshot: Equatable, Sendable {
+        struct Carrier: Equatable, Sendable {
+            let name: String
+            let city: String?
+            let country: String?
+        }
+        let carriers: [Carrier]
+        let readable: Bool
+    }
+
+    /// Only enrichment callers use this strict boundary; legacy metadata parsing
+    /// remains unchanged. The returned XMP was parsed from the validated capture.
+    static func readExistingGeocodingSidecar(at fileURL: URL) throws -> XMPData? {
+        let sidecar = fileURL.deletingPathExtension().appendingPathExtension("xmp")
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: sidecar.path)
+            || (try? manager.destinationOfSymbolicLink(atPath: sidecar.path)) != nil else { return nil }
+        let values = try sidecar.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+            throw AppError.invalidConfiguration("The existing XMP sidecar must be a regular file without symbolic links.")
+        }
+        return try MetadataXMPValidation.read(at: sidecar)
+    }
+
+    static func existingPlaceFields(at fileURL: URL, relativePath: String) throws -> ExistingPlaceFieldsSnapshot {
+        if usesXMPSidecar(for: relativePath) {
+            if let xmp = try readExistingGeocodingSidecar(at: fileURL) {
+                return .init(carriers: [.init(name: "Existing XMP sidecar", city: xmp.city, country: xmp.country)], readable: true)
+            }
+            let raw = try rawPolicyMetadata(at: fileURL)
+            return .init(carriers: [.init(name: raw.origin, city: raw.xmp.city, country: raw.xmp.country)], readable: raw.readable)
+        }
+        let metadata = try ImageMetadata.read(from: fileURL)
+        return .init(carriers: [.init(name: "Embedded IPTC", city: metadata.iptc.city, country: metadata.iptc.countryName),
+                                .init(name: "Embedded XMP", city: metadata.xmp?.city, country: metadata.xmp?.country)], readable: true)
+    }
+
+    static func writablePlaceFields(at fileURL: URL, relativePath: String,
+                                    settings: MetadataGeocodingSettings) throws -> Set<MetadataPlaceField> {
+        // Even variable-only settings must reject a damaged sidecar before any
+        // scheduled legacy field can be assessed or written by the caller.
+        let validatedXMP = settings.isEnabled && usesXMPSidecar(for: relativePath)
+            ? try readExistingGeocodingSidecar(at: fileURL) : nil
+        guard settings.cityPolicy != .disabled || settings.countryPolicy != .disabled else { return [] }
+        let existing: ExistingPlaceFieldsSnapshot
+        if let validatedXMP {
+            existing = .init(carriers: [.init(name: "Existing XMP sidecar", city: validatedXMP.city,
+                country: validatedXMP.country)], readable: true)
+        } else { existing = try existingPlaceFields(at: fileURL, relativePath: relativePath) }
+        return Set(MetadataPlaceField.allCases.filter { field in
+            let policy = field == .city ? settings.cityPolicy : settings.countryPolicy
+            switch policy {
+            case .disabled: return false
+            case .overwrite: return true
+            case .fillEmpty:
+                return existing.carriers.allSatisfy { isEmpty(field == .city ? $0.city : $0.country) }
+            }
+        })
+    }
+
+    static func maximumPlaceUTF8Bytes(for field: MetadataPlaceField) -> Int {
+        (field == .city ? IPTCTag.city : IPTCTag.countryPrimaryLocationName).maxLength!
+    }
+
+    private static func validatePlaceChanges(_ places: ResolvedMetadataPlaceChanges?) throws {
+        guard let places else { return }
+        for field in MetadataPlaceField.allCases {
+            let policy = field == .city ? places.cityPolicy : places.countryPolicy
+            guard policy != .disabled, let value = field == .city ? places.city : places.country else { continue }
+            guard value.utf8.count <= maximumPlaceUTF8Bytes(for: field), validXMLText(value) else {
+                throw AppError.invalidConfiguration("Resolved \(field.title) exceeds metadata limits or contains an unsupported character.")
+            }
+        }
+    }
+
+    private static func validateFaceNames(_ changes: ResolvedFaceNameChanges?) throws {
+        guard let changes else { return }
+        guard changes.names.count <= PeopleLibraryManifest.Limits().maximumPeople else {
+            throw AppError.invalidConfiguration("Resolved face names exceed metadata limits.")
+        }
+        var totalBytes = 0
+        for name in changes.names {
+            guard name.utf8.count <= PeopleLibraryManifest.Limits().maximumNameUTF8Bytes,
+                  validXMLText(name), name.utf8.count <= Int.max - totalBytes else {
+                throw AppError.invalidConfiguration("A resolved face name exceeds metadata limits or contains an unsupported character.")
+            }
+            totalBytes += name.utf8.count
+            if changes.appendToKeywords,
+               name.utf8.count > IPTCTag.keywords.maxLength! {
+                throw AppError.invalidConfiguration("A resolved face name exceeds the Keywords metadata limit.")
+            }
+        }
+        guard totalBytes <= 1_048_576 else {
+            throw AppError.invalidConfiguration("Resolved face names exceed metadata limits.")
+        }
+    }
+
+    private static func validXMLText(_ value: String) -> Bool {
+        value.unicodeScalars.allSatisfy { scalar in
+            let value = scalar.value
+            return value == 9 || value == 10 || value == 13 || (0x20...0xD7FF).contains(value)
+                || (0xE000...0xFFFD).contains(value) || (0x10000...0x10FFFF).contains(value)
+        }
+    }
+
+    /// Read-only policy assessment using the same carriers as apply(). An existing
+    /// RAW sidecar is authoritative; when absent, seed from embedded IPTC/XMP just
+    /// as sidecar creation does. No generated sidecar or metadata write occurs here.
+    static func writableFields(at fileURL: URL, relativePath: String,
+                               policy: MetadataExistingFieldPolicy) throws -> Set<MetadataWritableField> {
+        if usesXMPSidecar(for: relativePath) {
+            let xmp = try rawPolicyMetadata(at: fileURL).xmp
+            return Set(MetadataWritableField.allCases.filter { field in
+                if policy.overwrites(field) { return true }
+                switch field {
+                case .headline: return isEmpty(xmp.headline)
+                case .description: return isEmpty(xmp.description)
+                case .keywords: return xmp.subject.isEmpty
+                case .creator: return xmp.creator.isEmpty
+                case .copyright: return isEmpty(xmp.rights)
+                case .gpsPosition: return xmpGPSPosition(xmp) == nil
+                }
+            })
+        }
+        let metadata = try ImageMetadata.read(from: fileURL)
+        return Set(MetadataWritableField.allCases.filter { field in
+            if policy.overwrites(field) { return true }
+            switch field {
+            case .headline: return isEmpty(metadata.iptc.headline) && isEmpty(metadata.xmp?.headline)
+            case .description: return isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)
+            case .keywords: return metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)
+            case .creator: return isEmpty(metadata.iptc.byline) && (metadata.xmp?.creator.isEmpty ?? true)
+            case .copyright: return isEmpty(metadata.iptc.copyright) && isEmpty(metadata.xmp?.rights)
+            case .gpsPosition: return embeddedGPSPosition(metadata) == nil && metadata.xmp.flatMap(xmpGPSPosition) == nil
+            }
+        })
     }
 
     static func schedulingDate(
@@ -56,19 +341,23 @@ enum MetadataWriter {
     }
 
     static func assess(
-        _ assignment: MetadataAssignment,
+        _ changes: ResolvedMetadataChanges,
         at fileURL: URL,
         relativePath: String
     ) throws -> ApplicationAssessment {
+        try validatePlaceChanges(changes.places)
+        try validateFaceNames(changes.faceNames)
         if usesXMPSidecar(for: relativePath) {
             let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("xmp")
-            guard FileManager.default.fileExists(atPath: sidecarURL.path) else {
-                return .willApply
+            if changes.places != nil || !(changes.faceNames?.names.isEmpty ?? true) {
+                let xmp = try readExistingGeocodingSidecar(at: fileURL) ?? rawPolicyMetadata(at: fileURL).xmp
+                return assessment(for: changes, xmp: xmp)
             }
-            return assessment(for: assignment, xmp: try XMPSidecar.read(from: sidecarURL))
+            guard FileManager.default.fileExists(atPath: sidecarURL.path) else { return .willApply }
+            return assessment(for: changes, xmp: try XMPSidecar.read(from: sidecarURL))
         }
 
-        return assessment(for: assignment, metadata: try ImageMetadata.read(from: fileURL))
+        return assessment(for: changes, metadata: try ImageMetadata.read(from: fileURL))
     }
 
     static func parseExifDate(_ value: String, localTimeZone: TimeZone = .current) -> Date? {
@@ -145,61 +434,96 @@ enum MetadataWriter {
     }
 
     @discardableResult
-    static func apply(_ assignment: MetadataAssignment, to fileURL: URL) throws -> [String] {
+    static func apply(_ changes: ResolvedMetadataChanges, to fileURL: URL) throws -> [String] {
+        try validatePlaceChanges(changes.places)
+        try validateFaceNames(changes.faceNames)
         var metadata = try ImageMetadata.read(from: fileURL)
         let readWarnings = metadata.warnings
+        metadata.iptc = try utf8IPTCForWriting(metadata.iptc)
         var xmp = metadata.xmp ?? XMPData()
-        let fields = assignment.clip.fields
 
-        let headline = fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
-        let description = fields.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let creator = assignment.photographer.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
-        let keywords = fields.normalizedKeywords
+        let headline = changes.headline
+        let description = changes.description
+        let creator = changes.creator
+        let copyright = changes.copyright
+        let keywords = changes.keywords
 
         if !headline.isEmpty,
-           assignment.existingFieldPolicy.overwrites(.headline) || (isEmpty(metadata.iptc.headline) && isEmpty(metadata.xmp?.headline)) {
+           changes.existingFieldPolicy.overwrites(.headline) || (isEmpty(metadata.iptc.headline) && isEmpty(metadata.xmp?.headline)) {
             try metadata.iptc.setValue(headline, for: .headline)
             xmp.headline = headline
         }
         if !description.isEmpty,
-           assignment.existingFieldPolicy.overwrites(.description) || (isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)) {
+           changes.existingFieldPolicy.overwrites(.description) || (isEmpty(metadata.iptc.caption) && isEmpty(metadata.xmp?.description)) {
             try metadata.iptc.setValue(description, for: .captionAbstract)
             xmp.description = description
+            recordDescriptionBaseline(changes.descriptionBaseline, output: description, in: &xmp)
         }
         if !keywords.isEmpty,
-           assignment.existingFieldPolicy.overwrites(.keywords) || (metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)) {
+           changes.existingFieldPolicy.overwrites(.keywords) || (metadata.iptc.keywords.isEmpty && (metadata.xmp?.subject.isEmpty ?? true)) {
             try metadata.iptc.setValues(keywords, for: .keywords)
             xmp.subject = keywords
         }
         if !creator.isEmpty,
-           assignment.existingFieldPolicy.overwrites(.creator) || (isEmpty(metadata.iptc.byline) && (metadata.xmp?.creator.isEmpty ?? true)) {
+           changes.existingFieldPolicy.overwrites(.creator) || (isEmpty(metadata.iptc.byline) && (metadata.xmp?.creator.isEmpty ?? true)) {
             try metadata.iptc.setValue(creator, for: .byline)
             xmp.creator = [creator]
         }
         if !copyright.isEmpty,
-           assignment.existingFieldPolicy.overwrites(.copyright) || (isEmpty(metadata.iptc.copyright) && isEmpty(metadata.xmp?.rights)) {
+           changes.existingFieldPolicy.overwrites(.copyright) || (isEmpty(metadata.iptc.copyright) && isEmpty(metadata.xmp?.rights)) {
             try metadata.iptc.setValue(copyright, for: .copyrightNotice)
             xmp.rights = copyright
         }
+        if let places = changes.places {
+            if let city = places.city, places.cityPolicy != .disabled,
+               places.cityPolicy == .overwrite || (isEmpty(metadata.iptc.city) && isEmpty(xmp.city)) {
+                try metadata.iptc.setValue(city, for: .city)
+                xmp.city = city
+            }
+            if let country = places.country, places.countryPolicy != .disabled,
+               places.countryPolicy == .overwrite || (isEmpty(metadata.iptc.countryName) && isEmpty(xmp.country)) {
+                try metadata.iptc.setValue(country, for: .countryPrimaryLocationName)
+                xmp.country = country
+            }
+        }
+        try applyFaceNames(changes.faceNames, metadata: &metadata, xmp: &xmp)
         metadata.xmp = xmp
-        applyGPS(from: assignment, to: &metadata)
+        applyGPS(from: changes, to: &metadata)
         let writeWarnings = try metadata.write(to: fileURL)
         return uniqueWarnings(readWarnings + writeWarnings)
     }
 
+    /// The pinned writer already emits UTF-8. Perform that same lossless
+    /// conversion before setting new Unicode values, which would otherwise try
+    /// to encode in the old character set. Never relabel existing raw bytes.
+    /// Undecodable retained text fails while the image is still untouched.
+    static func utf8IPTCForWriting(_ source: IPTCData) throws -> IPTCData {
+        guard source.encoding != .utf8 else { return source }
+        var converted = try IPTCReader.read(from: IPTCWriter.write(source))
+        // Keep the promotion contract explicit even when ASCII-only output
+        // omits its charset marker.
+        converted.encoding = .utf8
+        return converted
+    }
+
     static func apply(
-        _ assignment: MetadataAssignment,
+        _ changes: ResolvedMetadataChanges,
         to fileURL: URL,
         relativePath: String
     ) throws -> WriteResult {
         guard usesXMPSidecar(for: relativePath) else {
-            let warnings = try apply(assignment, to: fileURL)
+            let warnings = try apply(changes, to: fileURL)
             return .embedded(size: try fileSize(at: fileURL), warnings: warnings)
         }
 
+        try validatePlaceChanges(changes.places)
+        try validateFaceNames(changes.faceNames)
         let sidecarURL = fileURL.deletingPathExtension().appendingPathExtension("xmp")
-        var xmp = (try? XMPSidecar.read(from: sidecarURL)) ?? XMPData()
+        // The new enrichment path must not replace an unreadable existing sidecar.
+        var xmp: XMPData
+        if changes.places != nil || !(changes.faceNames?.names.isEmpty ?? true) {
+            xmp = try readExistingGeocodingSidecar(at: fileURL) ?? XMPData()
+        } else { xmp = (try? XMPSidecar.read(from: sidecarURL)) ?? XMPData() }
         var warnings: [String] = []
         if !FileManager.default.fileExists(atPath: sidecarURL.path),
            var metadata = try? ImageMetadata.read(from: fileURL) {
@@ -213,8 +537,14 @@ enum MetadataWriter {
                 setGPS(embeddedPosition, on: &xmp)
             }
         }
-        apply(assignment, to: &xmp)
+        apply(changes, to: &xmp)
 
+        let serialized = Data(XMPWriter.generateXML(xmp).utf8)
+        do {
+            try MetadataXMPValidation.validate(serialized)
+        } catch {
+            throw AppError.invalidConfiguration("The updated XMP sidecar exceeds metadata safety limits.")
+        }
         try XMPSidecar.write(xmp, to: sidecarURL)
         return .sidecar(
             localURL: sidecarURL,
@@ -223,30 +553,37 @@ enum MetadataWriter {
         )
     }
 
-    private static func apply(_ assignment: MetadataAssignment, to xmp: inout XMPData) {
-        let fields = assignment.clip.fields
-        let headline = fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
-        let description = fields.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let creator = assignment.photographer.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let copyright = assignment.photographer.copyrightNotice.trimmingCharacters(in: .whitespacesAndNewlines)
-        let keywords = fields.normalizedKeywords
+    private static func apply(_ changes: ResolvedMetadataChanges, to xmp: inout XMPData) {
+        let headline = changes.headline
+        let description = changes.description
+        let creator = changes.creator
+        let copyright = changes.copyright
+        let keywords = changes.keywords
 
-        if !headline.isEmpty, assignment.existingFieldPolicy.overwrites(.headline) || isEmpty(xmp.headline) {
+        if !headline.isEmpty, changes.existingFieldPolicy.overwrites(.headline) || isEmpty(xmp.headline) {
             xmp.headline = headline
         }
-        if !description.isEmpty, assignment.existingFieldPolicy.overwrites(.description) || isEmpty(xmp.description) {
+        if !description.isEmpty, changes.existingFieldPolicy.overwrites(.description) || isEmpty(xmp.description) {
             xmp.description = description
+            recordDescriptionBaseline(changes.descriptionBaseline, output: description, in: &xmp)
         }
-        if !keywords.isEmpty, assignment.existingFieldPolicy.overwrites(.keywords) || xmp.subject.isEmpty {
+        if !keywords.isEmpty, changes.existingFieldPolicy.overwrites(.keywords) || xmp.subject.isEmpty {
             xmp.subject = keywords
         }
-        if !creator.isEmpty, assignment.existingFieldPolicy.overwrites(.creator) || xmp.creator.isEmpty {
+        if !creator.isEmpty, changes.existingFieldPolicy.overwrites(.creator) || xmp.creator.isEmpty {
             xmp.creator = [creator]
         }
-        if !copyright.isEmpty, assignment.existingFieldPolicy.overwrites(.copyright) || isEmpty(xmp.rights) {
+        if !copyright.isEmpty, changes.existingFieldPolicy.overwrites(.copyright) || isEmpty(xmp.rights) {
             xmp.rights = copyright
         }
-        applyGPS(from: assignment, to: &xmp)
+        if let places = changes.places {
+            if let city = places.city, places.cityPolicy != .disabled,
+               places.cityPolicy == .overwrite || isEmpty(xmp.city) { xmp.city = city }
+            if let country = places.country, places.countryPolicy != .disabled,
+               places.countryPolicy == .overwrite || isEmpty(xmp.country) { xmp.country = country }
+        }
+        applyFaceNames(changes.faceNames, xmp: &xmp)
+        applyGPS(from: changes, to: &xmp)
     }
 
     private enum FieldAssessment: Equatable {
@@ -256,82 +593,160 @@ enum MetadataWriter {
     }
 
     private static func assessment(
-        for assignment: MetadataAssignment,
+        for changes: ResolvedMetadataChanges,
         metadata: ImageMetadata
     ) -> ApplicationAssessment {
-        let fields = assignment.clip.fields
         var assessments: [FieldAssessment] = []
 
         assess(
-            fields.headline,
+            changes.headline,
             currentValues: [metadata.iptc.headline, metadata.xmp?.headline],
-            overwrite: assignment.existingFieldPolicy.overwrites(.headline),
+            overwrite: changes.existingFieldPolicy.overwrites(.headline),
             into: &assessments
         )
         assess(
-            fields.description,
+            changes.description,
             currentValues: [metadata.iptc.caption, metadata.xmp?.description],
-            overwrite: assignment.existingFieldPolicy.overwrites(.description),
+            overwrite: changes.existingFieldPolicy.overwrites(.description),
             into: &assessments
         )
+        assessKeywords(changes, currentValues: [metadata.iptc.keywords, metadata.xmp?.subject ?? []], into: &assessments)
         assess(
-            fields.normalizedKeywords,
-            currentValues: [metadata.iptc.keywords, metadata.xmp?.subject ?? []],
-            overwrite: assignment.existingFieldPolicy.overwrites(.keywords),
-            into: &assessments
-        )
-        assess(
-            assignment.photographer.photographerName,
+            changes.creator,
             currentValues: [metadata.iptc.byline] + (metadata.xmp?.creator.map(Optional.some) ?? []),
-            overwrite: assignment.existingFieldPolicy.overwrites(.creator),
+            overwrite: changes.existingFieldPolicy.overwrites(.creator),
             into: &assessments
         )
         assess(
-            assignment.photographer.copyrightNotice,
+            changes.copyright,
             currentValues: [metadata.iptc.copyright, metadata.xmp?.rights],
-            overwrite: assignment.existingFieldPolicy.overwrites(.copyright),
+            overwrite: changes.existingFieldPolicy.overwrites(.copyright),
             into: &assessments
         )
         assessGPS(
-            assignment.clip.gpsPosition,
+            changes.gpsPosition,
             currentValues: [embeddedGPSPosition(metadata), metadata.xmp.flatMap(xmpGPSPosition)],
-            overwrite: assignment.existingFieldPolicy.overwrites(.gpsPosition),
+            overwrite: changes.existingFieldPolicy.overwrites(.gpsPosition),
             into: &assessments
         )
+        assessFaceNames(changes.faceNames, personInImage: metadata.xmp?.personInImage ?? [], into: &assessments)
 
+        assessPlaces(changes.places, city: [metadata.iptc.city, metadata.xmp?.city],
+                     country: [metadata.iptc.countryName, metadata.xmp?.country], into: &assessments)
         return combinedAssessment(assessments)
     }
 
     private static func assessment(
-        for assignment: MetadataAssignment,
+        for changes: ResolvedMetadataChanges,
         xmp: XMPData
     ) -> ApplicationAssessment {
-        let fields = assignment.clip.fields
         var assessments: [FieldAssessment] = []
 
-        assess(fields.headline, currentValues: [xmp.headline], overwrite: assignment.existingFieldPolicy.overwrites(.headline), into: &assessments)
-        assess(fields.description, currentValues: [xmp.description], overwrite: assignment.existingFieldPolicy.overwrites(.description), into: &assessments)
-        assess(fields.normalizedKeywords, currentValues: [xmp.subject], overwrite: assignment.existingFieldPolicy.overwrites(.keywords), into: &assessments)
+        assess(changes.headline, currentValues: [xmp.headline], overwrite: changes.existingFieldPolicy.overwrites(.headline), into: &assessments)
+        assess(changes.description, currentValues: [xmp.description], overwrite: changes.existingFieldPolicy.overwrites(.description), into: &assessments)
+        assessKeywords(changes, currentValues: [xmp.subject], into: &assessments)
         assess(
-            assignment.photographer.photographerName,
+            changes.creator,
             currentValues: xmp.creator.map(Optional.some),
-            overwrite: assignment.existingFieldPolicy.overwrites(.creator),
+            overwrite: changes.existingFieldPolicy.overwrites(.creator),
             into: &assessments
         )
         assess(
-            assignment.photographer.copyrightNotice,
+            changes.copyright,
             currentValues: [xmp.rights],
-            overwrite: assignment.existingFieldPolicy.overwrites(.copyright),
+            overwrite: changes.existingFieldPolicy.overwrites(.copyright),
             into: &assessments
         )
         assessGPS(
-            assignment.clip.gpsPosition,
+            changes.gpsPosition,
             currentValues: [xmpGPSPosition(xmp)],
-            overwrite: assignment.existingFieldPolicy.overwrites(.gpsPosition),
+            overwrite: changes.existingFieldPolicy.overwrites(.gpsPosition),
             into: &assessments
         )
+        assessFaceNames(changes.faceNames, personInImage: xmp.personInImage, into: &assessments)
 
+        assessPlaces(changes.places, city: [xmp.city], country: [xmp.country], into: &assessments)
         return combinedAssessment(assessments)
+    }
+
+    private static func applyFaceNames(
+        _ changes: ResolvedFaceNameChanges?,
+        metadata: inout ImageMetadata,
+        xmp: inout XMPData
+    ) throws {
+        guard let changes, !changes.names.isEmpty else { return }
+        xmp.personInImage = appendingUnique(changes.names, to: xmp.personInImage)
+        guard changes.appendToKeywords else { return }
+        let iptcKeywords = appendingUnique(changes.names, to: metadata.iptc.keywords)
+        let xmpKeywords = appendingUnique(changes.names, to: xmp.subject)
+        if iptcKeywords != metadata.iptc.keywords { try metadata.iptc.setValues(iptcKeywords, for: .keywords) }
+        xmp.subject = xmpKeywords
+    }
+
+    private static func applyFaceNames(_ changes: ResolvedFaceNameChanges?, xmp: inout XMPData) {
+        guard let changes, !changes.names.isEmpty else { return }
+        xmp.personInImage = appendingUnique(changes.names, to: xmp.personInImage)
+        if changes.appendToKeywords { xmp.subject = appendingUnique(changes.names, to: xmp.subject) }
+    }
+
+    private static func assessFaceNames(
+        _ changes: ResolvedFaceNameChanges?,
+        personInImage: [String],
+        into assessments: inout [FieldAssessment]
+    ) {
+        guard let changes, !changes.names.isEmpty else { return }
+        assessments.append(appendingUnique(changes.names, to: personInImage) == personInImage ? .matches : .willChange)
+    }
+
+    private static func assessKeywords(
+        _ changes: ResolvedMetadataChanges,
+        currentValues: [[String]],
+        into assessments: inout [FieldAssessment]
+    ) {
+        guard let faceNames = changes.faceNames, faceNames.appendToKeywords, !faceNames.names.isEmpty else {
+            assess(changes.keywords, currentValues: currentValues,
+                overwrite: changes.existingFieldPolicy.overwrites(.keywords), into: &assessments)
+            return
+        }
+        let shouldReplace = !changes.keywords.isEmpty &&
+            (changes.existingFieldPolicy.overwrites(.keywords) || currentValues.allSatisfy { $0.isEmpty })
+        if shouldReplace {
+            let desired = appendingUnique(faceNames.names, to: changes.keywords)
+            assessments.append(currentValues.allSatisfy({ $0 == desired }) ? .matches : .willChange)
+        } else {
+            assess(changes.keywords, currentValues: currentValues,
+                overwrite: changes.existingFieldPolicy.overwrites(.keywords), into: &assessments)
+            assessments.append(currentValues.allSatisfy {
+                appendingUnique(faceNames.names, to: $0) == $0
+            } ? .matches : .willChange)
+        }
+    }
+
+    private static func appendingUnique(_ additions: [String], to existing: [String]) -> [String] {
+        var result = existing
+        var seen = Set(existing.compactMap(normalizationKey))
+        for addition in additions {
+            guard let key = normalizationKey(addition), seen.insert(key).inserted else { continue }
+            result.append(addition)
+        }
+        return result
+    }
+
+    private static func normalizationKey(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return ResolvedFaceNameChanges.normalizationKey(trimmed)
+    }
+
+    private static func assessPlaces(_ places: ResolvedMetadataPlaceChanges?, city: [String?], country: [String?],
+                                     into assessments: inout [FieldAssessment]) {
+        guard let places else { return }
+        if let value = places.city, places.cityPolicy != .disabled {
+            assess(value, currentValues: city, overwrite: places.cityPolicy == .overwrite, into: &assessments)
+        }
+        if let value = places.country, places.countryPolicy != .disabled {
+            assess(value, currentValues: country, overwrite: places.countryPolicy == .overwrite, into: &assessments)
+        }
     }
 
     private static func assess(
@@ -374,12 +789,12 @@ enum MetadataWriter {
         }
     }
 
-    private static func applyGPS(from assignment: MetadataAssignment, to metadata: inout ImageMetadata) {
-        guard let desiredPosition = assignment.clip.gpsPosition,
+    private static func applyGPS(from changes: ResolvedMetadataChanges, to metadata: inout ImageMetadata) {
+        guard let desiredPosition = changes.gpsPosition,
               desiredPosition.isValid else { return }
         let hasExistingPosition = embeddedGPSPosition(metadata) != nil
             || metadata.xmp.flatMap(xmpGPSPosition) != nil
-        guard assignment.existingFieldPolicy.overwrites(.gpsPosition) || !hasExistingPosition else { return }
+        guard changes.existingFieldPolicy.overwrites(.gpsPosition) || !hasExistingPosition else { return }
 
         metadata.setGPS(
             latitude: desiredPosition.latitude,
@@ -396,10 +811,10 @@ enum MetadataWriter {
         metadata.xmp = xmp
     }
 
-    private static func applyGPS(from assignment: MetadataAssignment, to xmp: inout XMPData) {
-        guard let desiredPosition = assignment.clip.gpsPosition,
+    private static func applyGPS(from changes: ResolvedMetadataChanges, to xmp: inout XMPData) {
+        guard let desiredPosition = changes.gpsPosition,
               desiredPosition.isValid else { return }
-        guard assignment.existingFieldPolicy.overwrites(.gpsPosition) || xmpGPSPosition(xmp) == nil else { return }
+        guard changes.existingFieldPolicy.overwrites(.gpsPosition) || xmpGPSPosition(xmp) == nil else { return }
         setGPS(desiredPosition, on: &xmp)
     }
 
@@ -464,7 +879,8 @@ enum MetadataWriter {
         return String(format: "%d,%.7f%@", locale: Locale(identifier: "en_US_POSIX"), degrees, minutes, String(direction))
     }
 
-    private static func parseXMPCoordinate(_ value: String?, isLatitude: Bool) -> Double? {
+    // Shared with the read-only effective-coordinate adapter; legacy parsing is unchanged.
+    static func parseXMPCoordinate(_ value: String?, isLatitude: Bool) -> Double? {
         guard let value else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard let direction = normalized.last,
@@ -482,7 +898,7 @@ enum MetadataWriter {
         return abs(coordinate) <= limit ? coordinate : nil
     }
 
-    private static func parseRational(_ value: String?) -> Double? {
+    static func parseRational(_ value: String?) -> Double? {
         guard let value else { return nil }
         let components = value.split(separator: "/")
         if components.count == 1 {

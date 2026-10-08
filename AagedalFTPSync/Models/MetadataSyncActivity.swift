@@ -52,7 +52,18 @@ struct MetadataSyncEvent: Codable, Identifiable {
         if let failure = error as? MetadataSyncFailure {
             return failure.diagnosticCode ?? "Calendar validation or local storage failed. Review the current sync status for details."
         }
-        if let urlError = error as? URLError { return "Network request failed (URL error \(urlError.code.rawValue))." }
+        if let urlError = error as? URLError {
+            let reason: String
+            switch urlError.code {
+            case .notConnectedToInternet: reason = "macOS reports no internet connection"
+            case .cannotConnectToHost: reason = "could not connect to the server"
+            case .timedOut: reason = "the request timed out"
+            case .cannotFindHost, .dnsLookupFailed: reason = "the server name could not be resolved"
+            case .networkConnectionLost: reason = "the connection was interrupted"
+            default: reason = "network request failed"
+            }
+            return "Network request failed: \(reason) (URL error \(urlError.code.rawValue))."
+        }
         if error is DecodingError { return "The server response could not be decoded. Check app/server compatibility." }
         if let serverError = error as? MetadataSyncServerError { return serverError.localizedDescription }
         return "Sync failed. Review the current sync status for details."
@@ -61,14 +72,26 @@ struct MetadataSyncEvent: Codable, Identifiable {
 
 struct MetadataSyncEventRepository {
     var url: URL
+    var storageFormat: AppStorageFormat = .legacy
+    private var codec: VersionedStoreCodec { VersionedStoreCodec(format: storageFormat, store: .metadataSyncEvents) }
+
+    /// Compatibility convenience for legacy diagnostic history. V3 callers use
+    /// loadResult() so incompatible state is visible instead of becoming empty.
     func load() -> [MetadataSyncEvent] {
-        guard let data = try? Data(contentsOf: url),
-              let events = try? JSONDecoder().decode([MetadataSyncEvent].self, from: data) else { return [] }
+        (try? loadResult()) ?? []
+    }
+    func loadResult() throws -> [MetadataSyncEvent] {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            try codec.validateExistingStore(at: url)
+            return []
+        }
+        let events = try codec.decode([MetadataSyncEvent].self, from: Data(contentsOf: url), decoder: JSONDecoder())
         return Array(events.suffix(200))
     }
     func save(_ events: [MetadataSyncEvent]) throws {
+        try codec.validateExistingStore(at: url)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(Array(events.suffix(200))).write(to: url, options: .atomic)
+        try codec.encode(Array(events.suffix(200)), encoder: JSONEncoder()).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
@@ -76,11 +99,23 @@ struct MetadataSyncEventRepository {
 struct MetadataSyncInvitation {
     let address: String?
     let token: String
+    let protocolVersion: MetadataCalendarProtocol?
+
+    /// Preserve the calendar namespace even when the server address is omitted.
+    static func copyText(token: String, address: String?, protocolVersion: MetadataCalendarProtocol) -> String {
+        let prefix = protocolVersion == .templates ? "Aagedal template calendar invitation\n" : ""
+        return prefix + (address.map { "Server: \($0)\nInvitation: " } ?? "") + token
+    }
 
     /// Accept either the token alone or the complete text produced by Copy Invitation.
     init(_ text: String) throws {
         var address: String?
-        var token = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var token = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let templatePrefix = "Aagedal template calendar invitation\n"
+        if token.hasPrefix(templatePrefix) {
+            protocolVersion = .templates
+            token = String(token.dropFirst(templatePrefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } else { protocolVersion = nil }
         if token.lowercased().hasPrefix("server:") {
             guard let separator = token.range(of: "invitation:", options: .caseInsensitive) else {
                 throw MetadataSyncFailure(message: "The copied invitation is incomplete. Copy it again from the owner’s Mac.")

@@ -1,8 +1,488 @@
+import AppKit
 import Foundation
+import MetadataTemplates
+import SwiftMediaMetadata
 import XCTest
 @testable import AagedalFTPSync
 
 final class RemoteTransportIntegrationTests: XCTestCase {
+    func testRemoteRAWSidecarChangedDuringGeocodingDoesNotPublishProcessedPair() async throws {
+        let configuration = try Self.configuration()
+        let rawBytes = Data("opaque remote mutation RAW fixture".utf8)
+        var originalXMP = XMPData()
+        originalXMP.exifGPSLatitude = "59,30N"
+        originalXMP.exifGPSLongitude = "10,15E"
+        originalXMP.headline = "Keep headline"
+        let originalURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xmp")
+        let changedURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xmp")
+        defer {
+            try? FileManager.default.removeItem(at: originalURL)
+            try? FileManager.default.removeItem(at: changedURL)
+        }
+        try XMPSidecar.write(originalXMP, to: originalURL)
+        var changedXMP = originalXMP
+        changedXMP.headline = "Swap headline"
+        try XMPSidecar.write(changedXMP, to: changedURL)
+        let originalSize = try Data(contentsOf: originalURL).count
+        XCTAssertEqual(try Data(contentsOf: changedURL).count, originalSize)
+        let observedAt = Date().addingTimeInterval(-300)
+
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("remote-source-mutation-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let rawName = "MUTATE_" + token + ".CR3"
+            let sidecarName = "MUTATE_" + token + ".xmp"
+            let downloads = root.appendingPathComponent("downloads")
+            let processed = root.appendingPathComponent("processed")
+            for folder in [downloads, processed] {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            }
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            func localEndpoint(_ folder: URL) throws -> Endpoint {
+                Endpoint(kind: .local, localPath: folder.path,
+                    bookmark: try folder.bookmarkData(options: .withSecurityScope,
+                        includingResourceValuesForKeys: nil, relativeTo: nil))
+            }
+            var job = SyncJob(name: "Remote source mutation during geocoding")
+            job.left = remote
+            job.right = try localEndpoint(downloads)
+            job.processedFolder = try localEndpoint(processed)
+            job.filter.photographerInitials = "MUTATE_" + token
+            job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+            job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty,
+                countryPolicy: .fillEmpty, localeIdentifier: "en_US")
+            let sidecarFile = SyncFile(relativePath: sidecarName, size: Int64(originalSize), modifiedAt: observedAt)
+            let rawFile = SyncFile(relativePath: rawName, size: Int64(rawBytes.count), modifiedAt: observedAt)
+            let geocoding = MetadataGeocodingService(identity: .init(provider: "fixture", version: "1",
+                dataset: "remote-source-mutation-" + token)) { _ in
+                do {
+                    try await session.importFile(from: changedURL, as: sidecarFile,
+                        preserveDate: true, verifySize: true)
+                } catch {
+                    XCTFail("Could not mutate the disposable remote sidecar: \(error)")
+                }
+                return .found(.init(city: "Oslo", country: "Norway",
+                    source: "injected remote mutation", distanceMeters: 25))
+            }
+            let engine = SyncEngine(geocodingService: geocoding,
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            let rawURL = try temporaryFile(containing: rawBytes)
+            defer { try? FileManager.default.removeItem(at: rawURL) }
+            do {
+                try await session.importFile(from: rawURL, as: rawFile, preserveDate: true, verifySize: true)
+                try await session.importFile(from: originalURL, as: sidecarFile, preserveDate: true, verifySize: true)
+                do {
+                    _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("A changed remote companion must stop processed publication for \(kind)")
+                } catch let failure as SyncRunFailure {
+                    XCTAssertEqual(failure.partialResult.processed, 0, kind.rawValue)
+                }
+                XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: processed.path), [], kind.rawValue)
+                let remoteAfterFailure = try await session.listFiles()
+                XCTAssertNotNil(remoteAfterFailure[rawName], kind.rawValue)
+                let retainedSidecar = try XCTUnwrap(remoteAfterFailure[sidecarName])
+                let retainedURL = try temporaryFile(containing: Data())
+                defer { try? FileManager.default.removeItem(at: retainedURL) }
+                try await session.exportFile(retainedSidecar, to: retainedURL)
+                XCTAssertEqual(try XMPSidecar.read(from: retainedURL).headline, "Swap headline", kind.rawValue)
+
+                let retry = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(retry.processed, 1, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: processed.appendingPathComponent(rawName)), rawBytes, kind.rawValue)
+                XCTAssertEqual(try XMPSidecar.read(from: processed.appendingPathComponent(sidecarName)).headline,
+                    "Swap headline", kind.rawValue)
+                let remoteAfterRetry = try await session.listFiles()
+                XCTAssertNil(remoteAfterRetry[rawName], kind.rawValue)
+                XCTAssertNil(remoteAfterRetry[sidecarName], kind.rawValue)
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
+    func testLateRAWSidecarEnrichesUnchangedRemotePrimaryAcrossLiveTransports() async throws {
+        let configuration = try Self.configuration()
+        let rawBytes = Data("opaque late-sidecar RAW fixture".utf8)
+        var xmp = XMPData()
+        xmp.exifGPSLatitude = "59,30N"
+        xmp.exifGPSLongitude = "10,15E"
+        xmp.headline = "Source headline"
+        let sidecarURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xmp")
+        defer { try? FileManager.default.removeItem(at: sidecarURL) }
+        try XMPSidecar.write(xmp, to: sidecarURL)
+        let sidecarBytes = try Data(contentsOf: sidecarURL)
+        let observedAt = Date().addingTimeInterval(-300)
+
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("late-raw-sidecar-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let rawName = "LATE_" + token + ".CR3"
+            let sidecarName = "LATE_" + token + ".xmp"
+            let folder = root.appendingPathComponent("downloads")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            let local = Endpoint(kind: .local, localPath: folder.path,
+                bookmark: try folder.bookmarkData(options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil, relativeTo: nil))
+            var job = SyncJob(name: "Late RAW sidecar download")
+            job.left = remote
+            job.right = local
+            job.filter.photographerInitials = "LATE_" + token
+            job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+            job.metadataGeocoding = try MetadataGeocodingSettings(cityPolicy: .fillEmpty,
+                countryPolicy: .fillEmpty, localeIdentifier: "en_US")
+            let geocoding = MetadataGeocodingService(identity: .init(provider: "fixture", version: "1", dataset: "late-sidecar")) { query in
+                XCTAssertEqual(query.latitude, 59.5, accuracy: 0.0001)
+                XCTAssertEqual(query.longitude, 10.25, accuracy: 0.0001)
+                return .found(.init(city: "Oslo", country: "Norway", source: "injected fixture", distanceMeters: 25))
+            }
+            let engine = SyncEngine(geocodingService: geocoding,
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            let rawFile = SyncFile(relativePath: rawName, size: Int64(rawBytes.count), modifiedAt: observedAt)
+            let sidecarFile = SyncFile(relativePath: sidecarName, size: Int64(sidecarBytes.count),
+                modifiedAt: observedAt.addingTimeInterval(60))
+            do {
+                let rawURL = try temporaryFile(containing: rawBytes)
+                defer { try? FileManager.default.removeItem(at: rawURL) }
+                try await session.importFile(from: rawURL, as: rawFile, preserveDate: true, verifySize: true)
+                let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(first.transferred, 1, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(rawName)), rawBytes, kind.rawValue)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent(sidecarName).path), kind.rawValue)
+                let idleBeforeSidecar = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(idleBeforeSidecar.transferred, 0, kind.rawValue)
+
+                try await session.importFile(from: sidecarURL, as: sidecarFile, preserveDate: true, verifySize: true)
+                let late = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertGreaterThan(late.transferred, 0, kind.rawValue)
+                XCTAssertEqual(Set(late.metadataReport.entries.filter { $0.status == .applied }
+                    .map(\.relativePath)), [rawName], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(rawName)), rawBytes, kind.rawValue)
+                let delivered = try XMPSidecar.read(from: folder.appendingPathComponent(sidecarName))
+                XCTAssertEqual(delivered.city, "Oslo", kind.rawValue)
+                XCTAssertEqual(delivered.country, "Norway", kind.rawValue)
+                XCTAssertEqual(delivered.headline, "Source headline", kind.rawValue)
+                let idleAfterSidecar = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(idleAfterSidecar.transferred, 0, kind.rawValue)
+                _ = try await session.listFiles()
+                try await session.removeFile(rawFile)
+                try await session.removeFile(sidecarFile)
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
+    func testProgrammedDownloadProcessesDecodableJPEGAndValidRAWSidecarAcrossLiveTransports() async throws {
+        let configuration = try Self.configuration()
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8,
+            bitsPerSample: 8, samplesPerPixel: 3, hasAlpha: false, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        try XCTUnwrap(bitmap.bitmapData).initialize(repeating: 80, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+        let imageURL = try temporaryFile(containing: try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:])))
+        defer { try? FileManager.default.removeItem(at: imageURL) }
+        var imageMetadata = try ImageMetadata.read(from: imageURL)
+        imageMetadata.setGPS(latitude: 59.5, longitude: 10.25)
+        try imageMetadata.write(to: imageURL)
+        let jpegBytes = try Data(contentsOf: imageURL)
+        let rawBytes = Data("opaque camera RAW transport fixture".utf8)
+        var xmp = XMPData()
+        xmp.exifGPSLatitude = "59,30N"
+        xmp.exifGPSLongitude = "10,15E"
+        xmp.subject = ["Existing keyword"]
+        let sidecarURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".xmp")
+        defer { try? FileManager.default.removeItem(at: sidecarURL) }
+        try XMPSidecar.write(xmp, to: sidecarURL)
+        let sidecarBytes = try Data(contentsOf: sidecarURL)
+        let observedAt = Date().addingTimeInterval(-300)
+
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("programmed-media-" + UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let prefix = "QA" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let jpegName = prefix + "_001.JPG"
+            let rawName = prefix + "_002.CR3"
+            let sidecarName = prefix + "_002.xmp"
+            let contents = [jpegName: jpegBytes, rawName: rawBytes, sidecarName: sidecarBytes]
+            let folder = root.appendingPathComponent("downloads")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            let local = Endpoint(kind: .local, localPath: folder.path,
+                bookmark: try folder.bookmarkData(options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil, relativeTo: nil))
+            let profile = PhotographerProfile(name: "Fixture author", filenamePrefix: prefix,
+                creator: "Fixture author", copyrightNotice: "")
+            var fields = ScheduledMetadataFields()
+            fields.setHeadline(try .activated("{photographer} in {gps:city}"))
+            let clip = MetadataScheduleClip(photographerID: profile.id, name: "Media fixture",
+                startsAt: observedAt.addingTimeInterval(-120), endsAt: observedAt.addingTimeInterval(120),
+                fields: fields)
+            var job = SyncJob(name: "Programmed media download")
+            job.left = remote
+            job.right = local
+            job.filter.usesMetadataProgrammingPhotographers = true
+            job.metadataProcessingTimeZoneIdentifier = "Etc/UTC"
+            job.metadataGeocoding = try MetadataGeocodingSettings(resolveVariables: true, cityPolicy: .fillEmpty,
+                countryPolicy: .fillEmpty, localeIdentifier: "en_US")
+            job.metadataAutomation = MetadataAutomation(isEnabled: true, timestampPolicy: .sourceModification,
+                photographers: [profile], photographerTracks: [MetadataPhotographerTrack(
+                    photographerID: profile.id, date: PhotographerWorkDate(Date()))], clips: [clip])
+            let geocoding = MetadataGeocodingService(identity: .init(provider: "fixture", version: "1", dataset: "media")) { query in
+                XCTAssertEqual(query.latitude, 59.5, accuracy: 0.0001)
+                XCTAssertEqual(query.longitude, 10.25, accuracy: 0.0001)
+                return .found(.init(city: "Oslo", country: "Norway", source: "injected media fixture", distanceMeters: 25))
+            }
+            let engine = SyncEngine(geocodingService: geocoding,
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            let files = contents.map { name, bytes in
+                SyncFile(relativePath: name, size: Int64(bytes.count), modifiedAt: observedAt)
+            }
+            do {
+                for file in files {
+                    let input = try temporaryFile(containing: try XCTUnwrap(contents[file.relativePath]))
+                    defer { try? FileManager.default.removeItem(at: input) }
+                    try await session.importFile(from: input, as: file, preserveDate: true, verifySize: true)
+                }
+                let listed = try await session.listFiles()
+                XCTAssertNotNil(job.metadataAutomation?.assignment(for: jpegName,
+                    scheduledAt: try XCTUnwrap(listed[jpegName]).modifiedAt), kind.rawValue)
+                let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertGreaterThan(first.transferred, 0, kind.rawValue)
+                XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)),
+                    Set(contents.keys), kind.rawValue)
+                let deliveredJPEG = folder.appendingPathComponent(jpegName)
+                let deliveredRAW = folder.appendingPathComponent(rawName)
+                let deliveredSidecar = folder.appendingPathComponent(sidecarName)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: imageURL), jpegBytes, kind.rawValue)
+                XCTAssertEqual(try ImageMetadata.read(from: deliveredJPEG).iptc.headline,
+                    "Fixture author in Oslo", kind.rawValue)
+                XCTAssertEqual(try ImageMetadata.read(from: deliveredJPEG).iptc.city, "Oslo", kind.rawValue)
+                let deliveredXMP = try XMPSidecar.read(from: deliveredSidecar)
+                XCTAssertEqual(deliveredXMP.headline, "Fixture author in Oslo", kind.rawValue)
+                XCTAssertEqual(deliveredXMP.city, "Oslo", kind.rawValue)
+                XCTAssertEqual(deliveredXMP.subject, ["Existing keyword"], kind.rawValue)
+                XCTAssertEqual(Set(first.metadataReport.entries.filter { $0.status == .applied }.map(\.relativePath)),
+                    [jpegName, rawName], kind.rawValue)
+                let repeated = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(repeated.transferred, 0, kind.rawValue)
+                let unchangedJPEG = try Data(contentsOf: deliveredJPEG)
+                var changedSourceXMP = xmp
+                changedSourceXMP.subject.append("New source keyword")
+                try XMPSidecar.write(changedSourceXMP, to: sidecarURL)
+                let changedSidecarBytes = try Data(contentsOf: sidecarURL)
+                let changedSidecar = SyncFile(relativePath: sidecarName,
+                    size: Int64(changedSidecarBytes.count), modifiedAt: observedAt.addingTimeInterval(60))
+                try await session.importFile(from: sidecarURL, as: changedSidecar,
+                    preserveDate: true, verifySize: true)
+                let companionResend = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertGreaterThan(companionResend.transferred, 0, kind.rawValue)
+                XCTAssertEqual(Set(companionResend.metadataReport.entries.filter { $0.status == .applied }
+                    .map(\.relativePath)), [rawName], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredJPEG), unchangedJPEG, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                let resentXMP = try XMPSidecar.read(from: deliveredSidecar)
+                XCTAssertEqual(resentXMP.subject, ["Existing keyword", "New source keyword"], kind.rawValue)
+                XCTAssertEqual(resentXMP.headline, "Fixture author in Oslo", kind.rawValue)
+                let afterResend = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(afterResend.transferred, 0, kind.rawValue)
+                var changedAutomation = try XCTUnwrap(job.metadataAutomation)
+                changedAutomation.existingFieldPolicy = .init(overwriteFields: [.headline])
+                changedAutomation.clips[0].fields.setHeadline(try .activated("Updated: {photographer} in {gps:city}"))
+                job.metadataAutomation = changedAutomation
+                let beforePreview = try Data(contentsOf: deliveredJPEG)
+                let preview = try await MetadataPreviewService.previewLocalFolder(at: folder,
+                    automation: changedAutomation, geocoding: job.metadataGeocoding, service: geocoding,
+                    processingTimeZone: try XCTUnwrap(TimeZone(identifier: "Etc/UTC")))
+                XCTAssertEqual(preview.items.first { $0.relativePath == jpegName }?.processing?.changes.headline,
+                    "Updated: Fixture author in Oslo", kind.rawValue)
+                XCTAssertEqual(preview.items.first { $0.relativePath == rawName }?.processing?.changes.headline,
+                    "Updated: Fixture author in Oslo", kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredJPEG), beforePreview, kind.rawValue)
+                let reprocessed = try await engine.reprocessExistingLocalFiles(job: job)
+                XCTAssertEqual(reprocessed.applied, 2, kind.rawValue)
+                XCTAssertEqual(try ImageMetadata.read(from: deliveredJPEG).iptc.headline,
+                    "Updated: Fixture author in Oslo", kind.rawValue)
+                XCTAssertEqual(try XMPSidecar.read(from: deliveredSidecar).headline,
+                    "Updated: Fixture author in Oslo", kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                let latest = Dictionary(uniqueKeysWithValues: reprocessed.metadataReport.entries.map {
+                    ($0.relativePath, $0)
+                })
+                var editedSidecar = try XMPSidecar.read(from: deliveredSidecar)
+                editedSidecar.subject.append("Reviewed local keyword")
+                try XMPSidecar.write(editedSidecar, to: deliveredSidecar)
+                changedAutomation.clips[0].fields.setHeadline(try .activated("Final: {photographer} in {gps:city}"))
+                job.metadataAutomation = changedAutomation
+                let preflight = try await engine.preflightExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete, latestOutcomes: latest
+                )
+                XCTAssertEqual(preflight.conflicts, [rawName], kind.rawValue)
+                XCTAssertNotNil(preflight.conflictOutputRevisions[rawName], kind.rawValue)
+                editedSidecar.subject.append("Later local keyword")
+                try XMPSidecar.write(editedSidecar, to: deliveredSidecar)
+                let laterSidecarBytes = try Data(contentsOf: deliveredSidecar)
+                let afterReview = try await engine.reprocessExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete,
+                    conflictPolicy: .processEditedOutputs(preflight.conflictOutputRevisions),
+                    latestOutcomes: latest
+                )
+                XCTAssertEqual(afterReview.conflicts, [rawName], kind.rawValue)
+                XCTAssertEqual(afterReview.applied, 1, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredSidecar), laterSidecarBytes, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                XCTAssertEqual(try ImageMetadata.read(from: deliveredJPEG).iptc.headline,
+                    "Final: Fixture author in Oslo", kind.rawValue)
+                var secondSourceXMP = changedSourceXMP
+                secondSourceXMP.subject.append("Later source keyword")
+                try XMPSidecar.write(secondSourceXMP, to: sidecarURL)
+                let secondSourceBytes = try Data(contentsOf: sidecarURL)
+                let secondSourceSidecar = SyncFile(relativePath: sidecarName,
+                    size: Int64(secondSourceBytes.count), modifiedAt: observedAt.addingTimeInterval(90))
+                try await session.importFile(from: sidecarURL, as: secondSourceSidecar,
+                    preserveDate: true, verifySize: true)
+                let latestAfterReview = Dictionary(uniqueKeysWithValues: afterReview.metadataReport.entries.map {
+                    ($0.relativePath, $0)
+                })
+                let combinedPreflight = try await engine.preflightExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete, latestOutcomes: latestAfterReview
+                )
+                XCTAssertEqual(combinedPreflight.conflicts, [rawName], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredSidecar), laterSidecarBytes, kind.rawValue)
+                let combinedReprocess = try await engine.reprocessExistingLocalFiles(
+                    job: job, filter: .staleOrIncomplete, latestOutcomes: latestAfterReview
+                )
+                XCTAssertEqual(combinedReprocess.conflicts, [rawName], kind.rawValue)
+                XCTAssertEqual(combinedReprocess.applied, 0, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredSidecar), laterSidecarBytes, kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: deliveredRAW), rawBytes, kind.rawValue)
+                _ = try await session.listFiles()
+                for file in files { try await session.removeFile(file) }
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
+    func testProgrammedDownloadChangesDayAcrossLiveTransportsAndKeepsRawSidecars() async throws {
+        let configuration = try Self.configuration()
+        for kind in [EndpointKind.ftp, .ftps, .sftp] {
+            let session = try makeSession(kind: kind, configuration: configuration)
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let token = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            let janePrefix = "TA" + token
+            let samPrefix = "JB" + token
+            let contents: [String: Data] = [
+                "\(janePrefix)_001.CR3": Data("Jane RAW".utf8),
+                "\(janePrefix)_001.xmp": Data("Jane sidecar".utf8),
+                "\(janePrefix)_001_EDITED.JPG": Data("returned copy".utf8),
+                "\(samPrefix)_001.JPG": Data("Sam original".utf8)
+            ]
+            let files = contents.map { name, bytes in
+                SyncFile(relativePath: name, size: Int64(bytes.count), modifiedAt: Date().addingTimeInterval(-300))
+            }
+            let folder = root.appendingPathComponent("downloads")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let remote = Endpoint(kind: kind, host: "localhost", username: "integration",
+                hostKeyFingerprint: kind == .sftp ? try required("AFTPSYNC_REMOTE_SFTP_FINGERPRINT", in: configuration) : "")
+            let local = Endpoint(kind: .local, localPath: folder.path,
+                bookmark: try folder.bookmarkData(options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil, relativeTo: nil))
+            let jane = PhotographerProfile(name: "Jane", filenamePrefix: janePrefix,
+                creator: "Jane", copyrightNotice: "")
+            let sam = PhotographerProfile(name: "Sam", filenamePrefix: samPrefix,
+                creator: "Sam", copyrightNotice: "")
+            let day = Date()
+            var job = SyncJob(name: "Programmed live download")
+            job.left = remote
+            job.right = local
+            job.filter.photographerInitials = "OLD"
+            job.filter.excludedFilenameSuffixes = "_EDITED"
+            job.filter.usesMetadataProgrammingPhotographers = true
+            job.metadataAutomation = MetadataAutomation(photographers: [jane, sam],
+                photographerTracks: [MetadataPhotographerTrack(photographerID: jane.id,
+                    date: PhotographerWorkDate(day))], clips: [])
+            let engine = SyncEngine(
+                sourceSignatureRepository: SourceSignatureRepository(fileURL: root.appendingPathComponent("signatures.sqlite")),
+                downloadManifestRepository: DownloadManifestRepository(fileURL: root.appendingPathComponent("manifest.json")),
+                sessionFactory: { endpoint, _, _ -> any EndpointSession in
+                    if endpoint.kind.isRemote { return session }
+                    return try LocalEndpointSession(endpoint: endpoint)
+                })
+            do {
+                for file in files {
+                    let input = try temporaryFile(containing: try XCTUnwrap(contents[file.relativePath]))
+                    defer { try? FileManager.default.removeItem(at: input) }
+                    try await session.importFile(from: input, as: file, preserveDate: true, verifySize: true)
+                }
+                let first = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                // The early-download path counts a RAW/sidecar group once;
+                // the full-listing path can count its two files separately.
+                XCTAssertGreaterThan(first.transferred, 0, kind.rawValue)
+                XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)),
+                    ["\(janePrefix)_001.CR3", "\(janePrefix)_001.xmp"], kind.rawValue)
+                for name in ["\(janePrefix)_001.CR3", "\(janePrefix)_001.xmp"] {
+                    XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent(name)), contents[name], kind.rawValue)
+                }
+
+                job.metadataAutomation?.photographerTracks = [MetadataPhotographerTrack(
+                    photographerID: sam.id, date: PhotographerWorkDate(day))]
+                let second = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(second.transferred, 1, kind.rawValue)
+                XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: folder.path)),
+                    ["\(janePrefix)_001.CR3", "\(janePrefix)_001.xmp", "\(samPrefix)_001.JPG"], kind.rawValue)
+                XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("\(samPrefix)_001.JPG")),
+                    contents["\(samPrefix)_001.JPG"], kind.rawValue)
+
+                job.metadataAutomation?.photographerTracks = []
+                let empty = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(empty.transferred, 0, kind.rawValue)
+                XCTAssertFalse(FileManager.default.fileExists(atPath:
+                    folder.appendingPathComponent("\(janePrefix)_001_EDITED.JPG").path), kind.rawValue)
+                _ = try await session.listFiles()
+                for file in files { try await session.removeFile(file) }
+                await session.close()
+                try assertNoStagingFiles(in: rootURL(kind: kind, configuration: configuration))
+            } catch {
+                await session.close()
+                throw error
+            }
+        }
+    }
+
     func testSharedServerDownloadUploadRoundTripExcludesRenamedCopies() async throws {
         let configuration = try Self.configuration()
         for kind in [EndpointKind.ftp, .ftps, .sftp] {

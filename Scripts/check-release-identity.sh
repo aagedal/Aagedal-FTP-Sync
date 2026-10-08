@@ -121,7 +121,13 @@ release_heading_count=$(awk -v version="$marketing_version" '
     }
     END { print count + 0 }
 ' "$changelog")
-[ "$release_heading_count" -eq 1 ] || fail "CHANGELOG.md must contain exactly one '## $marketing_version — YYYY-MM-DD' release heading"
+development_heading_count=$(awk -v heading="## Unreleased ($marketing_version)" '$0 == heading { count++ } END { print count + 0 }' "$changelog")
+[ "$development_heading_count" -le 1 ] || fail "duplicate development version headings"
+if [ "$development_heading_count" -eq 1 ]; then
+    [ "$release_heading_count" -eq 0 ] || fail "development version also has a dated release heading"
+else
+    [ "$release_heading_count" -eq 1 ] || fail "CHANGELOG.md must contain exactly one '## $marketing_version — YYYY-MM-DD' release heading"
+fi
 
 latest_changelog_version=$(awk '
     /^## [0-9]+\.[0-9]+\.[0-9]+ / {
@@ -129,9 +135,16 @@ latest_changelog_version=$(awk '
         exit
     }
 ' "$changelog")
-[ "$latest_changelog_version" = "$marketing_version" ] || fail "latest changelog release is ${latest_changelog_version:-missing}, not $marketing_version"
+if [ "$development_heading_count" -eq 0 ]; then
+    [ "$latest_changelog_version" = "$marketing_version" ] || fail "latest changelog release is ${latest_changelog_version:-missing}, not $marketing_version"
+fi
 
-release_line=$(printf '%s\n' "$marketing_version" | awk -F. '{ print $1 "." $2 }')
+# An explicitly unreleased build does not change the supported shipping release.
+policy_version=$marketing_version
+if [ "$development_heading_count" -eq 1 ]; then
+    policy_version=$latest_changelog_version
+fi
+release_line=$(printf '%s\n' "$policy_version" | awk -F. '{ print $1 "." $2 }')
 supported_release_policy=$(awk '
     /^## Supported release$/ { in_section = 1; next }
     in_section && /^## / { exit }
@@ -146,4 +159,8 @@ if ! printf '%s\n' "$supported_release_policy" | grep -F "latest available $rele
     fail "SECURITY.md must direct users to the latest available $release_line.x version"
 fi
 
-echo "Release identity verified for $marketing_version (build $build_number)."
+if [ "$development_heading_count" -eq 1 ]; then
+    echo "Development identity verified for $marketing_version (build $build_number); not a shipping release."
+else
+    echo "Release identity verified for $marketing_version (build $build_number)."
+fi
