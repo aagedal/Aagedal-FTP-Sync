@@ -331,6 +331,65 @@ final class LocalMatchingPublicationTests: XCTestCase {
         }
     }
 
+    func testUnpublishedRawPairReconciliationPreservesStagedOutputAndRejectsChangedEvidence() throws {
+        for rawExtension in ["arw", "cr3"] {
+            for managed in [false, true] {
+                for defect in ["none", "staged-edit", "staged-link", "sidecar-visible", "raw-visible", "unknown-phase"] {
+                    let root = FileManager.default.temporaryDirectory.appendingPathComponent("held-raw-reconcile-\(UUID())")
+                        .resolvingSymlinksInPath()
+                    defer { try? FileManager.default.removeItem(at: root) }
+                    let recovery = try seedInterruptedRawReconciliation(root: root, managed: managed, rawExtension: rawExtension)
+                    let destination = recovery.deletingLastPathComponent()
+                    let raw = destination.appendingPathComponent("nested/recovery." + rawExtension)
+                    let sidecar = destination.appendingPathComponent("nested/recovery.xmp")
+                    let staged = recovery.appendingPathComponent("output-stage-0")
+                    try FileManager.default.moveItem(at: sidecar, to: staged)
+                    try Data("originalsHeld".utf8).write(to: root.appendingPathComponent("native-image-interruption"))
+                    switch defect {
+                    case "staged-edit": try Data("edited".utf8).write(to: staged)
+                    case "staged-link":
+                        try FileManager.default.removeItem(at: staged)
+                        try FileManager.default.createSymbolicLink(at: staged,
+                            withDestinationURL: recovery.appendingPathComponent("output-copy-0"))
+                    case "sidecar-visible": try Data("user sidecar".utf8).write(to: sidecar)
+                    case "raw-visible": try Data("user RAW".utf8).write(to: raw)
+                    case "unknown-phase": try Data("prepared".utf8).write(to: root.appendingPathComponent("native-image-interruption"))
+                    default: break
+                    }
+                    let manifest = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+                    if defect != "none" {
+                        XCTAssertThrowsError(try UITestSupport.reconcileInterruptedImageFixture(
+                            rootURL: root, managed: managed, raw: true, rawExtension: rawExtension), defect)
+                        XCTAssertEqual(FileManager.default.fileExists(atPath: raw.path), defect == "raw-visible")
+                        XCTAssertEqual(FileManager.default.fileExists(atPath: sidecar.path), defect == "sidecar-visible")
+                        if defect == "raw-visible" { XCTAssertEqual(try Data(contentsOf: raw), Data("user RAW".utf8)) }
+                        if defect == "sidecar-visible" { XCTAssertEqual(try Data(contentsOf: sidecar), Data("user sidecar".utf8)) }
+                        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent("recovery.json")), manifest)
+                        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent("original-held-0")), Data("camera RAW".utf8))
+                        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent("original-held-1")), Data("original".utf8))
+                        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("rescued-publication.xmp").path))
+                        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("reconciled-image-recovery").path))
+                        continue
+                    }
+                    let stagedDate = try staged.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                    try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension)
+                    XCTAssertEqual(try Data(contentsOf: raw), Data("camera RAW".utf8))
+                    XCTAssertEqual(try Data(contentsOf: sidecar), Data("original".utf8))
+                    XCTAssertEqual(try raw.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                                   Date(timeIntervalSince1970: 1_700_000_000))
+                    XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.xmp")), Data("published".utf8))
+                    let preserved = root.appendingPathComponent("reconciled-image-recovery")
+                    XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifest)
+                    XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("output-stage-0")), Data("published".utf8))
+                    XCTAssertEqual(try preserved.appendingPathComponent("output-stage-0").resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, stagedDate)
+                    try Data("retry".utf8).write(to: sidecar)
+                    try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension)
+                    XCTAssertEqual(try Data(contentsOf: sidecar), Data("retry".utf8))
+                }
+            }
+        }
+    }
+
     private func seedInterruptedRawReconciliation(root: URL, managed: Bool, rawExtension: String) throws -> URL {
         let recovery = try seedInterruptedReconciliation(root: root, managed: managed)
         let manager = FileManager.default

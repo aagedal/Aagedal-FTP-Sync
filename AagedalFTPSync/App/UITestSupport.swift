@@ -378,8 +378,16 @@ enum UITestSupport {
             return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed)
         }
         return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
-            guard case .beforeCommit = phase else { return }
-            try Data("beforeCommit".utf8).write(to: rootURL.appendingPathComponent("native-image-interruption"), options: .atomic)
+            let name: String
+            switch phase {
+            case .prepared: name = "prepared"
+            case .originalsHeld: name = "originalsHeld"
+            case .published(let index): name = "published-\(index)"
+            case .beforeCommit: name = "beforeCommit"
+            }
+            let requested = ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPTION_PHASE"] ?? "beforeCommit"
+            guard name == requested else { return }
+            try Data(name.utf8).write(to: rootURL.appendingPathComponent("native-image-interruption"), options: .atomic)
             // Only a DEBUG, explicitly isolated UI fixture can reach this hook.
             // The runner survives; the app leaves its actual image transaction on disk.
             kill(getpid(), SIGKILL)
@@ -541,8 +549,8 @@ enum UITestSupport {
 
     #if DEBUG
     /// Explicit recovery choice for the single-image SIGKILL fixture. Preserve
-    /// the entire transaction and the visible publication before restoring the
-    /// original for a fresh native retry. This is not production recovery logic.
+    /// the entire transaction and the staged or visible replacement before
+    /// restoring originals for a fresh native retry. This is not production recovery logic.
     static func reconcileInterruptedImageFixture(rootURL: URL, managed: Bool = false, raw: Bool = false, rawExtension: String = "arw") throws {
         let manager = FileManager.default
         // macOS may expose the owning sandbox's temporary root through an
@@ -552,9 +560,10 @@ enum UITestSupport {
         let candidates = try manager.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasPrefix(".aagedal-sync-") && $0.pathExtension == "transaction" }
         guard !candidates.isEmpty else { return } // Relaunch must not restore twice.
-        guard candidates.count == 1,
-              try Data(contentsOf: rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")) == Data("seeded".utf8),
-              try Data(contentsOf: rootURL.appendingPathComponent("native-image-interruption")) == Data("beforeCommit".utf8) else {
+        let phase = try String(contentsOf: rootURL.appendingPathComponent("native-image-interruption"), encoding: .utf8)
+        let published = phase == "beforeCommit" || phase == "published-0"
+        guard candidates.count == 1, published || phase == "originalsHeld",
+              try Data(contentsOf: rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")) == Data("seeded".utf8) else {
             throw AppError.invalidConfiguration("Unexpected interrupted image fixture")
         }
         let recovery = candidates[0]
@@ -599,20 +608,22 @@ enum UITestSupport {
             guard bytes == (try Data(contentsOf: source)), bytes == (try Data(contentsOf: snapshot)) else {
                 throw AppError.invalidConfiguration("Interrupted image evidence changed before recovery")
             }
-            if original.isReplaced {
+            if original.isReplaced && published {
                 try checkRegular(visible)
             } else {
                 guard !manager.fileExists(atPath: visible.path),
                       visible.standardizedFileURL.path == visible.resolvingSymlinksInPath().path else {
-                    throw AppError.invalidConfiguration("Guard-only RAW destination changed before recovery")
+                    throw AppError.invalidConfiguration("Unpublished destination changed before recovery")
                 }
             }
-            restore.append((visible, bytes, try (original.isReplaced ? visible : held).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate))
+            restore.append((visible, bytes, try (original.isReplaced && published ? visible : held).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate))
         }
         let visible = destination.appendingPathComponent(outputPath)
         let publishedSnapshot = recovery.appendingPathComponent(publication.snapshotFilename)
         try checkRegular(publishedSnapshot)
-        guard try Data(contentsOf: visible) == Data(contentsOf: publishedSnapshot) else {
+        let publicationEvidence = published ? visible : recovery.appendingPathComponent(publication.stagedFilename)
+        try checkRegular(publicationEvidence)
+        guard try Data(contentsOf: publicationEvidence) == Data(contentsOf: publishedSnapshot) else {
             throw AppError.invalidConfiguration("Interrupted publication changed before recovery")
         }
         let preserved = rootURL.appendingPathComponent("reconciled-image-recovery")
@@ -620,7 +631,7 @@ enum UITestSupport {
         guard !manager.fileExists(atPath: preserved.path), !manager.fileExists(atPath: rescuedPublication.path) else {
             throw AppError.invalidConfiguration("Interrupted image rescue already exists")
         }
-        try manager.copyItem(at: visible, to: rescuedPublication)
+        try manager.copyItem(at: publicationEvidence, to: rescuedPublication)
         // Keep recovery admission blocked until both originals are restored.
         for (url, bytes, date) in restore {
             try bytes.write(to: url, options: .atomic)

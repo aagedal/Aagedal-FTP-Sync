@@ -60,13 +60,30 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3")
     }
 
-    private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false, rawExtension: String = "arw") throws {
+    func testCameraRawHeldOriginalsReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, phase: "originalsHeld")
+    }
+
+    func testManagedCameraRawHeldOriginalsReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, phase: "originalsHeld")
+    }
+
+    func testCanonRawHeldOriginalsReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, rawExtension: "cr3", phase: "originalsHeld")
+    }
+
+    func testManagedCanonRawHeldOriginalsReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3", phase: "originalsHeld")
+    }
+
+    private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false, rawExtension: String = "arw", phase: String = "beforeCommit") throws {
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
         }
+        let published = phase != "originalsHeld"
         let filename = raw ? "recovery.xmp" : "recovery.jpg"
         launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
-               imageRecovery: true, interruptPublication: true, rawRecovery: raw, rawExtension: rawExtension)
+               imageRecovery: true, interruptPublication: true, rawRecovery: raw, rawExtension: rawExtension, interruptionPhase: phase)
         element("Metadata").firstMatch.click()
         element("reprocess-geocoding").click()
         let review = app.sheets.firstMatch
@@ -99,7 +116,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let root = endpoint.deletingLastPathComponent()
         XCTAssertEqual(root.lastPathComponent, app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"])
         XCTAssertEqual(root.deletingLastPathComponent().lastPathComponent, "AagedalFTPSyncUITests")
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("native-image-interruption"), encoding: .utf8), "beforeCommit")
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("native-image-interruption"), encoding: .utf8), phase)
         XCTAssertTrue(recovery.lastPathComponent.hasPrefix(".aagedal-sync-"))
         XCTAssertNotEqual(recovery.lastPathComponent, ".aagedal-sync-ui-fixture.transaction")
         let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
@@ -112,7 +129,9 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let source = root.appendingPathComponent("Source/" + filename)
         XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
         let output = destination.appendingPathComponent("nested/" + filename)
-        try assertRecoveryCity(output, raw: raw)
+        let publicationEvidence = published ? output : recovery.appendingPathComponent("output-stage-0")
+        XCTAssertEqual(FileManager.default.fileExists(atPath: output.path), published)
+        try assertRecoveryCity(publicationEvidence, raw: raw)
         let rawSource = root.appendingPathComponent("Source/recovery." + rawExtension)
         let rawOutput = destination.appendingPathComponent("nested/recovery." + rawExtension)
         let rawHeld = recovery.appendingPathComponent("original-held-0")
@@ -121,16 +140,16 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: rawOutput.path))
             XCTAssertEqual(try Data(contentsOf: rawHeld), rawBytes)
         }
-        XCTAssertEqual(try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+        XCTAssertEqual(try publicationEvidence.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                        Date(timeIntervalSince1970: 1_700_000_000))
         XCTAssertFalse(blocked.buttons["Reprocess Saved Files"].exists)
         blocked.buttons["Cancel"].click()
         waitForSheetTransition()
         XCTAssertTrue(FileManager.default.fileExists(atPath: held.path))
         XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
-        let publishedBytes = try Data(contentsOf: output)
+        let publishedBytes = try Data(contentsOf: publicationEvidence)
         let originalBytes = try Data(contentsOf: source)
-        let date = try output.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let date = try publicationEvidence.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         // Explicitly choose the retained original in this disposable sandbox.
         // The launch helper preserves both versions and the actual transaction.
         app.terminate()
@@ -1067,7 +1086,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         matchingClipImage: Bool = false,
         interruptPublication: Bool = false,
         rawRecovery: Bool = false,
-        rawExtension: String = "arw"
+        rawExtension: String = "arw",
+        interruptionPhase: String = "beforeCommit"
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -1088,7 +1108,10 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_RECOVERY"] = "1"
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_EXTENSION"] = rawExtension
         }
-        if interruptPublication { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1" }
+        if interruptPublication {
+            app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1"
+            app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPTION_PHASE"] = interruptionPhase
+        }
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 
