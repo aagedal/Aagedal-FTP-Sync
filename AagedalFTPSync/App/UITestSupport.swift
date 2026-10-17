@@ -562,7 +562,8 @@ enum UITestSupport {
         guard !candidates.isEmpty else { return } // Relaunch must not restore twice.
         let phase = try String(contentsOf: rootURL.appendingPathComponent("native-image-interruption"), encoding: .utf8)
         let published = phase == "beforeCommit" || phase == "published-0"
-        guard candidates.count == 1, published || phase == "originalsHeld",
+        let prepared = phase == "prepared"
+        guard candidates.count == 1, published || prepared || phase == "originalsHeld",
               try Data(contentsOf: rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")) == Data("seeded".utf8) else {
             throw AppError.invalidConfiguration("Unexpected interrupted image fixture")
         }
@@ -603,20 +604,29 @@ enum UITestSupport {
             let snapshot = recovery.appendingPathComponent(original.snapshotFilename)
             let source = rootURL.appendingPathComponent("Source/" + URL(fileURLWithPath: original.relativePath).lastPathComponent)
             let visible = destination.appendingPathComponent(original.relativePath)
-            for url in [held, snapshot, source] { try checkRegular(url) }
-            let bytes = try Data(contentsOf: held)
+            let originalEvidence = prepared ? visible : held
+            for url in [originalEvidence, snapshot, source] { try checkRegular(url) }
+            if prepared {
+                guard !manager.fileExists(atPath: held.path),
+                      held.standardizedFileURL.path == held.resolvingSymlinksInPath().path else {
+                    throw AppError.invalidConfiguration("Unexpected prepared image holding")
+                }
+            }
+            let bytes = try Data(contentsOf: originalEvidence)
             guard bytes == (try Data(contentsOf: source)), bytes == (try Data(contentsOf: snapshot)) else {
                 throw AppError.invalidConfiguration("Interrupted image evidence changed before recovery")
             }
-            if original.isReplaced && published {
+            if !prepared && original.isReplaced && published {
                 try checkRegular(visible)
-            } else {
+            } else if !prepared {
                 guard !manager.fileExists(atPath: visible.path),
                       visible.standardizedFileURL.path == visible.resolvingSymlinksInPath().path else {
                     throw AppError.invalidConfiguration("Unpublished destination changed before recovery")
                 }
             }
-            restore.append((visible, bytes, try (original.isReplaced && published ? visible : held).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate))
+            if !prepared {
+                restore.append((visible, bytes, try (original.isReplaced && published ? visible : held).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate))
+            }
         }
         let visible = destination.appendingPathComponent(outputPath)
         let publishedSnapshot = recovery.appendingPathComponent(publication.snapshotFilename)
