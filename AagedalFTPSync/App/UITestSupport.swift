@@ -337,7 +337,7 @@ enum UITestSupport {
             job.metadataAutomation = MetadataAutomation(
                 isEnabled: true,
                 timestampPolicy: ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] == "1"
-                    ? .cameraCapture : .sourceModification,
+                    && !rawRecoveryFixture ? .cameraCapture : .sourceModification,
                 photographers: [photographer],
                 clips: [clip]
             )
@@ -487,21 +487,26 @@ enum UITestSupport {
     /// DEBUG test bundle. Never read an operator's original through the app.
     private static func seedCameraRawRecoveryImage(rootURL: URL, nested: URL) throws {
         #if DEBUG
-        guard interruptsImagePublication,
-              let fixture = Bundle.main.url(forResource: "UITestRecovery", withExtension: cameraRawExtension) else {
+        guard let fixture = Bundle.main.url(forResource: "UITestRecovery", withExtension: cameraRawExtension) else {
             throw AppError.invalidConfiguration("Opt-in camera RAW test bundle is missing")
         }
         let manager = FileManager.default
         let sidecar = Data("""
         <?xml version="1.0"?><x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:exif="http://ns.adobe.com/exif/1.0/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:custom="https://example.invalid/recovery/" xmp:Rating="4" custom:Keep="Camera &amp; desk" exif:GPSLatitude="59,30N" exif:GPSLongitude="10,15E"><dc:description><rdf:Alt><rdf:li xml:lang="x-default">Preserve camera sidecar — æøå</rdf:li></rdf:Alt></dc:description><dc:subject><rdf:Bag><rdf:li>Recovery keyword æøå</rdf:li><rdf:li>Desk &amp; camera</rdf:li></rdf:Bag></dc:subject><dc:rights><rdf:Alt><rdf:li xml:lang="x-default">© Recovery fixture</rdf:li></rdf:Alt></dc:rights></rdf:Description></rdf:RDF></x:xmpmeta>
         """.utf8)
+        let matchingClip = ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] == "1"
+        let basename = matchingClip ? "MAP_recovery" : "recovery"
+        // Match the scoped clip using filesystem time without rewriting camera bytes.
+        let modified = matchingClip
+            ? Calendar.current.startOfDay(for: Date()).addingTimeInterval(9 * 60 * 60 + 30 * 60)
+            : Date(timeIntervalSince1970: 1_700_000_000)
         for folder in [nested, rootURL.appendingPathComponent("Source")] {
-            let image = folder.appendingPathComponent("recovery." + cameraRawExtension)
+            let image = folder.appendingPathComponent(basename + "." + cameraRawExtension)
             try manager.copyItem(at: fixture, to: image)
-            let xmp = folder.appendingPathComponent("recovery.xmp")
+            let xmp = folder.appendingPathComponent(basename + ".xmp")
             try sidecar.write(to: xmp)
             for file in [image, xmp] {
-                try manager.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: file.path)
+                try manager.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
             }
         }
         #else
