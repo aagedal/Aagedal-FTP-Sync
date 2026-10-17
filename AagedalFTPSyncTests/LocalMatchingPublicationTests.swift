@@ -353,7 +353,7 @@ final class LocalMatchingPublicationTests: XCTestCase {
                             withDestinationURL: recovery.appendingPathComponent("output-copy-0"))
                     case "sidecar-visible": try Data("user sidecar".utf8).write(to: sidecar)
                     case "raw-visible": try Data("user RAW".utf8).write(to: raw)
-                    case "unknown-phase": try Data("prepared".utf8).write(to: root.appendingPathComponent("native-image-interruption"))
+                    case "unknown-phase": try Data("unsupported".utf8).write(to: root.appendingPathComponent("native-image-interruption"))
                     default: break
                     }
                     let manifest = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
@@ -385,6 +385,68 @@ final class LocalMatchingPublicationTests: XCTestCase {
                     try Data("retry".utf8).write(to: sidecar)
                     try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension)
                     XCTAssertEqual(try Data(contentsOf: sidecar), Data("retry".utf8))
+                }
+            }
+        }
+    }
+
+    func testPreparedRawReconciliationPreservesOriginalIdentityAndRejectsChangedEvidence() throws {
+        let manager = FileManager.default
+        for rawExtension in ["arw", "cr3"] {
+            for managed in [false, true] {
+                for defect in ["none", "raw-edit", "sidecar-edit", "raw-link", "unexpected-held", "staged-edit", "staged-link", "snapshot-edit", "source-edit", "unknown-phase"] {
+                    let root = manager.temporaryDirectory.appendingPathComponent("prepared-raw-\(UUID())").resolvingSymlinksInPath()
+                    defer { try? manager.removeItem(at: root) }
+                    let recovery = try seedInterruptedRawReconciliation(root: root, managed: managed, rawExtension: rawExtension)
+                    let destination = recovery.deletingLastPathComponent()
+                    let raw = destination.appendingPathComponent("nested/recovery." + rawExtension)
+                    let sidecar = destination.appendingPathComponent("nested/recovery.xmp")
+                    let staged = recovery.appendingPathComponent("output-stage-0")
+                    try manager.moveItem(at: sidecar, to: staged)
+                    for (index, visible) in [raw, sidecar].enumerated() {
+                        try manager.moveItem(at: recovery.appendingPathComponent("original-held-\(index)"), to: visible)
+                    }
+                    try Data("prepared".utf8).write(to: root.appendingPathComponent("native-image-interruption"))
+                    switch defect {
+                    case "raw-edit": try Data("user RAW".utf8).write(to: raw)
+                    case "sidecar-edit": try Data("user XMP".utf8).write(to: sidecar)
+                    case "raw-link":
+                        try manager.removeItem(at: raw)
+                        try manager.createSymbolicLink(at: raw, withDestinationURL: recovery.appendingPathComponent("original-copy-0"))
+                    case "unexpected-held": try Data("holding".utf8).write(to: recovery.appendingPathComponent("original-held-0"))
+                    case "staged-edit": try Data("edited".utf8).write(to: staged)
+                    case "staged-link":
+                        try manager.removeItem(at: staged)
+                        try manager.createSymbolicLink(at: staged, withDestinationURL: recovery.appendingPathComponent("output-copy-0"))
+                    case "snapshot-edit": try Data("edited".utf8).write(to: recovery.appendingPathComponent("original-copy-1"))
+                    case "source-edit": try Data("edited".utf8).write(to: root.appendingPathComponent("Source/recovery.xmp"))
+                    case "unknown-phase": try Data("unsupported".utf8).write(to: root.appendingPathComponent("native-image-interruption"))
+                    default: break
+                    }
+                    let rawBytes = try Data(contentsOf: raw), sidecarBytes = try Data(contentsOf: sidecar)
+                    let rawAttributes = try manager.attributesOfItem(atPath: raw.path)
+                    let sidecarAttributes = try manager.attributesOfItem(atPath: sidecar.path)
+                    let manifest = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+                    if defect != "none" {
+                        XCTAssertThrowsError(try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension), defect)
+                        XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent("recovery.json")), manifest)
+                        XCTAssertFalse(manager.fileExists(atPath: root.appendingPathComponent("rescued-publication.xmp").path))
+                        XCTAssertFalse(manager.fileExists(atPath: root.appendingPathComponent("reconciled-image-recovery").path))
+                    } else {
+                        try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension)
+                        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.xmp")), Data("published".utf8))
+                        let preserved = root.appendingPathComponent("reconciled-image-recovery")
+                        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifest)
+                        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("output-stage-0")), Data("published".utf8))
+                        try UITestSupport.reconcileInterruptedImageFixture(rootURL: root, managed: managed, raw: true, rawExtension: rawExtension)
+                    }
+                    XCTAssertEqual(try Data(contentsOf: raw), rawBytes)
+                    XCTAssertEqual(try Data(contentsOf: sidecar), sidecarBytes)
+                    for (url, attributes) in [(raw, rawAttributes), (sidecar, sidecarAttributes)] {
+                        let after = try manager.attributesOfItem(atPath: url.path)
+                        XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+                        XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+                    }
                 }
             }
         }

@@ -76,11 +76,44 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3", phase: "originalsHeld")
     }
 
+    func testCameraRawPreparedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, rawExtension: "arw", phase: "prepared")
+    }
+
+    func testCameraRawFirstPublishedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, rawExtension: "arw", phase: "published-0")
+    }
+
+    func testManagedCameraRawPreparedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "arw", phase: "prepared")
+    }
+
+    func testManagedCameraRawFirstPublishedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "arw", phase: "published-0")
+    }
+
+    func testCanonRawPreparedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, rawExtension: "cr3", phase: "prepared")
+    }
+
+    func testCanonRawFirstPublishedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, rawExtension: "cr3", phase: "published-0")
+    }
+
+    func testManagedCanonRawPreparedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3", phase: "prepared")
+    }
+
+    func testManagedCanonRawFirstPublishedReconcileAndRetryAcrossRelaunch() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3", phase: "published-0")
+    }
+
     private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false, rawExtension: String = "arw", phase: String = "beforeCommit") throws {
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
         }
-        let published = phase != "originalsHeld"
+        let published = phase == "beforeCommit" || phase == "published-0"
+        let prepared = phase == "prepared"
         let filename = raw ? "recovery.xmp" : "recovery.jpg"
         launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
                imageRecovery: true, interruptPublication: true, rawRecovery: raw, rawExtension: rawExtension, interruptionPhase: phase)
@@ -125,19 +158,22 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(originals.count, raw ? 2 : 1)
         let original = originals[raw ? 1 : 0]
         XCTAssertEqual(original["relativePath"] as? String, "nested/" + filename)
-        let held = recovery.appendingPathComponent(try XCTUnwrap(original["heldFilename"] as? String))
+        let heldPath = recovery.appendingPathComponent(try XCTUnwrap(original["heldFilename"] as? String))
+        let held = prepared ? destination.appendingPathComponent("nested/" + filename) : heldPath
+        XCTAssertEqual(FileManager.default.fileExists(atPath: heldPath.path), !prepared)
         let source = root.appendingPathComponent("Source/" + filename)
         XCTAssertEqual(try Data(contentsOf: held), try Data(contentsOf: source))
         let output = destination.appendingPathComponent("nested/" + filename)
         let publicationEvidence = published ? output : recovery.appendingPathComponent("output-stage-0")
-        XCTAssertEqual(FileManager.default.fileExists(atPath: output.path), published)
+        XCTAssertEqual(FileManager.default.fileExists(atPath: output.path), published || prepared)
+        XCTAssertEqual(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("output-stage-0").path), !published)
         try assertRecoveryCity(publicationEvidence, raw: raw)
         let rawSource = root.appendingPathComponent("Source/recovery." + rawExtension)
         let rawOutput = destination.appendingPathComponent("nested/recovery." + rawExtension)
-        let rawHeld = recovery.appendingPathComponent("original-held-0")
+        let rawHeld = prepared ? rawOutput : recovery.appendingPathComponent("original-held-0")
         let rawBytes = raw ? try Data(contentsOf: rawSource) : nil
         if raw {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: rawOutput.path))
+            XCTAssertEqual(FileManager.default.fileExists(atPath: rawOutput.path), prepared)
             XCTAssertEqual(try Data(contentsOf: rawHeld), rawBytes)
         }
         XCTAssertEqual(try publicationEvidence.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
@@ -150,6 +186,9 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let publishedBytes = try Data(contentsOf: publicationEvidence)
         let originalBytes = try Data(contentsOf: source)
         let date = try publicationEvidence.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let preparedOriginals = prepared ? try (raw ? [rawOutput, output] : [output]).map { url in
+            (url, try FileManager.default.attributesOfItem(atPath: url.path))
+        } : []
         // Explicitly choose the retained original in this disposable sandbox.
         // The launch helper preserves both versions and the actual transaction.
         app.terminate()
@@ -158,7 +197,17 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         waitForJobsWindow(seedJob: true)
         let preserved = root.appendingPathComponent("reconciled-image-recovery")
         XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.path))
-        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(held.lastPathComponent)), originalBytes)
+        for (url, attributes) in preparedOriginals {
+            let after = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+            XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+        }
+        if !published {
+            let retainedStage = preserved.appendingPathComponent("output-stage-0")
+            XCTAssertEqual(try Data(contentsOf: retainedStage), publishedBytes)
+            XCTAssertEqual(try retainedStage.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+        }
+        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(prepared ? "original-copy-\(raw ? 1 : 0)" : held.lastPathComponent)), originalBytes)
         XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifestBytes)
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(raw ? "rescued-publication.xmp" : "rescued-publication.jpg")), publishedBytes)
         XCTAssertEqual(try Data(contentsOf: output), originalBytes)
@@ -166,7 +215,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
         if raw {
             XCTAssertEqual(try Data(contentsOf: rawOutput), rawBytes)
-            XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("original-held-0")), rawBytes)
+            XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(prepared ? "original-copy-0" : "original-held-0")), rawBytes)
         }
         element("Metadata").firstMatch.click()
         element("reprocess-geocoding").click()
@@ -211,7 +260,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: output), retryBytes)
         XCTAssertEqual(try Data(contentsOf: source), originalBytes)
-        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(held.lastPathComponent)), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(prepared ? "original-copy-\(raw ? 1 : 0)" : held.lastPathComponent)), originalBytes)
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(raw ? "rescued-publication.xmp" : "rescued-publication.jpg")), publishedBytes)
     }
 
