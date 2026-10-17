@@ -339,10 +339,21 @@ enum UITestSupport {
                 timestampPolicy: ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] == "1"
                     && !rawRecoveryFixture ? .cameraCapture : .sourceModification,
                 photographers: [photographer],
-                clips: [clip]
+                clips: mixedClipRecoveryFixture ? [clip, MetadataScheduleClip(
+                    id: UUID(uuidString: "BBA15329-412D-414D-8467-EBB820A82111")!,
+                    photographerID: photographer.id,
+                    name: "Other Assignment",
+                    startsAt: dayStart.addingTimeInterval(11 * 60 * 60),
+                    endsAt: dayStart.addingTimeInterval(12 * 60 * 60),
+                    fields: ScheduledMetadataFields(headline: "Other capture")
+                )] : [clip]
             )
         }
         return job
+    }
+
+    private static var mixedClipRecoveryFixture: Bool {
+        enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MIXED_CLIP_RECOVERY"] == "1"
     }
 
     private static var managedRecoveryFixture: Bool {
@@ -507,6 +518,18 @@ enum UITestSupport {
             try sidecar.write(to: xmp)
             for file in [image, xmp] {
                 try manager.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+            }
+        }
+        if mixedClipRecoveryFixture {
+            // Same photographer and day, but assigned to the other clip. A clip
+            // filter that only checks prefix/day would incorrectly publish both.
+            let otherDate = Calendar.current.startOfDay(for: Date()).addingTimeInterval(11 * 60 * 60 + 30 * 60)
+            for folder in [nested, rootURL.appendingPathComponent("Source")] {
+                for ext in [cameraRawExtension, "xmp"] {
+                    let other = folder.appendingPathComponent("MAP_other." + ext)
+                    try manager.copyItem(at: folder.appendingPathComponent(basename + "." + ext), to: other)
+                    try manager.setAttributes([.modificationDate: otherDate], ofItemAtPath: other.path)
+                }
             }
         }
         #else
