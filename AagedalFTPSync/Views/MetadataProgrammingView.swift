@@ -269,6 +269,14 @@ struct MetadataProgrammingView: View {
         )) {
             MetadataReprocessReviewSheet {
                 Text(reprocessConfirmationMessage)
+                #if DEBUG
+                if UITestSupport.usesRawConflictEditFixture {
+                    HStack {
+                        Button("Fixture Edit A") { try! UITestSupport.editRawConflictFixture(later: false) }
+                        Button("Fixture Edit B") { try! UITestSupport.editRawConflictFixture(later: true) }
+                    }
+                }
+                #endif
             } actions: {
                 if let preflight = reprocessPreflight {
                     Button(reprocessActionTitle) {

@@ -468,14 +468,30 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "cr3", mixedClipBatch: true)
     }
 
-    private func verifyProgrammingPublishesRecoveredImage(managed: Bool, matchingClip: Bool = false, rawExtension: String? = nil, mixedClipBatch: Bool = false) throws {
+    func testProgrammingRecoveryPreservesEditedCameraRawUntilReviewed() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: true, rawExtension: "arw", mixedClipBatch: true, editedOutputConflict: true)
+    }
+
+    func testManagedProgrammingRecoveryPreservesEditedCameraRawUntilReviewed() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "arw", mixedClipBatch: true, editedOutputConflict: true)
+    }
+
+    func testProgrammingRecoveryPreservesEditedCanonRawUntilReviewed() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: true, rawExtension: "cr3", mixedClipBatch: true, editedOutputConflict: true)
+    }
+
+    func testManagedProgrammingRecoveryPreservesEditedCanonRawUntilReviewed() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "cr3", mixedClipBatch: true, editedOutputConflict: true)
+    }
+
+    private func verifyProgrammingPublishesRecoveredImage(managed: Bool, matchingClip: Bool = false, rawExtension: String? = nil, mixedClipBatch: Bool = false, editedOutputConflict: Bool = false) throws {
         let raw = rawExtension != nil
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
         }
         launch(seedJob: true, seedMap: true, recoveryFixture: true,
                managedRecovery: managed, imageRecovery: true, matchingClipImage: matchingClip, mixedClipRecovery: mixedClipBatch,
-               rawRecovery: raw, rawExtension: rawExtension ?? "arw")
+               rawRecovery: raw, rawExtension: rawExtension ?? "arw", editedRawConflict: editedOutputConflict)
         element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let window = app.windows["Metadata Programming"]
@@ -697,6 +713,124 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             waitForSheetTransition()
             XCTAssertTrue(allReview.waitForNonExistence(timeout: 5))
             try assertOtherClipUnchanged()
+        }
+        if editedOutputConflict {
+            // The DEBUG app performs the edits inside its own isolated sandbox.
+            // The runner independently reads and validates the resulting bytes.
+            func assertPreserved(_ bytes: Data) throws {
+                XCTAssertEqual(try Data(contentsOf: image), bytes)
+                XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
+                XCTAssertEqual(try Data(contentsOf: source), before)
+                XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-original.txt")), Data("retained original fixture bytes".utf8))
+                try assertRawUnchanged()
+                try assertOtherClipUnchanged()
+                XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("reconciled-recovery/recovery.json")), manifestBytes)
+            }
+            func openClipReview() -> XCUIElement {
+                let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
+                XCTAssertTrue(clip.waitForExistence(timeout: 5))
+                clip.rightClick()
+                let action = app.menuItems["Reprocess This Clip’s Files…"]
+                XCTAssertTrue(action.waitForExistence(timeout: 3))
+                action.click()
+                let sheet = window.sheets.firstMatch
+                XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+                return sheet
+            }
+            func openConflictReview() -> XCUIElement {
+                let sheet = openClipReview()
+                XCTAssertTrue(sheet.staticTexts.matching(NSPredicate(
+                    format: "label CONTAINS %@ OR value CONTAINS %@",
+                    "Preflight checked 1 files: 0 ready to update",
+                    "Preflight checked 1 files: 0 ready to update"
+                )).firstMatch.waitForExistence(timeout: 8))
+                XCTAssertTrue(sheet.staticTexts.matching(NSPredicate(
+                    format: "label CONTAINS %@ OR value CONTAINS %@",
+                    "1 edited output was found", "1 edited output was found"
+                )).firstMatch.exists)
+                XCTAssertFalse(sheet.buttons["Reprocess Clip’s Files"].isEnabled)
+                XCTAssertTrue(sheet.buttons["Reprocess 1 Edited Output"].isEnabled)
+                return sheet
+            }
+            let editReview = openClipReview()
+            XCTAssertTrue(editReview.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "Preflight checked 1 files: 0 ready to update",
+                "Preflight checked 1 files: 0 ready to update"
+            )).firstMatch.waitForExistence(timeout: 8))
+            editReview.buttons["Fixture Edit A"].click()
+            let reviewedBytes = try Data(contentsOf: image)
+            let editedXML = try XMLDocument(contentsOf: image)
+            XCTAssertEqual(try editedXML.nodes(forXPath: "//*[local-name()='Headline'] | //@*[local-name()='Headline']").first?.stringValue, "")
+            let reviewedText = try XCTUnwrap(String(data: reviewedBytes, encoding: .utf8))
+            XCTAssertTrue(reviewedText.contains("<!-- local edit A -->"))
+            let laterBytes = Data(reviewedText.replacingOccurrences(of: "<!-- local edit A -->", with: "<!-- local edit B -->").utf8)
+            XCTAssertEqual(reviewedBytes.count, laterBytes.count)
+            XCTAssertNotEqual(reviewedBytes, laterBytes)
+            editReview.buttons["Cancel"].click()
+            waitForSheetTransition()
+            XCTAssertTrue(editReview.waitForNonExistence(timeout: 5))
+            let cancelled = openConflictReview()
+            try assertPreserved(reviewedBytes)
+            cancelled.buttons["Cancel"].click()
+            waitForSheetTransition()
+            XCTAssertTrue(cancelled.waitForNonExistence(timeout: 5))
+            try assertPreserved(reviewedBytes)
+
+            let staleReview = openConflictReview()
+            try assertPreserved(reviewedBytes)
+            staleReview.buttons["Fixture Edit B"].click()
+            try assertPreserved(laterBytes)
+            staleReview.buttons["Reprocess 1 Edited Output"].click()
+            XCTAssertTrue(staleReview.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(window.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "Reprocessed 0 of 1 files; 1 skipped, 0 failed",
+                "Reprocessed 0 of 1 files; 1 skipped, 0 failed"
+            )).firstMatch.waitForExistence(timeout: 15))
+            try assertPreserved(laterBytes)
+
+            let freshReview = openConflictReview()
+            try assertPreserved(laterBytes)
+            freshReview.buttons["Reprocess 1 Edited Output"].click()
+            XCTAssertTrue(freshReview.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(completion.waitForExistence(timeout: 15))
+            try assertRecoveryCity(image, raw: true)
+            let reapplied = try XMLDocument(contentsOf: image)
+            XCTAssertEqual(try reapplied.nodes(forXPath: "//*[local-name()='Headline'] | //@*[local-name()='Headline']").first?.stringValue, "Scoped capture")
+            for (field, expected) in [("GPSLatitude", "59,30N"), ("GPSLongitude", "10,15E")] {
+                XCTAssertEqual(try reapplied.nodes(forXPath: "//*[local-name()='\(field)'] | //@*[local-name()='\(field)']").first?.stringValue, expected)
+            }
+            let approved = try Data(contentsOf: image)
+            XCTAssertNotEqual(approved, laterBytes)
+            try assertPreserved(approved)
+
+            app.terminate()
+            app.launch()
+            waitForJobsWindow(seedJob: true)
+            element("Metadata").firstMatch.click()
+            element("open-metadata-programming").click()
+            XCTAssertTrue(window.waitForExistence(timeout: 5))
+            let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
+            XCTAssertTrue(clip.waitForExistence(timeout: 5))
+            clip.rightClick()
+            let action = app.menuItems["Reprocess This Clip’s Files…"]
+            XCTAssertTrue(action.waitForExistence(timeout: 3))
+            action.click()
+            let finalReview = window.sheets.firstMatch
+            XCTAssertTrue(finalReview.waitForExistence(timeout: 5))
+            XCTAssertTrue(finalReview.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "Preflight checked 1 files: 0 ready to update",
+                "Preflight checked 1 files: 0 ready to update"
+            )).firstMatch.waitForExistence(timeout: 8))
+            XCTAssertFalse(finalReview.buttons["Reprocess Clip’s Files"].isEnabled)
+            XCTAssertFalse(finalReview.buttons["Reprocess 1 Edited Output"].exists)
+            try assertPreserved(approved)
+            finalReview.buttons["Cancel"].click()
+            waitForSheetTransition()
+            XCTAssertTrue(finalReview.waitForNonExistence(timeout: 5))
+            try assertPreserved(approved)
         }
     }
 
@@ -1279,7 +1413,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         interruptPublication: Bool = false,
         rawRecovery: Bool = false,
         rawExtension: String = "arw",
-        interruptionPhase: String = "beforeCommit"
+        interruptionPhase: String = "beforeCommit",
+        editedRawConflict: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -1296,6 +1431,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if imageRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] = "1" }
         if matchingClipImage { app.launchEnvironment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] = "1" }
         if mixedClipRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MIXED_CLIP_RECOVERY"] = "1" }
+        if editedRawConflict { app.launchEnvironment["AAGEDAL_UI_TEST_EDIT_RAW_CONFLICT"] = "1" }
         if managedRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] = "1" }
         if rawRecovery {
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_RECOVERY"] = "1"

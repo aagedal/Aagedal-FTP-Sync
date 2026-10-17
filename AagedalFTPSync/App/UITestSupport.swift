@@ -352,6 +352,45 @@ enum UITestSupport {
         return job
     }
 
+    #if DEBUG
+    static var usesRawConflictEditFixture: Bool {
+        enabled && mixedClipRecoveryFixture && rawRecoveryFixture
+            && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_EDIT_RAW_CONFLICT"] == "1"
+    }
+
+    /// The native runner cannot write inside this app's sandbox. These controls
+    /// edit only the explicitly isolated, already reconciled camera fixture.
+    static func editRawConflictFixture(later: Bool) throws {
+        guard usesRawConflictEditFixture, let rootURL else {
+            throw AppError.invalidConfiguration("RAW conflict fixture is not enabled")
+        }
+        let destination = recoveryFixtureDestination(rootURL: rootURL, managed: managedRecoveryFixture)
+        guard FileManager.default.fileExists(atPath: rootURL.appendingPathComponent("reconciled-recovery/recovery.json").path) else {
+            throw AppError.invalidConfiguration("RAW conflict fixture has not been reconciled")
+        }
+        let image = destination.appendingPathComponent("nested/MAP_recovery.xmp")
+        let date = try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let bytes: Data
+        if later {
+            let text = try String(contentsOf: image, encoding: .utf8)
+            guard text.contains("<!-- local edit A -->") else {
+                throw AppError.invalidConfiguration("RAW conflict fixture has no reviewed edit")
+            }
+            bytes = Data(text.replacingOccurrences(of: "<!-- local edit A -->", with: "<!-- local edit B -->").utf8)
+        } else {
+            let xml = try XMLDocument(contentsOf: image)
+            guard let headline = try xml.nodes(forXPath: "//*[local-name()='Headline'] | //@*[local-name()='Headline']").first,
+                  headline.stringValue == "Scoped capture" else {
+                throw AppError.invalidConfiguration("RAW conflict fixture has no published Headline")
+            }
+            headline.stringValue = ""
+            bytes = xml.xmlData + Data("\n<!-- local edit A -->".utf8)
+        }
+        try bytes.write(to: image)
+        if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: image.path) }
+    }
+    #endif
+
     private static var mixedClipRecoveryFixture: Bool {
         enabled && ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_MIXED_CLIP_RECOVERY"] == "1"
     }
