@@ -108,7 +108,23 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3", phase: "published-0")
     }
 
-    private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false, rawExtension: String = "arw", phase: String = "beforeCommit") throws {
+    func testSyncNowRejectsInterruptedCameraRawAndResumesAfterRecovery() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, ordinarySyncRecovery: true)
+    }
+
+    func testManagedSyncNowRejectsInterruptedCameraRawAndResumesAfterRecovery() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, ordinarySyncRecovery: true)
+    }
+
+    func testSyncNowRejectsInterruptedCanonRawAndResumesAfterRecovery() throws {
+        try verifyInterruptedImagePublication(managed: false, raw: true, rawExtension: "cr3", ordinarySyncRecovery: true)
+    }
+
+    func testManagedSyncNowRejectsInterruptedCanonRawAndResumesAfterRecovery() throws {
+        try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3", ordinarySyncRecovery: true)
+    }
+
+    private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false, rawExtension: String = "arw", phase: String = "beforeCommit", ordinarySyncRecovery: Bool = false) throws {
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
         }
@@ -186,6 +202,51 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let publishedBytes = try Data(contentsOf: publicationEvidence)
         let originalBytes = try Data(contentsOf: source)
         let date = try publicationEvidence.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        if ordinarySyncRecovery {
+            // The crash occurred in reprocessing. Exercise ordinary run admission
+            // against that real retained transaction before any listing can publish.
+            let evidenceFiles = try FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: nil)
+            let protectedFiles = evidenceFiles + [publicationEvidence, rawHeld, source, rawSource]
+            let evidence = try protectedFiles.map { url in
+                (url, try Data(contentsOf: url), try FileManager.default.attributesOfItem(atPath: url.path))
+            }
+            let journals = ["metadata-audit-v1.json", "download-manifest-v1.json"].map { root.appendingPathComponent($0) }
+            let journalBytes = journals.map { try? Data(contentsOf: $0) }
+            element("Server & Sync").firstMatch.click()
+            for _ in 0..<2 {
+                let sync = app.buttons["Sync Now"]
+                XCTAssertTrue(sync.isEnabled)
+                let failureJournal = root.appendingPathComponent("sync-errors-v1.json")
+                let priorFailures = try? Data(contentsOf: failureJournal)
+                sync.click()
+                let recorded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                    (try? Data(contentsOf: failureJournal)) != priorFailures && sync.isEnabled
+                }, object: nil)
+                XCTAssertEqual(XCTWaiter.wait(for: [recorded], timeout: 8), .completed)
+                let failure = app.staticTexts.matching(NSPredicate(
+                    format: "label CONTAINS %@ OR value CONTAINS %@", recovery.path, recovery.path
+                )).firstMatch
+                XCTAssertTrue(failure.waitForExistence(timeout: 8))
+                XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: recovery.path)),
+                               Set(evidenceFiles.map(\.lastPathComponent)))
+                for (url, bytes, attributes) in evidence {
+                    XCTAssertEqual(try Data(contentsOf: url), bytes)
+                    let after = try FileManager.default.attributesOfItem(atPath: url.path)
+                    XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+                    XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+                }
+                for (url, bytes) in zip(journals, journalBytes) { XCTAssertEqual(try? Data(contentsOf: url), bytes) }
+                XCTAssertEqual(try Data(contentsOf: source), originalBytes)
+                XCTAssertEqual(try Data(contentsOf: rawSource), rawBytes)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent(filename).path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("recovery." + rawExtension).path))
+                if managed {
+                    for name in [filename, "recovery." + rawExtension] {
+                        XCTAssertFalse(FileManager.default.fileExists(atPath: endpoint.appendingPathComponent("Processed Files/" + name).path))
+                    }
+                }
+            }
+        }
         let preparedOriginals = prepared ? try (raw ? [rawOutput, output] : [output]).map { url in
             (url, try FileManager.default.attributesOfItem(atPath: url.path))
         } : []
@@ -262,6 +323,59 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: source), originalBytes)
         XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent(prepared ? "original-copy-\(raw ? 1 : 0)" : held.lastPathComponent)), originalBytes)
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(raw ? "rescued-publication.xmp" : "rescued-publication.jpg")), publishedBytes)
+        if ordinarySyncRecovery {
+            waitForSheetTransition()
+            element("Server & Sync").firstMatch.click()
+            app.buttons["Sync Now"].click()
+            let completed = app.staticTexts["The latest sync completed."]
+            XCTAssertTrue(completed.waitForExistence(timeout: 15))
+            let syncedRaw = destination.appendingPathComponent("recovery." + rawExtension)
+            let syncedXMP = destination.appendingPathComponent(filename)
+            XCTAssertEqual(try Data(contentsOf: syncedRaw), rawBytes)
+            try assertRecoveryCity(syncedXMP, raw: true)
+            XCTAssertEqual(try syncedRaw.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+            XCTAssertEqual(try syncedXMP.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+            var publications = [syncedRaw, syncedXMP, rawOutput, output]
+            if managed {
+                let processed = endpoint.appendingPathComponent("Processed Files")
+                let processedRaw = processed.appendingPathComponent("recovery." + rawExtension)
+                let processedXMP = processed.appendingPathComponent(filename)
+                XCTAssertEqual(try Data(contentsOf: processedRaw), rawBytes)
+                try assertRecoveryCity(processedXMP, raw: true)
+                for url in [processedRaw, processedXMP] {
+                    XCTAssertEqual(try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+                }
+                publications += [processedRaw, processedXMP]
+                // This job explicitly moves successful outputs to Processed Files.
+                XCTAssertFalse(FileManager.default.fileExists(atPath: rawSource.path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+            } else {
+                XCTAssertEqual(try Data(contentsOf: rawSource), rawBytes)
+                XCTAssertEqual(try Data(contentsOf: source), originalBytes)
+            }
+            let snapshots = try publications.map { url in
+                (url, try Data(contentsOf: url), try FileManager.default.attributesOfItem(atPath: url.path))
+            }
+            app.terminate()
+            app.launch()
+            waitForJobsWindow(seedJob: true)
+            app.buttons["Sync Now"].click()
+            openStatusMenu()
+            let idle = app.staticTexts.matching(NSPredicate(
+                format: "label BEGINSWITH %@ OR value BEGINSWITH %@", "0 files transferred", "0 files transferred"
+            )).firstMatch
+            XCTAssertTrue(idle.waitForExistence(timeout: 15))
+            dismissStatusPanelIfNeeded()
+            for (url, bytes, attributes) in snapshots {
+                XCTAssertEqual(try Data(contentsOf: url), bytes)
+                let after = try FileManager.default.attributesOfItem(atPath: url.path)
+                XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+                XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber,
+                               "Idle ordinary sync must not republish an output")
+            }
+            XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifestBytes)
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-publication.xmp")), publishedBytes)
+        }
     }
 
     private func assertRecoveryCity(_ output: URL, raw: Bool) throws {
