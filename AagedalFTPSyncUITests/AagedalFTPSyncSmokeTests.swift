@@ -420,9 +420,46 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true)
     }
 
-    private func verifyProgrammingPublishesRecoveredImage(managed: Bool, matchingClip: Bool = false) throws {
+    func testProgrammingPublishesCameraRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: false, rawExtension: "arw")
+    }
+
+    func testProgrammingPublishesMatchingClipCameraRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: true, rawExtension: "arw")
+    }
+
+    func testManagedProgrammingPublishesCameraRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: false, rawExtension: "arw")
+    }
+
+    func testManagedProgrammingPublishesMatchingClipCameraRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "arw")
+    }
+
+    func testProgrammingPublishesCanonRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: false, rawExtension: "cr3")
+    }
+
+    func testProgrammingPublishesMatchingClipCanonRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: true, rawExtension: "cr3")
+    }
+
+    func testManagedProgrammingPublishesCanonRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: false, rawExtension: "cr3")
+    }
+
+    func testManagedProgrammingPublishesMatchingClipCanonRawAfterRecovery() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "cr3")
+    }
+
+    private func verifyProgrammingPublishesRecoveredImage(managed: Bool, matchingClip: Bool = false, rawExtension: String? = nil) throws {
+        let raw = rawExtension != nil
+        if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
+            throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
+        }
         launch(seedJob: true, seedMap: true, recoveryFixture: true,
-               managedRecovery: managed, imageRecovery: true, matchingClipImage: matchingClip)
+               managedRecovery: managed, imageRecovery: true, matchingClipImage: matchingClip,
+               rawRecovery: raw, rawExtension: rawExtension ?? "arw")
         element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         let window = app.windows["Metadata Programming"]
@@ -451,9 +488,23 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             XCTFail("Refusing to inspect an image outside this isolated fixture")
             return
         }
-        let filename = matchingClip ? "MAP_recovery.jpg" : "recovery.jpg"
+        let basename = matchingClip ? "MAP_recovery" : "recovery"
+        let filename = basename + (raw ? ".xmp" : ".jpg")
         let image = destination.appendingPathComponent("nested/\(filename)")
         let source = root.appendingPathComponent("Source/\(filename)")
+        let rawOutput = destination.appendingPathComponent("nested/" + basename + "." + (rawExtension ?? "arw"))
+        let rawSource = root.appendingPathComponent("Source/" + basename + "." + (rawExtension ?? "arw"))
+        let rawBytes = raw ? try Data(contentsOf: rawSource) : nil
+        let rawDate = raw ? try XCTUnwrap(rawOutput.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) : nil
+        func assertRawUnchanged() throws {
+            guard raw else { return }
+            XCTAssertEqual(try Data(contentsOf: rawOutput), rawBytes)
+            XCTAssertEqual(try Data(contentsOf: rawSource), rawBytes)
+            XCTAssertEqual(try rawOutput.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, rawDate)
+            XCTAssertEqual(try rawSource.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, rawDate)
+        }
+        try assertRawUnchanged()
+        let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
         let before = try Data(contentsOf: image)
         let modified = try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         XCTAssertEqual(try Data(contentsOf: source), before)
@@ -461,6 +512,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         blocked.buttons["Cancel"].click()
         waitForSheetTransition()
         XCTAssertTrue(blocked.waitForNonExistence(timeout: 5))
+        try assertRawUnchanged()
         XCTAssertEqual(try Data(contentsOf: image), before)
 
         // The same real image must remain protected when recovery admission is
@@ -482,6 +534,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         scopedBlocked.buttons["Cancel"].click()
         waitForSheetTransition()
         XCTAssertTrue(scopedBlocked.waitForNonExistence(timeout: 5))
+        try assertRawUnchanged()
         XCTAssertEqual(try Data(contentsOf: image), before)
         XCTAssertEqual(try Data(contentsOf: source), before)
         XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
@@ -512,6 +565,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             "Preflight checked 1 files: 1 ready to update"
         )).firstMatch
         XCTAssertTrue(ready.waitForExistence(timeout: 8))
+        try assertRawUnchanged()
         XCTAssertEqual(try Data(contentsOf: image), before, "Review must not publish")
         let publish = review.buttons[matchingClip ? "Reprocess Clip’s Files" : "Reprocess Files"]
         XCTAssertTrue(publish.isEnabled)
@@ -523,14 +577,31 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             "Reprocessed 1 of 1 files; 0 skipped, 0 failed"
         )).firstMatch
         XCTAssertTrue(completion.waitForExistence(timeout: 15))
-        let imageSource = try XCTUnwrap(CGImageSourceCreateWithURL(image as CFURL, nil))
-        let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any])
-        let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
-        XCTAssertEqual(iptc[kCGImagePropertyIPTCCity as String] as? String,
-                       matchingClip ? "Oslo" : "Recovery Venue")
-        if matchingClip {
-            XCTAssertEqual(iptc[kCGImagePropertyIPTCHeadline as String] as? String, "Scoped capture")
+        if raw {
+            // Existing XMP GPS wins under fill-empty, including a scheduled clip.
+            try assertRecoveryCity(image, raw: true)
+            let coordinates = try XMLDocument(contentsOf: image)
+            for (field, expected) in [("GPSLatitude", "59,30N"), ("GPSLongitude", "10,15E")] {
+                XCTAssertEqual(try coordinates.nodes(forXPath: "//*[local-name()='\(field)'] | //@*[local-name()='\(field)']").first?.stringValue, expected)
+            }
+            if matchingClip {
+                let xml = try XMLDocument(contentsOf: image)
+                XCTAssertEqual(try xml.nodes(forXPath: "//*[local-name()='Headline'] | //@*[local-name()='Headline']").first?.stringValue,
+                               "Scoped capture")
+            }
+        } else {
+            let imageSource = try XCTUnwrap(CGImageSourceCreateWithURL(image as CFURL, nil))
+            let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any])
+            let iptc = try XCTUnwrap(properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any])
+            XCTAssertEqual(iptc[kCGImagePropertyIPTCCity as String] as? String,
+                           matchingClip ? "Oslo" : "Recovery Venue")
+            if matchingClip {
+                XCTAssertEqual(iptc[kCGImagePropertyIPTCHeadline as String] as? String, "Scoped capture")
+            }
         }
+        try assertRawUnchanged()
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("reconciled-recovery/recovery.json")), manifestBytes)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-original.txt")), Data("retained original fixture bytes".utf8))
         let published = try Data(contentsOf: image)
         XCTAssertNotEqual(published, before)
         XCTAssertEqual(try Data(contentsOf: source), before)
@@ -552,6 +623,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         )).firstMatch
         XCTAssertTrue(noReady.waitForExistence(timeout: 8))
         XCTAssertFalse(repeatReview.buttons["Reprocess Files"].isEnabled)
+        try assertRawUnchanged()
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("reconciled-recovery/recovery.json")), manifestBytes)
         XCTAssertEqual(try Data(contentsOf: image), published)
         XCTAssertEqual(try Data(contentsOf: source), before)
         XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
