@@ -452,13 +452,29 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "cr3")
     }
 
-    private func verifyProgrammingPublishesRecoveredImage(managed: Bool, matchingClip: Bool = false, rawExtension: String? = nil) throws {
+    func testProgrammingRecoveryExcludesOtherClipCameraRaw() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: true, rawExtension: "arw", mixedClipBatch: true)
+    }
+
+    func testManagedProgrammingRecoveryExcludesOtherClipCameraRaw() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "arw", mixedClipBatch: true)
+    }
+
+    func testProgrammingRecoveryExcludesOtherClipCanonRaw() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: false, matchingClip: true, rawExtension: "cr3", mixedClipBatch: true)
+    }
+
+    func testManagedProgrammingRecoveryExcludesOtherClipCanonRaw() throws {
+        try verifyProgrammingPublishesRecoveredImage(managed: true, matchingClip: true, rawExtension: "cr3", mixedClipBatch: true)
+    }
+
+    private func verifyProgrammingPublishesRecoveredImage(managed: Bool, matchingClip: Bool = false, rawExtension: String? = nil, mixedClipBatch: Bool = false) throws {
         let raw = rawExtension != nil
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
         }
         launch(seedJob: true, seedMap: true, recoveryFixture: true,
-               managedRecovery: managed, imageRecovery: true, matchingClipImage: matchingClip,
+               managedRecovery: managed, imageRecovery: true, matchingClipImage: matchingClip, mixedClipRecovery: mixedClipBatch,
                rawRecovery: raw, rawExtension: rawExtension ?? "arw")
         element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
@@ -503,16 +519,36 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             XCTAssertEqual(try rawOutput.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, rawDate)
             XCTAssertEqual(try rawSource.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, rawDate)
         }
+        let excludedFiles = mixedClipBatch ? [destination.appendingPathComponent("nested"), root.appendingPathComponent("Source")]
+            .flatMap { folder in [rawExtension ?? "arw", "xmp"].map { folder.appendingPathComponent("MAP_other." + $0) } } : []
+        let excludedSnapshots = try excludedFiles.map { file in
+            (file, try Data(contentsOf: file), try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+        }
+        func assertOtherClipUnchanged() throws {
+            for (file, bytes, date) in excludedSnapshots {
+                XCTAssertEqual(try Data(contentsOf: file), bytes, "Other clip must remain untouched: \(file.lastPathComponent)")
+                XCTAssertEqual(try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+            }
+        }
         try assertRawUnchanged()
+        try assertOtherClipUnchanged()
         let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
         let before = try Data(contentsOf: image)
         let modified = try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
         XCTAssertEqual(try Data(contentsOf: source), before)
+        let otherDate = Calendar.current.startOfDay(for: Date()).addingTimeInterval(11 * 60 * 60 + 30 * 60)
+        for (file, bytes, date) in excludedSnapshots {
+            // Both fixture pairs start with the same bytes. Check against that
+            // known source as well as snapshots taken after blocked admission.
+            XCTAssertEqual(bytes, file.pathExtension == "xmp" ? before : rawBytes)
+            XCTAssertEqual(date, otherDate)
+        }
         XCTAssertFalse(blocked.buttons["Reprocess Files"].exists)
         blocked.buttons["Cancel"].click()
         waitForSheetTransition()
         XCTAssertTrue(blocked.waitForNonExistence(timeout: 5))
         try assertRawUnchanged()
+        try assertOtherClipUnchanged()
         XCTAssertEqual(try Data(contentsOf: image), before)
 
         // The same real image must remain protected when recovery admission is
@@ -535,6 +571,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         waitForSheetTransition()
         XCTAssertTrue(scopedBlocked.waitForNonExistence(timeout: 5))
         try assertRawUnchanged()
+        try assertOtherClipUnchanged()
         XCTAssertEqual(try Data(contentsOf: image), before)
         XCTAssertEqual(try Data(contentsOf: source), before)
         XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
@@ -566,6 +603,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         )).firstMatch
         XCTAssertTrue(ready.waitForExistence(timeout: 8))
         try assertRawUnchanged()
+        try assertOtherClipUnchanged()
         XCTAssertEqual(try Data(contentsOf: image), before, "Review must not publish")
         let publish = review.buttons[matchingClip ? "Reprocess Clip’s Files" : "Reprocess Files"]
         XCTAssertTrue(publish.isEnabled)
@@ -600,6 +638,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             }
         }
         try assertRawUnchanged()
+        try assertOtherClipUnchanged()
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("reconciled-recovery/recovery.json")), manifestBytes)
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("rescued-original.txt")), Data("retained original fixture bytes".utf8))
         let published = try Data(contentsOf: image)
@@ -613,7 +652,16 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         element("Metadata").firstMatch.click()
         element("open-metadata-programming").click()
         XCTAssertTrue(window.waitForExistence(timeout: 5))
-        window.buttons["Reprocess Existing Files…"].click()
+        if mixedClipBatch {
+            let clip = element("metadata-programming-clip-D7523669-D8BE-46C4-9FE7-3E18CF25F8B6")
+            XCTAssertTrue(clip.waitForExistence(timeout: 5))
+            clip.rightClick()
+            let action = app.menuItems["Reprocess This Clip’s Files…"]
+            XCTAssertTrue(action.waitForExistence(timeout: 3))
+            action.click()
+        } else {
+            window.buttons["Reprocess Existing Files…"].click()
+        }
         let repeatReview = window.sheets.firstMatch
         XCTAssertTrue(repeatReview.waitForExistence(timeout: 5))
         let noReady = repeatReview.staticTexts.matching(NSPredicate(
@@ -622,13 +670,34 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             "Preflight checked 1 files: 0 ready to update"
         )).firstMatch
         XCTAssertTrue(noReady.waitForExistence(timeout: 8))
-        XCTAssertFalse(repeatReview.buttons["Reprocess Files"].isEnabled)
+        XCTAssertFalse(repeatReview.buttons[mixedClipBatch ? "Reprocess Clip’s Files" : "Reprocess Files"].isEnabled)
         try assertRawUnchanged()
+        try assertOtherClipUnchanged()
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("reconciled-recovery/recovery.json")), manifestBytes)
         XCTAssertEqual(try Data(contentsOf: image), published)
         XCTAssertEqual(try Data(contentsOf: source), before)
         XCTAssertEqual(try image.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, modified)
         repeatReview.buttons["Cancel"].click()
+        if mixedClipBatch {
+            waitForSheetTransition()
+            XCTAssertTrue(repeatReview.waitForNonExistence(timeout: 5))
+            window.buttons["Reprocess Existing Files…"].click()
+            let allReview = window.sheets.firstMatch
+            XCTAssertTrue(allReview.waitForExistence(timeout: 5))
+            let otherReady = allReview.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@",
+                "Preflight checked 2 files: 1 ready to update",
+                "Preflight checked 2 files: 1 ready to update"
+            )).firstMatch
+            XCTAssertTrue(otherReady.waitForExistence(timeout: 8), "Full scope must still offer the other clip")
+            XCTAssertTrue(allReview.buttons["Reprocess Files"].isEnabled)
+            try assertOtherClipUnchanged()
+            XCTAssertEqual(try Data(contentsOf: image), published)
+            allReview.buttons["Cancel"].click()
+            waitForSheetTransition()
+            XCTAssertTrue(allReview.waitForNonExistence(timeout: 5))
+            try assertOtherClipUnchanged()
+        }
     }
 
     private func verifyProgrammingRecoveryReview(managed: Bool) {
@@ -1206,6 +1275,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         managedRecovery: Bool = false,
         imageRecovery: Bool = false,
         matchingClipImage: Bool = false,
+        mixedClipRecovery: Bool = false,
         interruptPublication: Bool = false,
         rawRecovery: Bool = false,
         rawExtension: String = "arw",
@@ -1225,6 +1295,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         if recoveryFixture { app.launchEnvironment["AAGEDAL_UI_TEST_RECOVERY"] = "1" }
         if imageRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_IMAGE_RECOVERY"] = "1" }
         if matchingClipImage { app.launchEnvironment["AAGEDAL_UI_TEST_MATCHING_CLIP_IMAGE"] = "1" }
+        if mixedClipRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MIXED_CLIP_RECOVERY"] = "1" }
         if managedRecovery { app.launchEnvironment["AAGEDAL_UI_TEST_MANAGED_RECOVERY"] = "1" }
         if rawRecovery {
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_RECOVERY"] = "1"
