@@ -2,6 +2,21 @@ import Foundation
 import XCTest
 @testable import AagedalFTPSync
 
+private final class PasswordRetryReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failedOnce = false
+
+    func read(_ id: String) throws -> String? {
+        try lock.withLock {
+            if id == "right", !failedOnce {
+                failedOnce = true
+                throw AppError.transferFailed("Injected temporary Keychain failure")
+            }
+            return "saved-\(id)"
+        }
+    }
+}
+
 final class JobRepositoryTests: XCTestCase {
     @MainActor
     func testListingFailureWaitsForSiblingCleanupBeforeClosingSessions() async throws {
@@ -716,6 +731,247 @@ final class SyncFailureRepositoryTests: XCTestCase {
 
 @MainActor
 final class AppStorePersistenceTests: XCTestCase {
+    func testExternalCopySuspensionRejectsPendingQuickControlSave() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("suspended-quick-save-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let saved = try XCTUnwrap(store.jobs.first)
+        let bytes = try Data(contentsOf: root.appendingPathComponent("jobs.json"))
+
+        store.suspendForExternalWriter()
+        store.updateInterval(jobID: job.id, seconds: 90)
+
+        XCTAssertTrue(store.isSuspendedForExternalWriter)
+        XCTAssertEqual(store.jobs, [saved])
+        XCTAssertEqual(try repository.load(), [saved])
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("jobs.json")), bytes)
+    }
+
+    func testSavedCustomFileAgeRemainsAnExactChoiceInBothEditors() throws {
+        for (hours, expectedTitle) in [(2, "Last 2 hours"), (336, "Last 14 days")] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("custom-file-age-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+            let store = makeStore(repository: repository, root: root)
+            var job = store.makeJobDraft()
+            job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+            job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+            job.filter.recentHours = hours
+            XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+            let saved = try XCTUnwrap(repository.load().first)
+
+            let choices = FileAgeChoices.hours(including: saved.filter.recentHours)
+            let selectedIndex = try XCTUnwrap(choices.firstIndex(of: saved.filter.recentHours))
+            XCTAssertNotEqual(selectedIndex, 0, "A custom age must not fall back to Any age")
+            XCTAssertEqual(choices.filter { $0 == hours }.count, 1)
+            XCTAssertEqual(FileAgeChoices.title(for: choices[selectedIndex]), expectedTitle)
+            XCTAssertEqual(choices.compactMap { $0 }, choices.compactMap { $0 }.sorted())
+            XCTAssertEqual(try repository.load(), [saved], "Preparing editor choices must not change the saved window")
+            XCTAssertEqual(store.jobs, [saved])
+        }
+        XCTAssertEqual(FileAgeChoices.hours(including: nil).firstIndex(of: nil), 0)
+        XCTAssertEqual(FileAgeChoices.title(for: nil), "Any age")
+        XCTAssertEqual(FileAgeChoices.hours(including: 3).filter { $0 == 3 }.count, 1)
+    }
+
+    func testAnyAgeCannotInvalidateAutomaticCleanupJob() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cleanup-any-age-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        job.filter.recentHours = 1
+        job.targetCleanup = TargetCleanup(olderThanHours: 3)
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let saved = try XCTUnwrap(store.jobs.first)
+        XCTAssertNil(saved.validationMessage)
+
+        store.updateFileAge(jobID: job.id, recentHours: nil)
+
+        XCTAssertEqual(store.jobs, [saved])
+        XCTAssertEqual(try repository.load(), [saved])
+        XCTAssertNil(store.jobs.first?.validationMessage)
+        XCTAssertEqual(store.alertMessage, "Turn off automatic cleanup in Job Settings before choosing Any age.")
+    }
+
+    func testValidQuickFileAgeChangesPreserveCleanupBoundary() throws {
+        for (requestedAge, cleanupAge, expectedCleanup) in [
+            (nil as Int?, nil as Int?, nil as Int?),
+            (2, 3, 3),
+            (3, 3, 4),
+            (6, 3, 7),
+        ] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("cleanup-valid-age-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+            let store = makeStore(repository: repository, root: root)
+            var job = store.makeJobDraft()
+            job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+            job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+            job.filter.recentHours = 1
+            job.targetCleanup = cleanupAge.map { TargetCleanup(olderThanHours: $0) }
+            XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+
+            store.updateFileAge(jobID: job.id, recentHours: requestedAge)
+
+            let saved = try XCTUnwrap(repository.load().first)
+            XCTAssertEqual(saved, store.jobs.first)
+            XCTAssertEqual(saved.filter.recentHours, requestedAge)
+            XCTAssertEqual(saved.targetCleanup?.olderThanHours, expectedCleanup)
+            XCTAssertNil(saved.validationMessage)
+            XCTAssertNil(store.alertMessage)
+        }
+    }
+
+    func testFailedQuickFileAgeSavePreservesAgeAndCleanup() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cleanup-age-failure-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("job-store")
+        let repository = JobRepository(fileURL: directory.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        job.filter.recentHours = 1
+        job.targetCleanup = TargetCleanup(olderThanHours: 3)
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let saved = try XCTUnwrap(store.jobs.first)
+        try FileManager.default.removeItem(at: directory)
+        let blocker = Data("blocked persistence directory".utf8)
+        try blocker.write(to: directory)
+
+        store.updateFileAge(jobID: job.id, recentHours: 6)
+
+        XCTAssertEqual(store.jobs, [saved])
+        XCTAssertNil(store.jobs.first?.validationMessage)
+        XCTAssertNotNil(store.alertMessage)
+        XCTAssertEqual(try Data(contentsOf: directory), blocker)
+        store.alertMessage = nil
+        store.updateInterval(jobID: job.id, seconds: 90)
+        XCTAssertEqual(store.jobs, [saved])
+        XCTAssertNotNil(store.alertMessage)
+        XCTAssertEqual(try Data(contentsOf: directory), blocker)
+    }
+
+    func testSavingOpenSettingsPreservesMenuBarStopAndQuickControls() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shared-controls-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let session = JobEditingSession()
+        // Simulate settings opened while automatic syncing was enabled, without
+        // starting real transfers in this persistence regression.
+        var openJob = try XCTUnwrap(store.jobs.first)
+        openJob.isEnabled = true
+        session.edit(openJob)
+        session.draft.name = "Renamed in settings"
+        session.draft.filter.excludedFilenamePrefixes = "EDIT"
+        store.setEnabled(false, for: job.id)
+        store.updateInterval(jobID: job.id, seconds: 90)
+        store.updateFilter(jobID: job.id, preset: .jpeg)
+        store.updateFileAge(jobID: job.id, recentHours: 6)
+
+        XCTAssertTrue(session.save(using: store), store.alertMessage ?? "")
+        let saved = try XCTUnwrap(repository.load().first)
+        XCTAssertFalse(saved.isEnabled, "Saving must not restart a job stopped from the menu bar")
+        XCTAssertEqual(saved.intervalSeconds, 90)
+        XCTAssertEqual(saved.filter.preset, .jpeg)
+        XCTAssertEqual(saved.filter.recentHours, 6)
+        XCTAssertEqual(saved.filter.excludedFilenamePrefixes, "EDIT")
+        XCTAssertEqual(saved.name, "Renamed in settings")
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testSharedControlRefreshPreservesLocalEditsAndDiscardUsesLatestSavedValues() {
+        let session = JobEditingSession()
+        var job = SyncJob(name: "Fixture")
+        job.isEnabled = true
+        job.filter.recentHours = 1
+        job.targetCleanup = TargetCleanup(olderThanHours: 3)
+        session.edit(job)
+        session.draft.intervalSeconds = 120
+        session.draft.name = "Local name"
+        var latest = job
+        latest.isEnabled = false
+        latest.intervalSeconds = 90
+        latest.filter.preset = .jpeg
+        latest.filter.recentHours = 6
+        latest.targetCleanup = TargetCleanup(olderThanHours: 7)
+        session.refreshSharedControls(from: latest)
+        XCTAssertFalse(session.draft.isEnabled)
+        XCTAssertEqual(session.draft.intervalSeconds, 120)
+        XCTAssertEqual(session.draft.name, "Local name")
+        XCTAssertEqual(session.draft.filter.preset, .jpeg)
+        XCTAssertEqual(session.draft.filter.recentHours, 6)
+        XCTAssertEqual(session.draft.targetCleanup?.olderThanHours, 7)
+        XCTAssertTrue(session.hasUnsavedChanges)
+        session.markDiscarded()
+        XCTAssertEqual(session.draft, latest)
+        XCTAssertFalse(session.hasUnsavedChanges)
+
+        latest.intervalSeconds = 30
+        session.refreshSharedControls(from: latest)
+        XCTAssertEqual(session.draft, latest)
+        XCTAssertFalse(session.hasUnsavedChanges, "External changes alone must not prompt to save")
+    }
+
+    func testSharedControlRefreshDoesNotMaterializeLegacyLaunchDefault() {
+        let session = JobEditingSession()
+        var job = SyncJob(name: "Legacy launch setting")
+        job.isEnabled = true
+        job.startOnAppLaunch = nil
+        session.edit(job)
+        var stopped = job
+        stopped.isEnabled = false
+        session.refreshSharedControls(from: stopped)
+        XCTAssertEqual(session.draft, stopped)
+        XCTAssertNil(session.draft.startOnAppLaunch)
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testPasswordLoadingRetriesAtomicallyAndPreservesTypedPassword() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("password-retry-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reads = PasswordRetryReads()
+        let keychain = KeychainStore(passwordReader: { id in try reads.read(id) },
+            passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let store = makeStore(repository: JobRepository(fileURL: root.appendingPathComponent("jobs.json")),
+                              root: root, keychain: keychain)
+        let session = JobEditingSession()
+        var job = SyncJob(name: "Credentials")
+        job.left = Endpoint(kind: .ftp, host: "left.example.com", username: "desk", credentialID: "left")
+        job.right = Endpoint(kind: .ftp, host: "right.example.com", username: "desk", credentialID: "right")
+        session.edit(job)
+        session.loadCredentials(using: store)
+        XCTAssertNotNil(session.credentialLoadError)
+        XCTAssertEqual(session.leftPassword, "")
+        XCTAssertEqual(session.rightPassword, "")
+        XCTAssertFalse(session.hasUnsavedChanges)
+        session.leftPassword = "typed replacement"
+        session.draft.name = "Keep my edits"
+        session.loadCredentials(using: store)
+        XCTAssertNil(session.credentialLoadError)
+        XCTAssertEqual(session.leftPassword, "typed replacement")
+        XCTAssertEqual(session.rightPassword, "saved-right")
+        XCTAssertEqual(session.draft.name, "Keep my edits")
+        XCTAssertTrue(session.hasUnsavedChanges)
+        session.markDiscarded()
+        XCTAssertEqual(session.leftPassword, "saved-left")
+        XCTAssertEqual(session.rightPassword, "saved-right")
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
     func testFailedAddDoesNotPublishTheNewJob() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("failed-add-\(UUID().uuidString)", isDirectory: true)

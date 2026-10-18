@@ -5,6 +5,84 @@ import XCTest
 
 @MainActor
 final class AppPersistenceCoordinatorTests: XCTestCase {
+    func testSuspensionRejectsCredentialLibraryAndImportChangesBeforeWriting() throws {
+        var job = SyncJob(name: "Saved job")
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        let layout = try startupLayout(jobs: [job])
+        let keychain = TestKeychain()
+        let store = try paused(layout, keychain: keychain.store)
+        let profile = ServerProfile(name: "Saved server", kind: .ftp, host: "example.test", username: "desk")
+        XCTAssertTrue(store.saveServerProfile(profile, password: "saved password"))
+        let photographer = PhotographerProfile(name: "Saved photographer", filenamePrefix: "AA", creator: "Photographer", copyrightNotice: "")
+        let preset = MetadataPreset(name: "Saved preset")
+        XCTAssertTrue(store.savePhotographerProfile(photographer))
+        XCTAssertTrue(store.saveMetadataPreset(preset))
+        let library = try XCTUnwrap(store.photographerLibraryExportData())
+        let package = try XCTUnwrap(store.configurationExportData(scope: .package, password: nil))
+        func savedFiles() throws -> [String: Data] {
+            let files = try FileManager.default.contentsOfDirectory(at: layout.root, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasSuffix(".json") || $0.lastPathComponent.hasSuffix(".backup") }
+            return try Dictionary(uniqueKeysWithValues: files.map { ($0.lastPathComponent, try Data(contentsOf: $0)) })
+        }
+        let savedJobs = store.jobs
+        let savedProfiles = store.serverProfiles
+        let savedPhotographers = store.photographerLibrary
+        let savedPresets = store.metadataPresets
+        let bytes = try savedFiles()
+        let passwords = keychain.valuesSnapshot()
+        let writeCount = keychain.writeCount
+        let removedIDs = keychain.removedCredentialIDs
+        var changedJob = try XCTUnwrap(store.jobs.first)
+        changedJob.name = "Rejected rename"
+        changedJob.left = Endpoint(kind: .ftp, host: "new.example.test", username: "new")
+        var changedProfile = profile; changedProfile.host = "rejected.example.test"
+        var changedPhotographer = photographer; changedPhotographer.name = "Rejected photographer"
+        var changedPreset = preset; changedPreset.name = "Rejected preset"
+
+        store.suspendForExternalWriter()
+        let attempts: [(String, () -> Void)] = [
+            ("job save", { XCTAssertFalse(store.saveJob(changedJob, leftPassword: "rejected password", rightPassword: "")) }),
+            ("server save", { XCTAssertFalse(store.saveServerProfile(changedProfile, password: "rejected password")) }),
+            ("server copy", { XCTAssertNil(store.duplicateServerProfile(profile.id)) }),
+            ("server delete", { XCTAssertFalse(store.removeServerProfile(profile.id)) }),
+            ("automation", { XCTAssertFalse(store.saveMetadataAutomation(MetadataAutomation(), for: job.id)) }),
+            ("synced automation", { XCTAssertFalse(store.applySyncedMetadataAutomation(MetadataAutomation(), for: job.id)) }),
+            ("photographer save", { XCTAssertFalse(store.savePhotographerProfile(changedPhotographer)) }),
+            ("photographer delete", { XCTAssertFalse(store.removePhotographerProfile(photographer.id)) }),
+            ("preset save", { XCTAssertFalse(store.saveMetadataPreset(changedPreset)) }),
+            ("preset delete", { XCTAssertFalse(store.removeMetadataPreset(preset.id)) }),
+            ("library import", { XCTAssertNil(store.importPhotographerLibrary(from: library)) }),
+            ("package import", { XCTAssertNil(store.importConfiguration(from: package, password: nil)) }),
+            ("interval", { store.updateInterval(jobID: job.id, seconds: 90) }),
+            ("file age", { store.updateFileAge(jobID: job.id, recentHours: 6) }),
+            ("file type", { store.updateFilter(jobID: job.id, preset: .jpeg) }),
+            ("stop all", { store.stopAll() }),
+            ("job delete", { store.removeJob(job.id) }),
+            ("job add", { _ = store.addJob() }),
+            ("clear history", { store.clearSyncFailureHistory(for: job.id) }),
+        ]
+        for (name, attempt) in attempts {
+            store.alertMessage = nil
+            attempt()
+            XCTAssertEqual(store.jobs, savedJobs, name)
+            XCTAssertEqual(store.serverProfiles, savedProfiles, name)
+            XCTAssertEqual(store.photographerLibrary, savedPhotographers, name)
+            XCTAssertEqual(store.metadataPresets, savedPresets, name)
+            XCTAssertEqual(try savedFiles(), bytes, name)
+            XCTAssertEqual(keychain.valuesSnapshot(), passwords, name)
+            XCTAssertEqual(keychain.writeCount, writeCount, name)
+            XCTAssertEqual(keychain.removedCredentialIDs, removedIDs, name)
+            XCTAssertTrue(store.alertMessage?.contains("Quit every copy") == true, name)
+            XCTAssertTrue(store.isSuspendedForExternalWriter, name)
+        }
+        var copy = job; copy.id = UUID()
+        XCTAssertThrowsError(try store.installCalendarReceiveCopy(source: job, duplicate: copy))
+        XCTAssertEqual(try savedFiles(), bytes)
+    }
+
     private func startupLayout(jobs: [SyncJob] = []) throws -> AppStorageLayout {
         let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("v3-startup-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -139,12 +217,12 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         job.right = .local
         try fixture.jobRepository.save([job])
         var invalid = job; invalid.intervalSeconds = .nan
-        XCTAssertThrowsError(try fixture.coordinator.saveJob(previousJobs: [job], draftJob: invalid,
+        XCTAssertThrowsError(try fixture.coordinator.saveJob(previousJobs: [job], serverProfiles: [], draftJob: invalid,
                                                              leftPassword: "replacement", rightPassword: ""))
         XCTAssertEqual(keychain.valuesSnapshot(), ["durable": "previous"])
         XCTAssertEqual(keychain.removedCredentialIDs.count, 1)
         XCTAssertNotEqual(keychain.removedCredentialIDs.first, "durable")
-        XCTAssertTrue(fixture.coordinator.removeCredentials(for: job, retainedJobs: []).isEmpty)
+        XCTAssertTrue(fixture.coordinator.removeCredentials(for: job, retainedJobs: [], serverProfiles: []).isEmpty)
         XCTAssertEqual(keychain.value(for: "durable"), "previous")
     }
 
@@ -159,7 +237,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         try fixture.jobRepository.save([job])
 
         let result = try fixture.coordinator.saveJob(
-            previousJobs: [job], draftJob: job,
+            previousJobs: [job], serverProfiles: [], draftJob: job,
             leftPassword: "new-left", rightPassword: "new-right"
         )
 
@@ -181,7 +259,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         defer { fixture.removeTemporaryFiles() }
         let job = remoteJob(leftCredentialID: "retained-left", rightCredentialID: "obsolete-right")
 
-        XCTAssertTrue(fixture.coordinator.removeCredentials(for: job, retainedJobs: []).isEmpty)
+        XCTAssertTrue(fixture.coordinator.removeCredentials(for: job, retainedJobs: [], serverProfiles: []).isEmpty)
         XCTAssertEqual(keychain.value(for: "retained-left"), "old-left")
         XCTAssertNil(keychain.value(for: "obsolete-right"))
         XCTAssertEqual(keychain.removedCredentialIDs, ["obsolete-right"])
@@ -361,6 +439,111 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         XCTAssertEqual(try fixture.jobRepository.load(), [previousJob])
     }
 
+    func testDetachingProfileWithSamePasswordPreservesSharedCredentialOnLaterEdit() throws {
+        let profile = ServerProfile(name: "Shared desk", host: "shared.example.test", username: "desk",
+            credentialID: "shared-profile-password")
+        let keychain = TestKeychain(values: [profile.credentialID: "same password"])
+        let fixture = try PersistenceCoordinatorFixture(prefix: "detached-profile-password", keychain: keychain.store)
+        defer { fixture.removeTemporaryFiles() }
+        var job = SyncJob(name: "Detach this connection")
+        job.left = profile.endpoint(remotePath: "/incoming")
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+        try fixture.serverProfileRepository.save([profile])
+        try fixture.jobRepository.save([job])
+        var detached = job
+        detached.left.serverProfileID = nil
+        detached.left.credentialID = "detached-draft-password"
+        let first = try fixture.coordinator.saveJob(previousJobs: [job], serverProfiles: [profile], draftJob: detached,
+            leftPassword: "same password", rightPassword: "")
+        XCTAssertNotEqual(first.savedJob.left.credentialID, profile.credentialID)
+        XCTAssertEqual(keychain.value(for: first.savedJob.left.credentialID), "same password")
+        let second = try fixture.coordinator.saveJob(previousJobs: first.jobs, serverProfiles: [profile], draftJob: first.savedJob,
+            leftPassword: "custom replacement", rightPassword: "")
+        XCTAssertEqual(keychain.value(for: second.savedJob.left.credentialID), "custom replacement")
+        XCTAssertEqual(keychain.value(for: profile.credentialID), "same password")
+        XCTAssertFalse(keychain.removedCredentialIDs.contains(profile.credentialID))
+        XCTAssertEqual(try fixture.serverProfileRepository.load(), [profile])
+    }
+
+    func testSavingExistingCustomAliasSeparatesCredentialsAndPreservesProfile() throws {
+        for supplied in ["profile password", "replacement password", ""] {
+            let profile = ServerProfile(name: "Shared desk", host: "shared.example.test", username: "desk",
+                credentialID: "existing-shared-alias")
+            let keychain = TestKeychain(values: [profile.credentialID: "profile password"])
+            let fixture = try PersistenceCoordinatorFixture(prefix: "repair-custom-alias", keychain: keychain.store)
+            defer { fixture.removeTemporaryFiles() }
+            var job = SyncJob(name: "Existing custom alias")
+            job.left = Endpoint(kind: .ftp, host: "custom.example.test", username: "custom", credentialID: profile.credentialID)
+            job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+            try fixture.serverProfileRepository.save([profile])
+            try fixture.jobRepository.save([job])
+            let result = try fixture.coordinator.saveJob(previousJobs: [job], serverProfiles: [profile], draftJob: job,
+                leftPassword: supplied, rightPassword: "")
+            XCTAssertNotEqual(result.savedJob.left.credentialID, profile.credentialID)
+            XCTAssertEqual(keychain.value(for: result.savedJob.left.credentialID), supplied.isEmpty ? nil : supplied)
+            XCTAssertEqual(keychain.value(for: profile.credentialID), "profile password")
+            try fixture.jobRepository.save([])
+            XCTAssertTrue(fixture.coordinator.removeCredentials(for: result.savedJob, retainedJobs: [], serverProfiles: [profile]).isEmpty)
+            XCTAssertNil(keychain.value(for: result.savedJob.left.credentialID))
+            XCTAssertEqual(keychain.value(for: profile.credentialID), "profile password")
+            XCTAssertFalse(keychain.removedCredentialIDs.contains(profile.credentialID))
+        }
+    }
+
+    func testFailedDetachmentPreservesProfileCredentialAndRollsBackOnlyStagedItem() throws {
+        for writeFails in [false, true] {
+            let profile = ServerProfile(name: "Shared desk", host: "shared.example.test", username: "desk",
+                credentialID: "profile-before-failure")
+            let keychain = TestKeychain(values: [profile.credentialID: "profile password"], failWriteNumber: writeFails ? 1 : nil)
+            let fixture = try PersistenceCoordinatorFixture(prefix: "detach-rollback", keychain: keychain.store)
+            defer { fixture.removeTemporaryFiles() }
+            var job = SyncJob(name: "Saved shared connection")
+            job.left = profile.endpoint()
+            job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+            try fixture.serverProfileRepository.save([profile])
+            try fixture.jobRepository.save([job])
+            var detached = job
+            detached.left.serverProfileID = nil
+            detached.left.credentialID = "uncommitted-detachment"
+            if !writeFails { detached.intervalSeconds = .nan }
+            XCTAssertThrowsError(try fixture.coordinator.saveJob(previousJobs: [job], serverProfiles: [profile], draftJob: detached,
+                leftPassword: "profile password", rightPassword: ""))
+            XCTAssertEqual(keychain.valuesSnapshot(), [profile.credentialID: "profile password"])
+            XCTAssertFalse(keychain.removedCredentialIDs.contains(profile.credentialID))
+            XCTAssertEqual(try fixture.jobRepository.load(), [job])
+            XCTAssertEqual(try fixture.serverProfileRepository.load(), [profile])
+            if !writeFails { XCTAssertEqual(keychain.removedCredentialIDs.count, 1) }
+        }
+    }
+
+    func testStoreSaveAndDeletionRetainProfileOwnedCredentialsForExistingAlias() throws {
+        for editFirst in [false, true] {
+            let profile = ServerProfile(name: "Shared desk", host: "shared.example.test", username: "desk",
+                credentialID: "stored-shared-alias")
+            let keychain = TestKeychain(values: [profile.credentialID: "profile password"])
+            var job = SyncJob(name: "Custom connection with old alias")
+            job.left = Endpoint(kind: .ftp, host: "custom.example.test", username: "custom", credentialID: profile.credentialID)
+            job.right = Endpoint(kind: .local, localPath: "/private/tmp", bookmark: Data([1]))
+            job.isEnabled = false
+            job.startsOnAppLaunch = false
+            let layout = try startupLayout(jobs: [job])
+            try ServerProfileRepository(storage: layout).save([profile])
+            let store = try paused(layout, keychain: keychain.store)
+            if editFirst {
+                XCTAssertTrue(store.saveJob(try XCTUnwrap(store.jobs.first), leftPassword: "custom replacement", rightPassword: ""), store.alertMessage ?? "")
+                XCTAssertEqual(keychain.value(for: profile.credentialID), "profile password")
+                XCTAssertNotEqual(store.jobs.first?.left.credentialID, profile.credentialID)
+            }
+            store.removeJob(job.id)
+            XCTAssertTrue(store.jobs.isEmpty)
+            XCTAssertEqual(store.serverProfiles, [profile])
+            XCTAssertEqual(keychain.value(for: profile.credentialID), "profile password")
+            XCTAssertFalse(keychain.removedCredentialIDs.contains(profile.credentialID))
+            XCTAssertEqual(try JobRepository(storage: layout).load(), [])
+            XCTAssertEqual(try ServerProfileRepository(storage: layout).load(), [profile])
+        }
+    }
+
     func testPasswordChangeUsesFreshCredentialAndCommitsBeforeRemovingOldPassword() throws {
         let leftCredentialID = "left-old"
         let rightCredentialID = "right-old"
@@ -377,6 +560,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         draft.name = "Updated"
         let result = try fixture.coordinator.saveJob(
             previousJobs: [job],
+            serverProfiles: [],
             draftJob: draft,
             leftPassword: "new-left-password",
             rightPassword: "right-password"
@@ -404,6 +588,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
 
         XCTAssertThrowsError(try fixture.coordinator.saveJob(
             previousJobs: [job],
+            serverProfiles: [],
             draftJob: unencodableDraft,
             leftPassword: "replacement-password",
             rightPassword: ""
@@ -430,6 +615,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
 
         XCTAssertThrowsError(try fixture.coordinator.saveJob(
             previousJobs: [job],
+            serverProfiles: [],
             draftJob: job,
             leftPassword: "left-new",
             rightPassword: "right-new"
@@ -452,6 +638,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
 
         let result = try fixture.coordinator.saveJob(
             previousJobs: [job],
+            serverProfiles: [],
             draftJob: job,
             leftPassword: "",
             rightPassword: ""
@@ -475,6 +662,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
 
         XCTAssertThrowsError(try fixture.coordinator.saveJob(
             previousJobs: [job],
+            serverProfiles: [],
             draftJob: job,
             leftPassword: "replacement",
             rightPassword: ""
@@ -502,6 +690,7 @@ final class AppPersistenceCoordinatorTests: XCTestCase {
         draft.left.remotePath = "/incoming/another-desk"
         let result = try fixture.coordinator.saveJob(
             previousJobs: [job],
+            serverProfiles: [],
             draftJob: draft,
             leftPassword: "attempted-job-password-change",
             rightPassword: ""

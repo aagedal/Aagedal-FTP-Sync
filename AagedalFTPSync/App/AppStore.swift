@@ -248,6 +248,11 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) -> Bool {
+        guard admitConfigurationChange() else { return false }
+        guard !isJobResetting(job.id) else {
+            alertMessage = "Wait for Reset Job to finish before saving changes to this job."
+            return false
+        }
         var resolvedJob: SyncJob
         do {
             resolvedJob = try job.resolvingServerProfiles(in: serverProfiles)
@@ -274,6 +279,7 @@ final class AppStore: ObservableObject {
         do {
             let result = try persistenceCoordinator.saveJob(
                 previousJobs: jobs,
+                serverProfiles: serverProfiles,
                 draftJob: resolvedJob,
                 leftPassword: leftPassword,
                 rightPassword: rightPassword
@@ -294,6 +300,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveServerProfile(_ profile: ServerProfile, password: String) -> Bool {
+        guard admitConfigurationChange() else { return false }
         if let message = profile.validationMessage {
             alertMessage = message
             return false
@@ -337,6 +344,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func duplicateServerProfile(_ profileID: UUID) -> ServerProfile? {
+        guard admitConfigurationChange() else { return nil }
         do {
             let result = try persistenceCoordinator.duplicateServerProfile(
                 profileID: profileID,
@@ -357,6 +365,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func removeServerProfile(_ profileID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             let result = try persistenceCoordinator.removeServerProfile(
                 profileID: profileID,
@@ -391,6 +400,10 @@ final class AppStore: ObservableObject {
 
     func updateFileAge(jobID: UUID, recentHours: Int?) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        guard recentHours != nil || jobs[index].targetCleanup == nil else {
+            alertMessage = "Turn off automatic cleanup in Job Settings before choosing Any age."
+            return
+        }
         var updatedJobs = jobs
         updatedJobs[index].filter.recentHours = recentHours
         if let recentHours,
@@ -403,6 +416,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             guard let updated = try metadataLibraryCoordinator.saveAutomation(
                 automation,
@@ -422,6 +436,7 @@ final class AppStore: ObservableObject {
     @discardableResult
     func applySyncedMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID,
                                       protocolVersion: MetadataCalendarProtocol = .legacy) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             try MetadataCalendarNamespaceGate.validate(automation, for: protocolVersion)
             if let metadataCalendarRepository {
@@ -503,6 +518,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func importPhotographerLibrary(from data: Data) -> PhotographerLibraryImportResult? {
+        guard admitConfigurationChange() else { return nil }
         do {
             let importResult = try metadataLibraryCoordinator.importLibrary(
                 from: data,
@@ -598,6 +614,7 @@ final class AppStore: ObservableObject {
         metadataTargetJobID: UUID? = nil,
         allowImportedAppleCoordinates: Bool = false
     ) -> ConfigurationImportResult? {
+        guard admitConfigurationChange() else { return nil }
         do {
             let prepared = try configurationTransferCoordinator.prepareImport(
                 from: data,
@@ -661,6 +678,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func savePhotographerProfile(_ profile: PhotographerProfile) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             let updated = try metadataLibraryCoordinator.saveProfile(
                 profile,
@@ -677,6 +695,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func removePhotographerProfile(_ photographerID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             let updated = try metadataLibraryCoordinator.removeProfile(
                 photographerID,
@@ -693,6 +712,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveMetadataPreset(_ preset: MetadataPreset) -> Bool {
+        guard admitConfigurationChange() else { return false }
         let normalized = preset.normalized()
         do {
             try Self.validateMetadataActivation(jobs: [], hasActivatedLibraryValues: normalized.hasActivatedTemplates,
@@ -725,6 +745,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func removeMetadataPreset(_ presetID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         let updatedPresets = metadataPresets.filter { $0.id != presetID }
         guard updatedPresets.count != metadataPresets.count else { return true }
         do {
@@ -761,6 +782,9 @@ final class AppStore: ObservableObject {
     /// are retained; password editing/removal already accounts for references from other jobs.
     @discardableResult
     func installCalendarReceiveCopy(source: SyncJob, duplicate: SyncJob) throws -> SyncJob {
+        guard admitConfigurationChange() else {
+            throw AppError.invalidConfiguration(Self.externalWriterSuspensionMessage)
+        }
         // The receipt journal may replay after jobs were saved but the link was not.
         if let existing = jobs.first(where: { $0.id == duplicate.id }) { return existing }
         try validateCalendarReceiveCopy(source: source, duplicate: duplicate)
@@ -781,6 +805,10 @@ final class AppStore: ObservableObject {
 
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
         guard !isSuspendedForExternalWriter else { return }
+        guard !enabled || !isJobResetting(jobID) else {
+            alertMessage = "Wait for Reset Job to finish before starting this job."
+            return
+        }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         if enabled, let message = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) {
             alertMessage = message
@@ -813,7 +841,7 @@ final class AppStore: ObservableObject {
                 appendAlert("The deleted job's download manifest could not be cleaned up: \(error.localizedDescription)")
             }
         }
-        for warning in persistenceCoordinator.removeCredentials(for: job, retainedJobs: updatedJobs) {
+        for warning in persistenceCoordinator.removeCredentials(for: job, retainedJobs: updatedJobs, serverProfiles: serverProfiles) {
             appendAlert("A saved password for the deleted job could not be removed: \(warning)")
         }
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }
@@ -906,21 +934,31 @@ final class AppStore: ObservableObject {
             || resetTasks[jobID] != nil
     }
 
-    func resetJob(_ jobID: UUID) {
-        guard !isSuspendedForExternalWriter else { return }
+    private func isJobResetting(_ jobID: UUID) -> Bool {
+        resettingJobs.contains(jobID) || resetTasks[jobID] != nil
+    }
+
+    @discardableResult
+    func resetJob(_ review: JobResetReview) -> Bool {
+        let jobID = review.job.id
+        guard !isSuspendedForExternalWriter else { return false }
         guard !isJobBusy(jobID),
-              let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+              let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
         let job = jobs[index]
+        guard job == review.job else {
+            alertMessage = "This job changed after the reset preview. Review Reset Job again before deleting any downloads."
+            return false
+        }
         if let message = JobResetService.validationMessage(for: job) {
             alertMessage = message
-            return
+            return false
         }
 
         var updatedJobs = jobs
         updatedJobs[index].isEnabled = false
         updatedJobs[index].startsOnAppLaunch = false
         guard persistAndPublishJobs(updatedJobs, errorPrefix: "The job could not be disabled for reset") else {
-            return
+            return false
         }
 
         scheduler.cancel(jobID)
@@ -954,13 +992,22 @@ final class AppStore: ObservableObject {
             }
         }
         resetTasks[jobID] = task
+        return true
     }
 
-    func resetPreview(for jobID: UUID) async -> JobResetPreview? {
-        guard !isJobBusy(jobID),
+    func resetPreview(for jobID: UUID) async -> JobResetReview? {
+        guard !isSuspendedForExternalWriter, !isJobBusy(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return nil }
         do {
-            return try await jobResetService.preview(for: job)
+            let preview = try await jobResetService.preview(for: job)
+            guard !Task.isCancelled, !isSuspendedForExternalWriter else { return nil }
+            guard jobs.first(where: { $0.id == jobID }) == job, !isJobBusy(jobID) else {
+                alertMessage = "This job changed while preparing the reset preview. Review Reset Job again before deleting any downloads."
+                return nil
+            }
+            return JobResetReview(job: job, preview: preview)
+        } catch is CancellationError {
+            return nil
         } catch {
             alertMessage = error.localizedDescription
             return nil
@@ -1100,7 +1147,7 @@ final class AppStore: ObservableObject {
         for task in metadataReprocessTasks.values { task.cancel() }
         for task in resetTasks.values { task.cancel() }
         for task in sourceSignatureMaintenanceTasks.values { task.cancel() }
-        alertMessage = "Another copy of Aagedal FTP Sync was detected. New work is blocked and active operations are being cancelled. Quit the other copy, then quit and reopen this app before continuing."
+        alertMessage = Self.externalWriterSuspensionMessage
     }
 
     struct LaunchRestoration: Equatable {
@@ -1142,10 +1189,10 @@ final class AppStore: ObservableObject {
         var updatedJobs = jobs
         let blockedJobs = updatedJobs.filter { metadataFaceRecognitionRuntimeBlocker(for: $0) != nil }
         let newlyEnabledJobIDs = updatedJobs.compactMap {
-            $0.isEnabled || metadataFaceRecognitionRuntimeBlocker(for: $0) != nil ? nil : $0.id
+            $0.isEnabled || isJobResetting($0.id) || metadataFaceRecognitionRuntimeBlocker(for: $0) != nil ? nil : $0.id
         }
         for index in updatedJobs.indices {
-            if metadataFaceRecognitionRuntimeBlocker(for: updatedJobs[index]) == nil {
+            if !isJobResetting(updatedJobs[index].id), metadataFaceRecognitionRuntimeBlocker(for: updatedJobs[index]) == nil {
                 updatedJobs[index].isEnabled = true
             }
         }
@@ -1155,6 +1202,10 @@ final class AppStore: ObservableObject {
         if !blockedJobs.isEmpty {
             let names = blockedJobs.map(\.name).joined(separator: ", ")
             alertMessage = "Face recognition is not ready, so these jobs remain stopped: \(names). Disable face recognition to run them without it."
+        }
+        let resettingNames = jobs.filter { isJobResetting($0.id) }.map(\.name)
+        if !resettingNames.isEmpty {
+            appendAlert("Reset Job is still running, so these jobs remain stopped: \(resettingNames.joined(separator: ", ")).")
         }
     }
 
@@ -1215,6 +1266,7 @@ final class AppStore: ObservableObject {
     }
 
     func clearSyncFailureHistory(for jobID: UUID) {
+        guard admitConfigurationChange() else { return }
         do {
             let retained = try persistenceCoordinator.removeSyncFailures(jobID: jobID)
             syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
@@ -1237,7 +1289,8 @@ final class AppStore: ObservableObject {
     }
 
     private func performSync(_ jobID: UUID) async -> SyncAttempt {
-        guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
+        guard !isSuspendedForExternalWriter, !isJobResetting(jobID), metadataReprocessTasks[jobID] == nil,
+              !scheduler.isRunning(jobID),
               let savedJob = jobs.first(where: { $0.id == jobID }) else { return .skipped }
         let job: SyncJob
         do {
@@ -1267,7 +1320,7 @@ final class AppStore: ObservableObject {
             phases[jobID] = .stopped
             return .cancelled
         }
-        guard scheduler.beginRunning(jobID) else {
+        guard !isJobResetting(jobID), metadataReprocessTasks[jobID] == nil, scheduler.beginRunning(jobID) else {
             await syncConcurrencyController.release(leaseID)
             return .skipped
         }
@@ -1309,12 +1362,16 @@ final class AppStore: ObservableObject {
             }
             recordSyncFailure(message, jobID: jobID)
             phases[jobID] = .failed(message, retryAt: nil)
-            attempt = failure.completedWithSourceFailures ? .sourceFilesFailed(message) : .failed(message)
+            if failure.requiresRecovery {
+                attempt = .recoveryRequired(message)
+            } else {
+                attempt = failure.completedWithSourceFailures ? .sourceFilesFailed(message) : .failed(message)
+            }
         } catch {
             let message = error.localizedDescription
             recordSyncFailure(message, jobID: jobID)
             phases[jobID] = .failed(message, retryAt: nil)
-            attempt = .failed(message)
+            attempt = AppError.requiresRecovery(error) ? .recoveryRequired(message) : .failed(message)
         }
         scheduler.endRunning(jobID)
         await syncConcurrencyController.release(leaseID)
@@ -1535,6 +1592,7 @@ final class AppStore: ObservableObject {
         _ updatedJobs: [SyncJob],
         errorPrefix: String = "Changes could not be saved"
     ) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             try persistenceCoordinator.saveJobs(updatedJobs)
             jobs = updatedJobs
@@ -1543,6 +1601,19 @@ final class AppStore: ObservableObject {
             alertMessage = "\(errorPrefix): \(error.localizedDescription)"
             return false
         }
+    }
+
+    private static let externalWriterSuspensionMessage = "Another copy of Aagedal FTP Sync was detected. New work and settings changes are blocked and active operations are being cancelled. Quit every copy, then reopen this app before continuing."
+
+    /// A disabled view cannot stop callbacks that were already queued, including
+    /// quick-control commits on disappearance. Admit settings writes here as well.
+    /// Completion audit/failure writes remain available for operations draining.
+    private func admitConfigurationChange() -> Bool {
+        guard !isSuspendedForExternalWriter else {
+            alertMessage = Self.externalWriterSuspensionMessage
+            return false
+        }
+        return true
     }
 
     private func appendAlert(_ message: String) {
@@ -1604,6 +1675,10 @@ extension AppStore: SyncSchedulerDelegate {
         objectWillChange.send()
     }
 
+    func syncSchedulerDidPauseForRecovery(_ jobID: UUID) {
+        objectWillChange.send()
+    }
+
     func syncScheduler(
         _ jobID: UUID,
         scheduledNextRunAt date: Date,
@@ -1634,7 +1709,7 @@ extension AppStore: SyncSchedulerDelegate {
             }
         case .failed(let message), .sourceFilesFailed(let message):
             phases[jobID] = .failed(message, retryAt: date)
-        case .cancelled, .skipped:
+        case .cancelled, .skipped, .recoveryRequired:
             break
         }
     }

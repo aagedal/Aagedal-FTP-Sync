@@ -130,10 +130,12 @@ private struct TransferMetadataOutcome: Sendable {
 
 private struct TransferStepFailure: LocalizedError, Sendable {
     let failureDescription: String
+    let requiresRecovery: Bool
     let outcome: TransferMetadataOutcome
 
     init(_ error: any Error, outcome: TransferMetadataOutcome) {
         failureDescription = error.localizedDescription
+        requiresRecovery = AppError.requiresRecovery(error)
         self.outcome = outcome
     }
 
@@ -658,7 +660,8 @@ struct SyncEngine: Sendable {
             } catch let failure as SyncRunFailure {
                 throw SyncRunFailure(
                     failureDescription: failure.failureDescription,
-                    partialResult: completedTransfers.adding(failure.partialResult)
+                    partialResult: completedTransfers.adding(failure.partialResult),
+                    requiresRecovery: failure.requiresRecovery
                 )
             }
             let completedResult = completedTransfers.adding(SyncResult(transferred: 0, deleted: deleted))
@@ -711,7 +714,8 @@ struct SyncEngine: Sendable {
                 throw SyncRunFailure(
                     failureDescription: failure.failureDescription
                         + " Source signature persistence also failed: \(persistenceError.localizedDescription)",
-                    partialResult: failure.partialResult
+                    partialResult: failure.partialResult,
+                    requiresRecovery: failure.requiresRecovery
                 )
             }
             throw failure
@@ -733,7 +737,8 @@ struct SyncEngine: Sendable {
                     throw SyncRunFailure(
                         failureDescription: error.localizedDescription
                             + " Source signature persistence also failed: \(persistenceError.localizedDescription)",
-                        partialResult: earlyResult
+                        partialResult: earlyResult,
+                        requiresRecovery: AppError.requiresRecovery(error)
                     )
                 }
                 throw SyncRunFailure(error, partialResult: earlyResult)
@@ -2050,6 +2055,7 @@ struct SyncEngine: Sendable {
             }
             let outcome: TransferMetadataOutcome
             var deferredFailureDescription: String?
+            var deferredRequiresRecovery = false
             do {
                 if isRetry {
                     await source.close()
@@ -2115,6 +2121,7 @@ struct SyncEngine: Sendable {
             } catch let failure as TransferStepFailure {
                 outcome = failure.outcome
                 deferredFailureDescription = failure.failureDescription
+                deferredRequiresRecovery = failure.requiresRecovery
             } catch {
                 let transferError = error
                 do {
@@ -2133,7 +2140,8 @@ struct SyncEngine: Sendable {
                             processed: processed,
                             metadataReport: metadataReport,
                             pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
-                        )
+                        ),
+                        requiresRecovery: AppError.requiresRecovery(transferError)
                     )
                 }
                 throw SyncRunFailure(
@@ -2188,7 +2196,8 @@ struct SyncEngine: Sendable {
                             processed: processed,
                             metadataReport: metadataReport,
                             pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
-                        )
+                        ),
+                        requiresRecovery: deferredRequiresRecovery
                     )
                 }
                 throw SyncRunFailure(
@@ -2199,7 +2208,8 @@ struct SyncEngine: Sendable {
                         processed: processed,
                         metadataReport: metadataReport,
                         pendingSourceFiles: Array(Set(changingFiles.values)).sorted()
-                    )
+                    ),
+                    requiresRecovery: deferredRequiresRecovery
                 )
             }
         }
@@ -2941,33 +2951,14 @@ struct SyncEngine: Sendable {
                         occupiedPaths: occupiedProcessedPaths
                     )
 
-                    var importedProcessedFiles: [SyncFile] = []
-                    do {
-                        for output in processedOutputs {
-                            try await importProcessedFile(
-                                from: output.localURL,
-                                as: output.file,
-                                to: processedDestination,
-                                preserveDate: preserveDate
-                            )
-                            importedProcessedFiles.append(output.file)
-                        }
-                    } catch {
-                        var rollbackFailures: [String] = []
-                        for importedFile in importedProcessedFiles.reversed() {
-                            do {
-                                try await processedDestination.removeFile(importedFile)
-                            } catch {
-                                rollbackFailures.append(importedFile.relativePath)
-                            }
-                        }
-                        if !rollbackFailures.isEmpty {
-                            throw AppError.transferFailed(
-                                "The processed RAW/XMP pair could not be completed, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The source was left untouched."
-                            )
-                        }
-                        throw error
-                    }
+                    // Keep RAW/XMP publication recoverable as one group. Local
+                    // rollback revokes only unchanged outputs, preserving edits
+                    // made after publication and retaining recovery evidence.
+                    try await processedDestination.importFilesTransactionallyIfAbsent(
+                        processedOutputs.map { EndpointFileImport(localURL: $0.localURL, file: $0.file) },
+                        preserveDate: preserveDate,
+                        verifySize: true
+                    )
                 }
                 publishedProcessedPaths = Set(outputPaths)
                 try await source.removeFilesTransactionally(
@@ -3018,20 +3009,6 @@ struct SyncEngine: Sendable {
             relativePath: folder + "/" + file.relativePath,
             size: file.size,
             modifiedAt: file.modifiedAt
-        )
-    }
-
-    private func importProcessedFile(
-        from localURL: URL,
-        as file: SyncFile,
-        to processedDestination: any EndpointSession,
-        preserveDate: Bool
-    ) async throws {
-        try await processedDestination.importFileIfAbsent(
-            from: localURL,
-            as: file,
-            preserveDate: preserveDate,
-            verifySize: true
         )
     }
 

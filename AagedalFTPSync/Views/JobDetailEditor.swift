@@ -9,7 +9,7 @@ struct JobDetailEditor: View {
     let onDiscardNewJob: () -> Void
     @State private var showDeleteConfirmation = false
     @State private var showResetConfirmation = false
-    @State private var resetPreview: JobResetPreview?
+    @State private var resetReview: JobResetReview?
     @State private var isPreparingReset = false
     @State private var saveConfirmation = false
     @State private var showMetadataAudit = false
@@ -73,8 +73,10 @@ struct JobDetailEditor: View {
                     Task {
                         isPreparingReset = true
                         defer { isPreparingReset = false }
-                        resetPreview = await store.resetPreview(for: draft.id)
-                        showResetConfirmation = resetPreview != nil
+                        let review = await store.resetPreview(for: draft.id)
+                        guard let review, draft == review.job else { return }
+                        resetReview = review
+                        showResetConfirmation = true
                     }
                 }
                     .disabled(resetUnavailableReason != nil)
@@ -85,7 +87,7 @@ struct JobDetailEditor: View {
                         .font(.caption)
                         .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                         .lineLimit(3)
-                } else if saveConfirmation {
+                } else if saveConfirmation && !session.hasUnsavedChanges {
                     Label("Saved", systemImage: "checkmark.circle.fill")
                         .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
                 }
@@ -102,6 +104,8 @@ struct JobDetailEditor: View {
             .padding(14)
         }
         .navigationTitle(draft.name)
+        .onChange(of: draft) { _, _ in invalidateChangedResetReview() }
+        .onChange(of: store.jobs) { _, _ in invalidateChangedResetReview() }
         .onChange(of: store.metadataSyncSettingsJobID) { _, _ in openRequestedMetadataSyncSettings() }
         .onChange(of: session.jobID) { _, _ in openRequestedMetadataSyncSettings() }
         .onAppear {
@@ -143,6 +147,7 @@ struct JobDetailEditor: View {
             Text(processedFolderError ?? "")
         }
         .alert("Saved Passwords", isPresented: $showCredentialLoadError) {
+            Button("Retry") { session.loadCredentials(using: store) }
             Button("OK") {}
         } message: {
             Text(session.credentialLoadError ?? "")
@@ -164,13 +169,16 @@ struct JobDetailEditor: View {
                 ? "This job has not been saved, so no stored jobs or credentials will be changed."
                 : "Files are not deleted, but this job and its saved credentials will be removed.")
         }
-        .confirmationDialog("Reset “\(draft.name)”?", isPresented: $showResetConfirmation) {
+        .confirmationDialog("Reset “\(resetReview?.job.name ?? draft.name)”?", isPresented: $showResetConfirmation) {
             Button("Delete Downloads and Reset", role: .destructive) {
-                draft.isEnabled = false
-                draft.startsOnAppLaunch = false
-                store.resetJob(draft.id)
-                resetPreview = nil
+                guard let review = resetReview, draft == review.job else { return }
+                if store.resetJob(review) {
+                    draft.isEnabled = false
+                    draft.startsOnAppLaunch = false
+                }
+                resetReview = nil
             }
+            .disabled(resetReview == nil)
         } message: {
             Text(resetConfirmationMessage)
         }
@@ -190,9 +198,17 @@ struct JobDetailEditor: View {
                 Toggle("Two-way sync", isOn: twoWayBinding)
             }
 
+            if let message = session.credentialLoadError {
+                Section("Saved passwords need attention") {
+                    Text(message).font(.callout)
+                    Button("Retry Loading Passwords") { session.loadCredentials(using: store) }
+                }
+            }
+
             Section("Automatic syncing") {
                 Toggle("Automatic syncing enabled", isOn: $session.draft.isEnabled)
                     .help("Repeatedly sync this job while the app is open.")
+                    .accessibilityIdentifier("automatic-sync-enabled")
                 LabeledContent("Check every") {
                     HStack {
                         Slider(value: intervalSecondsBinding, in: 5...300)
@@ -482,15 +498,10 @@ struct JobDetailEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Include hidden files", isOn: $session.draft.filter.includeHiddenFiles)
                 Picker("File age", selection: recentHoursBinding) {
-                    Text("Any age").tag(0)
-                        .disabled(draft.targetCleanup != nil)
-                    Text("Last hour").tag(1)
-                    Text("Last 3 hours").tag(3)
-                    Text("Last 6 hours").tag(6)
-                    Text("Last 12 hours").tag(12)
-                    Text("Last 24 hours").tag(24)
-                    Text("Last 48 hours").tag(48)
-                    Text("Last 7 days").tag(168)
+                    ForEach(FileAgeChoices.hours(including: draft.filter.recentHours), id: \.self) { hours in
+                        Text(FileAgeChoices.title(for: hours)).tag(hours ?? 0)
+                            .disabled(hours == nil && draft.targetCleanup != nil)
+                    }
                 }
             }
 
@@ -686,8 +697,10 @@ struct JobDetailEditor: View {
     }
 
     private var intervalLabel: String {
-        if draft.intervalSeconds < 60 { return "\(Int(draft.intervalSeconds)) sec" }
-        return "\(Int(draft.intervalSeconds / 60)) min"
+        let seconds = Int(draft.intervalSeconds)
+        if seconds < 60 { return "\(seconds) sec" }
+        let remainder = seconds % 60
+        return remainder == 0 ? "\(seconds / 60) min" : "\(seconds / 60)m \(remainder)s"
     }
 
     private var destinationLocationTitle: String {
@@ -713,19 +726,23 @@ struct JobDetailEditor: View {
     }
 
     private var resetConfirmationMessage: String {
-        guard let savedJob else { return "This job has not been saved." }
-        let path = resetPreview?.downloadFolderPath
-            ?? savedJob.localDestinationDisplayPath
-            ?? "the local download folder"
-        let fileCount = resetPreview?.filesToDelete ?? 0
+        guard let review = resetReview else { return "Review Reset Job again before deleting any downloads." }
+        let path = review.preview.downloadFolderPath
+        let fileCount = review.preview.filesToDelete
         let fileDescription = fileCount == 1 ? "1 file" : "\(fileCount) files"
         let folderWarning: String
-        if resetPreview?.deletesWholeManagedFolder == true {
+        if review.preview.deletesWholeManagedFolder {
             folderWarning = "Reset will permanently delete \(fileDescription) currently inside \(path). Processed Files and the source will not be changed."
         } else {
             folderWarning = "Reset will permanently delete \(fileDescription) recorded as downloads created by this job in \(path). Other files and the source will not be changed."
         }
         return "\(folderWarning) Transfer counts, metadata audit entries, error history, and saved source signatures will also be cleared. The job will be stopped and disabled at login. This cannot be undone."
+    }
+
+    private func invalidateChangedResetReview() {
+        guard let review = resetReview, draft != review.job || savedJob != review.job else { return }
+        showResetConfirmation = false
+        resetReview = nil
     }
 
     private func filenameFilterBinding(_ keyPath: WritableKeyPath<FileFilter, String?>) -> Binding<String> {

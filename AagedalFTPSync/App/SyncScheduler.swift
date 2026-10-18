@@ -110,6 +110,7 @@ enum SyncAttempt {
     case succeeded
     case failed(String)
     case sourceFilesFailed(String)
+    case recoveryRequired(String)
     case cancelled
     case skipped
 }
@@ -130,6 +131,7 @@ protocol SyncSchedulerDelegate: AnyObject {
     func syncSchedulerPerformSync(_ jobID: UUID) async -> SyncAttempt
     func syncSchedulerDidStop(_ jobID: UUID)
     func syncSchedulerDidFinishManualSync(_ jobID: UUID)
+    func syncSchedulerDidPauseForRecovery(_ jobID: UUID)
     func syncScheduler(
         _ jobID: UUID,
         scheduledNextRunAt date: Date,
@@ -139,6 +141,7 @@ protocol SyncSchedulerDelegate: AnyObject {
 
 extension SyncSchedulerDelegate {
     func syncSchedulerDidFinishManualSync(_ jobID: UUID) {}
+    func syncSchedulerDidPauseForRecovery(_ jobID: UUID) {}
 }
 
 @MainActor
@@ -287,6 +290,13 @@ final class SyncScheduler {
                 case .skipped:
                     delay = job.intervalSeconds
                 case .cancelled:
+                    return
+                case .recoveryRequired:
+                    // Keep the failure visible and release busy ownership. A user
+                    // may explicitly retry after reconciliation; never poll retained files.
+                    scheduleTasks[jobID] = nil
+                    scheduleRequestIDs[jobID] = nil
+                    delegate.syncSchedulerDidPauseForRecovery(jobID)
                     return
                 }
 

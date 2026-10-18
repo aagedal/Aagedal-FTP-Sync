@@ -140,7 +140,7 @@ def wait_for_services(
     raise SystemExit("Timed out waiting for loopback FTP/SFTP services")
 
 
-def run_xcodebuild() -> tuple[dict[str, object], str]:
+def run_xcodebuild(derived_data_path: Path) -> tuple[dict[str, object], str]:
     command = [
         "xcodebuild",
         "test",
@@ -150,6 +150,9 @@ def run_xcodebuild() -> tuple[dict[str, object], str]:
         "AagedalFTPSync",
         "-destination",
         "platform=macOS",
+        "-derivedDataPath",
+        str(derived_data_path),
+        "-disableAutomaticPackageResolution",
         "CODE_SIGNING_ALLOWED=NO",
         "-only-testing:AagedalFTPSyncTests/DeliveryLatencyBenchmarkTests/testLargeTreeBenchmark",
     ]
@@ -435,7 +438,10 @@ def main() -> int:
             configuration_path.write_text(
                 json.dumps(configuration, sort_keys=True), encoding="utf-8"
             )
-            payload, _ = run_xcodebuild()
+            derived_data_path = Path(os.environ.get(
+                "AFTPSYNC_TEST_DERIVED_DATA", str(temporary_path / "DerivedData")
+            ))
+            payload, _ = run_xcodebuild(derived_data_path)
         finally:
             service.terminate()
             try:

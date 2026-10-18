@@ -9,6 +9,24 @@
 
 ## Unreleased (3.0.0)
 
+- Publish processed RAW/XMP copies as one durable group before removing their
+  sources. Preserve concurrent edits during rollback and retain recovery evidence
+  after interrupted or conflicted processed-file handoff.
+
+- Protect unsaved FTP server settings when switching servers, adding a server,
+  changing Settings tabs or closing the window. New server drafts can be discarded.
+- Keep stale server drafts from overwriting changes made in another window,
+  including password changes. Offer password-loading retry and visible setup validation.
+- Preserve custom server ports when loading saved connections in server settings
+  and job setup. Apply protocol defaults only when the user changes the protocol.
+
+- Keep open job settings in step with menu-bar Start/Stop and quick controls.
+  Saving unrelated edits no longer restarts a paused job or restores old filters.
+- Retry failed Keychain password loading without abandoning job edits; load both
+  saved passwords together and preserve manually entered replacements.
+- Add visible Set Up Location / Edit Location actions, show exact sync intervals,
+  and hide the Saved confirmation when there are new unsaved edits.
+
 - Retain a path manifest and output snapshots when ordinary local sync publication
   is interrupted. Block further sync until the partial group is reconciled, and
   preserve concurrent edits during collision-safe rollback.

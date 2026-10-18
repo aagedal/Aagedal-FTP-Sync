@@ -18,8 +18,11 @@ struct JobsWindowView: View {
     @State private var importSummary: String?
     @State private var pendingEditorTransition: PendingEditorTransition?
     @State private var handledNewJobDraftRequestID: UUID?
+    @State private var selectionRefreshID = UUID()
 
-    var body: some View {
+    // Split from the presentation modifiers below to keep each expression
+    // within the compiler's type-checking limits.
+    private var jobsSplitView: some View {
         NavigationSplitView {
             List(selection: editorSelectionBinding) {
                 ForEach(displayedJobs) { job in
@@ -39,6 +42,7 @@ struct JobsWindowView: View {
                     .tag(job.id)
                 }
             }
+            .id(selectionRefreshID)
             .navigationTitle("Sync Jobs")
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
@@ -148,6 +152,14 @@ struct JobsWindowView: View {
             handleNewJobDraftRequest()
         }
         .onChange(of: store.jobs.map(\.id)) { _, _ in selectFirstIfNeeded() }
+        .onChange(of: store.jobs) { _, jobs in
+            if let latest = jobs.first(where: { $0.id == editingSession.jobID }) {
+                editingSession.refreshSharedControls(from: latest)
+            }
+        }
+        .onChange(of: store.serverProfiles) { _, _ in
+            editingSession.refreshServerProfiles(using: store)
+        }
         .onChange(of: store.newJobDraftRequestID) { _, _ in handleNewJobDraftRequest() }
         .onChange(of: store.selectedJobID) { _, selectedJobID in
             guard selectedJobID != editingSession.jobID else { return }
@@ -156,6 +168,10 @@ struct JobsWindowView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { store.refreshLaunchAtLoginStatus() }
         }
+    }
+
+    var body: some View {
+        jobsSplitView
         .fileImporter(
             isPresented: $showConfigurationImporter,
             allowedContentTypes: [.aagedalFTPSyncConfiguration],
@@ -234,7 +250,7 @@ struct JobsWindowView: View {
         } message: {
             Text("Your edits have not been saved.")
         }
-        .background(JobWindowCloseGuard(closeDecision: closeDecision))
+        .background(UnsavedChangesWindowGuard(closeDecision: closeDecision))
     }
 
     private var displayedJobs: [SyncJob] {
@@ -342,6 +358,10 @@ struct JobsWindowView: View {
 
     private func cancelPendingEditorTransition() {
         pendingEditorTransition = nil
+        // AppKit can keep the declined row selected even though the binding
+        // still points to this draft. Restore it so choosing that row again
+        // requests a transition, including when this is an unsaved new job.
+        selectionRefreshID = UUID()
         guard !editingSession.isNewJob else { return }
         store.selectedJobID = editingSession.jobID
     }
@@ -425,7 +445,7 @@ private enum PendingEditorTransition: Equatable {
     case newJob
 }
 
-private struct JobWindowCloseGuard: NSViewRepresentable {
+struct UnsavedChangesWindowGuard: NSViewRepresentable {
     let closeDecision: @MainActor () -> Bool
 
     func makeCoordinator() -> Coordinator {

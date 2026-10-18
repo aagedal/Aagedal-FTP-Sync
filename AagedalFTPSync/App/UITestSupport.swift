@@ -91,9 +91,11 @@ enum UITestSupport {
         if enabled, ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECOVERY"] == "1" {
             do {
                 #if DEBUG
-                if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] == "1" {
+                if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] == "1"
+                    || ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_PROCESSED_HANDOFF"] == "1" {
                     try reconcileInterruptedOrdinarySyncFixture(rootURL: rootURL, managed: managedRecoveryFixture,
-                                                               raw: rawRecoveryFixture, rawExtension: cameraRawExtension)
+                        raw: rawRecoveryFixture, rawExtension: cameraRawExtension,
+                        processedHandoff: ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_PROCESSED_HANDOFF"] == "1")
                 }
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_INTERRUPTED_IMAGE"] == "1" {
                     try reconcileInterruptedImageFixture(rootURL: rootURL, managed: managedRecoveryFixture, raw: rawRecoveryFixture, rawExtension: cameraRawExtension)
@@ -164,7 +166,8 @@ enum UITestSupport {
                 downloadManifestRepository: downloadManifest,
                 sessionFactory: { endpoint, password, managed in
                     if endpoint.kind == .local,
-                       ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC"] == "1" {
+                       (ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC"] == "1"
+                        || ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_PROCESSED_HANDOFF"] == "1") {
                         return try reprocessingFixtureSession(endpoint: endpoint, managed: managed)
                     }
                     return try EndpointSessionFactory.make(endpoint: endpoint, password: password, managedFolder: managed)
@@ -438,6 +441,11 @@ enum UITestSupport {
                 == rootURL.appendingPathComponent("Destination").resolvingSymlinksInPath().path else {
             return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed)
         }
+        if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_PROCESSED_HANDOFF"] == "1" {
+            guard managedRecoveryFixture, case .processedFiles? = managed else {
+                return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed)
+            }
+        }
         return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
             let name: String
             switch phase {
@@ -630,10 +638,15 @@ enum UITestSupport {
     /// Preserve every transaction byte and the visible first output, then let a
     /// fresh ordinary run publish from the intact source. Never replay the map.
     static func reconcileInterruptedOrdinarySyncFixture(rootURL: URL, managed: Bool = false,
-                                                        raw: Bool = false, rawExtension: String = "arw") throws {
+                                                        raw: Bool = false, rawExtension: String = "arw",
+                                                        processedHandoff: Bool = false) throws {
         let manager = FileManager.default
+        guard !processedHandoff || managed else {
+            throw AppError.invalidConfiguration("Processed handoff recovery requires a managed fixture")
+        }
         let rootURL = rootURL.resolvingSymlinksInPath()
-        let destination = recoveryFixtureDestination(rootURL: rootURL, managed: managed)
+        let synced = recoveryFixtureDestination(rootURL: rootURL, managed: managed)
+        let destination = processedHandoff ? rootURL.appendingPathComponent("Destination/Processed Files") : synced
         let candidates = try manager.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.hasPrefix(".aagedal-sync-") && $0.pathExtension == "transaction" }
         guard !candidates.isEmpty else { return }
@@ -673,7 +686,7 @@ enum UITestSupport {
                 try checkRegular(url)
             }
             let source = rootURL.appendingPathComponent("Source/" + names[index])
-            let seeded = destination.appendingPathComponent("nested/" + names[index])
+            let seeded = synced.appendingPathComponent("nested/" + names[index])
             try checkRegular(seeded)
             guard manager.contentsEqual(atPath: source.path, andPath: seeded.path),
                   !(raw && index == 0) || manager.contentsEqual(atPath: source.path, andPath: snapshot.path) else {
@@ -685,11 +698,18 @@ enum UITestSupport {
                   manager.contentsEqual(atPath: evidence.path, andPath: snapshot.path) else {
                 throw AppError.invalidConfiguration("Changed ordinary sync recovery output")
             }
+            if processedHandoff {
+                let complete = synced.appendingPathComponent(names[index])
+                try checkRegular(complete)
+                guard manager.contentsEqual(atPath: complete.path, andPath: snapshot.path) else {
+                    throw AppError.invalidConfiguration("Changed completed sync output before processed recovery")
+                }
+            }
         }
         // Both moves are exclusive. Failure retains every byte for inspection.
         try manager.moveItem(at: destination.appendingPathComponent(names[0]),
-                             to: rootURL.appendingPathComponent("rescued-ordinary-publication"))
-        try manager.moveItem(at: recovery, to: rootURL.appendingPathComponent("reconciled-ordinary-sync"))
+                             to: rootURL.appendingPathComponent(processedHandoff ? "rescued-processed-publication" : "rescued-ordinary-publication"))
+        try manager.moveItem(at: recovery, to: rootURL.appendingPathComponent(processedHandoff ? "reconciled-processed-handoff" : "reconciled-ordinary-sync"))
     }
 
     /// Explicit recovery choice for the single-image SIGKILL fixture. Preserve

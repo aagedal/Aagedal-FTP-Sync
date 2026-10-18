@@ -97,12 +97,14 @@ struct StartupMenuLabel: View {
 
 struct RuntimeSettingsView: View {
     @ObservedObject var store: AppStore
+    @StateObject private var serverEditingSession = ServerProfileEditingSession()
+    @StateObject private var photographerEditingSession = PhotographerEditingSession()
     var body: some View {
         TabView(selection: $store.settingsTab) {
-            ServerSettingsView()
+            ServerSettingsView(session: serverEditingSession, protectsWindowClose: false)
                 .tabItem { Label("FTP Servers", systemImage: "server.rack") }
                 .tag(AppSettingsTab.servers)
-            PhotographerSettingsView()
+            PhotographerSettingsView(session: photographerEditingSession, protectsWindowClose: false)
                 .tabItem { Label("Photographers", systemImage: "person.2") }
                 .tag(AppSettingsTab.photographers)
             MetadataSyncSettingsView()
@@ -120,6 +122,10 @@ struct RuntimeSettingsView: View {
                     .tag(AppSettingsTab.peopleLibrary)
             }
         }
+        .background(UnsavedChangesWindowGuard(closeDecision: {
+            serverEditingSession.confirmLeavingDraft(using: store)
+                && photographerEditingSession.confirmLeavingDraft(using: store)
+        }))
     }
 }
 

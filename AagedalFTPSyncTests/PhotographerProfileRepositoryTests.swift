@@ -2,6 +2,184 @@ import Foundation
 import XCTest
 @testable import AagedalFTPSync
 
+@MainActor
+final class PhotographerEditingSessionTests: XCTestCase {
+    private func fixture(linked: Bool = true) throws -> (AppStore, PhotographerProfileRepository, PhotographerProfile, URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("photographer-editing-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let storage = AppStorageLayout(root: root)
+        let profiles = PhotographerProfileRepository(fileURL: root.appendingPathComponent("profile-store/photographers.json"))
+        let profile = PhotographerProfile(name: "Original", filenamePrefix: "AA", creator: "Creator", copyrightNotice: "Original copyright")
+        try profiles.save([profile])
+        var job = SyncJob(name: "Linked job")
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        if linked { job.metadataAutomation = MetadataAutomation(photographers: [profile]) }
+        let jobs = JobRepository(storage: storage)
+        try jobs.save([job])
+        let store = AppStore(repository: jobs,
+            metadataPresetRepository: MetadataPresetRepository(storage: storage),
+            photographerProfileRepository: profiles, serverProfileRepository: ServerProfileRepository(storage: storage),
+            metadataAuditRepository: MetadataAuditRepository(storage: storage), syncFailureRepository: SyncFailureRepository(storage: storage),
+            sourceSignatureRepository: SourceSignatureRepository(storage: storage), downloadManifestRepository: DownloadManifestRepository(storage: storage),
+            keychain: KeychainStore(passwordReader: { _ in XCTFail("No credential reads"); return nil },
+                passwordWriter: { _, _ in XCTFail("No credential writes") }, passwordRemover: { _ in XCTFail("No credential removals") }),
+            startsJobsOnInitialization: false)
+        return (store, profiles, profile, root)
+    }
+
+    func testCleanDraftRefreshesExternalChangesWithoutBecomingUnsaved() throws {
+        let (store, repository, profile, root) = try fixture()
+        let first = PhotographerEditingSession()
+        let second = PhotographerEditingSession()
+        first.edit(profile)
+        second.edit(profile)
+        second.draft?.copyrightNotice = "New shared copyright"
+        second.draft?.filenamePrefix = "BB"
+        XCTAssertTrue(second.save(using: store))
+        XCTAssertFalse(first.hasUnsavedChanges, "An external change is not a local edit")
+        let bytes = try Data(contentsOf: root.appendingPathComponent("profile-store/photographers.json"))
+
+        first.refresh(from: store.photographerLibrary)
+
+        XCTAssertEqual(first.draft, second.draft)
+        XCTAssertFalse(first.hasUnsavedChanges)
+        XCTAssertNil(first.saveError)
+        XCTAssertEqual(try repository.load(), store.photographerLibrary)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("profile-store/photographers.json")), bytes)
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers.first?.copyrightNotice, "New shared copyright")
+    }
+
+    func testCancellingCloseResumesPendingAutosaveAndKeepsWindowOpen() async throws {
+        let (store, repository, profile, _) = try fixture()
+        let session = PhotographerEditingSession()
+        session.edit(profile)
+        session.draft?.copyrightNotice = "Autosaved after Cancel"
+        session.scheduleAutosave(using: store)
+
+        XCTAssertFalse(session.confirmLeavingDraft(using: store, choose: { .cancel }))
+        XCTAssertTrue(session.hasUnsavedChanges)
+        try await Task.sleep(for: .milliseconds(750))
+
+        XCTAssertEqual(try repository.load().first?.copyrightNotice, "Autosaved after Cancel")
+        XCTAssertFalse(session.hasUnsavedChanges)
+        XCTAssertTrue(session.saveConfirmation)
+        session.refresh(from: store.photographerLibrary)
+        XCTAssertTrue(session.saveConfirmation, "The save's own library notification must not clear Saved")
+    }
+
+    func testDirtyConflictCancelsAutosaveAndPreservesBothVersions() async throws {
+        let (store, repository, profile, _) = try fixture()
+        let first = PhotographerEditingSession()
+        first.edit(profile)
+        first.draft?.creator = "Local unsaved creator"
+        let local = first.draft
+        first.scheduleAutosave(using: store)
+        var external = profile
+        external.copyrightNotice = "New external copyright"
+        XCTAssertTrue(store.savePhotographerProfile(external))
+        let latest = store.photographerLibrary
+
+        first.refresh(from: latest)
+        try await Task.sleep(for: .milliseconds(750))
+
+        XCTAssertEqual(first.draft, local)
+        XCTAssertTrue(first.hasUnsavedChanges)
+        XCTAssertTrue(first.saveError?.contains("Revert") == true)
+        XCTAssertFalse(first.save(using: store), "Retry must not overwrite an external revision")
+        store.alertMessage = nil
+        XCTAssertFalse(first.confirmLeavingDraft(using: store, choose: { .cancel }))
+        try await Task.sleep(for: .milliseconds(750))
+        XCTAssertNil(store.alertMessage, "Cancel must not restart a paused conflicting save")
+        XCTAssertEqual(store.photographerLibrary, latest)
+        XCTAssertEqual(try repository.load(), latest)
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers.first?.copyrightNotice, "New external copyright")
+        first.edit(store.photographerLibrary.first)
+        XCTAssertFalse(first.hasUnsavedChanges)
+        XCTAssertNil(first.saveError)
+    }
+
+    func testDiscardingCloseCancelsPendingAutosaveAndRestoresLatestProfile() async throws {
+        let (store, repository, profile, root) = try fixture()
+        let session = PhotographerEditingSession()
+        session.edit(profile)
+        session.draft?.creator = "Discarded local creator"
+        session.scheduleAutosave(using: store)
+        var latest = profile
+        latest.copyrightNotice = "External change during close review"
+
+        XCTAssertTrue(session.confirmLeavingDraft(using: store, choose: {
+            XCTAssertTrue(store.savePhotographerProfile(latest))
+            return .discard
+        }))
+        let saved = store.photographerLibrary
+        let bytes = try Data(contentsOf: root.appendingPathComponent("profile-store/photographers.json"))
+        let inode = try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent("profile-store/photographers.json").path)[.systemFileNumber] as? NSNumber
+        XCTAssertEqual(session.draft, saved.first)
+        XCTAssertFalse(session.hasUnsavedChanges)
+        try await Task.sleep(for: .milliseconds(750))
+
+        XCTAssertEqual(try repository.load(), saved)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("profile-store/photographers.json")), bytes)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: root.appendingPathComponent("profile-store/photographers.json").path)[.systemFileNumber] as? NSNumber, inode,
+            "Discard must not leave a timer that rewrites even the restored profile")
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers.first?.copyrightNotice, latest.copyrightNotice)
+    }
+
+    func testDeletedProfileCannotBeRecreatedByDirtyAutosave() throws {
+        let (store, repository, profile, _) = try fixture(linked: false)
+        let session = PhotographerEditingSession()
+        session.edit(profile)
+        session.draft?.creator = "Retained local edit"
+        let local = session.draft
+        XCTAssertTrue(store.removePhotographerProfile(profile.id))
+
+        session.refresh(from: store.photographerLibrary)
+
+        XCTAssertEqual(session.draft, local)
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertFalse(session.save(using: store))
+        XCTAssertTrue(store.photographerLibrary.isEmpty)
+        XCTAssertTrue(try repository.load().isEmpty)
+        session.edit(nil)
+        XCTAssertFalse(session.hasUnsavedChanges)
+        XCTAssertNil(session.saveError)
+    }
+
+    func testFailedSaveRetainsDraftAndRetryAdoptsPersistedBaseline() async throws {
+        let (store, repository, profile, root) = try fixture()
+        let session = PhotographerEditingSession()
+        session.edit(profile)
+        session.draft?.copyrightNotice = "Retry copyright"
+        let local = session.draft
+        session.scheduleAutosave(using: store)
+        let directory = root.appendingPathComponent("profile-store")
+        try FileManager.default.removeItem(at: directory)
+        try Data("blocked repository".utf8).write(to: directory)
+
+        XCTAssertFalse(session.confirmLeavingDraft(using: store, choose: { .save }))
+        XCTAssertEqual(session.draft, local)
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertNotNil(session.saveError)
+        XCTAssertEqual(store.photographerLibrary, [profile])
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers.first, profile)
+
+        try FileManager.default.removeItem(at: directory)
+        try repository.save([profile])
+        try await Task.sleep(for: .milliseconds(750))
+        XCTAssertEqual(try repository.load(), [profile], "Failed close-save must await an explicit retry")
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertNotNil(session.saveError)
+        XCTAssertTrue(session.save(using: store), store.alertMessage ?? "")
+        XCTAssertEqual(session.draft, try repository.load().first)
+        XCTAssertFalse(session.hasUnsavedChanges)
+        XCTAssertNil(session.saveError)
+        XCTAssertEqual(store.jobs.first?.metadataAutomation?.photographers.first?.copyrightNotice, "Retry copyright")
+    }
+}
+
 final class PhotographerProfileRepositoryTests: XCTestCase {
     func testMissingLibraryLoadsAsEmpty() throws {
         let fileURL = temporaryFileURL()

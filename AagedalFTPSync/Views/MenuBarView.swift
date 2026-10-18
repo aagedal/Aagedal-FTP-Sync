@@ -196,8 +196,8 @@ private struct MenuJobRow: View {
                 .font(.title2)
         }
         .buttonStyle(.plain)
-        .disabled(phase == .syncing)
-        .help("Sync Now")
+        .disabled(store.isJobBusy(job.id))
+        .help(store.resettingJobs.contains(job.id) ? "Wait for Reset Job to finish." : "Sync Now")
         .accessibilityLabel("Sync \(job.name) Now")
         .accessibilityHint("Starts this sync job immediately")
     }
@@ -208,7 +208,7 @@ private struct MenuJobRow: View {
                 Text(job.name).fontWeight(.medium).lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 Image(systemName: job.direction.symbol).font(.caption).foregroundStyle(.secondary)
             }
-            Label(phase.label, systemImage: statusSymbol)
+            Label(store.resettingJobs.contains(job.id) ? "Resetting downloads…" : phase.label, systemImage: statusSymbol)
                 .font(.caption)
                 .labelStyle(AccessibleStatusLabelStyle(symbolColor: statusColor))
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
@@ -284,6 +284,7 @@ private struct MenuJobRow: View {
                 systemImage: job.isEnabled ? "stop.fill" : "play.fill"
             )
         }
+        .disabled(store.resettingJobs.contains(job.id))
         .buttonStyle(.bordered)
         .controlSize(.small)
         .fixedSize()
@@ -371,13 +372,12 @@ private struct JobQuickControls: View {
     @State private var ageIndex: Double
     @State private var intervalWasEdited = false
     @State private var ageWasEdited = false
-
-    private static let ageOptions: [Int?] = [nil, 1, 3, 6, 12, 24, 48, 168]
+    @State private var ageEditingOptions: [Int?] = []
 
     init(job: SyncJob) {
         self.job = job
         _intervalSeconds = State(initialValue: job.intervalSeconds)
-        let index = Self.ageOptions.firstIndex(of: job.filter.recentHours) ?? 0
+        let index = FileAgeChoices.hours(including: job.filter.recentHours).firstIndex(of: job.filter.recentHours) ?? 0
         _ageIndex = State(initialValue: Double(index))
     }
 
@@ -423,11 +423,14 @@ private struct JobQuickControls: View {
                         .monospacedDigit()
                 }
                 Slider(
-                    value: $intervalSeconds,
+                    value: intervalSliderBinding,
                     in: 5...300,
                     step: 1,
                     onEditingChanged: { editing in
-                        if editing { intervalWasEdited = true }
+                        if editing {
+                            intervalSeconds = displayedIntervalSeconds
+                            intervalWasEdited = true
+                        }
                         if !editing { commitInterval() }
                     }
                 )
@@ -448,21 +451,30 @@ private struct JobQuickControls: View {
                         .foregroundStyle(.secondary)
                 }
                 Slider(
-                    value: $ageIndex,
-                    in: 0...Double(Self.ageOptions.count - 1),
+                    value: ageSliderBinding,
+                    in: Double(minimumAgeIndex)...Double(ageOptions.count - 1),
                     step: 1,
                     onEditingChanged: { editing in
-                        if editing { ageWasEdited = true }
+                        if editing && !ageWasEdited {
+                            ageIndex = ageSliderBinding.wrappedValue
+                            ageEditingOptions = ageOptions
+                            ageWasEdited = true
+                        }
                         if !editing { commitFileAge() }
                     }
                 )
                 HStack {
-                    Text("Any age")
+                    Text(currentJob.targetCleanup == nil ? "Any age" : "Last hour")
                     Spacer()
-                    Text("7 days")
+                    Text(FileAgeChoices.title(for: ageOptions.last ?? nil))
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                if currentJob.targetCleanup != nil {
+                    Text("Automatic cleanup requires a file-age limit. Turn off cleanup in Job Settings to choose Any age.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(16)
@@ -518,26 +530,54 @@ private struct JobQuickControls: View {
     }
 
     private var intervalLabel: String {
-        let seconds = Int(intervalSeconds)
+        let seconds = Int(displayedIntervalSeconds)
         if seconds < 60 { return "\(seconds) sec" }
         let minutes = seconds / 60
         let remainder = seconds % 60
         return remainder == 0 ? "\(minutes) min" : "\(minutes)m \(remainder)s"
     }
 
+    private var minimumAgeIndex: Int { currentJob.targetCleanup == nil ? 0 : 1 }
+
+    private var ageOptions: [Int?] {
+        // Freeze ordinal choices during a gesture so an external custom-age
+        // change cannot reinterpret the slider position under the user's hand.
+        ageWasEdited ? ageEditingOptions : FileAgeChoices.hours(including: currentJob.filter.recentHours)
+    }
+
+    private var displayedIntervalSeconds: Double {
+        // Idle controls show committed settings, including after failed saves.
+        intervalWasEdited ? intervalSeconds : currentJob.intervalSeconds
+    }
+
+    private var intervalSliderBinding: Binding<Double> {
+        Binding(get: { displayedIntervalSeconds }, set: {
+            intervalSeconds = $0
+            intervalWasEdited = true
+        })
+    }
+
+    private var ageSliderBinding: Binding<Double> {
+        Binding(
+            get: {
+                let savedIndex = Double(ageOptions.firstIndex(of: currentJob.filter.recentHours) ?? minimumAgeIndex)
+                return max(Double(minimumAgeIndex), ageWasEdited ? ageIndex : savedIndex)
+            },
+            set: {
+                if !ageWasEdited { ageEditingOptions = ageOptions }
+                ageIndex = $0
+                ageWasEdited = true
+            }
+        )
+    }
+
     private var selectedAge: Int? {
-        let index = min(max(Int(ageIndex.rounded()), 0), Self.ageOptions.count - 1)
-        return Self.ageOptions[index]
+        let index = min(max(Int(ageSliderBinding.wrappedValue.rounded()), minimumAgeIndex), ageOptions.count - 1)
+        return ageOptions[index]
     }
 
     private var ageLabel: String {
-        guard let hours = selectedAge else { return "Any age" }
-        if hours == 1 { return "Last hour" }
-        if hours.isMultiple(of: 24) {
-            let days = hours / 24
-            return days == 1 ? "Last day" : "Last \(days) days"
-        }
-        return "Last \(hours) hours"
+        FileAgeChoices.title(for: selectedAge)
     }
 
     private func commitInterval() {
@@ -549,8 +589,28 @@ private struct JobQuickControls: View {
 
     private func commitFileAge() {
         guard ageWasEdited else { return }
+        let requestedAge = selectedAge
         ageWasEdited = false
-        guard currentJob.filter.recentHours != selectedAge else { return }
-        store.updateFileAge(jobID: job.id, recentHours: selectedAge)
+        guard currentJob.filter.recentHours != requestedAge else { return }
+        store.updateFileAge(jobID: job.id, recentHours: requestedAge)
+    }
+}
+
+/// Keep saved custom windows selectable instead of presenting them as Any age.
+enum FileAgeChoices {
+    static func hours(including selected: Int?) -> [Int?] {
+        var hours: Set<Int> = [1, 3, 6, 12, 24, 48, 168]
+        if let selected, selected > 0 { hours.insert(selected) }
+        return [nil] + hours.sorted().map(Optional.some)
+    }
+
+    static func title(for hours: Int?) -> String {
+        guard let hours else { return "Any age" }
+        if hours == 1 { return "Last hour" }
+        if hours.isMultiple(of: 24) {
+            let days = hours / 24
+            return days == 1 ? "Last day" : "Last \(days) days"
+        }
+        return "Last \(hours) hours"
     }
 }

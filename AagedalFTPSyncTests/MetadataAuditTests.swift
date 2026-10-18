@@ -406,6 +406,29 @@ final class MetadataAuditTests: XCTestCase {
     }
 
     @MainActor
+    func testSuspendedStoreRetainsCompletedOperationAudit() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("suspended-audit-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = MetadataAuditRepository(fileURL: root.appendingPathComponent("audit.json"))
+        let fixture = AuditFixture()
+        let entry = fixture.entry(status: .applied, path: "completed-before-drain.jpg")
+        let store = AppStore(
+            repository: JobRepository(fileURL: root.appendingPathComponent("jobs.json")),
+            metadataPresetRepository: MetadataPresetRepository(fileURL: root.appendingPathComponent("presets.json")),
+            metadataAuditRepository: repository
+        )
+        store.suspendForExternalWriter()
+
+        store.recordMetadataAudit(MetadataRunReport(entries: [entry]), jobID: fixture.jobID)
+
+        XCTAssertEqual(store.metadataAuditTrail(for: fixture.jobID), [entry])
+        XCTAssertEqual(try repository.load(), [entry])
+        store.clearSyncFailureHistory(for: fixture.jobID)
+        XCTAssertTrue(store.isSuspendedForExternalWriter)
+        XCTAssertTrue(store.alertMessage?.contains("Quit every copy") == true)
+    }
+
+    @MainActor
     func testAppStorePublishesPersistedAuditTrail() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("metadata-audit-store-\(UUID().uuidString)", isDirectory: true)

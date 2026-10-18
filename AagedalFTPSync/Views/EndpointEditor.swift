@@ -63,6 +63,12 @@ struct EndpointSummaryCard: View {
 
             Spacer(minLength: 0)
 
+            Button(endpoint.validationMessage == nil ? "Edit Location…" : "Set Up Location…") {
+                showSettings = true
+            }
+            .accessibilityLabel("\(title): \(endpoint.validationMessage == nil ? "Edit Location" : "Set Up Location")")
+            .help("Choose a local folder or configure a server connection.")
+
             if endpoint.validationMessage == nil {
                 Label("Configured", systemImage: "checkmark.circle.fill")
                     .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
@@ -193,15 +199,14 @@ private struct EndpointEditor: View {
                         Text("Missing server profile").tag(Optional(profileID))
                     }
                 }
+                .accessibilityIdentifier("endpoint.server-profile")
             }
 
-            Picker("Type", selection: $endpoint.kind) {
+            Picker("Type", selection: connectionKindBinding) {
                 ForEach(EndpointKind.allCases) { Text($0.title).tag($0) }
             }
+            .accessibilityIdentifier("endpoint.type")
             .disabled(endpoint.serverProfileID != nil)
-            .onChange(of: endpoint.kind) { oldKind, newKind in
-                if oldKind != newKind, newKind.isRemote { endpoint.port = newKind.defaultPort }
-            }
 
             if endpoint.kind == .local {
                 LabeledContent("Folder") {
@@ -217,6 +222,7 @@ private struct EndpointEditor: View {
                     .textContentType(.URL)
                     .disabled(endpoint.serverProfileID != nil)
                 TextField("Port", value: $endpoint.port, format: .number)
+                    .accessibilityIdentifier("endpoint.port")
                     .frame(maxWidth: 180)
                     .disabled(endpoint.serverProfileID != nil)
                 TextField("Username", text: $endpoint.username)
@@ -240,6 +246,7 @@ private struct EndpointEditor: View {
                     }
                 }
                 TextField("Remote folder", text: $endpoint.remotePath, prompt: Text("/incoming"))
+                    .accessibilityIdentifier("endpoint.remote-folder")
                 connectionTestControls
                 if endpoint.kind == .ftp {
                     Label("FTP sends credentials and files without encryption. Prefer SFTP or FTPS.", systemImage: "exclamationmark.shield")
@@ -290,7 +297,16 @@ private struct EndpointEditor: View {
         }
         .onChange(of: endpoint) { _, _ in resetConnectionTest() }
         .onChange(of: password) { _, _ in resetConnectionTest() }
+        .onChange(of: serverProfiles) { _, _ in resetConnectionTest() }
         .onDisappear { connectionTestTask?.cancel() }
+    }
+
+    private var connectionKindBinding: Binding<EndpointKind> {
+        Binding(get: { endpoint.kind }, set: { kind in
+            guard endpoint.kind != kind else { return }
+            endpoint.kind = kind
+            if kind.isRemote { endpoint.port = kind.defaultPort }
+        })
     }
 
     private var serverProfileSelection: Binding<UUID?> {
@@ -364,18 +380,26 @@ private struct EndpointEditor: View {
 
     private func testConnection() {
         connectionTestTask?.cancel()
+        let input: EndpointConnectionTestInput
+        do {
+            input = try EndpointConnectionTestInput(endpoint: endpoint, password: password,
+                profiles: store.serverProfiles, loadPassword: { try store.password(for: $0) })
+        } catch {
+            connectionTestState = .failed(error.localizedDescription)
+            return
+        }
         connectionTestState = .testing
-        let candidate = endpoint
-        let candidatePassword = password
         connectionTestTask = Task {
             do {
-                try await EndpointConnectionTester.test(endpoint: candidate, password: candidatePassword)
+                try await EndpointConnectionTester.test(endpoint: input.endpoint, password: input.password)
                 try Task.checkCancellation()
+                guard input.isCurrent(endpoint: endpoint, password: password, profiles: store.serverProfiles) else { return }
                 connectionTestState = .succeeded
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      input.isCurrent(endpoint: endpoint, password: password, profiles: store.serverProfiles) else { return }
                 if case let AppError.untrustedSSHHostKey(hostID, fingerprint) = error {
                     connectionTestState = .awaitingHostKey(hostID: hostID, fingerprint: fingerprint)
                 } else {
@@ -389,6 +413,24 @@ private struct EndpointEditor: View {
         connectionTestTask?.cancel()
         connectionTestTask = nil
         connectionTestState = .idle
+    }
+}
+
+/// Capture exactly the connection that will be saved/run, including the current
+/// profile credential reference. Never test a stale job projection or password.
+struct EndpointConnectionTestInput {
+    let endpoint: Endpoint
+    let password: String
+
+    init(endpoint: Endpoint, password: String, profiles: [ServerProfile],
+         loadPassword: (Endpoint) throws -> String) throws {
+        self.endpoint = try endpoint.resolvingServerProfile(in: profiles)
+        self.password = self.endpoint.serverProfileID == nil ? password : try loadPassword(self.endpoint)
+    }
+
+    func isCurrent(endpoint: Endpoint, password: String, profiles: [ServerProfile]) -> Bool {
+        guard let resolved = try? endpoint.resolvingServerProfile(in: profiles), resolved == self.endpoint else { return false }
+        return resolved.serverProfileID != nil || password == self.password
     }
 }
 

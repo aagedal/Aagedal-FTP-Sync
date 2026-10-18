@@ -148,20 +148,34 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedOrdinarySync(managed: false, rawExtension: "cr3")
     }
 
-    private func verifyInterruptedOrdinarySync(managed: Bool, rawExtension: String? = nil) throws {
+    func testManagedProcessedHandoffRetainsRecoveryAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, processedHandoff: true)
+    }
+
+    func testManagedCameraRawProcessedHandoffRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, rawExtension: "arw", processedHandoff: true)
+    }
+
+    func testManagedCanonRawProcessedHandoffRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, rawExtension: "cr3", processedHandoff: true)
+    }
+
+    private func verifyInterruptedOrdinarySync(managed: Bool, rawExtension: String? = nil, processedHandoff: Bool = false) throws {
         let raw = rawExtension != nil
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage authorized camera RAW in the DEBUG bundle and opt in")
         }
         launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
                imageRecovery: true, interruptPublication: true, rawRecovery: raw,
-               rawExtension: rawExtension ?? "arw", interruptionPhase: "published-0", ordinarySyncInterruption: true)
+               rawExtension: rawExtension ?? "arw", interruptionPhase: "published-0",
+               ordinarySyncInterruption: !processedHandoff, processedHandoffInterruption: processedHandoff)
         app.buttons["Sync Now"].click()
         let stopped = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in self.app.state == .notRunning }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 20), .completed)
         app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION")
         app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC")
+        app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_PROCESSED_HANDOFF")
         app.launch()
         waitForJobsWindow(seedJob: true)
         app.buttons["Sync Now"].click()
@@ -179,7 +193,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         guard root.lastPathComponent == app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"],
               root.deletingLastPathComponent().lastPathComponent == "AagedalFTPSyncUITests",
               endpoint.lastPathComponent == "Destination",
-              destination.lastPathComponent == (managed ? "Synced Files" : "Destination"),
+              destination.lastPathComponent == (processedHandoff ? "Processed Files" : (managed ? "Synced Files" : "Destination")),
               recovery.lastPathComponent.hasPrefix(".aagedal-sync-"),
               recovery.pathExtension == "transaction" else {
             XCTFail("Refusing recovery outside the isolated fixture")
@@ -207,7 +221,12 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             try assertRecoveryCity(published, raw: false)
         }
         let retained = try FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: nil)
-        let evidence = try (retained + [published] + sourceFiles).map { url in
+        let syncedFiles = processedHandoff ? names.map { endpoint.appendingPathComponent("Synced Files/" + $0) } : []
+        for (index, synced) in syncedFiles.enumerated() {
+            XCTAssertEqual(try Data(contentsOf: synced), try Data(contentsOf: recovery.appendingPathComponent("output-copy-\(index)")))
+            XCTAssertEqual(try synced.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+        }
+        let evidence = try (retained + [published] + sourceFiles + syncedFiles).map { url in
             (url, try Data(contentsOf: url), try FileManager.default.attributesOfItem(atPath: url.path))
         }
         let journals = ["metadata-audit-v1.json", "download-manifest-v1.json"].map { root.appendingPathComponent($0) }
@@ -234,10 +253,16 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         // Explicit test-assisted choice: preserve the partial publication and
         // entire transaction outside admission, then retry the intact source.
         app.terminate()
-        let preserved = root.appendingPathComponent("reconciled-ordinary-sync")
-        app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] = "1"
+        let preserved = root.appendingPathComponent(processedHandoff ? "reconciled-processed-handoff" : "reconciled-ordinary-sync")
+        app.launchEnvironment[processedHandoff ? "AAGEDAL_UI_TEST_RECONCILE_PROCESSED_HANDOFF" : "AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] = "1"
         app.launch()
         waitForJobsWindow(seedJob: true)
+        for (url, bytes, attributes) in evidence where syncedFiles.contains(url) {
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            let after = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+            XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+        }
         app.buttons["Sync Now"].click()
         XCTAssertTrue(app.staticTexts["The latest sync completed."].waitForExistence(timeout: 15))
         let output = destination.appendingPathComponent(raw ? names[1] : names[0])
@@ -251,8 +276,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             if managed { XCTAssertFalse(FileManager.default.fileExists(atPath: source.path)) }
             else { XCTAssertEqual(try Data(contentsOf: source), bytes) }
         }
-        var publicationURLs = names.map { destination.appendingPathComponent($0) }
-        if managed {
+        var publicationURLs = names.map { destination.appendingPathComponent($0) } + syncedFiles
+        if managed && !processedHandoff {
             let processed = endpoint.appendingPathComponent("Processed Files")
             let processedMetadata = processed.appendingPathComponent(raw ? names[1] : names[0])
             try assertRecoveryCity(processedMetadata, raw: raw)
@@ -263,7 +288,12 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
                 publicationURLs.append(url)
             }
         }
-        let rescued = root.appendingPathComponent("rescued-ordinary-publication")
+        for (index, url) in syncedFiles.enumerated() {
+            if raw && index == 0 { XCTAssertEqual(try Data(contentsOf: url), sourceBytes[0]) }
+            else { try assertRecoveryCity(url, raw: raw) }
+            XCTAssertEqual(try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+        }
+        let rescued = root.appendingPathComponent(processedHandoff ? "rescued-processed-publication" : "rescued-ordinary-publication")
         for (url, bytes, attributes) in evidence where url == published || retained.contains(url) {
             let moved = url == published ? rescued : preserved.appendingPathComponent(url.lastPathComponent)
             XCTAssertEqual(try Data(contentsOf: moved), bytes)
@@ -1185,6 +1215,48 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Unsaved draft"].exists)
     }
 
+    func testCancellingNewJobSelectionKeepsDraftAndAllowsSelectingSameRowAgain() {
+        launch(seedJob: true)
+        element("add-sync-job").click()
+        replaceText(in: element("job-name"), with: "Keep this unsaved job")
+        app.staticTexts["UI Smoke Fixture"].click()
+        let review = app.windows["jobs"].sheets.firstMatch
+        XCTAssertTrue(review.buttons["Cancel"].waitForExistence(timeout: 3))
+        review.buttons["Cancel"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Keep this unsaved job")
+        XCTAssertTrue(app.staticTexts["Unsaved draft"].exists)
+
+        app.staticTexts["UI Smoke Fixture"].click()
+        let discard = review.buttons["Discard Draft"]
+        XCTAssertTrue(discard.waitForExistence(timeout: 3))
+        discard.click()
+        XCTAssertEqual(element("job-name").value as? String, "UI Smoke Fixture")
+        XCTAssertFalse(app.staticTexts["Unsaved draft"].exists)
+        XCTAssertFalse(app.staticTexts["Keep this unsaved job"].exists)
+    }
+
+    func testCancellingSavedJobSelectionKeepsEditsAndAllowsSavingBeforeSwitch() {
+        launch(seedJob: true)
+        element("add-sync-job").click()
+        replaceText(in: element("job-name"), with: "Second saved job")
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+        replaceText(in: element("job-name"), with: "Second job with edits")
+        app.staticTexts["UI Smoke Fixture"].click()
+        let review = app.windows["jobs"].sheets.firstMatch
+        XCTAssertTrue(review.buttons["Cancel"].waitForExistence(timeout: 3))
+        review.buttons["Cancel"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Second job with edits")
+
+        app.staticTexts["UI Smoke Fixture"].click()
+        let save = review.buttons["Save Changes"]
+        XCTAssertTrue(save.waitForExistence(timeout: 3))
+        save.click()
+        XCTAssertEqual(element("job-name").value as? String, "UI Smoke Fixture")
+        app.staticTexts["Second job with edits"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Second job with edits")
+    }
+
     func testEditsSavedJob() {
         launch(seedJob: true)
 
@@ -1195,6 +1267,51 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
         XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.staticTexts["Edited in UI smoke test"].exists)
+    }
+
+    func testLocationSetupHasDirectActionsAndReturnsToUnsavedDraft() {
+        launch(seedJob: true)
+        let nameField = element("job-name")
+        replaceText(in: nameField, with: "Location setup draft")
+        let editSource = app.buttons["Source: Edit Location"]
+        XCTAssertTrue(editSource.waitForExistence(timeout: 3))
+        XCTAssertTrue(editSource.isHittable)
+        editSource.click()
+        XCTAssertTrue(app.staticTexts["Source Settings"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Choose…"].exists)
+        let sheetScreenshot = XCTAttachment(screenshot: app.screenshot())
+        sheetScreenshot.name = "Source location settings"
+        sheetScreenshot.lifetime = .keepAlways
+        add(sheetScreenshot)
+        app.buttons["Done"].click()
+        XCTAssertTrue(nameField.waitForExistence(timeout: 3))
+        XCTAssertEqual(nameField.value as? String, "Location setup draft")
+        XCTAssertTrue(app.buttons["Destination: Edit Location"].isHittable)
+        let mainScreenshot = XCTAttachment(screenshot: app.screenshot())
+        mainScreenshot.name = "Job setup with direct location actions"
+        mainScreenshot.lifetime = .keepAlways
+        add(mainScreenshot)
+    }
+
+    func testMenuBarStopUpdatesOpenSettingsAndSaveKeepsJobPaused() {
+        launch(seedJob: true)
+        openStatusMenu()
+        app.buttons["Start"].click()
+        dismissStatusPanelIfNeeded()
+        let automatic = element("automatic-sync-enabled")
+        XCTAssertTrue(automatic.waitForExistence(timeout: 3))
+        XCTAssertEqual(String(describing: automatic.value ?? ""), "1")
+        replaceText(in: element("job-name"), with: "Keep stopped after save")
+        openStatusMenu()
+        app.buttons["Stop"].click()
+        dismissStatusPanelIfNeeded()
+        XCTAssertEqual(String(describing: automatic.value ?? ""), "0")
+        XCTAssertEqual(element("job-name").value as? String, "Keep stopped after save")
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+        openStatusMenu()
+        XCTAssertTrue(app.buttons["Start"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Stop"].exists)
     }
 
     func testProgrammedFilenameFilterCanBeSavedForServerDownload() {
@@ -1644,6 +1761,130 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(delete.isEnabled)
     }
 
+    func testServerDraftSurvivesTabSwitchAndCancelledAddThenCanBeDiscarded() {
+        launch(seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        let name = element("server.name")
+        replaceText(in: name, with: "Unsaved server edit")
+        app.buttons["Photographers"].click()
+        app.buttons["FTP Servers"].click()
+        XCTAssertEqual(name.value as? String, "Unsaved server edit")
+        app.buttons["Add Server"].click()
+        XCTAssertTrue(app.dialogs.buttons["Cancel"].waitForExistence(timeout: 3))
+        app.dialogs.buttons["Cancel"].click()
+        XCTAssertEqual(name.value as? String, "Unsaved server edit")
+        app.buttons["Add Server"].click()
+        app.dialogs.buttons["Discard Changes"].click()
+        XCTAssertTrue(app.buttons["Discard Draft"].waitForExistence(timeout: 3))
+        XCTAssertFalse(element("server.save").isEnabled, "An incomplete server must stay an unsaved draft")
+        app.buttons["Discard Draft"].click()
+        XCTAssertEqual(name.value as? String, "Disposable UI Server")
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].exists)
+    }
+
+    func testClosingServerSettingsProtectsUnsavedDraftAndSavePersistsIt() {
+        launch(seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        let name = element("server.name")
+        replaceText(in: name, with: "Saved after close review")
+        let settings = app.windows.containing(.textField, identifier: "server.name").firstMatch
+        let close = settings.buttons[XCUIIdentifierCloseWindow]
+        app.buttons["Photographers"].click()
+        app.windows.containing(.button, identifier: "FTP Servers").firstMatch.buttons[XCUIIdentifierCloseWindow].click()
+        XCTAssertTrue(app.dialogs.buttons["Cancel"].waitForExistence(timeout: 3))
+        app.dialogs.buttons["Cancel"].click()
+        app.buttons["FTP Servers"].click()
+        XCTAssertEqual(name.value as? String, "Saved after close review")
+        close.click()
+        app.dialogs.buttons["Save Changes"].click()
+        XCTAssertTrue(settings.waitForNonExistence(timeout: 5))
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertEqual(name.value as? String, "Saved after close review")
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].exists)
+    }
+
+    func testSwitchingServersCanCancelOrSaveTheCurrentDraft() {
+        launch(seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        app.buttons["Duplicate Server"].click()
+        let name = element("server.name")
+        replaceText(in: name, with: "Edited second server")
+        element("server.protocol").click()
+        app.menuItems["FTPS (TLS)"].click()
+        replaceText(in: element("server.port"), with: "2121")
+        app.staticTexts["Disposable UI Server"].click()
+        XCTAssertTrue(app.dialogs.buttons["Cancel"].waitForExistence(timeout: 3))
+        app.dialogs.buttons["Cancel"].click()
+        XCTAssertEqual(name.value as? String, "Edited second server")
+        app.staticTexts["Disposable UI Server"].click()
+        app.dialogs.buttons["Save Changes"].click()
+        XCTAssertEqual(name.value as? String, "Disposable UI Server")
+        app.staticTexts["Edited second server"].click()
+        XCTAssertEqual(name.value as? String, "Edited second server")
+        XCTAssertEqual(String(describing: element("server.port").value ?? "").filter { $0.isNumber }, "2121")
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].exists)
+    }
+
+    func testOpenJobConnectionRefreshesWhenSharedServerChangesInSettings() {
+        launch(seedJob: true, seedServer: true)
+        replaceText(in: element("job-name"), with: "Keep local job edits")
+        app.buttons["Source: Edit Location"].click()
+        element("endpoint.type").click()
+        app.menuItems["FTPS (TLS)"].click()
+        element("endpoint.server-profile").click()
+        app.menuItems["Disposable UI Server"].click()
+        replaceText(in: element("endpoint.remote-folder"), with: "/keep/job/folder")
+
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        replaceText(in: element("server.port"), with: "2121")
+        element("server.save").click()
+
+        let sheet = app.windows["jobs"].sheets.firstMatch
+        let port = sheet.descendants(matching: .any)["endpoint.port"]
+        let refreshed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            String(describing: port.value ?? "").filter { $0.isNumber } == "2121"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 5), .completed)
+        XCTAssertFalse(port.isEnabled)
+        XCTAssertEqual(sheet.descendants(matching: .any)["endpoint.remote-folder"].value as? String, "/keep/job/folder")
+        sheet.buttons["Done"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Keep local job edits")
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+    }
+
+    func testJobConnectionKeepsCustomPortWhenSelectingDifferentProtocolProfile() {
+        launch(seedJob: true, seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        replaceText(in: element("server.port"), with: "2121")
+        element("server.save").click()
+        openStatusMenu()
+        element("open-jobs-window").click()
+        dismissStatusPanelIfNeeded()
+        app.buttons["Source: Edit Location"].click()
+        element("endpoint.type").click()
+        app.menuItems["FTPS (TLS)"].click()
+        element("endpoint.server-profile").click()
+        app.menuItems["Disposable UI Server"].click()
+        let port = element("endpoint.port")
+        XCTAssertEqual(String(describing: port.value ?? "").filter { $0.isNumber }, "2121")
+        XCTAssertFalse(port.isEnabled)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Saved profile custom port in job setup"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["Done"].click()
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+    }
+
     func testVersion3BackupOnlySourceUsesDetailedRecoveryMigration() {
         launchVersion3(session: UUID().uuidString, fixture: "backup-only")
 
@@ -1699,7 +1940,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         rawExtension: String = "arw",
         interruptionPhase: String = "beforeCommit",
         editedRawConflict: Bool = false,
-        ordinarySyncInterruption: Bool = false
+        ordinarySyncInterruption: Bool = false,
+        processedHandoffInterruption: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -1723,6 +1965,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_EXTENSION"] = rawExtension
         }
         if ordinarySyncInterruption { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC"] = "1" }
+        if processedHandoffInterruption { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PROCESSED_HANDOFF"] = "1" }
         if interruptPublication {
             app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1"
             app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPTION_PHASE"] = interruptionPhase

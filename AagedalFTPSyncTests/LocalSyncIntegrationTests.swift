@@ -5,6 +5,39 @@ import SwiftMediaMetadata
 import XCTest
 @testable import AagedalFTPSync
 
+private actor ResetPlanningGate {
+    private let pauseOnCall: Int
+    private let entered: XCTestExpectation
+    private var calls = 0
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(pauseOnCall: Int, entered: XCTestExpectation) {
+        self.pauseOnCall = pauseOnCall
+        self.entered = entered
+    }
+
+    func pause() async {
+        calls += 1
+        guard calls == pauseOnCall, !released else { return }
+        entered.fulfill()
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private final class ResetSessionCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func record() { lock.withLock { value += 1 } }
+}
+
 final class TransactionalRemovalTests: XCTestCase {
     func testFirstDeletionFailureRestoresEveryStagedSource() async throws {
         let sources = ["first.source", "second.source"]
@@ -76,6 +109,122 @@ final class TransactionalRemovalTests: XCTestCase {
 }
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    @MainActor
+    func testResetRejectsDestinationChangesDuringPreviewAndAfterReview() async throws {
+        for changesDuringPreview in [false, true] {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let entered = XCTestExpectation(description: "Reset planning suspended")
+            let gate = ResetPlanningGate(pauseOnCall: changesDuringPreview ? 1 : 0, entered: entered)
+            let (store, job, _) = try makeResetReviewStore(fixture, planningHook: { _ in await gate.pause() })
+            let original = fixture.right.appendingPathComponent("Synced Files/download.jpg")
+            let replacement = fixture.processed.appendingPathComponent("Synced Files/download.jpg")
+            for url in [original, replacement] {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(url == original ? "reviewed folder".utf8 : "unreviewed folder".utf8).write(to: url)
+            }
+            var changed = job
+            changed.right = try fixture.endpoint(for: fixture.processed)
+            if changesDuringPreview {
+                let task = Task { await store.resetPreview(for: job.id) }
+                await fulfillment(of: [entered], timeout: 3)
+                XCTAssertTrue(store.saveJob(changed, leftPassword: "", rightPassword: ""))
+                await gate.release()
+                let stale = await task.value
+                XCTAssertNil(stale)
+            } else {
+                let prepared = await store.resetPreview(for: job.id)
+                let review = try XCTUnwrap(prepared)
+                XCTAssertEqual(review.preview.filesToDelete, 1)
+                XCTAssertTrue(store.saveJob(changed, leftPassword: "", rightPassword: ""))
+                XCTAssertFalse(store.resetJob(review))
+            }
+            XCTAssertTrue(store.alertMessage?.contains("Review Reset Job again") == true)
+            XCTAssertFalse(store.isJobBusy(job.id))
+            XCTAssertEqual(try Data(contentsOf: original), Data("reviewed folder".utf8))
+            XCTAssertEqual(try Data(contentsOf: replacement), Data("unreviewed folder".utf8))
+            let prepared = await store.resetPreview(for: job.id)
+            let currentReview = try XCTUnwrap(prepared)
+            XCTAssertEqual(currentReview.preview.downloadFolderPath, replacement.deletingLastPathComponent().resolvingSymlinksInPath().path)
+            XCTAssertTrue(store.resetJob(currentReview))
+            for _ in 0..<500 {
+                if !store.isJobBusy(job.id) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(store.isJobBusy(job.id))
+            XCTAssertEqual(try Data(contentsOf: original), Data("reviewed folder".utf8))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: replacement.path))
+        }
+    }
+
+    @MainActor
+    func testResetBlocksStartSaveAndSchedulerAdmissionUntilItDrains() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let entered = expectation(description: "Reset held before deletion")
+        let gate = ResetPlanningGate(pauseOnCall: 2, entered: entered)
+        let (store, job, counter) = try makeResetReviewStore(fixture, planningHook: { _ in await gate.pause() })
+        let downloaded = fixture.right.appendingPathComponent("Synced Files/download.jpg")
+        try FileManager.default.createDirectory(at: downloaded.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("downloaded bytes".utf8).write(to: downloaded)
+        let prepared = await store.resetPreview(for: job.id)
+        let review = try XCTUnwrap(prepared)
+        XCTAssertTrue(store.resetJob(review))
+        await fulfillment(of: [entered], timeout: 3)
+        store.setEnabled(true, for: job.id)
+        store.startAll()
+        store.runNow(job.id)
+        var changed = job
+        changed.name = "Unreviewed edit during reset"
+        XCTAssertFalse(store.saveJob(changed, leftPassword: "", rightPassword: ""))
+        let attempt = await store.syncSchedulerPerformSync(job.id)
+        if case .skipped = attempt {} else { XCTFail("Scheduler must reject work while reset is active") }
+        XCTAssertEqual(counter.count, 0)
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+        XCTAssertEqual(store.jobs.first?.name, job.name)
+        XCTAssertTrue(store.resettingJobs.contains(job.id))
+        XCTAssertEqual(try Data(contentsOf: downloaded), Data("downloaded bytes".utf8))
+        await gate.release()
+        for _ in 0..<500 {
+            if !store.isJobBusy(job.id) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(store.isJobBusy(job.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: downloaded.path))
+        let retry = await store.syncSchedulerPerformSync(job.id)
+        if case .succeeded = retry {} else { XCTFail("A fresh sync must be admitted after reset drains") }
+        XCTAssertGreaterThan(counter.count, 0)
+    }
+
+    @MainActor
+    private func makeResetReviewStore(_ fixture: LocalFixture,
+        planningHook: @escaping @Sendable (SyncJob) async throws -> Void
+    ) throws -> (AppStore, SyncJob, ResetSessionCounter) {
+        let storage = AppStorageLayout(root: fixture.root.appendingPathComponent("reset-review-store"))
+        let repository = JobRepository(storage: storage)
+        var job = try fixture.job(direction: .leftToRight)
+        job.processedFilesLocation = .processedSubfolder
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        try repository.save([job])
+        let manifests = DownloadManifestRepository(storage: storage)
+        let counter = ResetSessionCounter()
+        let store = AppStore(repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(storage: storage),
+            photographerProfileRepository: PhotographerProfileRepository(storage: storage),
+            serverProfileRepository: ServerProfileRepository(storage: storage),
+            metadataAuditRepository: MetadataAuditRepository(storage: storage),
+            syncFailureRepository: SyncFailureRepository(storage: storage),
+            sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+            downloadManifestRepository: manifests,
+            jobResetService: JobResetService(downloadManifestRepository: manifests, planningHook: planningHook),
+            engine: SyncEngine(sessionFactory: { endpoint, _, managed in
+                counter.record()
+                return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed)
+            }), startsJobsOnInitialization: false)
+        return (store, job, counter)
+    }
+
     func testSyncRequiresRecoveryReconciliationBeforeAnyTransfer() async throws {
         for direction in [SyncDirection.leftToRight, .rightToLeft, .bidirectional] {
             for recoveryOnLeft in [false, true] {
@@ -594,7 +743,9 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(store.metadataAuditTrail(for: job.id).map(\.relativePath), [auditEntry.relativePath])
         XCTAssertEqual(store.syncFailureHistory(for: job.id).count, 1)
 
-        store.resetJob(job.id)
+        let preparedReview = await store.resetPreview(for: job.id)
+        let review = try XCTUnwrap(preparedReview)
+        XCTAssertTrue(store.resetJob(review))
         while store.resettingJobs.contains(job.id) {
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -999,6 +1150,252 @@ final class LocalSyncIntegrationTests: XCTestCase {
                 atPath: fixture.right.appendingPathComponent(relativePath).path
             )
         )
+    }
+
+    private func processedHandoffJob(_ fixture: LocalFixture, location: ProcessedFilesLocation) throws -> SyncJob {
+        let source = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("original camera RAW".utf8).write(to: source)
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: source.path)
+        var sidecar = XMPData()
+        sidecar.city = "Bergen"
+        sidecar.description = "Original source caption"
+        let sourceSidecar = source.deletingPathExtension().appendingPathExtension("xmp")
+        try XMPSidecar.write(sidecar, to: sourceSidecar)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: sourceSidecar.path)
+        let photographer = PhotographerProfile(name: "Jane", filenamePrefix: "JAD", creator: "Jane", copyrightNotice: "")
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(isEnabled: true, timestampPolicy: .sourceModification,
+            photographers: [photographer], clips: [MetadataScheduleClip(photographerID: photographer.id,
+                name: "Handoff", startsAt: date.addingTimeInterval(-60), endsAt: date.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Durable handoff"))])
+        job.processedFilesLocation = location
+        if location == .customFolder { job.processedFolder = try fixture.endpoint(for: fixture.processed) }
+        return job
+    }
+
+    func testProcessedHandoffCancellationRollsBackPairAndAllowsRetry() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            for boundary in ["prepared", "first", "commit"] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                let job = try processedHandoffJob(fixture, location: location)
+                let sourceSidecar = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+                let originalSidecar = try Data(contentsOf: sourceSidecar)
+                let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+                let customPath = job.processedFolder?.localPath
+                let engine = SyncEngine(sessionFactory: { endpoint, _, managed in
+                    let isProcessed: Bool
+                    if case .processedFiles? = managed { isProcessed = true }
+                    else { isProcessed = endpoint.localPath == customPath }
+                    return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                        guard isProcessed else { return }
+                        switch (boundary, phase) {
+                        case ("prepared", .prepared), ("first", .published(0)), ("commit", .beforeCommit):
+                            throw CancellationError()
+                        default: break
+                        }
+                    })
+                })
+                do {
+                    _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("Processed publication must stop at \(boundary)")
+                } catch { XCTAssertEqual(error.localizedDescription, CancellationError().localizedDescription) }
+                XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")), Data("original camera RAW".utf8))
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+                for path in ["nested/JAD_HANDOFF.CR3", "nested/JAD_HANDOFF.xmp"] {
+                    XCTAssertEqual(try fixture.left.appendingPathComponent(path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                                   Date(timeIntervalSince1970: 1_700_000_000))
+                }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested/JAD_HANDOFF.CR3").path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested/JAD_HANDOFF.xmp").path))
+                XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains(where: LocalEndpointSession.isRecoveryArtifact))
+                let retry = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(retry.processed, 1)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3").path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: sourceSidecar.path))
+                XCTAssertEqual(try XMPSidecar.read(from: root.appendingPathComponent("nested/JAD_HANDOFF.xmp")).headline, "Durable handoff")
+            }
+        }
+    }
+
+    func testProcessedHandoffPreservesConcurrentEditsAndBlocksRetryWithRecovery() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            for replaceInode in [false, true] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                let job = try processedHandoffJob(fixture, location: location)
+                let sourceSidecar = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+                let originalSidecar = try Data(contentsOf: sourceSidecar)
+                let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+                let customPath = job.processedFolder?.localPath
+                let output = root.appendingPathComponent("nested/JAD_HANDOFF.CR3")
+                let edit = Data("concurrent operator edit".utf8)
+                let engine = SyncEngine(sessionFactory: { endpoint, _, managed in
+                    let isProcessed: Bool
+                    if case .processedFiles? = managed { isProcessed = true }
+                    else { isProcessed = endpoint.localPath == customPath }
+                    return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                        if isProcessed, case .published(0) = phase {
+                            try edit.write(to: output, options: replaceInode ? .atomic : [])
+                            throw CancellationError()
+                        }
+                    })
+                })
+                do {
+                    _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("The edited partial group must retain recovery")
+                } catch { XCTAssertTrue(error.localizedDescription.contains("Recover retained files")) }
+                XCTAssertEqual(try Data(contentsOf: output), edit)
+                let source = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")
+                XCTAssertEqual(try Data(contentsOf: source), Data("original camera RAW".utf8))
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+                let recovery = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+                    .first(where: { LocalEndpointSession.isRecoveryArtifact(named: $0.lastPathComponent) }))
+                let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
+                    from: Data(contentsOf: recovery.appendingPathComponent("recovery.json")))
+                XCTAssertTrue(manifest.originals.isEmpty)
+                XCTAssertEqual(Set(manifest.outputs.map(\.relativePath)), ["nested/JAD_HANDOFF.CR3", "nested/JAD_HANDOFF.xmp"])
+                XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(manifest.outputs[0].snapshotFilename)), Data("original camera RAW".utf8))
+                let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+                for _ in 0..<2 {
+                    do {
+                        _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+                        XCTFail("Retained processed recovery must block admission")
+                    } catch { XCTAssertTrue(error.localizedDescription.contains("recovery folder")) }
+                    XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent("recovery.json")), manifestBytes)
+                }
+                XCTAssertEqual(try Data(contentsOf: output), edit)
+                XCTAssertEqual(try Data(contentsOf: source), Data("original camera RAW".utf8))
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+            }
+        }
+    }
+
+    func testProcessedHandoffRejectsLateSameSizeSourceSidecarEditAndPreservesItOnRetry() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let job = try processedHandoffJob(fixture, location: location)
+            let rawPath = "nested/JAD_HANDOFF.CR3"
+            let sidecarPath = "nested/JAD_HANDOFF.xmp"
+            let sourceRAW = fixture.left.appendingPathComponent(rawPath)
+            let sourceSidecar = fixture.left.appendingPathComponent(sidecarPath)
+            let rawBytes = try Data(contentsOf: sourceRAW)
+            let originalSidecar = try Data(contentsOf: sourceSidecar)
+            let changedSidecar = Data(try XCTUnwrap(String(data: originalSidecar, encoding: .utf8))
+                .replacingOccurrences(of: "Original source caption", with: "Revised! source caption").utf8)
+            XCTAssertNotEqual(changedSidecar, originalSidecar)
+            XCTAssertEqual(changedSidecar.count, originalSidecar.count)
+            let sourceDate = Date(timeIntervalSince1970: 1_700_000_000)
+            let sourceInodes = try [sourceRAW, sourceSidecar].map {
+                try XCTUnwrap(FileManager.default.attributesOfItem(atPath: $0.path)[.systemFileNumber] as? NSNumber)
+            }
+            let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+            let syncedRoot = job.usesManagedFolderStructure ? fixture.right.appendingPathComponent("Synced Files") : fixture.right
+            let customPath = job.processedFolder?.localPath
+            let signatures = SourceSignatureRepository(fileURL: fixture.root.appendingPathComponent("signatures.sqlite"))
+            let manifest = DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("downloads.json"))
+            let engine = SyncEngine(sourceSignatureRepository: signatures, downloadManifestRepository: manifest,
+                sessionFactory: { endpoint, _, managed in
+                    let isProcessed: Bool
+                    if case .processedFiles? = managed { isProcessed = true }
+                    else { isProcessed = endpoint.localPath == customPath }
+                    return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                        if isProcessed, case .beforeCommit = phase {
+                            // Both processed outputs are visible. Keep size, date
+                            // and inode unchanged to exercise final byte validation.
+                            try changedSidecar.write(to: sourceSidecar)
+                            try FileManager.default.setAttributes([.modificationDate: sourceDate], ofItemAtPath: sourceSidecar.path)
+                        }
+                    })
+                })
+            do {
+                _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTFail("A changed original companion must prevent final source removal")
+            } catch let failure as SyncRunFailure {
+                XCTAssertEqual(failure.partialResult.processed, 0)
+                XCTAssertTrue(failure.localizedDescription.contains("source changed"))
+            }
+            XCTAssertEqual(try Data(contentsOf: sourceRAW), rawBytes)
+            XCTAssertEqual(try Data(contentsOf: sourceSidecar), changedSidecar)
+            for (url, inode) in zip([sourceRAW, sourceSidecar], sourceInodes) {
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, inode)
+                XCTAssertEqual(attributes[.modificationDate] as? Date, sourceDate)
+            }
+            let published = [root.appendingPathComponent(rawPath), root.appendingPathComponent(sidecarPath)]
+            let publishedBytes = try published.map { try Data(contentsOf: $0) }
+            let publishedAttributes = try published.map { try FileManager.default.attributesOfItem(atPath: $0.path) }
+            XCTAssertEqual(publishedBytes[0], rawBytes)
+            XCTAssertEqual(try XMPSidecar.read(from: published[1]).description, "Original source caption")
+            XCTAssertEqual(try XMPSidecar.read(from: published[1]).headline, "Durable handoff")
+            XCTAssertEqual(try Data(contentsOf: syncedRoot.appendingPathComponent(rawPath)), rawBytes)
+            XCTAssertEqual(try XMPSidecar.read(from: syncedRoot.appendingPathComponent(sidecarPath)).description, "Original source caption")
+
+            let retry = SyncEngine(sourceSignatureRepository: signatures, downloadManifestRepository: manifest)
+            for _ in 0..<2 {
+                do {
+                    _ = try await retry.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("A stale processed companion must not authorize removal of an edited source")
+                } catch let failure as SyncRunFailure {
+                    XCTAssertEqual(failure.partialResult.processed, 0)
+                    XCTAssertTrue(failure.localizedDescription.contains("processed folder already contains"))
+                }
+                XCTAssertEqual(try Data(contentsOf: sourceRAW), rawBytes)
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), changedSidecar)
+                for (url, inode) in zip([sourceRAW, sourceSidecar], sourceInodes) {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, inode)
+                    XCTAssertEqual(attributes[.modificationDate] as? Date, sourceDate)
+                }
+                for (index, url) in published.enumerated() {
+                    XCTAssertEqual(try Data(contentsOf: url), publishedBytes[index])
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, publishedAttributes[index][.systemFileNumber] as? NSNumber)
+                    XCTAssertEqual(attributes[.modificationDate] as? Date, publishedAttributes[index][.modificationDate] as? Date)
+                }
+            }
+        }
+    }
+
+    func testProcessedHandoffLateSidecarCollisionPreservesCompetingFileAndSources() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let job = try processedHandoffJob(fixture, location: location)
+            let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+            let customPath = job.processedFolder?.localPath
+            let collision = root.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+            let competingBytes = Data("another operator's sidecar".utf8)
+            let sourceSidecar = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+            let originalSidecar = try Data(contentsOf: sourceSidecar)
+            let engine = SyncEngine(sessionFactory: { endpoint, _, managed in
+                let isProcessed: Bool
+                if case .processedFiles? = managed { isProcessed = true }
+                else { isProcessed = endpoint.localPath == customPath }
+                return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                    if isProcessed, case .published(0) = phase { try competingBytes.write(to: collision) }
+                })
+            })
+            do {
+                _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTFail("A late processed sidecar collision must stop source removal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("appeared")) }
+            XCTAssertEqual(try Data(contentsOf: collision), competingBytes)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested/JAD_HANDOFF.CR3").path))
+            XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+            XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")), Data("original camera RAW".utf8))
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains(where: LocalEndpointSession.isRecoveryArtifact))
+            do {
+                _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTFail("A partial competing processed group must not authorize source removal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("processed folder already contains")) }
+            XCTAssertEqual(try Data(contentsOf: collision), competingBytes)
+            XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+            XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")), Data("original camera RAW".utf8))
+        }
     }
 
     func testIdenticalProcessedCopiesLetRetryFinishRemovingSource() async throws {

@@ -869,17 +869,21 @@ struct SyncRunFailure: LocalizedError, Sendable {
     let failureDescription: String
     let partialResult: SyncResult
     let completedWithSourceFailures: Bool
+    let requiresRecovery: Bool
 
     init(_ error: any Error, partialResult: SyncResult) {
         failureDescription = error.localizedDescription
         self.partialResult = partialResult
         completedWithSourceFailures = false
+        requiresRecovery = AppError.requiresRecovery(error)
     }
 
-    init(failureDescription: String, partialResult: SyncResult, completedWithSourceFailures: Bool = false) {
+    init(failureDescription: String, partialResult: SyncResult, completedWithSourceFailures: Bool = false,
+         requiresRecovery: Bool = false) {
         self.failureDescription = failureDescription
         self.partialResult = partialResult
         self.completedWithSourceFailures = completedWithSourceFailures
+        self.requiresRecovery = requiresRecovery
     }
 
     var errorDescription: String? { failureDescription }

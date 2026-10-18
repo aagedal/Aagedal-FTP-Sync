@@ -5,7 +5,7 @@ A native macOS menu-bar utility for getting newsroom files where they need to go
 Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
 This branch contains the in-development 3.0 implementation. It is not a beta or a
-shipping release: the bundle identifies itself as 3.0.0 (build 43). Face recognition
+shipping release: the bundle identifies itself as 3.0.0 (build 44). Face recognition
 uses Photo Agent defaults; the remaining
 native, supported-macOS, performance and release gates are tracked in the
 [3.0 readiness report](Documentation/3.0-Readiness.md). Use the latest tagged 2.9.x
@@ -102,6 +102,30 @@ contract and open validation matrix.
 - Successfully tagged files can use a custom processed folder or a managed main folder containing sibling `Synced Files` and `Processed Files` folders
 - Processed pictures can optionally be sorted into sanitized `Photographer Name (INITIALS)` sub-folders while preserving their source-relative paths
 - Sync jobs, their referenced server profiles, and metadata programming can be exported separately or together in `.aftpsync` packages, with password protection enabled by default
+
+## Set up your first sync job
+
+1. Open **Jobs** from the menu-bar panel and choose **Add Sync Job**.
+2. Name the job. Under **Locations**, choose **Set Up Location…** for the source
+   and destination. Select a local folder or enter a server connection. Use
+   **Test Connection** for a server; verify and trust its fingerprint for SFTP.
+3. Review **File Filtering & Deletion**. New jobs include photos by default.
+4. Choose **Save**, then **Sync Now** for a single run. New jobs start with
+   automatic syncing off. Enable **Automatic syncing enabled** and save when
+   you want repeated checks; **Enable automatically on app launch** controls
+   whether the job starts automatically next time.
+
+Menu-bar Start/Stop and quick-control changes also update open job settings.
+Unrelated unsaved edits are retained. If saved passwords cannot be loaded,
+choose **Retry Loading Passwords** in **Server & Sync** after resolving Keychain
+access; your draft stays open.
+
+Reusable file-transfer connections live in **Settings → FTP Servers**. Unsaved
+server edits stay open when changing Settings tabs. Switching servers, adding a
+server or closing Settings offers **Save Changes**, **Discard Changes** and
+**Cancel**. An incomplete new connection stays a draft; choose **Discard Draft**
+to remove it. If another window changed the server, saving preserves your draft
+and asks you to **Revert** to the latest saved settings before editing again.
 
 ## Optional metadata calendar sync
 

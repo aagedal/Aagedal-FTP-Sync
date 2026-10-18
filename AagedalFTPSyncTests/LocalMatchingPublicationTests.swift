@@ -7,6 +7,91 @@ import SwiftMediaMetadata
 @testable import AagedalFTPSync
 
 final class LocalMatchingPublicationTests: XCTestCase {
+    @MainActor
+    func testScheduledSyncPausesForRetainedRecoveryUntilExplicitRetry() async throws {
+        try await verifyScheduledRecoveryPause(retainedAtStart: true)
+    }
+
+    @MainActor
+    func testScheduledSyncPausesWhenPublicationCleanupLeavesRecovery() async throws {
+        try await verifyScheduledRecoveryPause(retainedAtStart: false)
+    }
+
+    @MainActor
+    private func verifyScheduledRecoveryPause(retainedAtStart: Bool) async throws {
+        let f = try fixture()
+        let state = f.root.deletingLastPathComponent().appendingPathComponent("state")
+        let sourceFile = f.inputs.appendingPathComponent("photo.jpg")
+        try Data("source fixture bytes".utf8).write(to: sourceFile)
+        let bookmark = try FolderBookmark.create(for: f.inputs)
+        var job = SyncJob(name: "Recovery scheduling")
+        job.left = Endpoint(kind: .local, localPath: bookmark.resolvedURL.path, bookmark: bookmark.data)
+        job.right = f.endpoint
+        job.direction = .leftToRight
+        job.isEnabled = true
+        job.startsOnAppLaunch = true
+        job.intervalSeconds = 0.01
+        let repository = JobRepository(fileURL: state.appendingPathComponent("jobs.json"))
+        try repository.save([job])
+        if retainedAtStart {
+            let recovery = f.root.appendingPathComponent(".aagedal-sync-retained.transaction")
+            try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: false)
+            try Data("retained original".utf8).write(to: recovery.appendingPathComponent("original-held-0"))
+        }
+        let destinationPath = f.endpoint.localPath
+        let engine = SyncEngine(sessionFactory: { endpoint, _, managedFolder in
+            if endpoint.localPath == destinationPath {
+                return try LocalEndpointSession(endpoint: endpoint, managedFolder: managedFolder,
+                    matchingRecoveryRemoval: { _ in throw CocoaError(.fileWriteNoPermission) })
+            }
+            return try LocalEndpointSession(endpoint: endpoint, managedFolder: managedFolder)
+        })
+        let store = AppStore(
+            repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(fileURL: state.appendingPathComponent("presets.json")),
+            photographerProfileRepository: PhotographerProfileRepository(fileURL: state.appendingPathComponent("photographers.json")),
+            metadataAuditRepository: MetadataAuditRepository(fileURL: state.appendingPathComponent("audit.json")),
+            syncFailureRepository: SyncFailureRepository(fileURL: state.appendingPathComponent("failures.json")),
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: state.appendingPathComponent("signatures.json")),
+            engine: engine
+        )
+        defer { store.stopAll() }
+        for _ in 0..<200 where store.isJobBusy(job.id) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertFalse(store.isJobBusy(job.id))
+        guard case .failed(let message, let retryAt) = store.phases[job.id] else {
+            return XCTFail("Retained recovery must remain visible as a failure")
+        }
+        XCTAssertNil(retryAt)
+        XCTAssertTrue(message.contains("Automatic sync retries are paused"), message)
+        let recovery = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: f.root, includingPropertiesForKeys: nil)
+            .first { LocalEndpointSession.isRecoveryArtifact(named: $0.lastPathComponent) })
+        let retainedFiles = try FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: nil)
+        let before = try retainedFiles.map { url in
+            (url, try Data(contentsOf: url), try FileManager.default.attributesOfItem(atPath: url.path))
+        }
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(store.syncFailureHistory(for: job.id).count, 1)
+        for (url, data, attributes) in before {
+            XCTAssertEqual(try Data(contentsOf: url), data)
+            let current = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(current[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+            XCTAssertEqual(current[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+        }
+        // A user's premature explicit retry still fails closed and pauses again.
+        store.runNow(job.id)
+        for _ in 0..<200 where store.isJobBusy(job.id) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        guard case .failed(_, let retryAfterExplicitAttempt) = store.phases[job.id] else {
+            return XCTFail("Retry before reconciliation must still be refused")
+        }
+        XCTAssertNil(retryAfterExplicitAttempt)
+        XCTAssertFalse(store.isJobBusy(job.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recovery.path))
+    }
+
     func testLocalListingPreservesNestedAndHiddenFilesButNeverFollowsLinks() async throws {
         let f = try fixture()
         let directories = ["Nested folder/Åse", ".hidden", ".aagedal-sync-test.transaction", "Fixture.bundle"]
@@ -102,6 +187,7 @@ final class LocalMatchingPublicationTests: XCTestCase {
         try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: false)
         XCTAssertThrowsError(try session.validateMetadataRecoveryIsResolved()) { error in
             XCTAssertTrue(error.localizedDescription.contains(recovery.path), error.localizedDescription)
+            XCTAssertTrue(AppError.requiresRecovery(error))
         }
         try FileManager.default.removeItem(at: recovery)
         XCTAssertNoThrow(try session.validateMetadataRecoveryIsResolved())
@@ -1023,6 +1109,7 @@ final class LocalMatchingPublicationTests: XCTestCase {
             XCTFail("Cleanup failure must not report successful processing")
         } catch {
             XCTAssertTrue(error.localizedDescription.contains("Replacement was published"))
+            XCTAssertTrue(AppError.requiresRecovery(error))
             XCTAssertTrue(error.localizedDescription.contains("recovery folder cleanup failed"))
             XCTAssertTrue(error.localizedDescription.contains(f.root.path))
         }
