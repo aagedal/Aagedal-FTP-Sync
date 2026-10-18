@@ -498,15 +498,10 @@ struct JobDetailEditor: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Include hidden files", isOn: $session.draft.filter.includeHiddenFiles)
                 Picker("File age", selection: recentHoursBinding) {
-                    Text("Any age").tag(0)
-                        .disabled(draft.targetCleanup != nil)
-                    Text("Last hour").tag(1)
-                    Text("Last 3 hours").tag(3)
-                    Text("Last 6 hours").tag(6)
-                    Text("Last 12 hours").tag(12)
-                    Text("Last 24 hours").tag(24)
-                    Text("Last 48 hours").tag(48)
-                    Text("Last 7 days").tag(168)
+                    ForEach(FileAgeChoices.hours(including: draft.filter.recentHours), id: \.self) { hours in
+                        Text(FileAgeChoices.title(for: hours)).tag(hours ?? 0)
+                            .disabled(hours == nil && draft.targetCleanup != nil)
+                    }
                 }
             }
 

@@ -731,6 +731,33 @@ final class SyncFailureRepositoryTests: XCTestCase {
 
 @MainActor
 final class AppStorePersistenceTests: XCTestCase {
+    func testSavedCustomFileAgeRemainsAnExactChoiceInBothEditors() throws {
+        for (hours, expectedTitle) in [(2, "Last 2 hours"), (336, "Last 14 days")] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("custom-file-age-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+            let store = makeStore(repository: repository, root: root)
+            var job = store.makeJobDraft()
+            job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+            job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+            job.filter.recentHours = hours
+            XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+            let saved = try XCTUnwrap(repository.load().first)
+
+            let choices = FileAgeChoices.hours(including: saved.filter.recentHours)
+            let selectedIndex = try XCTUnwrap(choices.firstIndex(of: saved.filter.recentHours))
+            XCTAssertNotEqual(selectedIndex, 0, "A custom age must not fall back to Any age")
+            XCTAssertEqual(choices.filter { $0 == hours }.count, 1)
+            XCTAssertEqual(FileAgeChoices.title(for: choices[selectedIndex]), expectedTitle)
+            XCTAssertEqual(choices.compactMap { $0 }, choices.compactMap { $0 }.sorted())
+            XCTAssertEqual(try repository.load(), [saved], "Preparing editor choices must not change the saved window")
+            XCTAssertEqual(store.jobs, [saved])
+        }
+        XCTAssertEqual(FileAgeChoices.hours(including: nil).firstIndex(of: nil), 0)
+        XCTAssertEqual(FileAgeChoices.title(for: nil), "Any age")
+        XCTAssertEqual(FileAgeChoices.hours(including: 3).filter { $0 == 3 }.count, 1)
+    }
+
     func testAnyAgeCannotInvalidateAutomaticCleanupJob() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("cleanup-any-age-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -803,6 +830,11 @@ final class AppStorePersistenceTests: XCTestCase {
 
         XCTAssertEqual(store.jobs, [saved])
         XCTAssertNil(store.jobs.first?.validationMessage)
+        XCTAssertNotNil(store.alertMessage)
+        XCTAssertEqual(try Data(contentsOf: directory), blocker)
+        store.alertMessage = nil
+        store.updateInterval(jobID: job.id, seconds: 90)
+        XCTAssertEqual(store.jobs, [saved])
         XCTAssertNotNil(store.alertMessage)
         XCTAssertEqual(try Data(contentsOf: directory), blocker)
     }
