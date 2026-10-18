@@ -20,7 +20,9 @@ struct JobsWindowView: View {
     @State private var handledNewJobDraftRequestID: UUID?
     @State private var selectionRefreshID = UUID()
 
-    var body: some View {
+    // Split from the presentation modifiers below to keep each expression
+    // within the compiler's type-checking limits.
+    private var jobsSplitView: some View {
         NavigationSplitView {
             List(selection: editorSelectionBinding) {
                 ForEach(displayedJobs) { job in
@@ -166,6 +168,10 @@ struct JobsWindowView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { store.refreshLaunchAtLoginStatus() }
         }
+    }
+
+    var body: some View {
+        jobsSplitView
         .fileImporter(
             isPresented: $showConfigurationImporter,
             allowedContentTypes: [.aagedalFTPSyncConfiguration],
