@@ -196,8 +196,8 @@ private struct MenuJobRow: View {
                 .font(.title2)
         }
         .buttonStyle(.plain)
-        .disabled(phase == .syncing)
-        .help("Sync Now")
+        .disabled(store.isJobBusy(job.id))
+        .help(store.resettingJobs.contains(job.id) ? "Wait for Reset Job to finish." : "Sync Now")
         .accessibilityLabel("Sync \(job.name) Now")
         .accessibilityHint("Starts this sync job immediately")
     }
@@ -208,7 +208,7 @@ private struct MenuJobRow: View {
                 Text(job.name).fontWeight(.medium).lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 Image(systemName: job.direction.symbol).font(.caption).foregroundStyle(.secondary)
             }
-            Label(phase.label, systemImage: statusSymbol)
+            Label(store.resettingJobs.contains(job.id) ? "Resetting downloads…" : phase.label, systemImage: statusSymbol)
                 .font(.caption)
                 .labelStyle(AccessibleStatusLabelStyle(symbolColor: statusColor))
                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
@@ -284,6 +284,7 @@ private struct MenuJobRow: View {
                 systemImage: job.isEnabled ? "stop.fill" : "play.fill"
             )
         }
+        .disabled(store.resettingJobs.contains(job.id))
         .buttonStyle(.bordered)
         .controlSize(.small)
         .fixedSize()

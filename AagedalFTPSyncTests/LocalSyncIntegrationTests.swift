@@ -5,6 +5,39 @@ import SwiftMediaMetadata
 import XCTest
 @testable import AagedalFTPSync
 
+private actor ResetPlanningGate {
+    private let pauseOnCall: Int
+    private let entered: XCTestExpectation
+    private var calls = 0
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    init(pauseOnCall: Int, entered: XCTestExpectation) {
+        self.pauseOnCall = pauseOnCall
+        self.entered = entered
+    }
+
+    func pause() async {
+        calls += 1
+        guard calls == pauseOnCall, !released else { return }
+        entered.fulfill()
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private final class ResetSessionCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func record() { lock.withLock { value += 1 } }
+}
+
 final class TransactionalRemovalTests: XCTestCase {
     func testFirstDeletionFailureRestoresEveryStagedSource() async throws {
         let sources = ["first.source", "second.source"]
@@ -76,6 +109,122 @@ final class TransactionalRemovalTests: XCTestCase {
 }
 
 final class LocalSyncIntegrationTests: XCTestCase {
+    @MainActor
+    func testResetRejectsDestinationChangesDuringPreviewAndAfterReview() async throws {
+        for changesDuringPreview in [false, true] {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let entered = XCTestExpectation(description: "Reset planning suspended")
+            let gate = ResetPlanningGate(pauseOnCall: changesDuringPreview ? 1 : 0, entered: entered)
+            let (store, job, _) = try makeResetReviewStore(fixture, planningHook: { _ in await gate.pause() })
+            let original = fixture.right.appendingPathComponent("Synced Files/download.jpg")
+            let replacement = fixture.processed.appendingPathComponent("Synced Files/download.jpg")
+            for url in [original, replacement] {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(url == original ? "reviewed folder".utf8 : "unreviewed folder".utf8).write(to: url)
+            }
+            var changed = job
+            changed.right = try fixture.endpoint(for: fixture.processed)
+            if changesDuringPreview {
+                let task = Task { await store.resetPreview(for: job.id) }
+                await fulfillment(of: [entered], timeout: 3)
+                XCTAssertTrue(store.saveJob(changed, leftPassword: "", rightPassword: ""))
+                await gate.release()
+                let stale = await task.value
+                XCTAssertNil(stale)
+            } else {
+                let prepared = await store.resetPreview(for: job.id)
+                let review = try XCTUnwrap(prepared)
+                XCTAssertEqual(review.preview.filesToDelete, 1)
+                XCTAssertTrue(store.saveJob(changed, leftPassword: "", rightPassword: ""))
+                XCTAssertFalse(store.resetJob(review))
+            }
+            XCTAssertTrue(store.alertMessage?.contains("Review Reset Job again") == true)
+            XCTAssertFalse(store.isJobBusy(job.id))
+            XCTAssertEqual(try Data(contentsOf: original), Data("reviewed folder".utf8))
+            XCTAssertEqual(try Data(contentsOf: replacement), Data("unreviewed folder".utf8))
+            let prepared = await store.resetPreview(for: job.id)
+            let currentReview = try XCTUnwrap(prepared)
+            XCTAssertEqual(currentReview.preview.downloadFolderPath, replacement.deletingLastPathComponent().resolvingSymlinksInPath().path)
+            XCTAssertTrue(store.resetJob(currentReview))
+            for _ in 0..<500 {
+                if !store.isJobBusy(job.id) { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(store.isJobBusy(job.id))
+            XCTAssertEqual(try Data(contentsOf: original), Data("reviewed folder".utf8))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: replacement.path))
+        }
+    }
+
+    @MainActor
+    func testResetBlocksStartSaveAndSchedulerAdmissionUntilItDrains() async throws {
+        let fixture = try LocalFixture()
+        defer { fixture.cleanUp() }
+        let entered = expectation(description: "Reset held before deletion")
+        let gate = ResetPlanningGate(pauseOnCall: 2, entered: entered)
+        let (store, job, counter) = try makeResetReviewStore(fixture, planningHook: { _ in await gate.pause() })
+        let downloaded = fixture.right.appendingPathComponent("Synced Files/download.jpg")
+        try FileManager.default.createDirectory(at: downloaded.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("downloaded bytes".utf8).write(to: downloaded)
+        let prepared = await store.resetPreview(for: job.id)
+        let review = try XCTUnwrap(prepared)
+        XCTAssertTrue(store.resetJob(review))
+        await fulfillment(of: [entered], timeout: 3)
+        store.setEnabled(true, for: job.id)
+        store.startAll()
+        store.runNow(job.id)
+        var changed = job
+        changed.name = "Unreviewed edit during reset"
+        XCTAssertFalse(store.saveJob(changed, leftPassword: "", rightPassword: ""))
+        let attempt = await store.syncSchedulerPerformSync(job.id)
+        if case .skipped = attempt {} else { XCTFail("Scheduler must reject work while reset is active") }
+        XCTAssertEqual(counter.count, 0)
+        XCTAssertFalse(try XCTUnwrap(store.jobs.first).isEnabled)
+        XCTAssertEqual(store.jobs.first?.name, job.name)
+        XCTAssertTrue(store.resettingJobs.contains(job.id))
+        XCTAssertEqual(try Data(contentsOf: downloaded), Data("downloaded bytes".utf8))
+        await gate.release()
+        for _ in 0..<500 {
+            if !store.isJobBusy(job.id) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(store.isJobBusy(job.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: downloaded.path))
+        let retry = await store.syncSchedulerPerformSync(job.id)
+        if case .succeeded = retry {} else { XCTFail("A fresh sync must be admitted after reset drains") }
+        XCTAssertGreaterThan(counter.count, 0)
+    }
+
+    @MainActor
+    private func makeResetReviewStore(_ fixture: LocalFixture,
+        planningHook: @escaping @Sendable (SyncJob) async throws -> Void
+    ) throws -> (AppStore, SyncJob, ResetSessionCounter) {
+        let storage = AppStorageLayout(root: fixture.root.appendingPathComponent("reset-review-store"))
+        let repository = JobRepository(storage: storage)
+        var job = try fixture.job(direction: .leftToRight)
+        job.processedFilesLocation = .processedSubfolder
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        try repository.save([job])
+        let manifests = DownloadManifestRepository(storage: storage)
+        let counter = ResetSessionCounter()
+        let store = AppStore(repository: repository,
+            metadataPresetRepository: MetadataPresetRepository(storage: storage),
+            photographerProfileRepository: PhotographerProfileRepository(storage: storage),
+            serverProfileRepository: ServerProfileRepository(storage: storage),
+            metadataAuditRepository: MetadataAuditRepository(storage: storage),
+            syncFailureRepository: SyncFailureRepository(storage: storage),
+            sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+            downloadManifestRepository: manifests,
+            jobResetService: JobResetService(downloadManifestRepository: manifests, planningHook: planningHook),
+            engine: SyncEngine(sessionFactory: { endpoint, _, managed in
+                counter.record()
+                return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed)
+            }), startsJobsOnInitialization: false)
+        return (store, job, counter)
+    }
+
     func testSyncRequiresRecoveryReconciliationBeforeAnyTransfer() async throws {
         for direction in [SyncDirection.leftToRight, .rightToLeft, .bidirectional] {
             for recoveryOnLeft in [false, true] {
@@ -594,7 +743,9 @@ final class LocalSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(store.metadataAuditTrail(for: job.id).map(\.relativePath), [auditEntry.relativePath])
         XCTAssertEqual(store.syncFailureHistory(for: job.id).count, 1)
 
-        store.resetJob(job.id)
+        let preparedReview = await store.resetPreview(for: job.id)
+        let review = try XCTUnwrap(preparedReview)
+        XCTAssertTrue(store.resetJob(review))
         while store.resettingJobs.contains(job.id) {
             try await Task.sleep(for: .milliseconds(10))
         }

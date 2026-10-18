@@ -178,6 +178,58 @@ final class MetadataProgrammingCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.confirmReprocessing(in: store))
     }
 
+    func testScheduledSyncRespectsQueuedMetadataWorkReservation() async throws {
+        for preflight in [false, true] {
+            let controller = SyncConcurrencyController(policy: .init(globalLimit: 1, perHostLimit: nil))
+            let heldLease = try await controller.acquire(hosts: [])
+            let (root, store, _, _, jobID, otherJobID) = try switchFixture(
+                realFolders: true, concurrencyController: controller)
+            defer { try? FileManager.default.removeItem(at: root) }
+            store.removeJob(otherJobID)
+            if preflight { XCTAssertTrue(store.preflightMetadataReprocess(jobID)) }
+            else { store.reprocessExistingLocalFiles(jobID) }
+            let deadline = Date().addingTimeInterval(5)
+            while await controller.snapshot().pendingCount == 0, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            let initiallyQueued = await controller.snapshot()
+            XCTAssertEqual(initiallyQueued.pendingCount, 1)
+            store.setEnabled(true, for: jobID)
+            store.startAll()
+            let returned = XCTestExpectation(description: "Scheduled sync skips reserved job")
+            let sync = Task {
+                let attempt = await store.syncSchedulerPerformSync(jobID)
+                returned.fulfill()
+                return attempt
+            }
+            let completion = await XCTWaiter.fulfillment(of: [returned], timeout: 1)
+            let duringMetadata = await controller.snapshot()
+            // Always drain both paths, including when this regression fails.
+            sync.cancel()
+            store.stopAll()
+            if preflight { store.cancelMetadataReprocessPreflight(jobID) }
+            else { store.cancelMetadataReprocess(jobID) }
+            await controller.release(heldLease)
+            let attempt = await sync.value
+            let drainDeadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(jobID), Date() < drainDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(completion, .completed)
+            XCTAssertEqual(duringMetadata.pendingCount, 1, "Only the requested metadata work should wait for a slot")
+            if case .skipped = attempt {} else { XCTFail("Scheduled sync must leave the registered metadata operation in control") }
+            XCTAssertFalse(store.isJobBusy(jobID))
+            XCTAssertTrue(store.preflightMetadataReprocess(jobID))
+            let retryDeadline = Date().addingTimeInterval(5)
+            while store.isJobBusy(jobID), Date() < retryDeadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            guard case .ready = store.metadataReprocessPhases[jobID] else {
+                return XCTFail("A fresh metadata run must still work after the reservation drains")
+            }
+        }
+    }
+
     func testStopQueuedReprocessingDrainsLeaseAndAllowsAnotherRun() async throws {
         let controller = SyncConcurrencyController(policy: .init(globalLimit: 1, perHostLimit: nil))
         let heldLease = try await controller.acquire(hosts: [])

@@ -248,6 +248,10 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) -> Bool {
+        guard !isJobResetting(job.id) else {
+            alertMessage = "Wait for Reset Job to finish before saving changes to this job."
+            return false
+        }
         var resolvedJob: SyncJob
         do {
             resolvedJob = try job.resolvingServerProfiles(in: serverProfiles)
@@ -781,6 +785,10 @@ final class AppStore: ObservableObject {
 
     func setEnabled(_ enabled: Bool, for jobID: UUID) {
         guard !isSuspendedForExternalWriter else { return }
+        guard !enabled || !isJobResetting(jobID) else {
+            alertMessage = "Wait for Reset Job to finish before starting this job."
+            return
+        }
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
         if enabled, let message = metadataFaceRecognitionRuntimeBlocker(for: jobs[index]) {
             alertMessage = message
@@ -906,21 +914,31 @@ final class AppStore: ObservableObject {
             || resetTasks[jobID] != nil
     }
 
-    func resetJob(_ jobID: UUID) {
-        guard !isSuspendedForExternalWriter else { return }
+    private func isJobResetting(_ jobID: UUID) -> Bool {
+        resettingJobs.contains(jobID) || resetTasks[jobID] != nil
+    }
+
+    @discardableResult
+    func resetJob(_ review: JobResetReview) -> Bool {
+        let jobID = review.job.id
+        guard !isSuspendedForExternalWriter else { return false }
         guard !isJobBusy(jobID),
-              let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+              let index = jobs.firstIndex(where: { $0.id == jobID }) else { return false }
         let job = jobs[index]
+        guard job == review.job else {
+            alertMessage = "This job changed after the reset preview. Review Reset Job again before deleting any downloads."
+            return false
+        }
         if let message = JobResetService.validationMessage(for: job) {
             alertMessage = message
-            return
+            return false
         }
 
         var updatedJobs = jobs
         updatedJobs[index].isEnabled = false
         updatedJobs[index].startsOnAppLaunch = false
         guard persistAndPublishJobs(updatedJobs, errorPrefix: "The job could not be disabled for reset") else {
-            return
+            return false
         }
 
         scheduler.cancel(jobID)
@@ -954,13 +972,22 @@ final class AppStore: ObservableObject {
             }
         }
         resetTasks[jobID] = task
+        return true
     }
 
-    func resetPreview(for jobID: UUID) async -> JobResetPreview? {
-        guard !isJobBusy(jobID),
+    func resetPreview(for jobID: UUID) async -> JobResetReview? {
+        guard !isSuspendedForExternalWriter, !isJobBusy(jobID),
               let job = jobs.first(where: { $0.id == jobID }) else { return nil }
         do {
-            return try await jobResetService.preview(for: job)
+            let preview = try await jobResetService.preview(for: job)
+            guard !Task.isCancelled, !isSuspendedForExternalWriter else { return nil }
+            guard jobs.first(where: { $0.id == jobID }) == job, !isJobBusy(jobID) else {
+                alertMessage = "This job changed while preparing the reset preview. Review Reset Job again before deleting any downloads."
+                return nil
+            }
+            return JobResetReview(job: job, preview: preview)
+        } catch is CancellationError {
+            return nil
         } catch {
             alertMessage = error.localizedDescription
             return nil
@@ -1142,10 +1169,10 @@ final class AppStore: ObservableObject {
         var updatedJobs = jobs
         let blockedJobs = updatedJobs.filter { metadataFaceRecognitionRuntimeBlocker(for: $0) != nil }
         let newlyEnabledJobIDs = updatedJobs.compactMap {
-            $0.isEnabled || metadataFaceRecognitionRuntimeBlocker(for: $0) != nil ? nil : $0.id
+            $0.isEnabled || isJobResetting($0.id) || metadataFaceRecognitionRuntimeBlocker(for: $0) != nil ? nil : $0.id
         }
         for index in updatedJobs.indices {
-            if metadataFaceRecognitionRuntimeBlocker(for: updatedJobs[index]) == nil {
+            if !isJobResetting(updatedJobs[index].id), metadataFaceRecognitionRuntimeBlocker(for: updatedJobs[index]) == nil {
                 updatedJobs[index].isEnabled = true
             }
         }
@@ -1155,6 +1182,10 @@ final class AppStore: ObservableObject {
         if !blockedJobs.isEmpty {
             let names = blockedJobs.map(\.name).joined(separator: ", ")
             alertMessage = "Face recognition is not ready, so these jobs remain stopped: \(names). Disable face recognition to run them without it."
+        }
+        let resettingNames = jobs.filter { isJobResetting($0.id) }.map(\.name)
+        if !resettingNames.isEmpty {
+            appendAlert("Reset Job is still running, so these jobs remain stopped: \(resettingNames.joined(separator: ", ")).")
         }
     }
 
@@ -1237,7 +1268,8 @@ final class AppStore: ObservableObject {
     }
 
     private func performSync(_ jobID: UUID) async -> SyncAttempt {
-        guard !isSuspendedForExternalWriter, !scheduler.isRunning(jobID),
+        guard !isSuspendedForExternalWriter, !isJobResetting(jobID), metadataReprocessTasks[jobID] == nil,
+              !scheduler.isRunning(jobID),
               let savedJob = jobs.first(where: { $0.id == jobID }) else { return .skipped }
         let job: SyncJob
         do {
@@ -1267,7 +1299,7 @@ final class AppStore: ObservableObject {
             phases[jobID] = .stopped
             return .cancelled
         }
-        guard scheduler.beginRunning(jobID) else {
+        guard !isJobResetting(jobID), metadataReprocessTasks[jobID] == nil, scheduler.beginRunning(jobID) else {
             await syncConcurrencyController.release(leaseID)
             return .skipped
         }

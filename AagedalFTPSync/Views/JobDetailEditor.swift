@@ -9,7 +9,7 @@ struct JobDetailEditor: View {
     let onDiscardNewJob: () -> Void
     @State private var showDeleteConfirmation = false
     @State private var showResetConfirmation = false
-    @State private var resetPreview: JobResetPreview?
+    @State private var resetReview: JobResetReview?
     @State private var isPreparingReset = false
     @State private var saveConfirmation = false
     @State private var showMetadataAudit = false
@@ -73,8 +73,10 @@ struct JobDetailEditor: View {
                     Task {
                         isPreparingReset = true
                         defer { isPreparingReset = false }
-                        resetPreview = await store.resetPreview(for: draft.id)
-                        showResetConfirmation = resetPreview != nil
+                        let review = await store.resetPreview(for: draft.id)
+                        guard let review, draft == review.job else { return }
+                        resetReview = review
+                        showResetConfirmation = true
                     }
                 }
                     .disabled(resetUnavailableReason != nil)
@@ -102,6 +104,8 @@ struct JobDetailEditor: View {
             .padding(14)
         }
         .navigationTitle(draft.name)
+        .onChange(of: draft) { _, _ in invalidateChangedResetReview() }
+        .onChange(of: store.jobs) { _, _ in invalidateChangedResetReview() }
         .onChange(of: store.metadataSyncSettingsJobID) { _, _ in openRequestedMetadataSyncSettings() }
         .onChange(of: session.jobID) { _, _ in openRequestedMetadataSyncSettings() }
         .onAppear {
@@ -165,13 +169,16 @@ struct JobDetailEditor: View {
                 ? "This job has not been saved, so no stored jobs or credentials will be changed."
                 : "Files are not deleted, but this job and its saved credentials will be removed.")
         }
-        .confirmationDialog("Reset “\(draft.name)”?", isPresented: $showResetConfirmation) {
+        .confirmationDialog("Reset “\(resetReview?.job.name ?? draft.name)”?", isPresented: $showResetConfirmation) {
             Button("Delete Downloads and Reset", role: .destructive) {
-                draft.isEnabled = false
-                draft.startsOnAppLaunch = false
-                store.resetJob(draft.id)
-                resetPreview = nil
+                guard let review = resetReview, draft == review.job else { return }
+                if store.resetJob(review) {
+                    draft.isEnabled = false
+                    draft.startsOnAppLaunch = false
+                }
+                resetReview = nil
             }
+            .disabled(resetReview == nil)
         } message: {
             Text(resetConfirmationMessage)
         }
@@ -724,19 +731,23 @@ struct JobDetailEditor: View {
     }
 
     private var resetConfirmationMessage: String {
-        guard let savedJob else { return "This job has not been saved." }
-        let path = resetPreview?.downloadFolderPath
-            ?? savedJob.localDestinationDisplayPath
-            ?? "the local download folder"
-        let fileCount = resetPreview?.filesToDelete ?? 0
+        guard let review = resetReview else { return "Review Reset Job again before deleting any downloads." }
+        let path = review.preview.downloadFolderPath
+        let fileCount = review.preview.filesToDelete
         let fileDescription = fileCount == 1 ? "1 file" : "\(fileCount) files"
         let folderWarning: String
-        if resetPreview?.deletesWholeManagedFolder == true {
+        if review.preview.deletesWholeManagedFolder {
             folderWarning = "Reset will permanently delete \(fileDescription) currently inside \(path). Processed Files and the source will not be changed."
         } else {
             folderWarning = "Reset will permanently delete \(fileDescription) recorded as downloads created by this job in \(path). Other files and the source will not be changed."
         }
         return "\(folderWarning) Transfer counts, metadata audit entries, error history, and saved source signatures will also be cleared. The job will be stopped and disabled at login. This cannot be undone."
+    }
+
+    private func invalidateChangedResetReview() {
+        guard let review = resetReview, draft != review.job || savedJob != review.job else { return }
+        showResetConfirmation = false
+        resetReview = nil
     }
 
     private func filenameFilterBinding(_ keyPath: WritableKeyPath<FileFilter, String?>) -> Binding<String> {

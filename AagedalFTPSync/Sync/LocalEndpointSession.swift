@@ -807,6 +807,11 @@ struct JobResetPreview: Equatable, Sendable {
     let deletesWholeManagedFolder: Bool
 }
 
+struct JobResetReview: Equatable, Sendable {
+    let job: SyncJob
+    let preview: JobResetPreview
+}
+
 struct JobResetFileOperations: Sendable {
     let createDirectory: @Sendable (URL, Bool) throws -> Void
     let moveItem: @Sendable (URL, URL) throws -> Void
@@ -838,13 +843,16 @@ actor JobResetService {
 
     private let downloadManifestRepository: DownloadManifestRepository
     private let fileOperations: JobResetFileOperations
+    private let planningHook: (@Sendable (SyncJob) async throws -> Void)?
 
     init(
         downloadManifestRepository: DownloadManifestRepository = DownloadManifestRepository(),
-        fileOperations: JobResetFileOperations = .live
+        fileOperations: JobResetFileOperations = .live,
+        planningHook: (@Sendable (SyncJob) async throws -> Void)? = nil
     ) {
         self.downloadManifestRepository = downloadManifestRepository
         self.fileOperations = fileOperations
+        self.planningHook = planningHook
     }
 
     static func validationMessage(for job: SyncJob) -> String? {
@@ -948,6 +956,8 @@ actor JobResetService {
     }
 
     private func makeResetPlan(for job: SyncJob) async throws -> ResetPlan {
+        try await planningHook?(job)
+        try Task.checkCancellation()
         if let message = Self.validationMessage(for: job) {
             throw AppError.invalidConfiguration(message)
         }
