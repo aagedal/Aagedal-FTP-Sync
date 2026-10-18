@@ -239,7 +239,7 @@ struct JobsWindowView: View {
         } message: {
             Text("Your edits have not been saved.")
         }
-        .background(JobWindowCloseGuard(closeDecision: closeDecision))
+        .background(UnsavedChangesWindowGuard(closeDecision: closeDecision))
     }
 
     private var displayedJobs: [SyncJob] {
@@ -430,7 +430,7 @@ private enum PendingEditorTransition: Equatable {
     case newJob
 }
 
-private struct JobWindowCloseGuard: NSViewRepresentable {
+struct UnsavedChangesWindowGuard: NSViewRepresentable {
     let closeDecision: @MainActor () -> Bool
 
     func makeCoordinator() -> Coordinator {

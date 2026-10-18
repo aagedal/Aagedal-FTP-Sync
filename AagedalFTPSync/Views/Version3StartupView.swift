@@ -97,9 +97,10 @@ struct StartupMenuLabel: View {
 
 struct RuntimeSettingsView: View {
     @ObservedObject var store: AppStore
+    @StateObject private var serverEditingSession = ServerProfileEditingSession()
     var body: some View {
         TabView(selection: $store.settingsTab) {
-            ServerSettingsView()
+            ServerSettingsView(session: serverEditingSession, protectsWindowClose: false)
                 .tabItem { Label("FTP Servers", systemImage: "server.rack") }
                 .tag(AppSettingsTab.servers)
             PhotographerSettingsView()
@@ -120,6 +121,9 @@ struct RuntimeSettingsView: View {
                     .tag(AppSettingsTab.peopleLibrary)
             }
         }
+        .background(UnsavedChangesWindowGuard(closeDecision: {
+            serverEditingSession.confirmLeavingDraft(using: store)
+        }))
     }
 }
 

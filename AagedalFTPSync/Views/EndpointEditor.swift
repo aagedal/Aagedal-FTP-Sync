@@ -199,15 +199,14 @@ private struct EndpointEditor: View {
                         Text("Missing server profile").tag(Optional(profileID))
                     }
                 }
+                .accessibilityIdentifier("endpoint.server-profile")
             }
 
-            Picker("Type", selection: $endpoint.kind) {
+            Picker("Type", selection: connectionKindBinding) {
                 ForEach(EndpointKind.allCases) { Text($0.title).tag($0) }
             }
+            .accessibilityIdentifier("endpoint.type")
             .disabled(endpoint.serverProfileID != nil)
-            .onChange(of: endpoint.kind) { oldKind, newKind in
-                if oldKind != newKind, newKind.isRemote { endpoint.port = newKind.defaultPort }
-            }
 
             if endpoint.kind == .local {
                 LabeledContent("Folder") {
@@ -223,6 +222,7 @@ private struct EndpointEditor: View {
                     .textContentType(.URL)
                     .disabled(endpoint.serverProfileID != nil)
                 TextField("Port", value: $endpoint.port, format: .number)
+                    .accessibilityIdentifier("endpoint.port")
                     .frame(maxWidth: 180)
                     .disabled(endpoint.serverProfileID != nil)
                 TextField("Username", text: $endpoint.username)
@@ -297,6 +297,14 @@ private struct EndpointEditor: View {
         .onChange(of: endpoint) { _, _ in resetConnectionTest() }
         .onChange(of: password) { _, _ in resetConnectionTest() }
         .onDisappear { connectionTestTask?.cancel() }
+    }
+
+    private var connectionKindBinding: Binding<EndpointKind> {
+        Binding(get: { endpoint.kind }, set: { kind in
+            guard endpoint.kind != kind else { return }
+            endpoint.kind = kind
+            if kind.isRemote { endpoint.port = kind.defaultPort }
+        })
     }
 
     private var serverProfileSelection: Binding<UUID?> {

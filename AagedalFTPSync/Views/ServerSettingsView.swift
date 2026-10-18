@@ -1,13 +1,101 @@
+import AppKit
 import SwiftUI
+
+@MainActor
+final class ServerProfileEditingSession: ObservableObject {
+    @Published var draft: ServerProfile?
+    @Published var password = ""
+    @Published private(set) var credentialLoadError: String?
+    private var savedProfile: ServerProfile?
+    private var loadedPassword = ""
+
+    var isNewProfile: Bool { draft != nil && savedProfile == nil }
+    var hasUnsavedChanges: Bool {
+        guard let draft else { return false }
+        return isNewProfile || draft != savedProfile || password != loadedPassword
+    }
+
+    func edit(_ profile: ServerProfile?, using store: AppStore) {
+        draft = profile
+        savedProfile = profile
+        password = ""
+        loadedPassword = ""
+        credentialLoadError = nil
+        if profile != nil { retryCredentials(using: store) }
+    }
+
+    func beginNew(_ profile: ServerProfile) {
+        draft = profile
+        savedProfile = nil
+        password = ""
+        loadedPassword = ""
+        credentialLoadError = nil
+    }
+
+    func retryCredentials(using store: AppStore) {
+        guard let savedProfile else { return }
+        do {
+            let saved = try store.password(for: savedProfile)
+            if password == loadedPassword { password = saved }
+            loadedPassword = saved
+            credentialLoadError = nil
+        } catch {
+            credentialLoadError = "The saved password could not be loaded: \(error.localizedDescription)"
+        }
+    }
+
+    @discardableResult
+    func save(using store: AppStore) -> Bool {
+        guard let draft, credentialLoadError == nil else { return false }
+        if let savedProfile, store.serverProfiles.first(where: { $0.id == draft.id }) != savedProfile {
+            store.alertMessage = "This server changed in another window or was removed. Your edits are still here. Revert to load the latest saved settings before editing again."
+            return false
+        }
+        guard store.saveServerProfile(draft, password: password) else { return false }
+        savedProfile = store.serverProfiles.first(where: { $0.id == draft.id })
+        self.draft = savedProfile
+        loadedPassword = password
+        return true
+    }
+
+    func confirmLeavingDraft(using store: AppStore) -> Bool {
+        guard hasUnsavedChanges else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to “\(draft?.name ?? "Server")”?"
+        alert.informativeText = "Your server settings and password edits have not been saved."
+        alert.addButton(withTitle: "Save Changes").isEnabled = draft?.validationMessage == nil && credentialLoadError == nil
+        alert.addButton(withTitle: isNewProfile ? "Discard Draft" : "Discard Changes")
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return save(using: store)
+        case .alertSecondButtonReturn:
+            edit(store.serverProfiles.first(where: { $0.id == draft?.id }), using: store)
+            return true
+        default: return false
+        }
+    }
+}
 
 struct ServerSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selectedProfileID: UUID?
-    @State private var draft: ServerProfile?
-    @State private var password = ""
-    @State private var credentialLoadError: String?
-    @State private var isNewProfile = false
+    @State private var selectionRefreshID = UUID()
+    @StateObject private var session: ServerProfileEditingSession
     @State private var profilePendingDeletion: ServerProfile?
+    private let protectsWindowClose: Bool
+
+    init(session: ServerProfileEditingSession = ServerProfileEditingSession(), protectsWindowClose: Bool = true) {
+        _session = StateObject(wrappedValue: session)
+        self.protectsWindowClose = protectsWindowClose
+    }
+
+    private var draft: ServerProfile? {
+        get { session.draft }
+        nonmutating set { session.draft = newValue }
+    }
+    private var password: String { session.password }
+    private var credentialLoadError: String? { session.credentialLoadError }
+    private var isNewProfile: Bool { session.isNewProfile }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -45,11 +133,15 @@ struct ServerSettingsView: View {
 
                 Divider()
 
-                List(selection: $selectedProfileID) {
+                List(selection: selectionBinding) {
                     ForEach(displayedProfiles) { profile in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(profile.name)
                                 .fontWeight(.medium)
+                            if profile.id == draft?.id, hasUnsavedChanges {
+                                Label("Unsaved changes", systemImage: "pencil.circle")
+                                    .font(.caption)
+                            }
                             Text(profileSummary(profile))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -64,6 +156,7 @@ struct ServerSettingsView: View {
                         .tag(profile.id)
                     }
                 }
+                .id(selectionRefreshID)
             }
             .frame(width: 280)
 
@@ -78,26 +171,25 @@ struct ServerSettingsView: View {
                             Form {
                                 Section("Connection") {
                                     TextField("Name", text: draftBinding.name)
-                                    Picker("Protocol", selection: draftBinding.kind) {
+                                        .accessibilityIdentifier("server.name")
+                                    Picker("Protocol", selection: protocolBinding) {
                                         Text(EndpointKind.ftp.title).tag(EndpointKind.ftp)
                                         Text(EndpointKind.ftps.title).tag(EndpointKind.ftps)
                                         Text(EndpointKind.sftp.title).tag(EndpointKind.sftp)
                                     }
-                                    .onChange(of: draftBinding.wrappedValue.kind) { _, kind in
-                                        draft?.port = kind.defaultPort
-                                        if kind != .sftp { draft?.hostKeyFingerprint = "" }
-                                    }
+                                    .accessibilityIdentifier("server.protocol")
                                     TextField("Server", text: draftBinding.host, prompt: Text("photos.example.com"))
                                         .textContentType(.URL)
                                     TextField("Port", value: draftBinding.port, format: .number)
+                                        .accessibilityIdentifier("server.port")
                                         .frame(maxWidth: 180)
                                     TextField("Username", text: draftBinding.username)
                                         .textContentType(.username)
-                                    SecureField("Password", text: $password)
+                                    SecureField("Password", text: $session.password)
                                         .textContentType(.password)
                                     if !password.isEmpty {
                                         Button("Remove Saved Password", role: .destructive) {
-                                            password = ""
+                                            session.password = ""
                                         }
                                         .help("The password is removed from Keychain when the server is saved.")
                                     }
@@ -121,13 +213,20 @@ struct ServerSettingsView: View {
                                     .font(.caption)
                                     .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                                     .textSelection(.enabled)
+                                Button("Retry Loading Password") { session.retryCredentials(using: store) }
                             }
 
                             HStack {
+                                if let message = draftBinding.wrappedValue.validationMessage {
+                                    Label(message, systemImage: "exclamationmark.circle")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer()
-                                Button("Revert", action: loadSelectedProfile)
+                                Button(isNewProfile ? "Discard Draft" : "Revert", action: discardDraft)
                                     .disabled(!hasUnsavedChanges)
-                                Button("Save", action: saveDraft)
+                                Button("Save") { saveDraft() }
+                                    .accessibilityIdentifier("server.save")
                                     .buttonStyle(.borderedProminent)
                                     .disabled(
                                         !hasUnsavedChanges
@@ -150,24 +249,27 @@ struct ServerSettingsView: View {
         }
         .frame(minWidth: 740, minHeight: 500)
         .onAppear {
-            if selectedProfileID == nil {
-                selectedProfileID = store.serverProfiles.first?.id
+            if hasUnsavedChanges {
+                selectedProfileID = draft?.id
+            } else {
+                selectedProfileID = store.serverProfiles.first(where: { $0.id == draft?.id })?.id
+                    ?? selectedProfile?.id ?? store.serverProfiles.first?.id
+                loadSelectedProfile()
             }
-            loadSelectedProfile()
-        }
-        .onChange(of: selectedProfileID) { _, selectedID in
-            if isNewProfile, selectedID != draft?.id {
-                isNewProfile = false
-            }
-            loadSelectedProfile()
         }
         .onChange(of: store.serverProfiles) { _, profiles in
+            guard !hasUnsavedChanges else { return }
             if let selectedProfileID,
                !isNewProfile,
                !profiles.contains(where: { $0.id == selectedProfileID }) {
                 self.selectedProfileID = profiles.first?.id
             }
             loadSelectedProfile()
+        }
+        .background {
+            if protectsWindowClose {
+                UnsavedChangesWindowGuard(closeDecision: confirmLeavingDraft)
+            }
         }
         .confirmationDialog(
             "Delete server profile?",
@@ -213,7 +315,7 @@ struct ServerSettingsView: View {
 
     private var displayedProfiles: [ServerProfile] {
         var profiles = store.serverProfiles
-        if isNewProfile, let draft, !profiles.contains(where: { $0.id == draft.id }) {
+        if let draft, !profiles.contains(where: { $0.id == draft.id }) {
             profiles.append(draft)
         }
         return profiles.sorted {
@@ -229,14 +331,18 @@ struct ServerSettingsView: View {
         )
     }
 
-    private var hasUnsavedChanges: Bool {
-        guard let draft else { return false }
-        return isNewProfile
-            || draft != store.serverProfiles.first(where: { $0.id == draft.id })
-            || password != loadedPassword
+    private var protocolBinding: Binding<EndpointKind> {
+        Binding(get: { draft?.kind ?? .ftps }, set: { kind in
+            guard draft?.kind != kind else { return }
+            draft?.kind = kind
+            draft?.port = kind.defaultPort
+            if kind != .sftp { draft?.hostKeyFingerprint = "" }
+        })
     }
 
-    @State private var loadedPassword = ""
+    private var hasUnsavedChanges: Bool {
+        session.hasUnsavedChanges
+    }
 
     @ViewBuilder
     private func usageSection(for profile: ServerProfile) -> some View {
@@ -274,51 +380,53 @@ struct ServerSettingsView: View {
     }
 
     private func loadSelectedProfile() {
-        guard !isNewProfile, let selectedProfile else {
-            if selectedProfileID == nil {
-                draft = nil
-                password = ""
-                loadedPassword = ""
-                credentialLoadError = nil
-            }
-            return
-        }
-        draft = selectedProfile
-        do {
-            let savedPassword = try store.password(for: selectedProfile)
-            password = savedPassword
-            loadedPassword = savedPassword
-            credentialLoadError = nil
-        } catch {
-            password = ""
-            loadedPassword = ""
-            credentialLoadError = "The saved password could not be loaded: \(error.localizedDescription)"
-        }
+        session.edit(selectedProfile, using: store)
     }
 
     private func addProfile() {
+        guard confirmLeavingDraft() else { return }
         let profile = ServerProfile(name: uniqueName())
-        isNewProfile = true
-        draft = profile
+        session.beginNew(profile)
         selectedProfileID = profile.id
-        password = ""
-        loadedPassword = ""
-        credentialLoadError = nil
     }
 
-    private func saveDraft() {
-        guard let draft, store.saveServerProfile(draft, password: password) else { return }
-        isNewProfile = false
-        self.draft = store.serverProfiles.first { $0.id == draft.id }
+    @discardableResult
+    private func saveDraft() -> Bool {
+        session.save(using: store)
+    }
+
+    private var selectionBinding: Binding<UUID?> {
+        Binding(get: { selectedProfileID }, set: { id in
+            DispatchQueue.main.async {
+                guard id != selectedProfileID else { return }
+                guard confirmLeavingDraft() else {
+                    // AppKit can retain the proposed row selection after a
+                    // declined binding write. Restore it so the same row can
+                    // be selected again after Cancel.
+                    selectionRefreshID = UUID()
+                    return
+                }
+                selectedProfileID = id
+                loadSelectedProfile()
+            }
+        })
+    }
+
+    private func discardDraft() {
+        if isNewProfile || selectedProfile == nil { selectedProfileID = store.serverProfiles.first?.id }
         loadSelectedProfile()
+    }
+
+    private func confirmLeavingDraft() -> Bool {
+        guard session.confirmLeavingDraft(using: store) else { return false }
+        if draft == nil { discardDraft() }
+        return true
     }
 
     private func duplicateProfile() {
         guard let selectedProfile,
               let duplicate = store.duplicateServerProfile(selectedProfile.id) else { return }
-        isNewProfile = false
         selectedProfileID = duplicate.id
-        draft = duplicate
         loadSelectedProfile()
     }
 
@@ -332,7 +440,6 @@ struct ServerSettingsView: View {
             return
         }
         selectedProfileID = store.serverProfiles.first?.id
-        isNewProfile = false
         loadSelectedProfile()
         profilePendingDeletion = nil
     }

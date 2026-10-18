@@ -120,6 +120,13 @@ Unrelated unsaved edits are retained. If saved passwords cannot be loaded,
 choose **Retry Loading Passwords** in **Server & Sync** after resolving Keychain
 access; your draft stays open.
 
+Reusable file-transfer connections live in **Settings → FTP Servers**. Unsaved
+server edits stay open when changing Settings tabs. Switching servers, adding a
+server or closing Settings offers **Save Changes**, **Discard Changes** and
+**Cancel**. An incomplete new connection stays a draft; choose **Discard Draft**
+to remove it. If another window changed the server, saving preserves your draft
+and asks you to **Revert** to the latest saved settings before editing again.
+
 ## Optional metadata calendar sync
 
 Calendar sharing uses a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, owner/editor/read-only invitations, offline edits and explicit conflict resolution. Owners can invite additional owner devices to manage members and invitations. Manage servers under **Settings → Sync Servers**, and attach calendars under **Job settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. Choose [Docker deployment](Server/MetadataSync/DOCKER.md) or [manual PHP/SQL setup](Server/MetadataSync/MANUAL-SETUP.md). See the [server reference](Server/MetadataSync/README.md) for date-range boundaries, limits and deployment verification.

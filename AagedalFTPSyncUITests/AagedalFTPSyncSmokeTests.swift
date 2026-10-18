@@ -1689,6 +1689,101 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(delete.isEnabled)
     }
 
+    func testServerDraftSurvivesTabSwitchAndCancelledAddThenCanBeDiscarded() {
+        launch(seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        let name = element("server.name")
+        replaceText(in: name, with: "Unsaved server edit")
+        app.buttons["Photographers"].click()
+        app.buttons["FTP Servers"].click()
+        XCTAssertEqual(name.value as? String, "Unsaved server edit")
+        app.buttons["Add Server"].click()
+        XCTAssertTrue(app.dialogs.buttons["Cancel"].waitForExistence(timeout: 3))
+        app.dialogs.buttons["Cancel"].click()
+        XCTAssertEqual(name.value as? String, "Unsaved server edit")
+        app.buttons["Add Server"].click()
+        app.dialogs.buttons["Discard Changes"].click()
+        XCTAssertTrue(app.buttons["Discard Draft"].waitForExistence(timeout: 3))
+        XCTAssertFalse(element("server.save").isEnabled, "An incomplete server must stay an unsaved draft")
+        app.buttons["Discard Draft"].click()
+        XCTAssertEqual(name.value as? String, "Disposable UI Server")
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].exists)
+    }
+
+    func testClosingServerSettingsProtectsUnsavedDraftAndSavePersistsIt() {
+        launch(seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        let name = element("server.name")
+        replaceText(in: name, with: "Saved after close review")
+        let settings = app.windows.containing(.textField, identifier: "server.name").firstMatch
+        let close = settings.buttons[XCUIIdentifierCloseWindow]
+        app.buttons["Photographers"].click()
+        app.windows.containing(.button, identifier: "FTP Servers").firstMatch.buttons[XCUIIdentifierCloseWindow].click()
+        XCTAssertTrue(app.dialogs.buttons["Cancel"].waitForExistence(timeout: 3))
+        app.dialogs.buttons["Cancel"].click()
+        app.buttons["FTP Servers"].click()
+        XCTAssertEqual(name.value as? String, "Saved after close review")
+        close.click()
+        app.dialogs.buttons["Save Changes"].click()
+        XCTAssertTrue(settings.waitForNonExistence(timeout: 5))
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        XCTAssertEqual(name.value as? String, "Saved after close review")
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].exists)
+    }
+
+    func testSwitchingServersCanCancelOrSaveTheCurrentDraft() {
+        launch(seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        app.buttons["Duplicate Server"].click()
+        let name = element("server.name")
+        replaceText(in: name, with: "Edited second server")
+        element("server.protocol").click()
+        app.menuItems["FTPS (TLS)"].click()
+        replaceText(in: element("server.port"), with: "2121")
+        app.staticTexts["Disposable UI Server"].click()
+        XCTAssertTrue(app.dialogs.buttons["Cancel"].waitForExistence(timeout: 3))
+        app.dialogs.buttons["Cancel"].click()
+        XCTAssertEqual(name.value as? String, "Edited second server")
+        app.staticTexts["Disposable UI Server"].click()
+        app.dialogs.buttons["Save Changes"].click()
+        XCTAssertEqual(name.value as? String, "Disposable UI Server")
+        app.staticTexts["Edited second server"].click()
+        XCTAssertEqual(name.value as? String, "Edited second server")
+        XCTAssertEqual(String(describing: element("server.port").value ?? "").filter { $0.isNumber }, "2121")
+        XCTAssertFalse(app.staticTexts["Unsaved changes"].exists)
+    }
+
+    func testJobConnectionKeepsCustomPortWhenSelectingDifferentProtocolProfile() {
+        launch(seedJob: true, seedServer: true)
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        replaceText(in: element("server.port"), with: "2121")
+        element("server.save").click()
+        openStatusMenu()
+        element("open-jobs-window").click()
+        dismissStatusPanelIfNeeded()
+        app.buttons["Source: Edit Location"].click()
+        element("endpoint.type").click()
+        app.menuItems["FTPS (TLS)"].click()
+        element("endpoint.server-profile").click()
+        app.menuItems["Disposable UI Server"].click()
+        let port = element("endpoint.port")
+        XCTAssertEqual(String(describing: port.value ?? "").filter { $0.isNumber }, "2121")
+        XCTAssertFalse(port.isEnabled)
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Saved profile custom port in job setup"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+        app.buttons["Done"].click()
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+    }
+
     func testVersion3BackupOnlySourceUsesDetailedRecoveryMigration() {
         launchVersion3(session: UUID().uuidString, fixture: "backup-only")
 

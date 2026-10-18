@@ -176,6 +176,114 @@ final class ServerProfileRepositoryTests: XCTestCase {
 
 @MainActor
 final class ServerProfileAppStoreTests: XCTestCase {
+    private final class Credentials: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = "saved password"
+        private var failReads = false
+        func read() throws -> String {
+            try lock.withLock {
+                if failReads { throw AppError.transferFailed("Keychain unavailable") }
+                return value
+            }
+        }
+        func write(_ password: String) { lock.withLock { value = password } }
+        func fail(_ enabled: Bool) { lock.withLock { failReads = enabled } }
+    }
+
+    private func editingStore() throws -> (AppStore, Credentials, ServerProfile) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("server-editing-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let storage = AppStorageLayout(root: root)
+        let profile = ServerProfile(name: "Desk", host: "photos.example.test", username: "desk")
+        let profiles = ServerProfileRepository(storage: storage)
+        try profiles.save([profile])
+        let credentials = Credentials()
+        let store = AppStore(repository: JobRepository(storage: storage),
+            metadataPresetRepository: MetadataPresetRepository(storage: storage),
+            photographerProfileRepository: PhotographerProfileRepository(storage: storage),
+            serverProfileRepository: profiles, metadataAuditRepository: MetadataAuditRepository(storage: storage),
+            syncFailureRepository: SyncFailureRepository(storage: storage),
+            sourceSignatureRepository: SourceSignatureRepository(storage: storage),
+            downloadManifestRepository: DownloadManifestRepository(storage: storage),
+            keychain: KeychainStore(passwordReader: { _ in try credentials.read() },
+                passwordWriter: { value, _ in credentials.write(value) }, passwordRemover: { _ in }),
+            startsJobsOnInitialization: false)
+        return (store, credentials, profile)
+    }
+
+    func testServerEditingRetainsDraftUntilSuccessfulSaveOrExplicitRevert() throws {
+        let (store, _, profile) = try editingStore()
+        let session = ServerProfileEditingSession()
+        session.edit(profile, using: store)
+        XCTAssertFalse(session.hasUnsavedChanges)
+        session.draft?.name = "Edited desk"
+        session.password = "replacement"
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertEqual(store.serverProfiles.first?.name, "Desk")
+        XCTAssertTrue(session.save(using: store))
+        XCTAssertEqual(store.serverProfiles.first?.name, "Edited desk")
+        XCTAssertFalse(session.hasUnsavedChanges)
+        session.beginNew(ServerProfile(name: "New draft"))
+        XCTAssertTrue(session.isNewProfile)
+        XCTAssertFalse(session.save(using: store))
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertEqual(store.serverProfiles.count, 1)
+        session.edit(store.serverProfiles.first, using: store)
+        XCTAssertFalse(session.isNewProfile)
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testStaleServerDraftCannotOverwriteChangedOrDeletedProfile() throws {
+        let (store, _, profile) = try editingStore()
+        let session = ServerProfileEditingSession()
+        session.edit(profile, using: store)
+        session.draft?.name = "Keep this draft"
+        var latest = profile
+        latest.host = "changed.example.test"
+        XCTAssertTrue(store.saveServerProfile(latest, password: "saved password"))
+        XCTAssertFalse(session.save(using: store))
+        XCTAssertEqual(store.serverProfiles.first, latest)
+        XCTAssertEqual(session.draft?.name, "Keep this draft")
+        XCTAssertTrue(store.removeServerProfile(profile.id))
+        XCTAssertFalse(session.save(using: store))
+        XCTAssertTrue(store.serverProfiles.isEmpty)
+        XCTAssertTrue(session.hasUnsavedChanges)
+    }
+
+    func testPasswordOnlyChangeInAnotherWindowCannotBeOverwrittenByStaleDraft() throws {
+        let (store, credentials, profile) = try editingStore()
+        let first = ServerProfileEditingSession()
+        let second = ServerProfileEditingSession()
+        first.edit(profile, using: store)
+        second.edit(profile, using: store)
+        first.password = "new password"
+        XCTAssertTrue(first.save(using: store))
+        XCTAssertNotEqual(store.serverProfiles.first?.credentialID, profile.credentialID)
+        second.draft?.name = "Other window edit"
+        XCTAssertFalse(second.save(using: store))
+        XCTAssertEqual(try credentials.read(), "new password")
+        XCTAssertEqual(second.draft?.name, "Other window edit")
+        XCTAssertEqual(store.serverProfiles.first?.name, "Desk")
+    }
+
+    func testCredentialFailureAndRetryPreserveServerDraftAndTypedPassword() throws {
+        let (store, credentials, profile) = try editingStore()
+        let session = ServerProfileEditingSession()
+        credentials.fail(true)
+        session.edit(profile, using: store)
+        XCTAssertNotNil(session.credentialLoadError)
+        session.draft?.name = "Keep my edit"
+        session.password = "typed replacement"
+        XCTAssertFalse(session.save(using: store))
+        credentials.fail(false)
+        session.retryCredentials(using: store)
+        XCTAssertNil(session.credentialLoadError)
+        XCTAssertEqual(session.password, "typed replacement")
+        XCTAssertTrue(session.save(using: store))
+        XCTAssertEqual(store.serverProfiles.first?.name, "Keep my edit")
+        XCTAssertEqual(try credentials.read(), "typed replacement")
+    }
+
     func testStoreLoadsProfilesFromDedicatedRepository() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("server-profile-store-\(UUID().uuidString)", isDirectory: true)

@@ -9,6 +9,13 @@
 
 ## Unreleased (3.0.0)
 
+- Protect unsaved FTP server settings when switching servers, adding a server,
+  changing Settings tabs or closing the window. New server drafts can be discarded.
+- Keep stale server drafts from overwriting changes made in another window,
+  including password changes. Offer password-loading retry and visible setup validation.
+- Preserve custom server ports when loading saved connections in server settings
+  and job setup. Apply protocol defaults only when the user changes the protocol.
+
 - Keep open job settings in step with menu-bar Start/Stop and quick controls.
   Saving unrelated edits no longer restarts a paused job or restores old filters.
 - Retry failed Keychain password loading without abandoning job edits; load both
