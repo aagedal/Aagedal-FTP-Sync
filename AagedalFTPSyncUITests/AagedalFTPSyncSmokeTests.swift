@@ -124,6 +124,176 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedImagePublication(managed: true, raw: true, rawExtension: "cr3", ordinarySyncRecovery: true)
     }
 
+    func testOrdinarySyncPublicationRetainsRecoveryAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: false)
+    }
+
+    func testManagedOrdinarySyncPublicationRetainsRecoveryAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true)
+    }
+
+    func testOrdinaryCameraRawSyncRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: false, rawExtension: "arw")
+    }
+
+    func testManagedOrdinaryCanonRawSyncRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, rawExtension: "cr3")
+    }
+
+    func testManagedOrdinaryCameraRawSyncRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, rawExtension: "arw")
+    }
+
+    func testOrdinaryCanonRawSyncRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: false, rawExtension: "cr3")
+    }
+
+    private func verifyInterruptedOrdinarySync(managed: Bool, rawExtension: String? = nil) throws {
+        let raw = rawExtension != nil
+        if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
+            throw XCTSkip("Stage authorized camera RAW in the DEBUG bundle and opt in")
+        }
+        launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
+               imageRecovery: true, interruptPublication: true, rawRecovery: raw,
+               rawExtension: rawExtension ?? "arw", interruptionPhase: "published-0", ordinarySyncInterruption: true)
+        app.buttons["Sync Now"].click()
+        let stopped = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in self.app.state == .notRunning }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 20), .completed)
+        app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION")
+        app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC")
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        app.buttons["Sync Now"].click()
+        let failure = app.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@", "remains at ", "remains at "
+        )).firstMatch
+        XCTAssertTrue(failure.waitForExistence(timeout: 10))
+        let message = failure.value as? String ?? failure.label
+        let start = try XCTUnwrap(message.range(of: "remains at "))
+        let end = try XCTUnwrap(message.range(of: ". Recover the retained files"))
+        let recovery = URL(fileURLWithPath: String(message[start.upperBound..<end.lowerBound]))
+        let destination = recovery.deletingLastPathComponent()
+        let endpoint = managed ? destination.deletingLastPathComponent() : destination
+        let root = endpoint.deletingLastPathComponent()
+        guard root.lastPathComponent == app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"],
+              root.deletingLastPathComponent().lastPathComponent == "AagedalFTPSyncUITests",
+              endpoint.lastPathComponent == "Destination",
+              destination.lastPathComponent == (managed ? "Synced Files" : "Destination"),
+              recovery.lastPathComponent.hasPrefix(".aagedal-sync-"),
+              recovery.pathExtension == "transaction" else {
+            XCTFail("Refusing recovery outside the isolated fixture")
+            return
+        }
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("native-image-interruption"), encoding: .utf8), "published-0")
+        let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+        let manifest = try XCTUnwrap(JSONSerialization.jsonObject(with: manifestBytes) as? [String: Any])
+        XCTAssertEqual((manifest["originals"] as? [[String: Any]])?.count, 0)
+        let names = raw ? ["recovery." + rawExtension!, "recovery.xmp"] : ["recovery.jpg"]
+        let outputs = try XCTUnwrap(manifest["outputs"] as? [[String: Any]])
+        XCTAssertEqual(outputs.compactMap { $0["relativePath"] as? String }, names)
+        let sourceFiles = names.map { root.appendingPathComponent("Source/" + $0) }
+        let sourceBytes = try sourceFiles.map { try Data(contentsOf: $0) }
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let published = destination.appendingPathComponent(names[0])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: published.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("output-stage-0").path))
+        XCTAssertEqual(try Data(contentsOf: published), try Data(contentsOf: recovery.appendingPathComponent("output-copy-0")))
+        if raw {
+            XCTAssertEqual(try Data(contentsOf: published), sourceBytes[0])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent(names[1]).path))
+            try assertRecoveryCity(recovery.appendingPathComponent("output-stage-1"), raw: true)
+        } else {
+            try assertRecoveryCity(published, raw: false)
+        }
+        let retained = try FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: nil)
+        let evidence = try (retained + [published] + sourceFiles).map { url in
+            (url, try Data(contentsOf: url), try FileManager.default.attributesOfItem(atPath: url.path))
+        }
+        let journals = ["metadata-audit-v1.json", "download-manifest-v1.json"].map { root.appendingPathComponent($0) }
+        let journalBytes = journals.map { try? Data(contentsOf: $0) }
+        let errors = root.appendingPathComponent("sync-errors-v1.json")
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            self.app.buttons["Sync Now"].isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 10), .completed)
+        let priorErrors = try Data(contentsOf: errors)
+        app.buttons["Sync Now"].click()
+        let recorded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (try? Data(contentsOf: errors)) != priorErrors && self.app.buttons["Sync Now"].isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [recorded], timeout: 10), .completed)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: recovery.path)), Set(retained.map(\.lastPathComponent)))
+        for (url, bytes, attributes) in evidence {
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            let after = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+            XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+        }
+        for (url, bytes) in zip(journals, journalBytes) { XCTAssertEqual(try? Data(contentsOf: url), bytes) }
+        // Explicit test-assisted choice: preserve the partial publication and
+        // entire transaction outside admission, then retry the intact source.
+        app.terminate()
+        let preserved = root.appendingPathComponent("reconciled-ordinary-sync")
+        app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] = "1"
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        app.buttons["Sync Now"].click()
+        XCTAssertTrue(app.staticTexts["The latest sync completed."].waitForExistence(timeout: 15))
+        let output = destination.appendingPathComponent(raw ? names[1] : names[0])
+        try assertRecoveryCity(output, raw: raw)
+        if raw { XCTAssertEqual(try Data(contentsOf: published), sourceBytes[0]) }
+        for name in names {
+            XCTAssertEqual(try destination.appendingPathComponent(name).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+        }
+        XCTAssertEqual(try Data(contentsOf: preserved.appendingPathComponent("recovery.json")), manifestBytes)
+        for (source, bytes) in zip(sourceFiles, sourceBytes) {
+            if managed { XCTAssertFalse(FileManager.default.fileExists(atPath: source.path)) }
+            else { XCTAssertEqual(try Data(contentsOf: source), bytes) }
+        }
+        var publicationURLs = names.map { destination.appendingPathComponent($0) }
+        if managed {
+            let processed = endpoint.appendingPathComponent("Processed Files")
+            let processedMetadata = processed.appendingPathComponent(raw ? names[1] : names[0])
+            try assertRecoveryCity(processedMetadata, raw: raw)
+            if raw { XCTAssertEqual(try Data(contentsOf: processed.appendingPathComponent(names[0])), sourceBytes[0]) }
+            for name in names {
+                let url = processed.appendingPathComponent(name)
+                XCTAssertEqual(try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+                publicationURLs.append(url)
+            }
+        }
+        let rescued = root.appendingPathComponent("rescued-ordinary-publication")
+        for (url, bytes, attributes) in evidence where url == published || retained.contains(url) {
+            let moved = url == published ? rescued : preserved.appendingPathComponent(url.lastPathComponent)
+            XCTAssertEqual(try Data(contentsOf: moved), bytes)
+            let after = try FileManager.default.attributesOfItem(atPath: moved.path)
+            XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+            XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+        }
+        publicationURLs.append(rescued)
+        publicationURLs += retained.map { preserved.appendingPathComponent($0.lastPathComponent) }
+        let completed = try publicationURLs.map { url in
+            (url, try Data(contentsOf: url), try FileManager.default.attributesOfItem(atPath: url.path))
+        }
+        app.terminate()
+        app.launch()
+        waitForJobsWindow(seedJob: true)
+        app.buttons["Sync Now"].click()
+        XCTAssertTrue(app.staticTexts["The latest sync completed."].waitForExistence(timeout: 15))
+        openStatusMenu()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+            format: "label BEGINSWITH %@ OR value BEGINSWITH %@", "0 files transferred", "0 files transferred"
+        )).firstMatch.waitForExistence(timeout: 15))
+        dismissStatusPanelIfNeeded()
+        for (url, bytes, attributes) in completed {
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            let after = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+            XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+        }
+    }
+
     private func verifyInterruptedImagePublication(managed: Bool, raw: Bool = false, rawExtension: String = "arw", phase: String = "beforeCommit", ordinarySyncRecovery: Bool = false) throws {
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage the authorized camera RAW in the DEBUG test bundle and set AAGEDAL_NATIVE_RAW_RECOVERY=1")
@@ -1528,7 +1698,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         rawRecovery: Bool = false,
         rawExtension: String = "arw",
         interruptionPhase: String = "beforeCommit",
-        editedRawConflict: Bool = false
+        editedRawConflict: Bool = false,
+        ordinarySyncInterruption: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -1551,6 +1722,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_RECOVERY"] = "1"
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_EXTENSION"] = rawExtension
         }
+        if ordinarySyncInterruption { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC"] = "1" }
         if interruptPublication {
             app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1"
             app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPTION_PHASE"] = interruptionPhase

@@ -1598,6 +1598,12 @@ extension AppStore: SyncSchedulerDelegate {
         phases[jobID] = .stopped
     }
 
+    func syncSchedulerDidFinishManualSync(_ jobID: UUID) {
+        // The final phase is published while the manual request is still busy.
+        // Refresh actions once the scheduler has released that request as well.
+        objectWillChange.send()
+    }
+
     func syncScheduler(
         _ jobID: UUID,
         scheduledNextRunAt date: Date,

@@ -1,6 +1,6 @@
-# Recovering interrupted metadata reprocessing
+# Recovering interrupted local publication and metadata reprocessing
 
-When a replacement cannot safely restore its originals, the error identifies a
+When a local output publication is interrupted or cannot safely restore its originals, the error identifies a
 hidden `.aagedal-sync-<UUID>.transaction` directory inside the destination folder
 (inside `Synced Files` for managed jobs). Reset Job refuses to clear this recovery
 state. Reprocessing also refuses to scan or write until retained reprocessing or
@@ -14,7 +14,12 @@ reprocessing before inspecting the folder. Keep a copy
 of the complete recovery directory and the affected current destination files
 until recovery is resolved.
 
-New transactions contain `recovery.json`, written before any original is moved.
+Ordinary local grouped imports, collision-safe grouped imports and explicit
+reprocessing use this recovery format. Managed processed-copy handoff remains a
+separate publication path. New transactions contain `recovery.json`, written before
+any original is moved or output is published. A first import has an empty
+`originals` array; retain its partial outputs and snapshots until you choose how
+to reconcile the group.
 Its schema version is 1. Each `relativePath` is relative to the destination folder
 containing the transaction directory. The manifest records:
 

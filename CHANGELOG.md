@@ -9,6 +9,12 @@
 
 ## Unreleased (3.0.0)
 
+- Retain a path manifest and output snapshots when ordinary local sync publication
+  is interrupted. Block further sync until the partial group is reconciled, and
+  preserve concurrent edits during collision-safe rollback.
+- Refresh Sync Now after manual completion or failure so a rejected job can be
+  retried without reopening its editor.
+
 - Enable local face recognition with the user-approved Photo Agent matching defaults
   when a compatible People Library is selected and recognition is enabled for a job.
   Preserve conservative ambiguity checks and reject unavailable face quality.
