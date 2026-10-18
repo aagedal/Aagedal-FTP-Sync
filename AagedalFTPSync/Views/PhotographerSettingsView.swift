@@ -1,11 +1,101 @@
+import AppKit
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor
+final class PhotographerEditingSession: ObservableObject {
+    @Published var draft: PhotographerProfile?
+    @Published private(set) var saveError: String?
+    @Published var saveConfirmation = false
+    private var savedProfile: PhotographerProfile?
+    private var autosaveTask: Task<Void, Never>?
+
+    var hasUnsavedChanges: Bool { draft != savedProfile }
+
+    func edit(_ profile: PhotographerProfile?) {
+        cancelAutosave()
+        draft = profile
+        savedProfile = profile
+        saveError = nil
+        saveConfirmation = false
+    }
+
+    func refresh(from library: [PhotographerProfile]) {
+        let latest = library.first(where: { $0.id == draft?.id })
+        guard !hasUnsavedChanges else {
+            if latest != savedProfile {
+                cancelAutosave()
+                saveError = conflictMessage
+            }
+            return
+        }
+        guard latest != savedProfile else { return }
+        edit(latest)
+    }
+
+    @discardableResult
+    func save(using store: AppStore) -> Bool {
+        cancelAutosave()
+        guard let draft else { return false }
+        guard store.photographerLibrary.first(where: { $0.id == draft.id }) == savedProfile else {
+            saveError = conflictMessage
+            store.alertMessage = conflictMessage
+            return false
+        }
+        guard store.savePhotographerProfile(draft) else {
+            saveError = store.alertMessage ?? "The photographer could not be saved. Your edits are still here. Try saving again."
+            return false
+        }
+        edit(store.photographerLibrary.first(where: { $0.id == draft.id }))
+        saveConfirmation = true
+        return true
+    }
+
+    func cancelAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+    }
+
+    func scheduleAutosave(using store: AppStore) {
+        cancelAutosave()
+        guard hasUnsavedChanges else { return }
+        saveConfirmation = false
+        autosaveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled, let self else { return }
+            autosaveTask = nil
+            _ = save(using: store)
+        }
+    }
+
+    func confirmLeavingDraft(using store: AppStore) -> Bool {
+        cancelAutosave()
+        guard hasUnsavedChanges else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Save changes to “\(draft?.photographerName ?? "Photographer")”?"
+        alert.informativeText = saveError ?? "Your photographer edits have not been saved."
+        alert.addButton(withTitle: "Save Changes")
+        alert.addButton(withTitle: "Discard Changes")
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return save(using: store)
+        case .alertSecondButtonReturn:
+            edit(store.photographerLibrary.first(where: { $0.id == draft?.id }))
+            return true
+        default: return false
+        }
+    }
+
+    private var conflictMessage: String {
+        "This photographer changed in another window or was removed. Your edits are still here. Revert to load the latest saved profile before editing again."
+    }
+}
+
 struct PhotographerSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selectedPhotographerID: UUID?
-    @State private var draft: PhotographerProfile?
+    @StateObject private var session: PhotographerEditingSession
     @State private var photographerPendingDeletion: PhotographerProfile?
     @State private var showPhotographerImporter = false
     @State private var showPhotographerExporter = false
@@ -14,8 +104,17 @@ struct PhotographerSettingsView: View {
     @State private var photographerSearch = ""
     @State private var photographerSortOrder = PhotographerSortOrder.ascending
     @State private var promotedPhotographerID: UUID?
-    @State private var autosaveTask: Task<Void, Never>?
-    @State private var saveConfirmation = false
+    private let protectsWindowClose: Bool
+
+    init(session: PhotographerEditingSession = PhotographerEditingSession(), protectsWindowClose: Bool = true) {
+        _session = StateObject(wrappedValue: session)
+        self.protectsWindowClose = protectsWindowClose
+    }
+
+    private var draft: PhotographerProfile? {
+        get { session.draft }
+        nonmutating set { session.draft = newValue }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -129,6 +228,11 @@ struct PhotographerSettingsView: View {
                             Label(draftValidationMessage, systemImage: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                        } else if let saveError = session.saveError {
+                            Label(saveError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                                .textSelection(.enabled)
                         } else if hasUnsavedChanges {
                             HStack(spacing: 8) {
                                 ProgressView()
@@ -137,10 +241,19 @@ struct PhotographerSettingsView: View {
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        } else if saveConfirmation {
+                        } else if session.saveConfirmation {
                             Label("Saved", systemImage: "checkmark.circle.fill")
                                 .font(.caption)
                                 .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
+                        }
+                        HStack {
+                            Spacer()
+                            Button("Revert", action: revertDraft)
+                                .disabled(!hasUnsavedChanges && session.saveError == nil)
+                            if session.saveError != nil {
+                                Button("Retry Saving") { _ = commitPendingDraft(showValidationError: true) }
+                                    .disabled(draftValidationMessage != nil)
+                            }
                         }
                     }
                     .padding(20)
@@ -161,28 +274,38 @@ struct PhotographerSettingsView: View {
             maxHeight: .infinity
         )
         .onAppear {
+            guard !hasUnsavedChanges else {
+                selectedPhotographerID = draft?.id
+                return
+            }
             if selectedPhotographerID == nil {
                 selectedPhotographerID = store.photographerLibrary.first?.id
             }
             loadSelectedProfile()
         }
         .onChange(of: selectedPhotographerID) { _, _ in
+            guard draft?.id != selectedPhotographerID else { return }
             loadSelectedProfile()
         }
         .onChange(of: draft) { _, _ in
             scheduleAutosave()
         }
         .onChange(of: store.photographerLibrary) { _, library in
+            session.refresh(from: library)
+            guard !hasUnsavedChanges else { return }
             if let selectedPhotographerID,
                !library.contains(where: { $0.id == selectedPhotographerID }) {
                 self.selectedPhotographerID = library.first?.id
-            }
-            if !hasUnsavedChanges {
                 loadSelectedProfile()
             }
         }
         .onDisappear {
             _ = commitPendingDraft(showValidationError: false)
+        }
+        .background {
+            if protectsWindowClose {
+                UnsavedChangesWindowGuard(closeDecision: { session.confirmLeavingDraft(using: store) })
+            }
         }
         .fileImporter(
             isPresented: $showPhotographerImporter,
@@ -298,8 +421,7 @@ struct PhotographerSettingsView: View {
     }
 
     private var hasUnsavedChanges: Bool {
-        guard let draft else { return false }
-        return draft != store.photographerLibrary.first(where: { $0.id == draft.id })
+        session.hasUnsavedChanges
     }
 
     private var draftValidationMessage: String? {
@@ -321,7 +443,13 @@ struct PhotographerSettingsView: View {
     }
 
     private func loadSelectedProfile() {
-        draft = selectedProfile
+        session.edit(selectedProfile)
+    }
+
+    private func revertDraft() {
+        session.cancelAutosave()
+        if selectedProfile == nil { selectedPhotographerID = store.photographerLibrary.first?.id }
+        loadSelectedProfile()
     }
 
     private func addPhotographer() {
@@ -337,37 +465,26 @@ struct PhotographerSettingsView: View {
         photographerSearch = ""
         promotedPhotographerID = photographer.id
         selectedPhotographerID = photographer.id
-        draft = photographer
-        saveConfirmation = false
+        session.edit(photographer)
     }
 
     @discardableResult
     private func saveDraft() -> Bool {
-        guard let draft, store.savePhotographerProfile(draft) else { return false }
-        self.draft = store.photographerLibrary.first { $0.id == draft.id }
-        saveConfirmation = true
+        guard session.save(using: store) else { return false }
         return true
     }
 
     private func scheduleAutosave() {
-        autosaveTask?.cancel()
-        autosaveTask = nil
+        session.cancelAutosave()
         guard hasUnsavedChanges else { return }
-        saveConfirmation = false
+        session.saveConfirmation = false
         guard draftValidationMessage == nil else { return }
-
-        autosaveTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(600))
-            guard !Task.isCancelled else { return }
-            _ = saveDraft()
-            autosaveTask = nil
-        }
+        session.scheduleAutosave(using: store)
     }
 
     @discardableResult
     private func commitPendingDraft(showValidationError: Bool) -> Bool {
-        autosaveTask?.cancel()
-        autosaveTask = nil
+        session.cancelAutosave()
         guard hasUnsavedChanges else { return true }
         if let draftValidationMessage {
             if showValidationError {
@@ -444,7 +561,7 @@ struct PhotographerSettingsView: View {
             return
         }
         selectedPhotographerID = store.photographerLibrary.first?.id
-        draft = selectedProfile
+        loadSelectedProfile()
         photographerPendingDeletion = nil
     }
 
