@@ -2941,33 +2941,14 @@ struct SyncEngine: Sendable {
                         occupiedPaths: occupiedProcessedPaths
                     )
 
-                    var importedProcessedFiles: [SyncFile] = []
-                    do {
-                        for output in processedOutputs {
-                            try await importProcessedFile(
-                                from: output.localURL,
-                                as: output.file,
-                                to: processedDestination,
-                                preserveDate: preserveDate
-                            )
-                            importedProcessedFiles.append(output.file)
-                        }
-                    } catch {
-                        var rollbackFailures: [String] = []
-                        for importedFile in importedProcessedFiles.reversed() {
-                            do {
-                                try await processedDestination.removeFile(importedFile)
-                            } catch {
-                                rollbackFailures.append(importedFile.relativePath)
-                            }
-                        }
-                        if !rollbackFailures.isEmpty {
-                            throw AppError.transferFailed(
-                                "The processed RAW/XMP pair could not be completed, and rollback failed for \(rollbackFailures.joined(separator: ", ")). The source was left untouched."
-                            )
-                        }
-                        throw error
-                    }
+                    // Keep RAW/XMP publication recoverable as one group. Local
+                    // rollback revokes only unchanged outputs, preserving edits
+                    // made after publication and retaining recovery evidence.
+                    try await processedDestination.importFilesTransactionallyIfAbsent(
+                        processedOutputs.map { EndpointFileImport(localURL: $0.localURL, file: $0.file) },
+                        preserveDate: preserveDate,
+                        verifySize: true
+                    )
                 }
                 publishedProcessedPaths = Set(outputPaths)
                 try await source.removeFilesTransactionally(
@@ -3018,20 +2999,6 @@ struct SyncEngine: Sendable {
             relativePath: folder + "/" + file.relativePath,
             size: file.size,
             modifiedAt: file.modifiedAt
-        )
-    }
-
-    private func importProcessedFile(
-        from localURL: URL,
-        as file: SyncFile,
-        to processedDestination: any EndpointSession,
-        preserveDate: Bool
-    ) async throws {
-        try await processedDestination.importFileIfAbsent(
-            from: localURL,
-            as: file,
-            preserveDate: preserveDate,
-            verifySize: true
         )
     }
 

@@ -71,18 +71,32 @@ this thread's xcodebuild (exit 75); the other app was untouched. The hidden-tab
 close case passed before that interruption. This run is **not** a passing native
 selection. Desktop timing was requested before further native interaction.
 
-Final native retesting remains pending. Select the three new server-draft cases,
+## Authorized native rerun
+
+After the user confirmed desktop availability, all six signed native cases pass
+together with zero failures or skips (187.6 seconds of test execution, exit 0).
+Log and results: `build/server-setup-authorized-native.log` and
+`build/server-setup-authorized-native.xcresult`. This tests the committed setup
+source at `6ad6aaa`, plus the in-progress grouped processed-handoff engine change;
+the latter is not exercised by these configuration-only fixtures.
+
+The selection includes the three new server-draft cases,
 `testJobConnectionKeepsCustomPortWhenSelectingDifferentProtocolProfile`, the
 existing server deletion case and `testJobsWindowReopensFromStatusMenuAfterClosing`
 under `AagedalFTPSyncUITests/AagedalFTPSyncSmokeTests`, using the signed
 `AagedalFTPSyncUISmokeTests` scheme, `build/continuation-tests` derived data and
 `-parallel-testing-enabled NO`.
 
+The job-sheet screenshot was exported and visually inspected: the selected
+profile, read-only custom port 2121, remote-folder field, Test Connection and
+Done are visible and legible. Fixture credentials are empty; no connection is
+made to the `.invalid` host. Earlier interrupted/failed runs remain historical
+and are not counted as passes.
+
 ## Limits and next actions
 
-Complete the six-case native selection on an available desktop and inspect its
-job-sheet screenshot. Do not count interrupted or partially passing selections
-as acceptance. This slice does not verify real Keychain failure UI, VoiceOver,
+The focused setup interaction gate is complete for this source. This slice does
+not verify real Keychain failure UI, VoiceOver,
 macOS 14, original camera sidecars, interrupted publication, production performance
 or a final signed release candidate. The historical candidate remains IMPLEMENTING;
 M5 and final acceptance remain open. Private checklist results and candidate

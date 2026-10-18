@@ -9,6 +9,10 @@
 
 ## Unreleased (3.0.0)
 
+- Publish processed RAW/XMP copies as one durable group before removing their
+  sources. Preserve concurrent edits during rollback and retain recovery evidence
+  after interrupted or conflicted processed-file handoff.
+
 - Protect unsaved FTP server settings when switching servers, adding a server,
   changing Settings tabs or closing the window. New server drafts can be discarded.
 - Keep stale server drafts from overwriting changes made in another window,

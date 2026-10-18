@@ -1001,6 +1001,165 @@ final class LocalSyncIntegrationTests: XCTestCase {
         )
     }
 
+    private func processedHandoffJob(_ fixture: LocalFixture, location: ProcessedFilesLocation) throws -> SyncJob {
+        let source = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("original camera RAW".utf8).write(to: source)
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: source.path)
+        var sidecar = XMPData()
+        sidecar.city = "Bergen"
+        sidecar.description = "Original source caption"
+        let sourceSidecar = source.deletingPathExtension().appendingPathExtension("xmp")
+        try XMPSidecar.write(sidecar, to: sourceSidecar)
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: sourceSidecar.path)
+        let photographer = PhotographerProfile(name: "Jane", filenamePrefix: "JAD", creator: "Jane", copyrightNotice: "")
+        var job = try fixture.job(direction: .leftToRight)
+        job.metadataAutomation = MetadataAutomation(isEnabled: true, timestampPolicy: .sourceModification,
+            photographers: [photographer], clips: [MetadataScheduleClip(photographerID: photographer.id,
+                name: "Handoff", startsAt: date.addingTimeInterval(-60), endsAt: date.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Durable handoff"))])
+        job.processedFilesLocation = location
+        if location == .customFolder { job.processedFolder = try fixture.endpoint(for: fixture.processed) }
+        return job
+    }
+
+    func testProcessedHandoffCancellationRollsBackPairAndAllowsRetry() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            for boundary in ["prepared", "first", "commit"] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                let job = try processedHandoffJob(fixture, location: location)
+                let sourceSidecar = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+                let originalSidecar = try Data(contentsOf: sourceSidecar)
+                let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+                let customPath = job.processedFolder?.localPath
+                let engine = SyncEngine(sessionFactory: { endpoint, _, managed in
+                    let isProcessed: Bool
+                    if case .processedFiles? = managed { isProcessed = true }
+                    else { isProcessed = endpoint.localPath == customPath }
+                    return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                        guard isProcessed else { return }
+                        switch (boundary, phase) {
+                        case ("prepared", .prepared), ("first", .published(0)), ("commit", .beforeCommit):
+                            throw CancellationError()
+                        default: break
+                        }
+                    })
+                })
+                do {
+                    _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("Processed publication must stop at \(boundary)")
+                } catch { XCTAssertEqual(error.localizedDescription, CancellationError().localizedDescription) }
+                XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")), Data("original camera RAW".utf8))
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+                for path in ["nested/JAD_HANDOFF.CR3", "nested/JAD_HANDOFF.xmp"] {
+                    XCTAssertEqual(try fixture.left.appendingPathComponent(path).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                                   Date(timeIntervalSince1970: 1_700_000_000))
+                }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested/JAD_HANDOFF.CR3").path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested/JAD_HANDOFF.xmp").path))
+                XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains(where: LocalEndpointSession.isRecoveryArtifact))
+                let retry = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTAssertEqual(retry.processed, 1)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3").path))
+                XCTAssertFalse(FileManager.default.fileExists(atPath: sourceSidecar.path))
+                XCTAssertEqual(try XMPSidecar.read(from: root.appendingPathComponent("nested/JAD_HANDOFF.xmp")).headline, "Durable handoff")
+            }
+        }
+    }
+
+    func testProcessedHandoffPreservesConcurrentEditsAndBlocksRetryWithRecovery() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            for replaceInode in [false, true] {
+                let fixture = try LocalFixture()
+                defer { fixture.cleanUp() }
+                let job = try processedHandoffJob(fixture, location: location)
+                let sourceSidecar = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+                let originalSidecar = try Data(contentsOf: sourceSidecar)
+                let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+                let customPath = job.processedFolder?.localPath
+                let output = root.appendingPathComponent("nested/JAD_HANDOFF.CR3")
+                let edit = Data("concurrent operator edit".utf8)
+                let engine = SyncEngine(sessionFactory: { endpoint, _, managed in
+                    let isProcessed: Bool
+                    if case .processedFiles? = managed { isProcessed = true }
+                    else { isProcessed = endpoint.localPath == customPath }
+                    return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                        if isProcessed, case .published(0) = phase {
+                            try edit.write(to: output, options: replaceInode ? .atomic : [])
+                            throw CancellationError()
+                        }
+                    })
+                })
+                do {
+                    _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("The edited partial group must retain recovery")
+                } catch { XCTAssertTrue(error.localizedDescription.contains("Recover retained files")) }
+                XCTAssertEqual(try Data(contentsOf: output), edit)
+                let source = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")
+                XCTAssertEqual(try Data(contentsOf: source), Data("original camera RAW".utf8))
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+                let recovery = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+                    .first(where: { LocalEndpointSession.isRecoveryArtifact(named: $0.lastPathComponent) }))
+                let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self,
+                    from: Data(contentsOf: recovery.appendingPathComponent("recovery.json")))
+                XCTAssertTrue(manifest.originals.isEmpty)
+                XCTAssertEqual(Set(manifest.outputs.map(\.relativePath)), ["nested/JAD_HANDOFF.CR3", "nested/JAD_HANDOFF.xmp"])
+                XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent(manifest.outputs[0].snapshotFilename)), Data("original camera RAW".utf8))
+                let manifestBytes = try Data(contentsOf: recovery.appendingPathComponent("recovery.json"))
+                for _ in 0..<2 {
+                    do {
+                        _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+                        XCTFail("Retained processed recovery must block admission")
+                    } catch { XCTAssertTrue(error.localizedDescription.contains("recovery folder")) }
+                    XCTAssertEqual(try Data(contentsOf: recovery.appendingPathComponent("recovery.json")), manifestBytes)
+                }
+                XCTAssertEqual(try Data(contentsOf: output), edit)
+                XCTAssertEqual(try Data(contentsOf: source), Data("original camera RAW".utf8))
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+            }
+        }
+    }
+
+    func testProcessedHandoffLateSidecarCollisionPreservesCompetingFileAndSources() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let job = try processedHandoffJob(fixture, location: location)
+            let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+            let customPath = job.processedFolder?.localPath
+            let collision = root.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+            let competingBytes = Data("another operator's sidecar".utf8)
+            let sourceSidecar = fixture.left.appendingPathComponent("nested/JAD_HANDOFF.xmp")
+            let originalSidecar = try Data(contentsOf: sourceSidecar)
+            let engine = SyncEngine(sessionFactory: { endpoint, _, managed in
+                let isProcessed: Bool
+                if case .processedFiles? = managed { isProcessed = true }
+                else { isProcessed = endpoint.localPath == customPath }
+                return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                    if isProcessed, case .published(0) = phase { try competingBytes.write(to: collision) }
+                })
+            })
+            do {
+                _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTFail("A late processed sidecar collision must stop source removal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("appeared")) }
+            XCTAssertEqual(try Data(contentsOf: collision), competingBytes)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("nested/JAD_HANDOFF.CR3").path))
+            XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+            XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")), Data("original camera RAW".utf8))
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains(where: LocalEndpointSession.isRecoveryArtifact))
+            do {
+                _ = try await SyncEngine().run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTFail("A partial competing processed group must not authorize source removal")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("processed folder already contains")) }
+            XCTAssertEqual(try Data(contentsOf: collision), competingBytes)
+            XCTAssertEqual(try Data(contentsOf: sourceSidecar), originalSidecar)
+            XCTAssertEqual(try Data(contentsOf: fixture.left.appendingPathComponent("nested/JAD_HANDOFF.CR3")), Data("original camera RAW".utf8))
+        }
+    }
+
     func testIdenticalProcessedCopiesLetRetryFinishRemovingSource() async throws {
         let fixture = try LocalFixture()
         defer { fixture.cleanUp() }
