@@ -49,7 +49,7 @@ enum SyncLogFailureCategory: String, Sendable {
             return .configuration
         case .folderPermissionLost:
             return .folderAccess
-        case .transferFailed:
+        case .transferFailed, .recoveryRequired:
             return .transfer
         case .remoteOperationTimedOut:
             return .timeout

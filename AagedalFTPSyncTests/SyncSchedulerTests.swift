@@ -4,6 +4,79 @@ import XCTest
 
 @MainActor
 final class SyncSchedulerTests: XCTestCase {
+    func testRecoveryPausesEnabledScheduleAndExplicitRetryRestartsIt() async throws {
+        let scheduler = SyncScheduler()
+        let delegate = SyncSchedulerDelegateSpy()
+        scheduler.delegate = delegate
+        var job = SyncJob(name: "Recovery review")
+        job.isEnabled = true
+        job.intervalSeconds = 0.01
+        delegate.jobs[job.id] = job
+        delegate.immediateAttempts = [.recoveryRequired("Keep retained originals")]
+        delegate.recoveryPause = { jobID in
+            XCTAssertFalse(scheduler.isBusy(jobID))
+        }
+        scheduler.restart(with: [job])
+        defer { scheduler.cancelAll() }
+
+        let paused = await eventually { delegate.recoveryPausedJobIDs == [job.id] }
+        XCTAssertTrue(paused)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertEqual(delegate.performCallCount, 1)
+        XCTAssertTrue(delegate.nextRunEvents.isEmpty)
+        XCTAssertTrue(delegate.stoppedJobIDs.isEmpty)
+
+        delegate.immediateAttempts = [.succeeded, .recoveryRequired("Still needs review")]
+        scheduler.runNow(job)
+        let pausedAgain = await eventually { delegate.recoveryPausedJobIDs.count == 2 }
+        XCTAssertTrue(pausedAgain)
+        XCTAssertEqual(delegate.performCallCount, 3)
+        XCTAssertEqual(delegate.nextRunEvents.count, 1)
+        guard case .succeeded = delegate.nextRunEvents.first?.attempt else {
+            return XCTFail("Explicit retry must resume normal polling after success")
+        }
+        XCTAssertFalse(scheduler.isBusy(job.id))
+    }
+
+    func testOldRecoveryCompletionCannotPauseReplacementSchedule() async {
+        let scheduler = SyncScheduler()
+        let delegate = SyncSchedulerDelegateSpy()
+        scheduler.delegate = delegate
+        delegate.blocksAttempts = true
+        var job = SyncJob(name: "Replacement")
+        job.isEnabled = true
+        delegate.jobs[job.id] = job
+        scheduler.restart(with: [job])
+        let firstStarted = await eventually { delegate.performCallCount == 1 }
+        XCTAssertTrue(firstStarted)
+        scheduler.restart(with: [job])
+        let secondStarted = await eventually { delegate.performCallCount == 2 }
+        XCTAssertTrue(secondStarted)
+
+        delegate.resumeBlockedAttempt(returning: .recoveryRequired("Old request"))
+        let oldFinished = await eventually { delegate.finishedPerformCount == 1 }
+        XCTAssertTrue(oldFinished)
+        XCTAssertTrue(scheduler.isBusy(job.id))
+        XCTAssertTrue(delegate.recoveryPausedJobIDs.isEmpty)
+
+        delegate.resumeBlockedAttempt(returning: .recoveryRequired("Current request"))
+        let paused = await eventually { delegate.recoveryPausedJobIDs == [job.id] }
+        XCTAssertTrue(paused)
+        XCTAssertFalse(scheduler.isBusy(job.id))
+        scheduler.cancelAll()
+    }
+
+    func testRecoveryClassificationSurvivesNestedPartialResultsWithoutParsingText() {
+        let error = AppError.recoveryRequired("Retained fixture")
+        let partial = SyncResult(transferred: 2, deleted: 1)
+        let wrapped = SyncRunFailure(SyncRunFailure(error, partialResult: partial), partialResult: partial)
+        XCTAssertTrue(AppError.requiresRecovery(wrapped))
+        XCTAssertEqual(wrapped.partialResult, partial)
+        XCTAssertEqual(SyncLogFailureCategory.classify(error), .transfer)
+        XCTAssertFalse(AppError.requiresRecovery(AppError.transferFailed(error.localizedDescription)))
+        XCTAssertFalse(AppError.requiresRecovery(CancellationError()))
+    }
+
     func testMissingSourceFilesKeepNormalPollingInterval() async throws {
         let scheduler = SyncScheduler()
         let delegate = SyncSchedulerDelegateSpy()
@@ -303,8 +376,10 @@ private final class SyncSchedulerDelegateSpy: SyncSchedulerDelegate {
     private(set) var stoppedJobIDs: [UUID] = []
     private(set) var nextRunEvents: [NextRunEvent] = []
     private(set) var finishedManualJobIDs: [UUID] = []
+    private(set) var recoveryPausedJobIDs: [UUID] = []
     private(set) var finishedPerformCount = 0
     var manualCompletion: ((UUID) -> Void)?
+    var recoveryPause: ((UUID) -> Void)?
     private var blockedContinuations: [CheckedContinuation<SyncAttempt, Never>] = []
 
     var performCallCount: Int { performedJobIDs.count }
@@ -332,6 +407,11 @@ private final class SyncSchedulerDelegateSpy: SyncSchedulerDelegate {
 
     func syncSchedulerDidStop(_ jobID: UUID) {
         stoppedJobIDs.append(jobID)
+    }
+
+    func syncSchedulerDidPauseForRecovery(_ jobID: UUID) {
+        recoveryPausedJobIDs.append(jobID)
+        recoveryPause?(jobID)
     }
 
     func syncScheduler(

@@ -1362,12 +1362,16 @@ final class AppStore: ObservableObject {
             }
             recordSyncFailure(message, jobID: jobID)
             phases[jobID] = .failed(message, retryAt: nil)
-            attempt = failure.completedWithSourceFailures ? .sourceFilesFailed(message) : .failed(message)
+            if failure.requiresRecovery {
+                attempt = .recoveryRequired(message)
+            } else {
+                attempt = failure.completedWithSourceFailures ? .sourceFilesFailed(message) : .failed(message)
+            }
         } catch {
             let message = error.localizedDescription
             recordSyncFailure(message, jobID: jobID)
             phases[jobID] = .failed(message, retryAt: nil)
-            attempt = .failed(message)
+            attempt = AppError.requiresRecovery(error) ? .recoveryRequired(message) : .failed(message)
         }
         scheduler.endRunning(jobID)
         await syncConcurrencyController.release(leaseID)
@@ -1671,6 +1675,10 @@ extension AppStore: SyncSchedulerDelegate {
         objectWillChange.send()
     }
 
+    func syncSchedulerDidPauseForRecovery(_ jobID: UUID) {
+        objectWillChange.send()
+    }
+
     func syncScheduler(
         _ jobID: UUID,
         scheduledNextRunAt date: Date,
@@ -1701,7 +1709,7 @@ extension AppStore: SyncSchedulerDelegate {
             }
         case .failed(let message), .sourceFilesFailed(let message):
             phases[jobID] = .failed(message, retryAt: date)
-        case .cancelled, .skipped:
+        case .cancelled, .skipped, .recoveryRequired:
             break
         }
     }

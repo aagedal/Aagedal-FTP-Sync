@@ -301,7 +301,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             }) else { continue }
             if Self.isRecoveryArtifact(named: name) {
                 let recovery = rootURL.appendingPathComponent(name)
-                throw AppError.transferFailed(
+                throw AppError.recoveryRequired(
                     "A recovery folder from an earlier operation remains at \(recovery.path). Recover the retained files and remove the resolved hidden folder before retrying sync or metadata reprocessing."
                 )
             }
@@ -490,11 +490,11 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                 catch { retainRecovery = true }
             }
             if retainRecovery {
-                throw AppError.transferFailed("Replacement stopped; concurrent edits were not overwritten. Recover retained files at \(recovery.path). Cause: \(failure.localizedDescription)")
+                throw AppError.recoveryRequired("Replacement stopped; concurrent edits were not overwritten. Recover retained files at \(recovery.path). Cause: \(failure.localizedDescription)")
             }
             do { try matchingRecoveryRemoval(recovery) }
             catch {
-                throw AppError.transferFailed("Replacement stopped and originals were preserved or restored, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(failure.localizedDescription). Cleanup: \(error.localizedDescription)")
+                throw AppError.recoveryRequired("Replacement stopped and originals were preserved or restored, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(failure.localizedDescription). Cleanup: \(error.localizedDescription)")
             }
             throw failure
         }
@@ -503,12 +503,12 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         for index in heldIndices {
             do { try fileManager.removeItem(at: originalsPrepared[index].held) }
             catch {
-                throw AppError.transferFailed("Replacement was published, but original backup cleanup failed. Retained files: \(recovery.path)")
+                throw AppError.recoveryRequired("Replacement was published, but original backup cleanup failed. Retained files: \(recovery.path)")
             }
         }
         do { try matchingRecoveryRemoval(recovery) }
         catch {
-            throw AppError.transferFailed("Replacement was published, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(error.localizedDescription)")
+            throw AppError.recoveryRequired("Replacement was published, but recovery folder cleanup failed. Inspect retained files at \(recovery.path) before retrying. Cause: \(error.localizedDescription)")
         }
     }
 
@@ -932,7 +932,7 @@ actor JobResetService {
                 }
             }
             if !rollbackFailures.isEmpty {
-                throw AppError.transferFailed(
+                throw AppError.recoveryRequired(
                     "The download reset failed, and rollback could not restore: \(rollbackFailures.joined(separator: ", ")). Recovery files were retained at: \(holdingURL.path)."
                 )
             }
@@ -943,7 +943,7 @@ actor JobResetService {
         do {
             try fileOperations.removeItem(holdingURL)
         } catch {
-            throw AppError.transferFailed(
+            throw AppError.recoveryRequired(
                 "The downloads were isolated but could not be fully deleted. A hidden reset folder remains inside \(rootURL.path). \(error.localizedDescription)"
             )
         }
@@ -1003,8 +1003,8 @@ actor JobResetService {
         // still require recovery. Neither reset mode may delete them or clear
         // their download history before the user resolves the failed operation.
         if let recovery = children.first(where: { LocalEndpointSession.isRecoveryArtifact(named: $0.lastPathComponent) }) {
-            throw AppError.transferFailed(
-                "A recovery folder from an earlier operation remains at \(recovery.path). Recover or remove that hidden folder before retrying Reset Job so retained files and download history are preserved."
+            throw AppError.recoveryRequired(
+                "A recovery folder from an earlier operation remains at \(recovery.path). Reconcile the retained files before retrying Reset Job so retained files and download history are preserved."
             )
         }
         if job.usesManagedFolderStructure {
