@@ -278,6 +278,7 @@ final class AppStore: ObservableObject {
         do {
             let result = try persistenceCoordinator.saveJob(
                 previousJobs: jobs,
+                serverProfiles: serverProfiles,
                 draftJob: resolvedJob,
                 leftPassword: leftPassword,
                 rightPassword: rightPassword
@@ -821,7 +822,7 @@ final class AppStore: ObservableObject {
                 appendAlert("The deleted job's download manifest could not be cleaned up: \(error.localizedDescription)")
             }
         }
-        for warning in persistenceCoordinator.removeCredentials(for: job, retainedJobs: updatedJobs) {
+        for warning in persistenceCoordinator.removeCredentials(for: job, retainedJobs: updatedJobs, serverProfiles: serverProfiles) {
             appendAlert("A saved password for the deleted job could not be removed: \(warning)")
         }
         if selectedJobID == jobID { selectedJobID = jobs.last?.id }

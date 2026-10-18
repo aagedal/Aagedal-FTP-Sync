@@ -420,20 +420,24 @@ final class AppPersistenceCoordinator {
 
     func saveJob(
         previousJobs: [SyncJob],
+        serverProfiles: [ServerProfile],
         draftJob: SyncJob,
         leftPassword: String,
         rightPassword: String
     ) throws -> CredentialedJobSaveResult {
         let previousJob = previousJobs.first(where: { $0.id == draftJob.id })
+        let profileCredentialIDs = Set(serverProfiles.map(\.credentialID))
         let leftUpdate = try prepareCredentialUpdate(
             endpoint: draftJob.left,
             previousEndpoint: previousJob?.left,
-            password: leftPassword
+            password: leftPassword,
+            profileCredentialIDs: profileCredentialIDs
         )
         let rightUpdate = try prepareCredentialUpdate(
             endpoint: draftJob.right,
             previousEndpoint: previousJob?.right,
-            password: rightPassword
+            password: rightPassword,
+            profileCredentialIDs: profileCredentialIDs
         )
 
         var stagedCredentialIDs: [String] = []
@@ -466,7 +470,7 @@ final class AppPersistenceCoordinator {
         }
 
         let previousCredentialIDs = credentialIDs(in: previousJob.map { [$0] } ?? [])
-        let retainedCredentialIDs = credentialIDs(in: updatedJobs)
+        let retainedCredentialIDs = credentialIDs(in: serverProfiles, jobs: updatedJobs)
         let cleanupWarnings = removeCredentials(previousCredentialIDs.subtracting(retainedCredentialIDs))
         return CredentialedJobSaveResult(
             jobs: updatedJobs,
@@ -602,8 +606,8 @@ final class AppPersistenceCoordinator {
         )
     }
 
-    func removeCredentials(for job: SyncJob, retainedJobs: [SyncJob]) -> [String] {
-        removeCredentials(credentialIDs(in: [job]).subtracting(credentialIDs(in: retainedJobs)))
+    func removeCredentials(for job: SyncJob, retainedJobs: [SyncJob], serverProfiles: [ServerProfile]) -> [String] {
+        removeCredentials(credentialIDs(in: [job]).subtracting(credentialIDs(in: serverProfiles, jobs: retainedJobs)))
     }
 
     private func attemptRollback(_ operations: [() throws -> Void]) -> Error? {
@@ -626,7 +630,8 @@ final class AppPersistenceCoordinator {
     private func prepareCredentialUpdate(
         endpoint: Endpoint,
         previousEndpoint: Endpoint?,
-        password suppliedPassword: String
+        password suppliedPassword: String,
+        profileCredentialIDs: Set<String>
     ) throws -> CredentialUpdate {
         guard endpoint.kind.isRemote else {
             return CredentialUpdate(endpoint: endpoint, stagedPassword: nil)
@@ -637,7 +642,12 @@ final class AppPersistenceCoordinator {
             return CredentialUpdate(endpoint: endpoint, stagedPassword: nil)
         }
 
-        if let previousEndpoint, previousEndpoint.kind.isRemote {
+        // Custom connections must not borrow an item owned by a shared profile,
+        // even when the password text matches. Also repair existing aliases on
+        // save; the profile-aware cleanup below retains their original item.
+        if let previousEndpoint, previousEndpoint.kind.isRemote,
+           previousEndpoint.serverProfileID == nil,
+           !profileCredentialIDs.contains(previousEndpoint.credentialID) {
             let savedPassword = try password(forCredentialID: previousEndpoint.credentialID)
             let requestedPassword = suppliedPassword.isEmpty ? nil : suppliedPassword
             if savedPassword == requestedPassword {
