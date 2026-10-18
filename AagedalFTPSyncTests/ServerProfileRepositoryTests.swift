@@ -190,7 +190,7 @@ final class ServerProfileAppStoreTests: XCTestCase {
         func fail(_ enabled: Bool) { lock.withLock { failReads = enabled } }
     }
 
-    private func editingStore() throws -> (AppStore, Credentials, ServerProfile) {
+    private func editingStore(missingCredentialIDs: Set<String> = []) throws -> (AppStore, Credentials, ServerProfile) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("server-editing-\(UUID())")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let storage = AppStorageLayout(root: root)
@@ -205,7 +205,7 @@ final class ServerProfileAppStoreTests: XCTestCase {
             syncFailureRepository: SyncFailureRepository(storage: storage),
             sourceSignatureRepository: SourceSignatureRepository(storage: storage),
             downloadManifestRepository: DownloadManifestRepository(storage: storage),
-            keychain: KeychainStore(passwordReader: { _ in try credentials.read() },
+            keychain: KeychainStore(passwordReader: { id in missingCredentialIDs.contains(id) ? nil : try credentials.read() },
                 passwordWriter: { value, _ in credentials.write(value) }, passwordRemover: { _ in }),
             startsJobsOnInitialization: false)
         return (store, credentials, profile)
@@ -231,6 +231,198 @@ final class ServerProfileAppStoreTests: XCTestCase {
         session.edit(store.serverProfiles.first, using: store)
         XCTAssertFalse(session.isNewProfile)
         XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testOpenJobRefreshesSharedConnectionAndPasswordWithoutCreatingEdits() throws {
+        let (store, _, profile) = try editingStore()
+        var job = SyncJob(name: "Live shared server")
+        job.left = profile.endpoint(remotePath: "/job/incoming")
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let session = JobEditingSession()
+        session.edit(try XCTUnwrap(store.jobs.first))
+        session.loadCredentials(using: store)
+        XCTAssertFalse(session.hasUnsavedChanges)
+
+        var changed = profile
+        changed.kind = .ftp
+        changed.host = "new.example.test"
+        changed.port = 2121
+        changed.username = "new-user"
+        XCTAssertTrue(store.saveServerProfile(changed, password: "new shared password"))
+        session.refreshServerProfiles(using: store)
+
+        let current = try XCTUnwrap(store.serverProfiles.first)
+        XCTAssertEqual(session.draft.left, current.endpoint(remotePath: "/job/incoming"))
+        XCTAssertEqual(session.leftPassword, "new shared password")
+        XCTAssertNil(session.credentialLoadError)
+        XCTAssertFalse(session.hasUnsavedChanges)
+        session.markDiscarded()
+        XCTAssertEqual(session.draft.left, current.endpoint(remotePath: "/job/incoming"))
+    }
+
+    func testSharedConnectionRefreshPreservesUnsavedPathsNameAndCustomPassword() throws {
+        let (store, _, profile) = try editingStore()
+        var job = SyncJob(name: "Saved name")
+        job.left = profile.endpoint(remotePath: "/saved")
+        job.right = Endpoint(kind: .ftp, host: "custom.example.test", username: "custom")
+        let session = JobEditingSession()
+        // A transient draft can have two remote endpoints while choosing which
+        // side is local. It must retain edits but is not a persistable job.
+        session.edit(job)
+        session.loadCredentials(using: store)
+        session.draft.name = "Local name edit"
+        session.draft.left.remotePath = "/local/folder/edit"
+        session.rightPassword = "typed custom replacement"
+
+        var changed = profile
+        changed.port = 2990
+        XCTAssertTrue(store.saveServerProfile(changed, password: "rotated shared password"))
+        session.refreshServerProfiles(using: store)
+        XCTAssertEqual(session.draft.name, "Local name edit")
+        XCTAssertEqual(session.draft.left.remotePath, "/local/folder/edit")
+        XCTAssertEqual(session.draft.left.port, 2990)
+        XCTAssertEqual(session.leftPassword, "rotated shared password")
+        XCTAssertEqual(session.rightPassword, "typed custom replacement")
+        XCTAssertTrue(session.hasUnsavedChanges)
+    }
+
+    func testSharedConnectionReloadFailureBlocksSaveAndRetryPreservesDraft() throws {
+        let (store, credentials, profile) = try editingStore()
+        var job = SyncJob(name: "Keep these edits")
+        var stale = profile
+        stale.port = 1111
+        stale.credentialID = "obsolete-credential"
+        job.left = stale.endpoint(remotePath: "/incoming")
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+        let session = JobEditingSession()
+        session.edit(job)
+        session.draft.right.localPath = "/keep/local/edit"
+        credentials.fail(true)
+        session.refreshServerProfiles(using: store)
+        XCTAssertEqual(session.draft.left, profile.endpoint(remotePath: "/incoming"))
+        XCTAssertNotNil(session.credentialLoadError)
+        XCTAssertFalse(session.save(using: store))
+        XCTAssertTrue(store.jobs.isEmpty)
+        XCTAssertEqual(session.draft.right.localPath, "/keep/local/edit")
+
+        credentials.fail(false)
+        session.loadCredentials(using: store)
+        XCTAssertNil(session.credentialLoadError)
+        XCTAssertEqual(session.leftPassword, "saved password")
+        XCTAssertEqual(session.draft.right.localPath, "/keep/local/edit")
+        XCTAssertEqual(session.draft.name, "Keep these edits")
+        XCTAssertTrue(session.save(using: store))
+    }
+
+    func testSavingBeforeProfileObserverRunsUsesCurrentSharedConnection() throws {
+        let (store, _, profile) = try editingStore()
+        var job = SyncJob(name: "Saved job")
+        job.left = profile.endpoint(remotePath: "/incoming")
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let session = JobEditingSession()
+        session.edit(try XCTUnwrap(store.jobs.first))
+        session.loadCredentials(using: store)
+        session.draft.name = "Local name edit"
+        var changed = profile
+        changed.port = 2990
+        XCTAssertTrue(store.saveServerProfile(changed, password: "rotated password"))
+        XCTAssertTrue(session.save(using: store), store.alertMessage ?? "")
+        XCTAssertEqual(store.jobs.first?.left.port, 2990)
+        XCTAssertEqual(store.jobs.first?.name, "Local name edit")
+        XCTAssertEqual(session.leftPassword, "rotated password")
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testDiscardAfterLocallyChoosingProfileRestoresOriginalCustomPassword() throws {
+        let (store, _, profile) = try editingStore()
+        var job = SyncJob(name: "Custom connection")
+        job.left = Endpoint(kind: .ftp, host: "custom.example.test", username: "custom")
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "original custom password", rightPassword: ""))
+        let original = try XCTUnwrap(store.jobs.first)
+        let session = JobEditingSession()
+        session.edit(original)
+        session.loadCredentials(using: store)
+        session.draft.left = profile.endpoint(remotePath: "/selected")
+        session.leftPassword = try store.password(for: profile)
+        var changed = profile
+        changed.port = 2990
+        XCTAssertTrue(store.saveServerProfile(changed, password: "new profile password"))
+        session.refreshServerProfiles(using: store)
+        XCTAssertEqual(session.leftPassword, "new profile password")
+        session.markDiscarded()
+        XCTAssertEqual(session.draft.left, original.left)
+        XCTAssertEqual(session.leftPassword, "original custom password")
+        XCTAssertFalse(session.hasUnsavedChanges)
+        XCTAssertTrue(session.save(using: store))
+        XCTAssertEqual(try store.password(for: try XCTUnwrap(store.jobs.first).left), "original custom password")
+    }
+
+    func testConnectionTestUsesCurrentProfileAndRejectsStaleCompletion() throws {
+        let (store, _, profile) = try editingStore()
+        let stale = profile.endpoint(remotePath: "/job/folder")
+        let first = try EndpointConnectionTestInput(endpoint: stale, password: "obsolete", profiles: store.serverProfiles,
+            loadPassword: { try store.password(for: $0) })
+        XCTAssertEqual(first.password, "saved password")
+        var changed = profile
+        changed.host = "replacement.example.test"
+        changed.port = 2121
+        XCTAssertTrue(store.saveServerProfile(changed, password: "replacement password"))
+        XCTAssertFalse(first.isCurrent(endpoint: stale, password: "obsolete", profiles: store.serverProfiles))
+        let next = try EndpointConnectionTestInput(endpoint: stale, password: "obsolete", profiles: store.serverProfiles,
+            loadPassword: { try store.password(for: $0) })
+        XCTAssertEqual(next.endpoint.host, "replacement.example.test")
+        XCTAssertEqual(next.endpoint.port, 2121)
+        XCTAssertEqual(next.endpoint.remotePath, "/job/folder")
+        XCTAssertEqual(next.password, "replacement password")
+        XCTAssertTrue(next.isCurrent(endpoint: stale, password: "obsolete", profiles: store.serverProfiles))
+        XCTAssertTrue(store.saveServerProfile(try XCTUnwrap(store.serverProfiles.first), password: "password-only rotation"))
+        XCTAssertFalse(next.isCurrent(endpoint: stale, password: "obsolete", profiles: store.serverProfiles))
+        XCTAssertThrowsError(try EndpointConnectionTestInput(endpoint: stale, password: "obsolete", profiles: [],
+            loadPassword: { _ in XCTFail("Missing profile must fail before loading a password"); return "" }))
+        XCTAssertFalse(next.isCurrent(endpoint: stale, password: "obsolete", profiles: []))
+        XCTAssertThrowsError(try EndpointConnectionTestInput(endpoint: stale, password: "obsolete", profiles: store.serverProfiles,
+            loadPassword: { _ in throw AppError.transferFailed("Keychain unavailable") }))
+    }
+
+    func testDetachingProfilePreservesTypedOriginalPasswordDuringBaselineRefresh() throws {
+        let (store, _, profile) = try editingStore(missingCredentialIDs: ["unsaved-custom"])
+        var job = SyncJob(name: "Detach shared server")
+        job.left = profile.endpoint(remotePath: "/incoming")
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([1]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let session = JobEditingSession()
+        session.edit(try XCTUnwrap(store.jobs.first))
+        session.loadCredentials(using: store)
+        session.draft.left.serverProfileID = nil
+        session.draft.left.credentialID = "unsaved-custom"
+        // The user deliberately reuses the old profile password for this new
+        // custom connection; equal text does not mean the field is untouched.
+        session.leftPassword = "saved password"
+        var changed = profile
+        changed.port = 2990
+        XCTAssertTrue(store.saveServerProfile(changed, password: "saved password"))
+        session.refreshServerProfiles(using: store)
+        XCTAssertNil(session.draft.left.serverProfileID)
+        XCTAssertEqual(session.draft.left.port, profile.port)
+        XCTAssertEqual(session.leftPassword, "saved password")
+        XCTAssertTrue(session.hasUnsavedChanges)
+        XCTAssertTrue(session.save(using: store), store.alertMessage ?? "")
+        XCTAssertEqual(try store.password(for: try XCTUnwrap(store.jobs.first).left), "saved password")
+    }
+
+    func testConnectionTestTracksTypedCustomPasswordWithoutReadingSavedCredentials() throws {
+        let endpoint = Endpoint(kind: .ftp, host: "custom.example.test", username: "custom")
+        let input = try EndpointConnectionTestInput(endpoint: endpoint, password: "typed password", profiles: [],
+            loadPassword: { _ in XCTFail("A custom test must use its draft password"); return "" })
+        XCTAssertEqual(input.password, "typed password")
+        XCTAssertTrue(input.isCurrent(endpoint: endpoint, password: "typed password", profiles: []))
+        XCTAssertFalse(input.isCurrent(endpoint: endpoint, password: "changed password", profiles: []))
+        var changed = endpoint
+        changed.remotePath = "/other"
+        XCTAssertFalse(input.isCurrent(endpoint: changed, password: "typed password", profiles: []))
     }
 
     func testStaleServerDraftCannotOverwriteChangedOrDeletedProfile() throws {

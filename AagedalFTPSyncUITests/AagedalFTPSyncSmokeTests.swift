@@ -1215,6 +1215,48 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Unsaved draft"].exists)
     }
 
+    func testCancellingNewJobSelectionKeepsDraftAndAllowsSelectingSameRowAgain() {
+        launch(seedJob: true)
+        element("add-sync-job").click()
+        replaceText(in: element("job-name"), with: "Keep this unsaved job")
+        app.staticTexts["UI Smoke Fixture"].click()
+        let review = app.windows["jobs"].sheets.firstMatch
+        XCTAssertTrue(review.buttons["Cancel"].waitForExistence(timeout: 3))
+        review.buttons["Cancel"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Keep this unsaved job")
+        XCTAssertTrue(app.staticTexts["Unsaved draft"].exists)
+
+        app.staticTexts["UI Smoke Fixture"].click()
+        let discard = review.buttons["Discard Draft"]
+        XCTAssertTrue(discard.waitForExistence(timeout: 3))
+        discard.click()
+        XCTAssertEqual(element("job-name").value as? String, "UI Smoke Fixture")
+        XCTAssertFalse(app.staticTexts["Unsaved draft"].exists)
+        XCTAssertFalse(app.staticTexts["Keep this unsaved job"].exists)
+    }
+
+    func testCancellingSavedJobSelectionKeepsEditsAndAllowsSavingBeforeSwitch() {
+        launch(seedJob: true)
+        element("add-sync-job").click()
+        replaceText(in: element("job-name"), with: "Second saved job")
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+        replaceText(in: element("job-name"), with: "Second job with edits")
+        app.staticTexts["UI Smoke Fixture"].click()
+        let review = app.windows["jobs"].sheets.firstMatch
+        XCTAssertTrue(review.buttons["Cancel"].waitForExistence(timeout: 3))
+        review.buttons["Cancel"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Second job with edits")
+
+        app.staticTexts["UI Smoke Fixture"].click()
+        let save = review.buttons["Save Changes"]
+        XCTAssertTrue(save.waitForExistence(timeout: 3))
+        save.click()
+        XCTAssertEqual(element("job-name").value as? String, "UI Smoke Fixture")
+        app.staticTexts["Second job with edits"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Second job with edits")
+    }
+
     func testEditsSavedJob() {
         launch(seedJob: true)
 
@@ -1786,6 +1828,35 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(name.value as? String, "Edited second server")
         XCTAssertEqual(String(describing: element("server.port").value ?? "").filter { $0.isNumber }, "2121")
         XCTAssertFalse(app.staticTexts["Unsaved changes"].exists)
+    }
+
+    func testOpenJobConnectionRefreshesWhenSharedServerChangesInSettings() {
+        launch(seedJob: true, seedServer: true)
+        replaceText(in: element("job-name"), with: "Keep local job edits")
+        app.buttons["Source: Edit Location"].click()
+        element("endpoint.type").click()
+        app.menuItems["FTPS (TLS)"].click()
+        element("endpoint.server-profile").click()
+        app.menuItems["Disposable UI Server"].click()
+        replaceText(in: element("endpoint.remote-folder"), with: "/keep/job/folder")
+
+        openStatusMenu()
+        app.buttons["Settings"].click()
+        replaceText(in: element("server.port"), with: "2121")
+        element("server.save").click()
+
+        let sheet = app.windows["jobs"].sheets.firstMatch
+        let port = sheet.descendants(matching: .any)["endpoint.port"]
+        let refreshed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            String(describing: port.value ?? "").filter { $0.isNumber } == "2121"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 5), .completed)
+        XCTAssertFalse(port.isEnabled)
+        XCTAssertEqual(sheet.descendants(matching: .any)["endpoint.remote-folder"].value as? String, "/keep/job/folder")
+        sheet.buttons["Done"].click()
+        XCTAssertEqual(element("job-name").value as? String, "Keep local job edits")
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
     }
 
     func testJobConnectionKeepsCustomPortWhenSelectingDifferentProtocolProfile() {

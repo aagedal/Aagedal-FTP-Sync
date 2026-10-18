@@ -246,6 +246,7 @@ private struct EndpointEditor: View {
                     }
                 }
                 TextField("Remote folder", text: $endpoint.remotePath, prompt: Text("/incoming"))
+                    .accessibilityIdentifier("endpoint.remote-folder")
                 connectionTestControls
                 if endpoint.kind == .ftp {
                     Label("FTP sends credentials and files without encryption. Prefer SFTP or FTPS.", systemImage: "exclamationmark.shield")
@@ -296,6 +297,7 @@ private struct EndpointEditor: View {
         }
         .onChange(of: endpoint) { _, _ in resetConnectionTest() }
         .onChange(of: password) { _, _ in resetConnectionTest() }
+        .onChange(of: serverProfiles) { _, _ in resetConnectionTest() }
         .onDisappear { connectionTestTask?.cancel() }
     }
 
@@ -378,18 +380,26 @@ private struct EndpointEditor: View {
 
     private func testConnection() {
         connectionTestTask?.cancel()
+        let input: EndpointConnectionTestInput
+        do {
+            input = try EndpointConnectionTestInput(endpoint: endpoint, password: password,
+                profiles: store.serverProfiles, loadPassword: { try store.password(for: $0) })
+        } catch {
+            connectionTestState = .failed(error.localizedDescription)
+            return
+        }
         connectionTestState = .testing
-        let candidate = endpoint
-        let candidatePassword = password
         connectionTestTask = Task {
             do {
-                try await EndpointConnectionTester.test(endpoint: candidate, password: candidatePassword)
+                try await EndpointConnectionTester.test(endpoint: input.endpoint, password: input.password)
                 try Task.checkCancellation()
+                guard input.isCurrent(endpoint: endpoint, password: password, profiles: store.serverProfiles) else { return }
                 connectionTestState = .succeeded
             } catch is CancellationError {
                 return
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      input.isCurrent(endpoint: endpoint, password: password, profiles: store.serverProfiles) else { return }
                 if case let AppError.untrustedSSHHostKey(hostID, fingerprint) = error {
                     connectionTestState = .awaitingHostKey(hostID: hostID, fingerprint: fingerprint)
                 } else {
@@ -403,6 +413,24 @@ private struct EndpointEditor: View {
         connectionTestTask?.cancel()
         connectionTestTask = nil
         connectionTestState = .idle
+    }
+}
+
+/// Capture exactly the connection that will be saved/run, including the current
+/// profile credential reference. Never test a stale job projection or password.
+struct EndpointConnectionTestInput {
+    let endpoint: Endpoint
+    let password: String
+
+    init(endpoint: Endpoint, password: String, profiles: [ServerProfile],
+         loadPassword: (Endpoint) throws -> String) throws {
+        self.endpoint = try endpoint.resolvingServerProfile(in: profiles)
+        self.password = self.endpoint.serverProfileID == nil ? password : try loadPassword(self.endpoint)
+    }
+
+    func isCurrent(endpoint: Endpoint, password: String, profiles: [ServerProfile]) -> Bool {
+        guard let resolved = try? endpoint.resolvingServerProfile(in: profiles), resolved == self.endpoint else { return false }
+        return resolved.serverProfileID != nil || password == self.password
     }
 }
 
