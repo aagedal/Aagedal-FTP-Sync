@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 @MainActor
 final class PhotographerEditingSession: ObservableObject {
+    enum CloseChoice { case save, discard, cancel }
     @Published var draft: PhotographerProfile?
     @Published private(set) var saveError: String?
     @Published var saveConfirmation = false
@@ -69,21 +70,36 @@ final class PhotographerEditingSession: ObservableObject {
         }
     }
 
-    func confirmLeavingDraft(using store: AppStore) -> Bool {
+    func confirmLeavingDraft(using store: AppStore, choose: (() -> CloseChoice)? = nil) -> Bool {
+        let hadPendingAutosave = autosaveTask != nil
         cancelAutosave()
         guard hasUnsavedChanges else { return true }
-        let alert = NSAlert()
-        alert.messageText = "Save changes to “\(draft?.photographerName ?? "Photographer")”?"
-        alert.informativeText = saveError ?? "Your photographer edits have not been saved."
-        alert.addButton(withTitle: "Save Changes")
-        alert.addButton(withTitle: "Discard Changes")
-        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: return save(using: store)
-        case .alertSecondButtonReturn:
+        let choice: CloseChoice
+        if let choose {
+            choice = choose()
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Save changes to “\(draft?.photographerName ?? "Photographer")”?"
+            alert.informativeText = saveError ?? "Your photographer edits have not been saved."
+            alert.addButton(withTitle: "Save Changes")
+            alert.addButton(withTitle: "Discard Changes")
+            alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: choice = .save
+            case .alertSecondButtonReturn: choice = .discard
+            default: choice = .cancel
+            }
+        }
+        switch choice {
+        case .save: return save(using: store)
+        case .discard:
             edit(store.photographerLibrary.first(where: { $0.id == draft?.id }))
             return true
-        default: return false
+        case .cancel:
+            // Closing was cancelled, so restore the autosave that was already
+            // scheduled. Failed/conflicting drafts awaiting Retry stay paused.
+            if hadPendingAutosave { scheduleAutosave(using: store) }
+            return false
         }
     }
 
