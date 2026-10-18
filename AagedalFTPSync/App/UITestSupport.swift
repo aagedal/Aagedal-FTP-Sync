@@ -91,6 +91,10 @@ enum UITestSupport {
         if enabled, ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECOVERY"] == "1" {
             do {
                 #if DEBUG
+                if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] == "1" {
+                    try reconcileInterruptedOrdinarySyncFixture(rootURL: rootURL, managed: managedRecoveryFixture,
+                                                               raw: rawRecoveryFixture, rawExtension: cameraRawExtension)
+                }
                 if ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_RECONCILE_INTERRUPTED_IMAGE"] == "1" {
                     try reconcileInterruptedImageFixture(rootURL: rootURL, managed: managedRecoveryFixture, raw: rawRecoveryFixture, rawExtension: cameraRawExtension)
                 }
@@ -158,6 +162,13 @@ enum UITestSupport {
             engine: SyncEngine(
                 sourceSignatureRepository: sourceSignatures,
                 downloadManifestRepository: downloadManifest,
+                sessionFactory: { endpoint, password, managed in
+                    if endpoint.kind == .local,
+                       ProcessInfo.processInfo.environment["AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC"] == "1" {
+                        return try reprocessingFixtureSession(endpoint: endpoint, managed: managed)
+                    }
+                    return try EndpointSessionFactory.make(endpoint: endpoint, password: password, managedFolder: managed)
+                },
                 localReprocessSessionFactory: { endpoint, managed in
                     try reprocessingFixtureSession(endpoint: endpoint, managed: managed)
                 }
@@ -615,6 +626,72 @@ enum UITestSupport {
     }
 
     #if DEBUG
+    /// Explicit DEBUG test choice for first-import interruption at published-0.
+    /// Preserve every transaction byte and the visible first output, then let a
+    /// fresh ordinary run publish from the intact source. Never replay the map.
+    static func reconcileInterruptedOrdinarySyncFixture(rootURL: URL, managed: Bool = false,
+                                                        raw: Bool = false, rawExtension: String = "arw") throws {
+        let manager = FileManager.default
+        let rootURL = rootURL.resolvingSymlinksInPath()
+        let destination = recoveryFixtureDestination(rootURL: rootURL, managed: managed)
+        let candidates = try manager.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix(".aagedal-sync-") && $0.pathExtension == "transaction" }
+        guard !candidates.isEmpty else { return }
+        guard candidates.count == 1, !raw || ["arw", "cr3"].contains(rawExtension),
+              try String(contentsOf: rootURL.appendingPathComponent("native-image-interruption"), encoding: .utf8) == "published-0",
+              try Data(contentsOf: rootURL.appendingPathComponent("metadata-recovery-fixture-seeded")) == Data("seeded".utf8) else {
+            throw AppError.invalidConfiguration("Unexpected ordinary sync recovery fixture")
+        }
+        let recovery = candidates[0]
+        func checkRegular(_ url: URL) throws {
+            var info = stat()
+            guard url.standardizedFileURL.path == url.resolvingSymlinksInPath().path,
+                  lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else {
+                throw AppError.invalidConfiguration("Redirected ordinary sync recovery evidence")
+            }
+        }
+        let manifestURL = recovery.appendingPathComponent("recovery.json")
+        try checkRegular(manifestURL)
+        let manifest = try JSONDecoder().decode(LocalEndpointSession.MatchingRecoveryManifest.self, from: Data(contentsOf: manifestURL))
+        let names = raw ? ["recovery." + rawExtension, "recovery.xmp"] : ["recovery.jpg"]
+        guard manifest.schemaVersion == 1, manifest.originals.isEmpty,
+              manifest.outputs.map(\.relativePath) == names else {
+            throw AppError.invalidConfiguration("Unexpected ordinary sync recovery path map")
+        }
+        for (index, output) in manifest.outputs.enumerated() {
+            guard output.snapshotFilename == "output-copy-\(index)",
+                  output.stagedFilename == "output-stage-\(index)",
+                  output.rollbackFilename == "rollback-output-\(index)" else {
+                throw AppError.invalidConfiguration("Unexpected ordinary sync recovery output")
+            }
+            let snapshot = recovery.appendingPathComponent(output.snapshotFilename)
+            let visible = destination.appendingPathComponent(names[index])
+            let staged = recovery.appendingPathComponent(output.stagedFilename)
+            let evidence = index == 0 ? visible : staged
+            let absent = index == 0 ? staged : visible
+            for url in [snapshot, evidence, rootURL.appendingPathComponent("Source/" + names[index])] {
+                try checkRegular(url)
+            }
+            let source = rootURL.appendingPathComponent("Source/" + names[index])
+            let seeded = destination.appendingPathComponent("nested/" + names[index])
+            try checkRegular(seeded)
+            guard manager.contentsEqual(atPath: source.path, andPath: seeded.path),
+                  !(raw && index == 0) || manager.contentsEqual(atPath: source.path, andPath: snapshot.path) else {
+                throw AppError.invalidConfiguration("Changed ordinary sync recovery source")
+            }
+            var info = stat()
+            guard lstat(absent.path, &info) != 0, errno == ENOENT,
+                  absent.standardizedFileURL.path == absent.resolvingSymlinksInPath().path,
+                  manager.contentsEqual(atPath: evidence.path, andPath: snapshot.path) else {
+                throw AppError.invalidConfiguration("Changed ordinary sync recovery output")
+            }
+        }
+        // Both moves are exclusive. Failure retains every byte for inspection.
+        try manager.moveItem(at: destination.appendingPathComponent(names[0]),
+                             to: rootURL.appendingPathComponent("rescued-ordinary-publication"))
+        try manager.moveItem(at: recovery, to: rootURL.appendingPathComponent("reconciled-ordinary-sync"))
+    }
+
     /// Explicit recovery choice for the single-image SIGKILL fixture. Preserve
     /// the entire transaction and the staged or visible replacement before
     /// restoring originals for a fresh native retry. This is not production recovery logic.

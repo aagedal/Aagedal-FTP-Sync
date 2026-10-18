@@ -217,80 +217,34 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         )
     }
 
+    /// Ordinary local output groups use the same durable path map and guarded
+    /// rollback as explicit reprocessing. Snapshot only listed destinations;
+    /// an unlisted path that appears meanwhile is an exclusive-rename conflict.
+    func importFilesTransactionally(
+        _ imports: [EndpointFileImport],
+        replacing existingFiles: [String: SyncFile],
+        preserveDate: Bool,
+        verifySize: Bool
+    ) async throws {
+        guard !imports.isEmpty else { return }
+        let originals = try imports.compactMap { item -> EndpointFileImport? in
+            guard let existing = existingFiles[item.file.relativePath] else { return nil }
+            return EndpointFileImport(localURL: try safeURL(for: existing.relativePath), file: existing)
+        }
+        // The shared publisher snapshots every current original directly into
+        // recovery and validates its bytes before and after holding the group.
+        try await publishFilesTransactionally(imports, replacing: originals,
+                                              preserveDate: preserveDate, verifySize: verifySize)
+    }
+
     func importFilesTransactionallyIfAbsent(
         _ imports: [EndpointFileImport],
         preserveDate: Bool,
         verifySize: Bool
     ) async throws {
-        guard Set(imports.map(\.file.relativePath)).count == imports.count else {
-            throw AppError.transferFailed("A destination output group contained duplicate paths.")
-        }
         guard !imports.isEmpty else { return }
-
-        var prepared: [(staging: URL, destination: URL, file: SyncFile)] = []
-        var published: [(destination: URL, file: SyncFile)] = []
-        defer {
-            for item in prepared {
-                try? fileManager.removeItem(at: item.staging)
-            }
-        }
-
-        do {
-            for item in imports {
-                try Task.checkCancellation()
-                let destination = try safeURL(for: item.file.relativePath)
-                let directory = destination.deletingLastPathComponent()
-                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-                let staging = directory.appendingPathComponent(
-                    ".aagedal-sync-\(UUID().uuidString).part"
-                )
-                try fileManager.copyItem(at: item.localURL, to: staging)
-                if verifySize {
-                    let attributes = try fileManager.attributesOfItem(atPath: staging.path)
-                    let copiedSize = (attributes[.size] as? NSNumber)?.int64Value ?? -1
-                    guard copiedSize == item.file.size else {
-                        throw AppError.transferFailed(
-                            "Size verification failed for \(item.file.relativePath): expected \(item.file.size) bytes, copied \(copiedSize) bytes."
-                        )
-                    }
-                }
-                // Set the final date before publication; watchers may cache their first view.
-                try fileManager.setAttributes(
-                    [.modificationDate: preserveDate ? item.file.modifiedAt : Date()],
-                    ofItemAtPath: staging.path
-                )
-                prepared.append((staging, destination, item.file))
-            }
-
-            for item in prepared {
-                try Task.checkCancellation()
-                do {
-                    try moveExclusively(from: item.staging, to: item.destination)
-                    published.append((item.destination, item.file))
-                } catch {
-                    if fileManager.fileExists(atPath: item.destination.path) {
-                        throw AppError.transferFailed(
-                            "A file appeared at \(item.file.relativePath) before publication. Nothing there was overwritten."
-                        )
-                    }
-                    throw error
-                }
-            }
-        } catch {
-            let publicationError = error
-            var rollbackFailures: [String] = []
-            for item in published.reversed() {
-                do { try fileManager.removeItem(at: item.destination) }
-                catch { rollbackFailures.append(item.file.relativePath) }
-            }
-            if !rollbackFailures.isEmpty {
-                throw AppError.transferFailed(
-                    "The collision-safe output group could not be published, and rollback failed for \(rollbackFailures.joined(separator: ", ")). Publication error: \(publicationError.localizedDescription)"
-                )
-            }
-            if publicationError is CancellationError { throw CancellationError() }
-            throw publicationError
-        }
+        try await publishFilesTransactionally(imports, replacing: [],
+                                              preserveDate: preserveDate, verifySize: verifySize)
     }
 
     static func isRecoveryArtifact(named name: String) -> Bool {
@@ -390,11 +344,26 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         _ imports: [EndpointFileImport], replacing originals: [EndpointFileImport],
         preserveDate: Bool, verifySize: Bool
     ) async throws {
-        guard !imports.isEmpty, imports.count <= 2, !originals.isEmpty, originals.count <= 2,
+        guard !originals.isEmpty else {
+            throw AppError.transferFailed("Byte-matched publication requires an original image.")
+        }
+        try await publishFilesTransactionally(imports, replacing: originals,
+                                              preserveDate: preserveDate, verifySize: verifySize)
+    }
+
+    private func validatePublicationGroup(_ imports: [EndpointFileImport], originals: [EndpointFileImport]) throws {
+        guard !imports.isEmpty, imports.count <= 2, originals.count <= 2,
               Set(imports.map(\.file.relativePath)).count == imports.count,
               Set(originals.map(\.file.relativePath)).count == originals.count else {
-            throw AppError.transferFailed("Byte-matched publication requires one image and at most one sidecar, with unique paths.")
+            throw AppError.transferFailed("Publication requires one image and at most one sidecar, with unique paths.")
         }
+    }
+
+    private func publishFilesTransactionally(
+        _ imports: [EndpointFileImport], replacing originals: [EndpointFileImport],
+        preserveDate: Bool, verifySize: Bool
+    ) async throws {
+        try validatePublicationGroup(imports, originals: originals)
         try validateMetadataRecoveryIsResolved()
         let measurementStart = operationMeasurement.map { _ in ContinuousClock.now }
         defer {
@@ -411,7 +380,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
         var heldIndices: [Int] = [], publishedIndices: [Int] = []
         var retainRecovery = false
         do {
-            // Freeze caller-owned immutable inputs before altering any destination.
+            // Snapshot every original before altering any destination.
             for (index, original) in originals.enumerated() {
                 try Task.checkCancellation()
                 let destination = try safeURL(for: original.file.relativePath)
@@ -471,7 +440,14 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
             for original in originalsPrepared { try SourceRemovalVerification.validate(original.held, matches: original.expected) }
             for (index, output) in outputs.enumerated() {
                 try Task.checkCancellation()
-                try moveExclusively(from: output.staged, to: output.destination)
+                do {
+                    try moveExclusively(from: output.staged, to: output.destination)
+                } catch {
+                    if fileManager.fileExists(atPath: output.destination.path) {
+                        throw AppError.transferFailed("A file appeared at \(imports[index].file.relativePath) before publication. Nothing there was overwritten.")
+                    }
+                    throw error
+                }
                 publishedIndices.append(index)
                 try matchingImportHook(.published(index))
             }
@@ -503,6 +479,7 @@ struct LocalEndpointSession: EndpointSession, EndpointFileLookupSession, @unchec
                        fileManager.contentsEqual(atPath: quarantine.path, andPath: output.expected.path) {
                         try fileManager.removeItem(at: quarantine)
                     } else {
+                        retainRecovery = true
                         try moveExclusively(from: quarantine, to: output.destination)
                     }
                 } catch { retainRecovery = true }
