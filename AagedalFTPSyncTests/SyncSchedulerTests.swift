@@ -82,6 +82,57 @@ final class SyncSchedulerTests: XCTestCase {
         XCTAssertEqual(delegate.performCallCount, 1)
     }
 
+    func testRejectedManualAttemptNotifiesDelegateAfterBusyStateClears() async {
+        let scheduler = SyncScheduler()
+        let delegate = SyncSchedulerDelegateSpy()
+        scheduler.delegate = delegate
+        delegate.immediateAttempts = [.failed("Retained recovery requires reconciliation")]
+        delegate.manualCompletion = { jobID in
+            XCTAssertFalse(scheduler.isBusy(jobID))
+        }
+        var job = SyncJob(name: "Rejected manual sync")
+        job.isEnabled = false
+
+        scheduler.runNow(job)
+        let finished = await eventually { delegate.finishedManualJobIDs == [job.id] }
+        XCTAssertTrue(finished)
+        XCTAssertFalse(scheduler.isBusy(job.id))
+        scheduler.runNow(job)
+        let retried = await eventually { delegate.finishedManualJobIDs.count == 2 }
+        XCTAssertTrue(retried)
+        XCTAssertEqual(delegate.performedJobIDs, [job.id, job.id])
+    }
+
+    func testCancelledManualAttemptCannotNotifyCompletionForItsReplacement() async {
+        let scheduler = SyncScheduler()
+        let delegate = SyncSchedulerDelegateSpy()
+        scheduler.delegate = delegate
+        delegate.blocksAttempts = true
+        delegate.manualCompletion = { jobID in
+            XCTAssertFalse(scheduler.isBusy(jobID))
+        }
+        var job = SyncJob(name: "Replaced manual sync")
+        job.isEnabled = false
+        scheduler.runNow(job)
+        let firstStarted = await eventually { delegate.performCallCount == 1 }
+        XCTAssertTrue(firstStarted)
+        scheduler.cancel(job.id)
+        scheduler.runNow(job)
+        let secondStarted = await eventually { delegate.performCallCount == 2 }
+        XCTAssertTrue(secondStarted)
+
+        delegate.resumeBlockedAttempt(returning: .cancelled)
+        let oldFinished = await eventually { delegate.finishedPerformCount == 1 }
+        XCTAssertTrue(oldFinished)
+        XCTAssertTrue(scheduler.isBusy(job.id))
+        XCTAssertTrue(delegate.finishedManualJobIDs.isEmpty)
+
+        delegate.resumeBlockedAttempt(returning: .succeeded)
+        let replacementFinished = await eventually { delegate.finishedManualJobIDs == [job.id] }
+        XCTAssertTrue(replacementFinished)
+        XCTAssertFalse(scheduler.isBusy(job.id))
+    }
+
     func testRestartAndExplicitCancelReleaseScheduledBusyState() async {
         let scheduler = SyncScheduler()
         let delegate = SyncSchedulerDelegateSpy()
@@ -251,7 +302,10 @@ private final class SyncSchedulerDelegateSpy: SyncSchedulerDelegate {
     private(set) var performedJobIDs: [UUID] = []
     private(set) var stoppedJobIDs: [UUID] = []
     private(set) var nextRunEvents: [NextRunEvent] = []
-    private var blockedContinuation: CheckedContinuation<SyncAttempt, Never>?
+    private(set) var finishedManualJobIDs: [UUID] = []
+    private(set) var finishedPerformCount = 0
+    var manualCompletion: ((UUID) -> Void)?
+    private var blockedContinuations: [CheckedContinuation<SyncAttempt, Never>] = []
 
     var performCallCount: Int { performedJobIDs.count }
 
@@ -261,14 +315,19 @@ private final class SyncSchedulerDelegateSpy: SyncSchedulerDelegate {
 
     func syncSchedulerPerformSync(_ jobID: UUID) async -> SyncAttempt {
         performedJobIDs.append(jobID)
+        defer { finishedPerformCount += 1 }
         if !immediateAttempts.isEmpty {
             return immediateAttempts.removeFirst()
         }
         guard blocksAttempts else { return .skipped }
         return await withCheckedContinuation { continuation in
-            precondition(blockedContinuation == nil, "Only one blocked scheduler attempt is expected at a time.")
-            blockedContinuation = continuation
+            blockedContinuations.append(continuation)
         }
+    }
+
+    func syncSchedulerDidFinishManualSync(_ jobID: UUID) {
+        finishedManualJobIDs.append(jobID)
+        manualCompletion?(jobID)
     }
 
     func syncSchedulerDidStop(_ jobID: UUID) {
@@ -284,9 +343,8 @@ private final class SyncSchedulerDelegateSpy: SyncSchedulerDelegate {
     }
 
     func resumeBlockedAttempt(returning attempt: SyncAttempt) {
-        let continuation = blockedContinuation
-        blockedContinuation = nil
-        continuation?.resume(returning: attempt)
+        guard !blockedContinuations.isEmpty else { return }
+        blockedContinuations.removeFirst().resume(returning: attempt)
     }
 }
 

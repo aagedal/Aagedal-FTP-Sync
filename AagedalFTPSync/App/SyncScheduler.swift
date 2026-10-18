@@ -129,11 +129,16 @@ protocol SyncSchedulerDelegate: AnyObject {
     func syncSchedulerJob(_ jobID: UUID) -> SyncJob?
     func syncSchedulerPerformSync(_ jobID: UUID) async -> SyncAttempt
     func syncSchedulerDidStop(_ jobID: UUID)
+    func syncSchedulerDidFinishManualSync(_ jobID: UUID)
     func syncScheduler(
         _ jobID: UUID,
         scheduledNextRunAt date: Date,
         after attempt: SyncAttempt
     )
+}
+
+extension SyncSchedulerDelegate {
+    func syncSchedulerDidFinishManualSync(_ jobID: UUID) {}
 }
 
 @MainActor
@@ -190,6 +195,7 @@ final class SyncScheduler {
                 guard manualRequestIDs[job.id] == requestID else { return }
                 manualSyncTasks[job.id] = nil
                 manualRequestIDs[job.id] = nil
+                delegate?.syncSchedulerDidFinishManualSync(job.id)
             }
         }
     }
