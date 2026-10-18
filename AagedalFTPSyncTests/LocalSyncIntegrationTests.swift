@@ -1273,6 +1273,93 @@ final class LocalSyncIntegrationTests: XCTestCase {
         }
     }
 
+    func testProcessedHandoffRejectsLateSameSizeSourceSidecarEditAndPreservesItOnRetry() async throws {
+        for location in ProcessedFilesLocation.allCases {
+            let fixture = try LocalFixture()
+            defer { fixture.cleanUp() }
+            let job = try processedHandoffJob(fixture, location: location)
+            let rawPath = "nested/JAD_HANDOFF.CR3"
+            let sidecarPath = "nested/JAD_HANDOFF.xmp"
+            let sourceRAW = fixture.left.appendingPathComponent(rawPath)
+            let sourceSidecar = fixture.left.appendingPathComponent(sidecarPath)
+            let rawBytes = try Data(contentsOf: sourceRAW)
+            let originalSidecar = try Data(contentsOf: sourceSidecar)
+            let changedSidecar = Data(try XCTUnwrap(String(data: originalSidecar, encoding: .utf8))
+                .replacingOccurrences(of: "Original source caption", with: "Revised! source caption").utf8)
+            XCTAssertNotEqual(changedSidecar, originalSidecar)
+            XCTAssertEqual(changedSidecar.count, originalSidecar.count)
+            let sourceDate = Date(timeIntervalSince1970: 1_700_000_000)
+            let sourceInodes = try [sourceRAW, sourceSidecar].map {
+                try XCTUnwrap(FileManager.default.attributesOfItem(atPath: $0.path)[.systemFileNumber] as? NSNumber)
+            }
+            let root = location == .customFolder ? fixture.processed : fixture.right.appendingPathComponent("Processed Files")
+            let syncedRoot = job.usesManagedFolderStructure ? fixture.right.appendingPathComponent("Synced Files") : fixture.right
+            let customPath = job.processedFolder?.localPath
+            let signatures = SourceSignatureRepository(fileURL: fixture.root.appendingPathComponent("signatures.sqlite"))
+            let manifest = DownloadManifestRepository(fileURL: fixture.root.appendingPathComponent("downloads.json"))
+            let engine = SyncEngine(sourceSignatureRepository: signatures, downloadManifestRepository: manifest,
+                sessionFactory: { endpoint, _, managed in
+                    let isProcessed: Bool
+                    if case .processedFiles? = managed { isProcessed = true }
+                    else { isProcessed = endpoint.localPath == customPath }
+                    return try LocalEndpointSession(endpoint: endpoint, managedFolder: managed, matchingImportHook: { phase in
+                        if isProcessed, case .beforeCommit = phase {
+                            // Both processed outputs are visible. Keep size, date
+                            // and inode unchanged to exercise final byte validation.
+                            try changedSidecar.write(to: sourceSidecar)
+                            try FileManager.default.setAttributes([.modificationDate: sourceDate], ofItemAtPath: sourceSidecar.path)
+                        }
+                    })
+                })
+            do {
+                _ = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
+                XCTFail("A changed original companion must prevent final source removal")
+            } catch let failure as SyncRunFailure {
+                XCTAssertEqual(failure.partialResult.processed, 0)
+                XCTAssertTrue(failure.localizedDescription.contains("source changed"))
+            }
+            XCTAssertEqual(try Data(contentsOf: sourceRAW), rawBytes)
+            XCTAssertEqual(try Data(contentsOf: sourceSidecar), changedSidecar)
+            for (url, inode) in zip([sourceRAW, sourceSidecar], sourceInodes) {
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, inode)
+                XCTAssertEqual(attributes[.modificationDate] as? Date, sourceDate)
+            }
+            let published = [root.appendingPathComponent(rawPath), root.appendingPathComponent(sidecarPath)]
+            let publishedBytes = try published.map { try Data(contentsOf: $0) }
+            let publishedAttributes = try published.map { try FileManager.default.attributesOfItem(atPath: $0.path) }
+            XCTAssertEqual(publishedBytes[0], rawBytes)
+            XCTAssertEqual(try XMPSidecar.read(from: published[1]).description, "Original source caption")
+            XCTAssertEqual(try XMPSidecar.read(from: published[1]).headline, "Durable handoff")
+            XCTAssertEqual(try Data(contentsOf: syncedRoot.appendingPathComponent(rawPath)), rawBytes)
+            XCTAssertEqual(try XMPSidecar.read(from: syncedRoot.appendingPathComponent(sidecarPath)).description, "Original source caption")
+
+            let retry = SyncEngine(sourceSignatureRepository: signatures, downloadManifestRepository: manifest)
+            for _ in 0..<2 {
+                do {
+                    _ = try await retry.run(job: job, leftPassword: nil, rightPassword: nil)
+                    XCTFail("A stale processed companion must not authorize removal of an edited source")
+                } catch let failure as SyncRunFailure {
+                    XCTAssertEqual(failure.partialResult.processed, 0)
+                    XCTAssertTrue(failure.localizedDescription.contains("processed folder already contains"))
+                }
+                XCTAssertEqual(try Data(contentsOf: sourceRAW), rawBytes)
+                XCTAssertEqual(try Data(contentsOf: sourceSidecar), changedSidecar)
+                for (url, inode) in zip([sourceRAW, sourceSidecar], sourceInodes) {
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, inode)
+                    XCTAssertEqual(attributes[.modificationDate] as? Date, sourceDate)
+                }
+                for (index, url) in published.enumerated() {
+                    XCTAssertEqual(try Data(contentsOf: url), publishedBytes[index])
+                    let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                    XCTAssertEqual(attributes[.systemFileNumber] as? NSNumber, publishedAttributes[index][.systemFileNumber] as? NSNumber)
+                    XCTAssertEqual(attributes[.modificationDate] as? Date, publishedAttributes[index][.modificationDate] as? Date)
+                }
+            }
+        }
+    }
+
     func testProcessedHandoffLateSidecarCollisionPreservesCompetingFileAndSources() async throws {
         for location in ProcessedFilesLocation.allCases {
             let fixture = try LocalFixture()
