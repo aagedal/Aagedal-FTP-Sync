@@ -9,6 +9,13 @@
 
 ## Unreleased (3.0.0)
 
+- Keep open job settings in step with menu-bar Start/Stop and quick controls.
+  Saving unrelated edits no longer restarts a paused job or restores old filters.
+- Retry failed Keychain password loading without abandoning job edits; load both
+  saved passwords together and preserve manually entered replacements.
+- Add visible Set Up Location / Edit Location actions, show exact sync intervals,
+  and hide the Saved confirmation when there are new unsaved edits.
+
 - Retain a path manifest and output snapshots when ordinary local sync publication
   is interrupted. Block further sync until the partial group is reconciled, and
   preserve concurrent edits during collision-safe rollback.

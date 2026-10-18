@@ -148,6 +148,11 @@ struct JobsWindowView: View {
             handleNewJobDraftRequest()
         }
         .onChange(of: store.jobs.map(\.id)) { _, _ in selectFirstIfNeeded() }
+        .onChange(of: store.jobs) { _, jobs in
+            if let latest = jobs.first(where: { $0.id == editingSession.jobID }) {
+                editingSession.refreshSharedControls(from: latest)
+            }
+        }
         .onChange(of: store.newJobDraftRequestID) { _, _ in handleNewJobDraftRequest() }
         .onChange(of: store.selectedJobID) { _, selectedJobID in
             guard selectedJobID != editingSession.jobID else { return }

@@ -2,6 +2,21 @@ import Foundation
 import XCTest
 @testable import AagedalFTPSync
 
+private final class PasswordRetryReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failedOnce = false
+
+    func read(_ id: String) throws -> String? {
+        try lock.withLock {
+            if id == "right", !failedOnce {
+                failedOnce = true
+                throw AppError.transferFailed("Injected temporary Keychain failure")
+            }
+            return "saved-\(id)"
+        }
+    }
+}
+
 final class JobRepositoryTests: XCTestCase {
     @MainActor
     func testListingFailureWaitsForSiblingCleanupBeforeClosingSessions() async throws {
@@ -716,6 +731,118 @@ final class SyncFailureRepositoryTests: XCTestCase {
 
 @MainActor
 final class AppStorePersistenceTests: XCTestCase {
+    func testSavingOpenSettingsPreservesMenuBarStopAndQuickControls() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("shared-controls-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let session = JobEditingSession()
+        // Simulate settings opened while automatic syncing was enabled, without
+        // starting real transfers in this persistence regression.
+        var openJob = try XCTUnwrap(store.jobs.first)
+        openJob.isEnabled = true
+        session.edit(openJob)
+        session.draft.name = "Renamed in settings"
+        session.draft.filter.excludedFilenamePrefixes = "EDIT"
+        store.setEnabled(false, for: job.id)
+        store.updateInterval(jobID: job.id, seconds: 90)
+        store.updateFilter(jobID: job.id, preset: .jpeg)
+        store.updateFileAge(jobID: job.id, recentHours: 6)
+
+        XCTAssertTrue(session.save(using: store), store.alertMessage ?? "")
+        let saved = try XCTUnwrap(repository.load().first)
+        XCTAssertFalse(saved.isEnabled, "Saving must not restart a job stopped from the menu bar")
+        XCTAssertEqual(saved.intervalSeconds, 90)
+        XCTAssertEqual(saved.filter.preset, .jpeg)
+        XCTAssertEqual(saved.filter.recentHours, 6)
+        XCTAssertEqual(saved.filter.excludedFilenamePrefixes, "EDIT")
+        XCTAssertEqual(saved.name, "Renamed in settings")
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testSharedControlRefreshPreservesLocalEditsAndDiscardUsesLatestSavedValues() {
+        let session = JobEditingSession()
+        var job = SyncJob(name: "Fixture")
+        job.isEnabled = true
+        job.filter.recentHours = 1
+        job.targetCleanup = TargetCleanup(olderThanHours: 3)
+        session.edit(job)
+        session.draft.intervalSeconds = 120
+        session.draft.name = "Local name"
+        var latest = job
+        latest.isEnabled = false
+        latest.intervalSeconds = 90
+        latest.filter.preset = .jpeg
+        latest.filter.recentHours = 6
+        latest.targetCleanup = TargetCleanup(olderThanHours: 7)
+        session.refreshSharedControls(from: latest)
+        XCTAssertFalse(session.draft.isEnabled)
+        XCTAssertEqual(session.draft.intervalSeconds, 120)
+        XCTAssertEqual(session.draft.name, "Local name")
+        XCTAssertEqual(session.draft.filter.preset, .jpeg)
+        XCTAssertEqual(session.draft.filter.recentHours, 6)
+        XCTAssertEqual(session.draft.targetCleanup?.olderThanHours, 7)
+        XCTAssertTrue(session.hasUnsavedChanges)
+        session.markDiscarded()
+        XCTAssertEqual(session.draft, latest)
+        XCTAssertFalse(session.hasUnsavedChanges)
+
+        latest.intervalSeconds = 30
+        session.refreshSharedControls(from: latest)
+        XCTAssertEqual(session.draft, latest)
+        XCTAssertFalse(session.hasUnsavedChanges, "External changes alone must not prompt to save")
+    }
+
+    func testSharedControlRefreshDoesNotMaterializeLegacyLaunchDefault() {
+        let session = JobEditingSession()
+        var job = SyncJob(name: "Legacy launch setting")
+        job.isEnabled = true
+        job.startOnAppLaunch = nil
+        session.edit(job)
+        var stopped = job
+        stopped.isEnabled = false
+        session.refreshSharedControls(from: stopped)
+        XCTAssertEqual(session.draft, stopped)
+        XCTAssertNil(session.draft.startOnAppLaunch)
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
+    func testPasswordLoadingRetriesAtomicallyAndPreservesTypedPassword() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("password-retry-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reads = PasswordRetryReads()
+        let keychain = KeychainStore(passwordReader: { id in try reads.read(id) },
+            passwordWriter: { _, _ in }, passwordRemover: { _ in })
+        let store = makeStore(repository: JobRepository(fileURL: root.appendingPathComponent("jobs.json")),
+                              root: root, keychain: keychain)
+        let session = JobEditingSession()
+        var job = SyncJob(name: "Credentials")
+        job.left = Endpoint(kind: .ftp, host: "left.example.com", username: "desk", credentialID: "left")
+        job.right = Endpoint(kind: .ftp, host: "right.example.com", username: "desk", credentialID: "right")
+        session.edit(job)
+        session.loadCredentials(using: store)
+        XCTAssertNotNil(session.credentialLoadError)
+        XCTAssertEqual(session.leftPassword, "")
+        XCTAssertEqual(session.rightPassword, "")
+        XCTAssertFalse(session.hasUnsavedChanges)
+        session.leftPassword = "typed replacement"
+        session.draft.name = "Keep my edits"
+        session.loadCredentials(using: store)
+        XCTAssertNil(session.credentialLoadError)
+        XCTAssertEqual(session.leftPassword, "typed replacement")
+        XCTAssertEqual(session.rightPassword, "saved-right")
+        XCTAssertEqual(session.draft.name, "Keep my edits")
+        XCTAssertTrue(session.hasUnsavedChanges)
+        session.markDiscarded()
+        XCTAssertEqual(session.leftPassword, "saved-left")
+        XCTAssertEqual(session.rightPassword, "saved-right")
+        XCTAssertFalse(session.hasUnsavedChanges)
+    }
+
     func testFailedAddDoesNotPublishTheNewJob() {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("failed-add-\(UUID().uuidString)", isDirectory: true)

@@ -1197,6 +1197,51 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Edited in UI smoke test"].exists)
     }
 
+    func testLocationSetupHasDirectActionsAndReturnsToUnsavedDraft() {
+        launch(seedJob: true)
+        let nameField = element("job-name")
+        replaceText(in: nameField, with: "Location setup draft")
+        let editSource = app.buttons["Source: Edit Location"]
+        XCTAssertTrue(editSource.waitForExistence(timeout: 3))
+        XCTAssertTrue(editSource.isHittable)
+        editSource.click()
+        XCTAssertTrue(app.staticTexts["Source Settings"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Choose…"].exists)
+        let sheetScreenshot = XCTAttachment(screenshot: app.screenshot())
+        sheetScreenshot.name = "Source location settings"
+        sheetScreenshot.lifetime = .keepAlways
+        add(sheetScreenshot)
+        app.buttons["Done"].click()
+        XCTAssertTrue(nameField.waitForExistence(timeout: 3))
+        XCTAssertEqual(nameField.value as? String, "Location setup draft")
+        XCTAssertTrue(app.buttons["Destination: Edit Location"].isHittable)
+        let mainScreenshot = XCTAttachment(screenshot: app.screenshot())
+        mainScreenshot.name = "Job setup with direct location actions"
+        mainScreenshot.lifetime = .keepAlways
+        add(mainScreenshot)
+    }
+
+    func testMenuBarStopUpdatesOpenSettingsAndSaveKeepsJobPaused() {
+        launch(seedJob: true)
+        openStatusMenu()
+        app.buttons["Start"].click()
+        dismissStatusPanelIfNeeded()
+        let automatic = element("automatic-sync-enabled")
+        XCTAssertTrue(automatic.waitForExistence(timeout: 3))
+        XCTAssertEqual(String(describing: automatic.value ?? ""), "1")
+        replaceText(in: element("job-name"), with: "Keep stopped after save")
+        openStatusMenu()
+        app.buttons["Stop"].click()
+        dismissStatusPanelIfNeeded()
+        XCTAssertEqual(String(describing: automatic.value ?? ""), "0")
+        XCTAssertEqual(element("job-name").value as? String, "Keep stopped after save")
+        element("save-job").click()
+        XCTAssertTrue(app.staticTexts["Saved"].waitForExistence(timeout: 3))
+        openStatusMenu()
+        XCTAssertTrue(app.buttons["Start"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["Stop"].exists)
+    }
+
     func testProgrammedFilenameFilterCanBeSavedForServerDownload() {
         launchVersion3(session: UUID().uuidString, fixture: "populated",
                        expectsStartupWindow: false, seedRemoteJob: true)

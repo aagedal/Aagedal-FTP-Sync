@@ -85,7 +85,7 @@ struct JobDetailEditor: View {
                         .font(.caption)
                         .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                         .lineLimit(3)
-                } else if saveConfirmation {
+                } else if saveConfirmation && !session.hasUnsavedChanges {
                     Label("Saved", systemImage: "checkmark.circle.fill")
                         .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
                 }
@@ -143,6 +143,7 @@ struct JobDetailEditor: View {
             Text(processedFolderError ?? "")
         }
         .alert("Saved Passwords", isPresented: $showCredentialLoadError) {
+            Button("Retry") { session.loadCredentials(using: store) }
             Button("OK") {}
         } message: {
             Text(session.credentialLoadError ?? "")
@@ -190,9 +191,17 @@ struct JobDetailEditor: View {
                 Toggle("Two-way sync", isOn: twoWayBinding)
             }
 
+            if let message = session.credentialLoadError {
+                Section("Saved passwords need attention") {
+                    Text(message).font(.callout)
+                    Button("Retry Loading Passwords") { session.loadCredentials(using: store) }
+                }
+            }
+
             Section("Automatic syncing") {
                 Toggle("Automatic syncing enabled", isOn: $session.draft.isEnabled)
                     .help("Repeatedly sync this job while the app is open.")
+                    .accessibilityIdentifier("automatic-sync-enabled")
                 LabeledContent("Check every") {
                     HStack {
                         Slider(value: intervalSecondsBinding, in: 5...300)
@@ -686,8 +695,10 @@ struct JobDetailEditor: View {
     }
 
     private var intervalLabel: String {
-        if draft.intervalSeconds < 60 { return "\(Int(draft.intervalSeconds)) sec" }
-        return "\(Int(draft.intervalSeconds / 60)) min"
+        let seconds = Int(draft.intervalSeconds)
+        if seconds < 60 { return "\(seconds) sec" }
+        let remainder = seconds % 60
+        return remainder == 0 ? "\(seconds / 60) min" : "\(seconds / 60)m \(remainder)s"
     }
 
     private var destinationLocationTitle: String {

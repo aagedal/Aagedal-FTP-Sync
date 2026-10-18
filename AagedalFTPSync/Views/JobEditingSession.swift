@@ -63,16 +63,41 @@ final class JobEditingSession: ObservableObject {
 
     func loadCredentials(using store: AppStore) {
         guard hasJob, !credentialsLoaded else { return }
-        credentialsLoaded = true
         do {
-            leftPassword = try store.password(for: draft.left)
-            rightPassword = try store.password(for: draft.right)
-            savedLeftPassword = leftPassword
-            savedRightPassword = rightPassword
+            // Read both before publishing either, so a partial Keychain failure
+            // cannot dirty the draft or overwrite a password entered during retry.
+            let loadedLeft = try store.password(for: draft.left)
+            let loadedRight = try store.password(for: draft.right)
+            if leftPassword == savedLeftPassword { leftPassword = loadedLeft }
+            if rightPassword == savedRightPassword { rightPassword = loadedRight }
+            credentialsLoaded = true
+            savedLeftPassword = loadedLeft
+            savedRightPassword = loadedRight
             credentialLoadError = nil
         } catch {
             credentialLoadError = "Saved passwords could not be loaded from Keychain. No password changes will be saved until this is resolved. \(error.localizedDescription)"
         }
+    }
+
+    /// Rebase controls shared with the menu bar without discarding local edits.
+    func refreshSharedControls(from latest: SyncJob) {
+        guard hasJob, let baseline = savedJob, latest.id == draft.id else { return }
+        mergeSharedControl(\.isEnabled, baseline: baseline, latest: latest)
+        mergeSharedControl(\.startOnAppLaunch, baseline: baseline, latest: latest)
+        mergeSharedControl(\.intervalSeconds, baseline: baseline, latest: latest)
+        mergeSharedControl(\.filter.preset, baseline: baseline, latest: latest)
+        mergeSharedControl(\.filter.recentHours, baseline: baseline, latest: latest)
+        // Quick-control age changes can also move the cleanup safety boundary.
+        mergeSharedControl(\.targetCleanup, baseline: baseline, latest: latest)
+    }
+
+    private func mergeSharedControl<Value: Equatable>(
+        _ keyPath: WritableKeyPath<SyncJob, Value>, baseline: SyncJob, latest: SyncJob
+    ) {
+        if draft[keyPath: keyPath] == baseline[keyPath: keyPath] {
+            draft[keyPath: keyPath] = latest[keyPath: keyPath]
+        }
+        savedJob?[keyPath: keyPath] = latest[keyPath: keyPath]
     }
 
     @discardableResult
@@ -81,6 +106,7 @@ final class JobEditingSession: ObservableObject {
         // Metadata is edited in its own window. Merge the latest persisted programming
         // so an older job-settings draft cannot overwrite it.
         let latest = store.jobs.first(where: { $0.id == draft.id })
+        if let latest { refreshSharedControls(from: latest) }
         draft.metadataAutomation = latest?.metadataAutomation
         // A metadata save in another window may have frozen this zone while the
         // settings draft was open. Keep it unless this editor chose a replacement.

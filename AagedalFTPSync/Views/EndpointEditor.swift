@@ -63,6 +63,12 @@ struct EndpointSummaryCard: View {
 
             Spacer(minLength: 0)
 
+            Button(endpoint.validationMessage == nil ? "Edit Location…" : "Set Up Location…") {
+                showSettings = true
+            }
+            .accessibilityLabel("\(title): \(endpoint.validationMessage == nil ? "Edit Location" : "Set Up Location")")
+            .help("Choose a local folder or configure a server connection.")
+
             if endpoint.validationMessage == nil {
                 Label("Configured", systemImage: "checkmark.circle.fill")
                     .labelStyle(AccessibleStatusLabelStyle(symbolColor: .green))
