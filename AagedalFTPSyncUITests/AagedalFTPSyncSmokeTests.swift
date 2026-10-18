@@ -148,20 +148,34 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         try verifyInterruptedOrdinarySync(managed: false, rawExtension: "cr3")
     }
 
-    private func verifyInterruptedOrdinarySync(managed: Bool, rawExtension: String? = nil) throws {
+    func testManagedProcessedHandoffRetainsRecoveryAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, processedHandoff: true)
+    }
+
+    func testManagedCameraRawProcessedHandoffRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, rawExtension: "arw", processedHandoff: true)
+    }
+
+    func testManagedCanonRawProcessedHandoffRetainsPartialPairAfterInterruption() throws {
+        try verifyInterruptedOrdinarySync(managed: true, rawExtension: "cr3", processedHandoff: true)
+    }
+
+    private func verifyInterruptedOrdinarySync(managed: Bool, rawExtension: String? = nil, processedHandoff: Bool = false) throws {
         let raw = rawExtension != nil
         if raw && ProcessInfo.processInfo.environment["AAGEDAL_NATIVE_RAW_RECOVERY"] != "1" {
             throw XCTSkip("Stage authorized camera RAW in the DEBUG bundle and opt in")
         }
         launch(seedJob: true, recoveryFixture: true, managedRecovery: managed,
                imageRecovery: true, interruptPublication: true, rawRecovery: raw,
-               rawExtension: rawExtension ?? "arw", interruptionPhase: "published-0", ordinarySyncInterruption: true)
+               rawExtension: rawExtension ?? "arw", interruptionPhase: "published-0",
+               ordinarySyncInterruption: !processedHandoff, processedHandoffInterruption: processedHandoff)
         app.buttons["Sync Now"].click()
         let stopped = XCTNSPredicateExpectation(
             predicate: NSPredicate { _, _ in self.app.state == .notRunning }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [stopped], timeout: 20), .completed)
         app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION")
         app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC")
+        app.launchEnvironment.removeValue(forKey: "AAGEDAL_UI_TEST_INTERRUPT_PROCESSED_HANDOFF")
         app.launch()
         waitForJobsWindow(seedJob: true)
         app.buttons["Sync Now"].click()
@@ -179,7 +193,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         guard root.lastPathComponent == app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"],
               root.deletingLastPathComponent().lastPathComponent == "AagedalFTPSyncUITests",
               endpoint.lastPathComponent == "Destination",
-              destination.lastPathComponent == (managed ? "Synced Files" : "Destination"),
+              destination.lastPathComponent == (processedHandoff ? "Processed Files" : (managed ? "Synced Files" : "Destination")),
               recovery.lastPathComponent.hasPrefix(".aagedal-sync-"),
               recovery.pathExtension == "transaction" else {
             XCTFail("Refusing recovery outside the isolated fixture")
@@ -207,7 +221,12 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             try assertRecoveryCity(published, raw: false)
         }
         let retained = try FileManager.default.contentsOfDirectory(at: recovery, includingPropertiesForKeys: nil)
-        let evidence = try (retained + [published] + sourceFiles).map { url in
+        let syncedFiles = processedHandoff ? names.map { endpoint.appendingPathComponent("Synced Files/" + $0) } : []
+        for (index, synced) in syncedFiles.enumerated() {
+            XCTAssertEqual(try Data(contentsOf: synced), try Data(contentsOf: recovery.appendingPathComponent("output-copy-\(index)")))
+            XCTAssertEqual(try synced.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+        }
+        let evidence = try (retained + [published] + sourceFiles + syncedFiles).map { url in
             (url, try Data(contentsOf: url), try FileManager.default.attributesOfItem(atPath: url.path))
         }
         let journals = ["metadata-audit-v1.json", "download-manifest-v1.json"].map { root.appendingPathComponent($0) }
@@ -234,10 +253,16 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         // Explicit test-assisted choice: preserve the partial publication and
         // entire transaction outside admission, then retry the intact source.
         app.terminate()
-        let preserved = root.appendingPathComponent("reconciled-ordinary-sync")
-        app.launchEnvironment["AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] = "1"
+        let preserved = root.appendingPathComponent(processedHandoff ? "reconciled-processed-handoff" : "reconciled-ordinary-sync")
+        app.launchEnvironment[processedHandoff ? "AAGEDAL_UI_TEST_RECONCILE_PROCESSED_HANDOFF" : "AAGEDAL_UI_TEST_RECONCILE_ORDINARY_SYNC"] = "1"
         app.launch()
         waitForJobsWindow(seedJob: true)
+        for (url, bytes, attributes) in evidence where syncedFiles.contains(url) {
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+            let after = try FileManager.default.attributesOfItem(atPath: url.path)
+            XCTAssertEqual(after[.modificationDate] as? Date, attributes[.modificationDate] as? Date)
+            XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[.systemFileNumber] as? NSNumber)
+        }
         app.buttons["Sync Now"].click()
         XCTAssertTrue(app.staticTexts["The latest sync completed."].waitForExistence(timeout: 15))
         let output = destination.appendingPathComponent(raw ? names[1] : names[0])
@@ -251,8 +276,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             if managed { XCTAssertFalse(FileManager.default.fileExists(atPath: source.path)) }
             else { XCTAssertEqual(try Data(contentsOf: source), bytes) }
         }
-        var publicationURLs = names.map { destination.appendingPathComponent($0) }
-        if managed {
+        var publicationURLs = names.map { destination.appendingPathComponent($0) } + syncedFiles
+        if managed && !processedHandoff {
             let processed = endpoint.appendingPathComponent("Processed Files")
             let processedMetadata = processed.appendingPathComponent(raw ? names[1] : names[0])
             try assertRecoveryCity(processedMetadata, raw: raw)
@@ -263,7 +288,12 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
                 publicationURLs.append(url)
             }
         }
-        let rescued = root.appendingPathComponent("rescued-ordinary-publication")
+        for (index, url) in syncedFiles.enumerated() {
+            if raw && index == 0 { XCTAssertEqual(try Data(contentsOf: url), sourceBytes[0]) }
+            else { try assertRecoveryCity(url, raw: raw) }
+            XCTAssertEqual(try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, date)
+        }
+        let rescued = root.appendingPathComponent(processedHandoff ? "rescued-processed-publication" : "rescued-ordinary-publication")
         for (url, bytes, attributes) in evidence where url == published || retained.contains(url) {
             let moved = url == published ? rescued : preserved.appendingPathComponent(url.lastPathComponent)
             XCTAssertEqual(try Data(contentsOf: moved), bytes)
@@ -1839,7 +1869,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         rawExtension: String = "arw",
         interruptionPhase: String = "beforeCommit",
         editedRawConflict: Bool = false,
-        ordinarySyncInterruption: Bool = false
+        ordinarySyncInterruption: Bool = false,
+        processedHandoffInterruption: Bool = false
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
@@ -1863,6 +1894,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
             app.launchEnvironment["AAGEDAL_UI_TEST_RAW_EXTENSION"] = rawExtension
         }
         if ordinarySyncInterruption { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_ORDINARY_SYNC"] = "1" }
+        if processedHandoffInterruption { app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PROCESSED_HANDOFF"] = "1" }
         if interruptPublication {
             app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPT_PUBLICATION"] = "1"
             app.launchEnvironment["AAGEDAL_UI_TEST_INTERRUPTION_PHASE"] = interruptionPhase

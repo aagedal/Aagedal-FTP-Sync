@@ -260,17 +260,74 @@ final class LocalOrdinaryPublicationTests: XCTestCase {
         }
     }
 
-    private func reconciliationFixture(managed: Bool) throws -> (base: URL, destination: URL, recovery: URL) {
+    func testProcessedHandoffReconciliationPreservesSyncedSourcesAndEvidence() throws {
+        let f = try reconciliationFixture(managed: true, processedHandoff: true)
+        let before = try fileEvidence(in: f.base)
+        let attributes = try before.keys.reduce(into: [String: [FileAttributeKey: Any]]()) { result, path in
+            result[path] = try FileManager.default.attributesOfItem(atPath: path)
+        }
+        try UITestSupport.reconcileInterruptedOrdinarySyncFixture(rootURL: f.base, managed: true,
+            raw: true, rawExtension: "cr3", processedHandoff: true)
+        for (path, bytes) in before {
+            let target: URL
+            if path == f.destination.appendingPathComponent("recovery.cr3").path {
+                target = f.base.appendingPathComponent("rescued-processed-publication")
+            } else if path.hasPrefix(f.recovery.path + "/") {
+                target = f.base.appendingPathComponent("reconciled-processed-handoff")
+                    .appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
+            } else { target = URL(fileURLWithPath: path) }
+            XCTAssertEqual(try Data(contentsOf: target), bytes)
+            let after = try FileManager.default.attributesOfItem(atPath: target.path)
+            XCTAssertEqual(after[.modificationDate] as? Date, attributes[path]?[.modificationDate] as? Date)
+            XCTAssertEqual(after[.systemFileNumber] as? NSNumber, attributes[path]?[.systemFileNumber] as? NSNumber)
+        }
+        let reconciled = try fileEvidence(in: f.base)
+        try UITestSupport.reconcileInterruptedOrdinarySyncFixture(rootURL: f.base, managed: true,
+            raw: true, rawExtension: "cr3", processedHandoff: true)
+        XCTAssertEqual(try fileEvidence(in: f.base), reconciled)
+    }
+
+    func testProcessedHandoffReconciliationRejectsChangedEvidenceBeforeMovingAnything() throws {
+        for defect in ["source-raw", "source-xmp", "synced-raw", "synced-xmp", "missing-synced",
+                       "manifest", "redirected-manifest", "marker"] {
+            let f = try reconciliationFixture(managed: true, processedHandoff: true)
+            let manager = FileManager.default
+            switch defect {
+            case "source-raw": try Data("changed".utf8).write(to: f.base.appendingPathComponent("Source/recovery.cr3"))
+            case "source-xmp": try Data("changed".utf8).write(to: f.base.appendingPathComponent("Source/recovery.xmp"))
+            case "synced-raw": try Data("changed".utf8).write(to: f.base.appendingPathComponent("Destination/Synced Files/recovery.cr3"))
+            case "synced-xmp": try Data("changed".utf8).write(to: f.base.appendingPathComponent("Destination/Synced Files/recovery.xmp"))
+            case "missing-synced": try manager.removeItem(at: f.base.appendingPathComponent("Destination/Synced Files/recovery.xmp"))
+            case "manifest": try Data("{}".utf8).write(to: f.recovery.appendingPathComponent("recovery.json"))
+            case "redirected-manifest":
+                let redirected = f.base.appendingPathComponent("redirected.json")
+                try manager.moveItem(at: f.recovery.appendingPathComponent("recovery.json"), to: redirected)
+                try manager.createSymbolicLink(at: f.recovery.appendingPathComponent("recovery.json"), withDestinationURL: redirected)
+            default: try manager.removeItem(at: f.base.appendingPathComponent("metadata-recovery-fixture-seeded"))
+            }
+            let before = try fileEvidence(in: f.base)
+            XCTAssertThrowsError(try UITestSupport.reconcileInterruptedOrdinarySyncFixture(rootURL: f.base,
+                managed: true, raw: true, rawExtension: "cr3", processedHandoff: true), defect)
+            XCTAssertEqual(try fileEvidence(in: f.base), before, defect)
+            XCTAssertTrue(manager.fileExists(atPath: f.recovery.path))
+            XCTAssertTrue(manager.fileExists(atPath: f.destination.appendingPathComponent("recovery.cr3").path))
+            XCTAssertFalse(manager.fileExists(atPath: f.base.appendingPathComponent("rescued-processed-publication").path))
+            XCTAssertFalse(manager.fileExists(atPath: f.base.appendingPathComponent("reconciled-processed-handoff").path))
+        }
+    }
+
+    private func reconciliationFixture(managed: Bool, processedHandoff: Bool = false) throws -> (base: URL, destination: URL, recovery: URL) {
         let base = (try Version3StartupPaths.canonicalDirectory(FileManager.default.temporaryDirectory))
             .appendingPathComponent("ordinary-reconcile-\(UUID())")
         addTeardownBlock { try? FileManager.default.removeItem(at: base) }
-        let destination = base.appendingPathComponent(managed ? "Destination/Synced Files" : "Destination")
+        let synced = base.appendingPathComponent(managed ? "Destination/Synced Files" : "Destination")
+        let destination = processedHandoff ? base.appendingPathComponent("Destination/Processed Files") : synced
         let recovery = destination.appendingPathComponent(".aagedal-sync-test.transaction")
-        for directory in [base.appendingPathComponent("Source"), destination.appendingPathComponent("nested"), recovery] {
+        for directory in [base.appendingPathComponent("Source"), synced.appendingPathComponent("nested"), recovery] {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
         for (name, contents) in [("recovery.cr3", "opaque camera RAW"), ("recovery.xmp", "original camera XMP")] {
-            for directory in [base.appendingPathComponent("Source"), destination.appendingPathComponent("nested")] {
+            for directory in [base.appendingPathComponent("Source"), synced.appendingPathComponent("nested")] {
                 try Data(contents.utf8).write(to: directory.appendingPathComponent(name))
             }
         }
@@ -278,6 +335,10 @@ final class LocalOrdinaryPublicationTests: XCTestCase {
         try Data("opaque camera RAW".utf8).write(to: recovery.appendingPathComponent("output-copy-0"))
         for filename in ["output-stage-1", "output-copy-1"] {
             try Data("enriched camera XMP".utf8).write(to: recovery.appendingPathComponent(filename))
+        }
+        if processedHandoff {
+            try Data("opaque camera RAW".utf8).write(to: synced.appendingPathComponent("recovery.cr3"))
+            try Data("enriched camera XMP".utf8).write(to: synced.appendingPathComponent("recovery.xmp"))
         }
         let manifest = LocalEndpointSession.MatchingRecoveryManifest(schemaVersion: 1, originals: [],
             outputs: ["recovery.cr3", "recovery.xmp"].enumerated().map { index, path in
