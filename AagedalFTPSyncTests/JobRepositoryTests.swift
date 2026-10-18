@@ -731,6 +731,27 @@ final class SyncFailureRepositoryTests: XCTestCase {
 
 @MainActor
 final class AppStorePersistenceTests: XCTestCase {
+    func testExternalCopySuspensionRejectsPendingQuickControlSave() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("suspended-quick-save-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let saved = try XCTUnwrap(store.jobs.first)
+        let bytes = try Data(contentsOf: root.appendingPathComponent("jobs.json"))
+
+        store.suspendForExternalWriter()
+        store.updateInterval(jobID: job.id, seconds: 90)
+
+        XCTAssertTrue(store.isSuspendedForExternalWriter)
+        XCTAssertEqual(store.jobs, [saved])
+        XCTAssertEqual(try repository.load(), [saved])
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("jobs.json")), bytes)
+    }
+
     func testSavedCustomFileAgeRemainsAnExactChoiceInBothEditors() throws {
         for (hours, expectedTitle) in [(2, "Last 2 hours"), (336, "Last 14 days")] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("custom-file-age-\(UUID())")

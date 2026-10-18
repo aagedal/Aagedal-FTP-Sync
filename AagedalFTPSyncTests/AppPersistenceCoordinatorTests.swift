@@ -5,6 +5,84 @@ import XCTest
 
 @MainActor
 final class AppPersistenceCoordinatorTests: XCTestCase {
+    func testSuspensionRejectsCredentialLibraryAndImportChangesBeforeWriting() throws {
+        var job = SyncJob(name: "Saved job")
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        job.isEnabled = false
+        job.startsOnAppLaunch = false
+        let layout = try startupLayout(jobs: [job])
+        let keychain = TestKeychain()
+        let store = try paused(layout, keychain: keychain.store)
+        let profile = ServerProfile(name: "Saved server", kind: .ftp, host: "example.test", username: "desk")
+        XCTAssertTrue(store.saveServerProfile(profile, password: "saved password"))
+        let photographer = PhotographerProfile(name: "Saved photographer", filenamePrefix: "AA", creator: "Photographer", copyrightNotice: "")
+        let preset = MetadataPreset(name: "Saved preset")
+        XCTAssertTrue(store.savePhotographerProfile(photographer))
+        XCTAssertTrue(store.saveMetadataPreset(preset))
+        let library = try XCTUnwrap(store.photographerLibraryExportData())
+        let package = try XCTUnwrap(store.configurationExportData(scope: .package, password: nil))
+        func savedFiles() throws -> [String: Data] {
+            let files = try FileManager.default.contentsOfDirectory(at: layout.root, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasSuffix(".json") || $0.lastPathComponent.hasSuffix(".backup") }
+            return try Dictionary(uniqueKeysWithValues: files.map { ($0.lastPathComponent, try Data(contentsOf: $0)) })
+        }
+        let savedJobs = store.jobs
+        let savedProfiles = store.serverProfiles
+        let savedPhotographers = store.photographerLibrary
+        let savedPresets = store.metadataPresets
+        let bytes = try savedFiles()
+        let passwords = keychain.valuesSnapshot()
+        let writeCount = keychain.writeCount
+        let removedIDs = keychain.removedCredentialIDs
+        var changedJob = try XCTUnwrap(store.jobs.first)
+        changedJob.name = "Rejected rename"
+        changedJob.left = Endpoint(kind: .ftp, host: "new.example.test", username: "new")
+        var changedProfile = profile; changedProfile.host = "rejected.example.test"
+        var changedPhotographer = photographer; changedPhotographer.name = "Rejected photographer"
+        var changedPreset = preset; changedPreset.name = "Rejected preset"
+
+        store.suspendForExternalWriter()
+        let attempts: [(String, () -> Void)] = [
+            ("job save", { XCTAssertFalse(store.saveJob(changedJob, leftPassword: "rejected password", rightPassword: "")) }),
+            ("server save", { XCTAssertFalse(store.saveServerProfile(changedProfile, password: "rejected password")) }),
+            ("server copy", { XCTAssertNil(store.duplicateServerProfile(profile.id)) }),
+            ("server delete", { XCTAssertFalse(store.removeServerProfile(profile.id)) }),
+            ("automation", { XCTAssertFalse(store.saveMetadataAutomation(MetadataAutomation(), for: job.id)) }),
+            ("synced automation", { XCTAssertFalse(store.applySyncedMetadataAutomation(MetadataAutomation(), for: job.id)) }),
+            ("photographer save", { XCTAssertFalse(store.savePhotographerProfile(changedPhotographer)) }),
+            ("photographer delete", { XCTAssertFalse(store.removePhotographerProfile(photographer.id)) }),
+            ("preset save", { XCTAssertFalse(store.saveMetadataPreset(changedPreset)) }),
+            ("preset delete", { XCTAssertFalse(store.removeMetadataPreset(preset.id)) }),
+            ("library import", { XCTAssertNil(store.importPhotographerLibrary(from: library)) }),
+            ("package import", { XCTAssertNil(store.importConfiguration(from: package, password: nil)) }),
+            ("interval", { store.updateInterval(jobID: job.id, seconds: 90) }),
+            ("file age", { store.updateFileAge(jobID: job.id, recentHours: 6) }),
+            ("file type", { store.updateFilter(jobID: job.id, preset: .jpeg) }),
+            ("stop all", { store.stopAll() }),
+            ("job delete", { store.removeJob(job.id) }),
+            ("job add", { _ = store.addJob() }),
+            ("clear history", { store.clearSyncFailureHistory(for: job.id) }),
+        ]
+        for (name, attempt) in attempts {
+            store.alertMessage = nil
+            attempt()
+            XCTAssertEqual(store.jobs, savedJobs, name)
+            XCTAssertEqual(store.serverProfiles, savedProfiles, name)
+            XCTAssertEqual(store.photographerLibrary, savedPhotographers, name)
+            XCTAssertEqual(store.metadataPresets, savedPresets, name)
+            XCTAssertEqual(try savedFiles(), bytes, name)
+            XCTAssertEqual(keychain.valuesSnapshot(), passwords, name)
+            XCTAssertEqual(keychain.writeCount, writeCount, name)
+            XCTAssertEqual(keychain.removedCredentialIDs, removedIDs, name)
+            XCTAssertTrue(store.alertMessage?.contains("Quit every copy") == true, name)
+            XCTAssertTrue(store.isSuspendedForExternalWriter, name)
+        }
+        var copy = job; copy.id = UUID()
+        XCTAssertThrowsError(try store.installCalendarReceiveCopy(source: job, duplicate: copy))
+        XCTAssertEqual(try savedFiles(), bytes)
+    }
+
     private func startupLayout(jobs: [SyncJob] = []) throws -> AppStorageLayout {
         let root = URL(fileURLWithPath: "/private/tmp").appendingPathComponent("v3-startup-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

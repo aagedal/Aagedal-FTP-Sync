@@ -248,6 +248,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveJob(_ job: SyncJob, leftPassword: String, rightPassword: String) -> Bool {
+        guard admitConfigurationChange() else { return false }
         guard !isJobResetting(job.id) else {
             alertMessage = "Wait for Reset Job to finish before saving changes to this job."
             return false
@@ -299,6 +300,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveServerProfile(_ profile: ServerProfile, password: String) -> Bool {
+        guard admitConfigurationChange() else { return false }
         if let message = profile.validationMessage {
             alertMessage = message
             return false
@@ -342,6 +344,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func duplicateServerProfile(_ profileID: UUID) -> ServerProfile? {
+        guard admitConfigurationChange() else { return nil }
         do {
             let result = try persistenceCoordinator.duplicateServerProfile(
                 profileID: profileID,
@@ -362,6 +365,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func removeServerProfile(_ profileID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             let result = try persistenceCoordinator.removeServerProfile(
                 profileID: profileID,
@@ -412,6 +416,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             guard let updated = try metadataLibraryCoordinator.saveAutomation(
                 automation,
@@ -431,6 +436,7 @@ final class AppStore: ObservableObject {
     @discardableResult
     func applySyncedMetadataAutomation(_ automation: MetadataAutomation, for jobID: UUID,
                                       protocolVersion: MetadataCalendarProtocol = .legacy) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             try MetadataCalendarNamespaceGate.validate(automation, for: protocolVersion)
             if let metadataCalendarRepository {
@@ -512,6 +518,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func importPhotographerLibrary(from data: Data) -> PhotographerLibraryImportResult? {
+        guard admitConfigurationChange() else { return nil }
         do {
             let importResult = try metadataLibraryCoordinator.importLibrary(
                 from: data,
@@ -607,6 +614,7 @@ final class AppStore: ObservableObject {
         metadataTargetJobID: UUID? = nil,
         allowImportedAppleCoordinates: Bool = false
     ) -> ConfigurationImportResult? {
+        guard admitConfigurationChange() else { return nil }
         do {
             let prepared = try configurationTransferCoordinator.prepareImport(
                 from: data,
@@ -670,6 +678,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func savePhotographerProfile(_ profile: PhotographerProfile) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             let updated = try metadataLibraryCoordinator.saveProfile(
                 profile,
@@ -686,6 +695,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func removePhotographerProfile(_ photographerID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             let updated = try metadataLibraryCoordinator.removeProfile(
                 photographerID,
@@ -702,6 +712,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func saveMetadataPreset(_ preset: MetadataPreset) -> Bool {
+        guard admitConfigurationChange() else { return false }
         let normalized = preset.normalized()
         do {
             try Self.validateMetadataActivation(jobs: [], hasActivatedLibraryValues: normalized.hasActivatedTemplates,
@@ -734,6 +745,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     func removeMetadataPreset(_ presetID: UUID) -> Bool {
+        guard admitConfigurationChange() else { return false }
         let updatedPresets = metadataPresets.filter { $0.id != presetID }
         guard updatedPresets.count != metadataPresets.count else { return true }
         do {
@@ -770,6 +782,9 @@ final class AppStore: ObservableObject {
     /// are retained; password editing/removal already accounts for references from other jobs.
     @discardableResult
     func installCalendarReceiveCopy(source: SyncJob, duplicate: SyncJob) throws -> SyncJob {
+        guard admitConfigurationChange() else {
+            throw AppError.invalidConfiguration(Self.externalWriterSuspensionMessage)
+        }
         // The receipt journal may replay after jobs were saved but the link was not.
         if let existing = jobs.first(where: { $0.id == duplicate.id }) { return existing }
         try validateCalendarReceiveCopy(source: source, duplicate: duplicate)
@@ -1132,7 +1147,7 @@ final class AppStore: ObservableObject {
         for task in metadataReprocessTasks.values { task.cancel() }
         for task in resetTasks.values { task.cancel() }
         for task in sourceSignatureMaintenanceTasks.values { task.cancel() }
-        alertMessage = "Another copy of Aagedal FTP Sync was detected. New work is blocked and active operations are being cancelled. Quit the other copy, then quit and reopen this app before continuing."
+        alertMessage = Self.externalWriterSuspensionMessage
     }
 
     struct LaunchRestoration: Equatable {
@@ -1251,6 +1266,7 @@ final class AppStore: ObservableObject {
     }
 
     func clearSyncFailureHistory(for jobID: UUID) {
+        guard admitConfigurationChange() else { return }
         do {
             let retained = try persistenceCoordinator.removeSyncFailures(jobID: jobID)
             syncFailureEntries = Dictionary(grouping: retained, by: \.jobID)
@@ -1572,6 +1588,7 @@ final class AppStore: ObservableObject {
         _ updatedJobs: [SyncJob],
         errorPrefix: String = "Changes could not be saved"
     ) -> Bool {
+        guard admitConfigurationChange() else { return false }
         do {
             try persistenceCoordinator.saveJobs(updatedJobs)
             jobs = updatedJobs
@@ -1580,6 +1597,19 @@ final class AppStore: ObservableObject {
             alertMessage = "\(errorPrefix): \(error.localizedDescription)"
             return false
         }
+    }
+
+    private static let externalWriterSuspensionMessage = "Another copy of Aagedal FTP Sync was detected. New work and settings changes are blocked and active operations are being cancelled. Quit every copy, then reopen this app before continuing."
+
+    /// A disabled view cannot stop callbacks that were already queued, including
+    /// quick-control commits on disappearance. Admit settings writes here as well.
+    /// Completion audit/failure writes remain available for operations draining.
+    private func admitConfigurationChange() -> Bool {
+        guard !isSuspendedForExternalWriter else {
+            alertMessage = Self.externalWriterSuspensionMessage
+            return false
+        }
+        return true
     }
 
     private func appendAlert(_ message: String) {
