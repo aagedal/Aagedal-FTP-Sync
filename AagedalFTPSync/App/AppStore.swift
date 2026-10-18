@@ -396,6 +396,10 @@ final class AppStore: ObservableObject {
 
     func updateFileAge(jobID: UUID, recentHours: Int?) {
         guard let index = jobs.firstIndex(where: { $0.id == jobID }) else { return }
+        guard recentHours != nil || jobs[index].targetCleanup == nil else {
+            alertMessage = "Turn off automatic cleanup in Job Settings before choosing Any age."
+            return
+        }
         var updatedJobs = jobs
         updatedJobs[index].filter.recentHours = recentHours
         if let recentHours,

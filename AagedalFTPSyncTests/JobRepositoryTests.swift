@@ -731,6 +731,82 @@ final class SyncFailureRepositoryTests: XCTestCase {
 
 @MainActor
 final class AppStorePersistenceTests: XCTestCase {
+    func testAnyAgeCannotInvalidateAutomaticCleanupJob() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cleanup-any-age-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        job.filter.recentHours = 1
+        job.targetCleanup = TargetCleanup(olderThanHours: 3)
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let saved = try XCTUnwrap(store.jobs.first)
+        XCTAssertNil(saved.validationMessage)
+
+        store.updateFileAge(jobID: job.id, recentHours: nil)
+
+        XCTAssertEqual(store.jobs, [saved])
+        XCTAssertEqual(try repository.load(), [saved])
+        XCTAssertNil(store.jobs.first?.validationMessage)
+        XCTAssertEqual(store.alertMessage, "Turn off automatic cleanup in Job Settings before choosing Any age.")
+    }
+
+    func testValidQuickFileAgeChangesPreserveCleanupBoundary() throws {
+        for (requestedAge, cleanupAge, expectedCleanup) in [
+            (nil as Int?, nil as Int?, nil as Int?),
+            (2, 3, 3),
+            (3, 3, 4),
+            (6, 3, 7),
+        ] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("cleanup-valid-age-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let repository = JobRepository(fileURL: root.appendingPathComponent("jobs.json"))
+            let store = makeStore(repository: repository, root: root)
+            var job = store.makeJobDraft()
+            job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+            job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+            job.filter.recentHours = 1
+            job.targetCleanup = cleanupAge.map { TargetCleanup(olderThanHours: $0) }
+            XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+
+            store.updateFileAge(jobID: job.id, recentHours: requestedAge)
+
+            let saved = try XCTUnwrap(repository.load().first)
+            XCTAssertEqual(saved, store.jobs.first)
+            XCTAssertEqual(saved.filter.recentHours, requestedAge)
+            XCTAssertEqual(saved.targetCleanup?.olderThanHours, expectedCleanup)
+            XCTAssertNil(saved.validationMessage)
+            XCTAssertNil(store.alertMessage)
+        }
+    }
+
+    func testFailedQuickFileAgeSavePreservesAgeAndCleanup() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("cleanup-age-failure-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("job-store")
+        let repository = JobRepository(fileURL: directory.appendingPathComponent("jobs.json"))
+        let store = makeStore(repository: repository, root: root)
+        var job = store.makeJobDraft()
+        job.left = Endpoint(kind: .local, localPath: "/source", bookmark: Data([1]))
+        job.right = Endpoint(kind: .local, localPath: "/destination", bookmark: Data([2]))
+        job.filter.recentHours = 1
+        job.targetCleanup = TargetCleanup(olderThanHours: 3)
+        XCTAssertTrue(store.saveJob(job, leftPassword: "", rightPassword: ""))
+        let saved = try XCTUnwrap(store.jobs.first)
+        try FileManager.default.removeItem(at: directory)
+        let blocker = Data("blocked persistence directory".utf8)
+        try blocker.write(to: directory)
+
+        store.updateFileAge(jobID: job.id, recentHours: 6)
+
+        XCTAssertEqual(store.jobs, [saved])
+        XCTAssertNil(store.jobs.first?.validationMessage)
+        XCTAssertNotNil(store.alertMessage)
+        XCTAssertEqual(try Data(contentsOf: directory), blocker)
+    }
+
     func testSavingOpenSettingsPreservesMenuBarStopAndQuickControls() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("shared-controls-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

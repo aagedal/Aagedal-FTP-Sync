@@ -449,8 +449,8 @@ private struct JobQuickControls: View {
                         .foregroundStyle(.secondary)
                 }
                 Slider(
-                    value: $ageIndex,
-                    in: 0...Double(Self.ageOptions.count - 1),
+                    value: ageSliderBinding,
+                    in: Double(minimumAgeIndex)...Double(Self.ageOptions.count - 1),
                     step: 1,
                     onEditingChanged: { editing in
                         if editing { ageWasEdited = true }
@@ -458,16 +458,29 @@ private struct JobQuickControls: View {
                     }
                 )
                 HStack {
-                    Text("Any age")
+                    Text(currentJob.targetCleanup == nil ? "Any age" : "Last hour")
                     Spacer()
                     Text("7 days")
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+                if currentJob.targetCleanup != nil {
+                    Text("Automatic cleanup requires a file-age limit. Turn off cleanup in Job Settings to choose Any age.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(16)
         .frame(width: dynamicTypeSize.isAccessibilitySize ? 460 : 300)
+        .onChange(of: currentJob.filter.recentHours) { _, _ in
+            guard !ageWasEdited else { return }
+            ageIndex = Double(Self.ageOptions.firstIndex(of: currentJob.filter.recentHours) ?? minimumAgeIndex)
+        }
+        .onChange(of: currentJob.targetCleanup) { _, _ in
+            guard !ageWasEdited else { return }
+            ageIndex = Double(Self.ageOptions.firstIndex(of: currentJob.filter.recentHours) ?? minimumAgeIndex)
+        }
         .onDisappear {
             commitInterval()
             commitFileAge()
@@ -526,8 +539,17 @@ private struct JobQuickControls: View {
         return remainder == 0 ? "\(minutes) min" : "\(minutes)m \(remainder)s"
     }
 
+    private var minimumAgeIndex: Int { currentJob.targetCleanup == nil ? 0 : 1 }
+
+    private var ageSliderBinding: Binding<Double> {
+        Binding(
+            get: { max(Double(minimumAgeIndex), ageIndex) },
+            set: { ageIndex = $0 }
+        )
+    }
+
     private var selectedAge: Int? {
-        let index = min(max(Int(ageIndex.rounded()), 0), Self.ageOptions.count - 1)
+        let index = min(max(Int(ageSliderBinding.wrappedValue.rounded()), minimumAgeIndex), Self.ageOptions.count - 1)
         return Self.ageOptions[index]
     }
 
