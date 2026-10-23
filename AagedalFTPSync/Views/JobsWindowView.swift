@@ -4,18 +4,9 @@ import UniformTypeIdentifiers
 
 struct JobsWindowView: View {
     @EnvironmentObject private var store: AppStore
-    @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var editingSession = JobEditingSession()
-    @State private var showConfigurationImporter = false
-    @State private var showConfigurationExporter = false
-    @State private var showSupportBundleExporter = false
-    @State private var exportDocument = ConfigurationTransferFile()
-    @State private var supportBundleDocument = RedactedSupportBundleFile()
-    @State private var exportFilename = "Aagedal FTP Sync Package"
-    @State private var pendingTransfer: PendingConfigurationTransfer?
-    @State private var importSummary: String?
     @State private var pendingEditorTransition: PendingEditorTransition?
     @State private var handledNewJobDraftRequestID: UUID?
     @State private var selectionRefreshID = UUID()
@@ -47,28 +38,6 @@ struct JobsWindowView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     Divider()
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle(isOn: launchAtLoginBinding) {
-                            Label("Launch at Login", systemImage: "power")
-                        }
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-
-                        if store.launchAtLoginRequiresApproval {
-                            Label("Approval required in System Settings.", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
-                            Button("Open Login Items…") {
-                                store.openLoginItemsSettings()
-                            }
-                            .buttonStyle(.link)
-                            .font(.caption)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-
-                    Divider()
                     HStack {
                         Button(action: addJob) {
                             Label("Add Sync Job", systemImage: "plus")
@@ -78,45 +47,21 @@ struct JobsWindowView: View {
                         .keyboardShortcut("n", modifiers: .command)
                         Spacer()
                         Menu {
-                            Button("Manage Servers…", systemImage: "server.rack") {
-                                openServersWindow()
+                            Button("Server Settings…", systemImage: "server.rack") {
+                                openSettingsTab(.servers)
                             }
-
-                            Divider()
-
-                            Button("Import Configuration Package…", systemImage: "square.and.arrow.down") {
-                                if let url = UITestSupport.configurationPackageURL {
-                                    loadConfigurationPackage(.success([url]))
-                                } else {
-                                    showConfigurationImporter = true
-                                }
-                            }
-                            .accessibilityIdentifier("import-configuration")
-
-                            Divider()
-
-                            ForEach(ConfigurationTransferScope.allCases) { scope in
-                                Button("Export \(scope.title)…", systemImage: "square.and.arrow.up") {
-                                    pendingTransfer = PendingConfigurationTransfer(operation: .export(scope))
-                                }
-                                .accessibilityIdentifier("export-\(scope.rawValue)")
-                                .disabled(scope != .metadata && store.jobs.isEmpty)
-                            }
-
-                            Divider()
-
-                            Button("Export Redacted Support Bundle…", systemImage: "lifepreserver") {
-                                prepareSupportBundleExport()
+                            Button("Import or Export Configuration…", systemImage: "square.and.arrow.up.on.square") {
+                                openSettingsTab(.general)
                             }
                         } label: {
-                            Image(systemName: "ellipsis.circle")
+                            Image(systemName: "gearshape")
                         }
-                        .accessibilityIdentifier("configuration-transfer-menu")
-                        .accessibilityLabel("Configuration Actions")
-                        .accessibilityHint("Imports or exports configuration packages and support data")
+                        .accessibilityIdentifier("jobs-settings-menu")
+                        .accessibilityLabel("Settings Shortcuts")
+                        .accessibilityHint("Opens server settings or configuration import and export")
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        .help("Import or export configuration packages")
+                        .help("Server settings and configuration packages")
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
@@ -147,7 +92,6 @@ struct JobsWindowView: View {
         .accessibilityIdentifier("jobs-window-content")
         .onAppear {
             UITestSupport.activateJobsWindow()
-            store.refreshLaunchAtLoginStatus()
             selectFirstIfNeeded()
             handleNewJobDraftRequest()
         }
@@ -165,46 +109,10 @@ struct JobsWindowView: View {
             guard selectedJobID != editingSession.jobID else { return }
             requestSelection(selectedJobID)
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { store.refreshLaunchAtLoginStatus() }
-        }
     }
 
     var body: some View {
         jobsSplitView
-        .fileImporter(
-            isPresented: $showConfigurationImporter,
-            allowedContentTypes: [.aagedalFTPSyncConfiguration],
-            allowsMultipleSelection: false,
-            onCompletion: loadConfigurationPackage
-        )
-        .fileExporter(
-            isPresented: $showConfigurationExporter,
-            document: exportDocument,
-            contentType: .aagedalFTPSyncConfiguration,
-            defaultFilename: exportFilename
-        ) { result in
-            if case .failure(let error) = result {
-                store.alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
-            }
-        }
-        .fileExporter(
-            isPresented: $showSupportBundleExporter,
-            document: supportBundleDocument,
-            contentType: .json,
-            defaultFilename: "Aagedal FTP Sync Support Bundle"
-        ) { result in
-            if case .failure(let error) = result {
-                store.alertMessage = "The support bundle could not be exported: \(error.localizedDescription)"
-            }
-        }
-        .sheet(item: $pendingTransfer) { transfer in
-            ConfigurationTransferOptionsView(
-                operation: transfer.operation,
-                onExport: prepareConfigurationExport,
-                onImport: importConfiguration
-            )
-        }
         .alert("Aagedal FTP Sync", isPresented: Binding(
             get: { store.alertMessage != nil },
             set: { presented in
@@ -219,14 +127,6 @@ struct JobsWindowView: View {
             Button("OK") { store.alertMessage = nil }
         } message: {
             Text(store.alertMessage ?? "")
-        }
-        .alert("Configuration Imported", isPresented: Binding(
-            get: { importSummary != nil },
-            set: { if !$0 { importSummary = nil } }
-        )) {
-            Button("OK") { importSummary = nil }
-        } message: {
-            Text(importSummary ?? "")
         }
         .confirmationDialog(
             editingSession.isNewJob ? "Discard this unsaved job?" : "Save changes to “\(editingSession.draft.name)”?",
@@ -272,13 +172,6 @@ struct JobsWindowView: View {
         )
     }
 
-    private var launchAtLoginBinding: Binding<Bool> {
-        Binding(
-            get: { store.launchAtLoginEnabled },
-            set: { store.setLaunchAtLoginEnabled($0) }
-        )
-    }
-
     private func selectFirstIfNeeded() {
         if let editingID = editingSession.jobID {
             if editingSession.isNewJob || store.jobs.contains(where: { $0.id == editingID }) {
@@ -297,9 +190,10 @@ struct JobsWindowView: View {
         beginNewJob()
     }
 
-    private func openServersWindow() {
-        RegularWindowController.shared.prepareForOpening(windowID: "servers")
-        openWindow(id: "servers")
+    private func openSettingsTab(_ tab: AppSettingsTab) {
+        store.settingsTab = tab
+        RegularWindowController.shared.prepareForOpening()
+        openSettings()
     }
 
     private func handleNewJobDraftRequest() {
@@ -388,55 +282,6 @@ struct JobsWindowView: View {
         default:
             return false
         }
-    }
-
-    private func loadConfigurationPackage(_ result: Result<[URL], Error>) {
-        do {
-            guard let url = try result.get().first else { return }
-            let hasAccess = url.startAccessingSecurityScopedResource()
-            defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
-            let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-            guard fileSize <= ConfigurationTransferCodec.maximumFileSize else {
-                throw ConfigurationTransferError.fileTooLarge
-            }
-            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-            let protection = try ConfigurationTransferCodec.protection(of: data)
-            pendingTransfer = PendingConfigurationTransfer(operation: .importPackage(data, protection))
-        } catch {
-            store.alertMessage = "The configuration could not be opened: \(error.localizedDescription)"
-        }
-    }
-
-    private func prepareConfigurationExport(
-        _ scope: ConfigurationTransferScope,
-        _ password: String?
-    ) -> Bool {
-        guard let data = store.configurationExportData(scope: scope, password: password) else { return false }
-        if let url = UITestSupport.configurationPackageURL {
-            do {
-                try data.write(to: url, options: .atomic)
-                return true
-            } catch {
-                store.alertMessage = "The configuration could not be exported: \(error.localizedDescription)"
-                return false
-            }
-        }
-        exportDocument = ConfigurationTransferFile(data: data)
-        exportFilename = scope.defaultFilename
-        DispatchQueue.main.async { showConfigurationExporter = true }
-        return true
-    }
-
-    private func prepareSupportBundleExport() {
-        guard let data = store.supportBundleData() else { return }
-        supportBundleDocument = RedactedSupportBundleFile(data: data)
-        DispatchQueue.main.async { showSupportBundleExporter = true }
-    }
-
-    private func importConfiguration(_ data: Data, _ password: String?, _ allowAppleCoordinates: Bool) -> Bool {
-        guard let result = store.importConfiguration(from: data, password: password, allowImportedAppleCoordinates: allowAppleCoordinates) else { return false }
-        importSummary = result.summary
-        return true
     }
 }
 

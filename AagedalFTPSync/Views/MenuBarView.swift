@@ -5,6 +5,7 @@ struct MenuBarView: View {
     @EnvironmentObject private var store: AppStore
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
@@ -73,59 +74,83 @@ struct MenuBarView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 14) {
+        // Accessibility text sizes can outgrow the panel; fall back to icons,
+        // which keep their names for VoiceOver and still show tooltips.
+        ViewThatFits(in: .horizontal) {
+            footerControls.labelStyle(.titleAndIcon)
+            footerControls.labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(12)
+    }
+
+    private var footerControls: some View {
+        HStack(spacing: 8) {
+            Button { openJobsWindow(adding: false) } label: {
+                Label("Sync Jobs", systemImage: "rectangle.stack")
+            }
+            .help("Create and edit sync jobs, folders and servers")
+            .accessibilityHint("Opens the Sync Jobs window")
+            .accessibilityIdentifier("open-jobs-window")
+
+            Button(action: openMetadataWindow) {
+                Label("Metadata", systemImage: "tag")
+            }
+            .disabled(store.jobs.isEmpty)
+            .help(store.jobs.isEmpty
+                ? "Create a sync job before programming metadata"
+                : "Schedule captions, photographers and keywords")
+            .accessibilityHint("Opens the Metadata Programming window")
+            .accessibilityIdentifier("open-metadata-window")
+
+            Button { openSettingsWindow() } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .help("Servers, photographers, shared calendars and app preferences")
+            .accessibilityHint("Opens the Settings window")
+
+            Spacer(minLength: 0)
+
             Menu {
-                Button("Start All", systemImage: "play.fill") { store.startAll() }
-                Button("Stop All", systemImage: "stop.fill") { store.stopAll() }
+                Button("Start All Jobs", systemImage: "play.fill") { store.startAll() }
+                    .disabled(store.jobs.isEmpty)
+                Button("Stop All Jobs", systemImage: "stop.fill") { store.stopAll() }
+                    .disabled(store.jobs.isEmpty)
+                Divider()
+                Button("About Aagedal FTP Sync", systemImage: "info.circle") {
+                    RegularWindowController.shared.prepareForOpening(windowID: "about")
+                    openWindow(id: "about")
+                }
+                Divider()
+                Button("Quit Aagedal FTP Sync…", systemImage: "power", action: confirmQuit)
             } label: {
-                Image(systemName: "playpause.fill")
+                Image(systemName: "ellipsis.circle")
             }
             .menuStyle(.borderlessButton)
-            .help("All Jobs")
-            .accessibilityLabel("All Jobs")
-            .accessibilityHint("Starts or stops every sync job")
-            Spacer()
-            Button { openJobsWindow(adding: false) } label: {
-                Image(systemName: "rectangle.stack")
-            }
-                .buttonStyle(.plain)
-                .help("Jobs")
-                .accessibilityLabel("Jobs")
-                .accessibilityHint("Opens the sync jobs window")
-                .accessibilityIdentifier("open-jobs-window")
-            Button { openSettingsWindow() } label: {
-                Image(systemName: "gearshape")
-            }
-                .buttonStyle(.plain)
-                .help("Settings")
-                .accessibilityLabel("Settings")
-                .accessibilityHint("Opens server and photographer settings")
-            Button {
-                RegularWindowController.shared.prepareForOpening(windowID: "about")
-                openWindow(id: "about")
-            } label: {
-                Image(systemName: "info.circle")
-            }
-            .buttonStyle(.plain)
-            .help("About")
-            .accessibilityLabel("About")
-            .accessibilityHint("Opens information about Aagedal FTP Sync")
-            Button(action: confirmQuit) {
-                Image(systemName: "power")
-                    .foregroundStyle(.red)
-            }
-            .buttonStyle(.plain)
-            .help("Quit")
-            .accessibilityLabel("Quit")
-            .accessibilityHint("Asks for confirmation before quitting")
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Start or stop all jobs, About and Quit")
+            .accessibilityLabel("More")
+            .accessibilityHint("Starts or stops every job, shows About or quits")
         }
-        .padding(12)
     }
 
     private func openJobsWindow(adding: Bool) {
         if adding { store.requestNewJobDraft() }
         RegularWindowController.shared.prepareForOpening(windowID: "jobs")
         openWindow(id: "jobs")
+    }
+
+    private func openMetadataWindow() {
+        if store.selectedJobID.flatMap({ id in store.jobs.first(where: { $0.id == id }) }) == nil {
+            store.selectedJobID = store.jobs.first?.id
+        }
+        dismiss()
+        DispatchQueue.main.async {
+            RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
+            openWindow(id: "metadata-programming")
+        }
     }
 
     private func openSettingsWindow() {
@@ -170,7 +195,6 @@ private struct MenuJobRow: View {
                     HStack(spacing: 18) {
                         Spacer()
                         quickControlsButton
-                        metadataButton
                         folderButton
                     }
                 }
@@ -180,7 +204,6 @@ private struct MenuJobRow: View {
                     jobSummary
                     Spacer()
                     quickControlsButton
-                    metadataButton
                     folderButton
                     automaticSyncButton
                 }
@@ -232,30 +255,23 @@ private struct MenuJobRow: View {
             Image(systemName: "slider.horizontal.3")
         }
         .buttonStyle(.plain)
-        .help("Quick Controls")
-        .accessibilityLabel("Quick Controls for \(job.name)")
-        .accessibilityHint("Opens automatic-sync and scheduling controls")
+        .help("Job Controls: frequency, file type, settings and metadata")
+        .accessibilityLabel("Job Controls for \(job.name)")
+        .accessibilityHint("Opens sync frequency, file filter, job settings and metadata shortcuts")
         .popover(isPresented: $showQuickControls, arrowEdge: .trailing) {
-            JobQuickControls(job: job)
+            JobQuickControls(job: job, onOpenMetadata: openMetadataProgramming)
                 .environmentObject(store)
         }
     }
 
-    private var metadataButton: some View {
-        Button {
-            store.selectedJobID = job.id
-            dismiss()
-            DispatchQueue.main.async {
-                RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
-                openWindow(id: "metadata-programming")
-            }
-        } label: {
-            Image(systemName: "tag")
+    private func openMetadataProgramming() {
+        showQuickControls = false
+        store.selectedJobID = job.id
+        dismiss()
+        DispatchQueue.main.async {
+            RegularWindowController.shared.prepareForOpening(windowID: "metadata-programming")
+            openWindow(id: "metadata-programming")
         }
-        .buttonStyle(.plain)
-        .help("Metadata Programming")
-        .accessibilityLabel("Metadata Programming for \(job.name)")
-        .accessibilityHint("Opens the metadata schedule for this job")
     }
 
     private var folderButton: some View {
@@ -368,14 +384,16 @@ private struct JobQuickControls: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let job: SyncJob
+    let onOpenMetadata: () -> Void
     @State private var intervalSeconds: Double
     @State private var ageIndex: Double
     @State private var intervalWasEdited = false
     @State private var ageWasEdited = false
     @State private var ageEditingOptions: [Int?] = []
 
-    init(job: SyncJob) {
+    init(job: SyncJob, onOpenMetadata: @escaping () -> Void) {
         self.job = job
+        self.onOpenMetadata = onOpenMetadata
         _intervalSeconds = State(initialValue: job.intervalSeconds)
         let index = FileAgeChoices.hours(including: job.filter.recentHours).firstIndex(of: job.filter.recentHours) ?? 0
         _ageIndex = State(initialValue: Double(index))
@@ -399,13 +417,12 @@ private struct JobQuickControls: View {
 
             Divider()
 
-            HStack(spacing: 12) {
-                localFolderControl
-                Button(action: openJobSettings) {
-                    Label("Job Settings", systemImage: "gearshape")
-                }
-                .buttonStyle(.bordered)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { jobShortcuts }
+                VStack(alignment: .leading, spacing: 8) { jobShortcuts }
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
 
             Picker("File type", selection: filterBinding) {
                 ForEach(FilterPreset.allCases) { preset in
@@ -478,7 +495,7 @@ private struct JobQuickControls: View {
             }
         }
         .padding(16)
-        .frame(width: dynamicTypeSize.isAccessibilitySize ? 460 : 300)
+        .frame(width: dynamicTypeSize.isAccessibilitySize ? 460 : 340)
         .onDisappear {
             commitInterval()
             commitFileAge()
@@ -490,6 +507,20 @@ private struct JobQuickControls: View {
             get: { currentJob.filter.preset },
             set: { store.updateFilter(jobID: job.id, preset: $0) }
         )
+    }
+
+    @ViewBuilder
+    private var jobShortcuts: some View {
+        Button(action: openJobSettings) {
+            Label("Job Settings", systemImage: "gearshape")
+        }
+        .help("Edit this job in the Sync Jobs window")
+        Button(action: onOpenMetadata) {
+            Label("Metadata", systemImage: "tag")
+        }
+        .help("Open Metadata Programming for this job")
+        .accessibilityLabel("Metadata Programming for \(currentJob.name)")
+        localFolderControl
     }
 
     @ViewBuilder

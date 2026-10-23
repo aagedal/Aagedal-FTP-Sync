@@ -4,7 +4,7 @@ import Foundation
 import ServiceManagement
 
 enum AppSettingsTab: Hashable {
-    case servers, photographers, metadataSync, peopleLibrary, voiceMemos
+    case general, servers, photographers, metadataSync, peopleLibrary, voiceMemos
 }
 
 enum MetadataSyncSettingsTab: Hashable {
@@ -38,7 +38,7 @@ struct MetadataClipPositionUpdate: Equatable, Sendable {
 
 @MainActor
 final class AppStore: ObservableObject {
-    @Published var settingsTab: AppSettingsTab = .servers
+    @Published var settingsTab: AppSettingsTab = .general
     @Published var metadataSyncSettingsJobID: UUID?
     @Published var metadataSyncSettingsTab: MetadataSyncSettingsTab = .calendars
     @Published var metadataDraftsBeingEdited: Set<UUID> = []

@@ -1492,7 +1492,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         launch(seedJob: true, seedMap: true)
 
         openStatusMenu()
-        let openMetadata = app.buttons["Metadata Programming for UI Smoke Fixture"]
+        let openMetadata = element("open-metadata-window")
         XCTAssertTrue(openMetadata.waitForExistence(timeout: 5))
         openMetadata.click()
         let metadataWindow = app.windows["Metadata Programming"]
@@ -1679,7 +1679,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         openStatusMenu()
         XCTAssertFalse(element("startup.open").exists)
         app.buttons["Settings"].click()
-        app.buttons["Sync Servers"].click()
+        app.buttons["Shared Calendars"].click()
         XCTAssertTrue(element("metadata-sync-section").waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["FTP Servers"].exists)
         XCTAssertFalse(element("Sync Job").exists)
@@ -1739,6 +1739,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         launch(seedServer: true)
         openStatusMenu()
         app.buttons["Settings"].click()
+        app.buttons["FTP Servers"].click()
 
         let delete = element("server.delete")
         XCTAssertTrue(delete.waitForExistence(timeout: 5))
@@ -1765,6 +1766,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         launch(seedServer: true)
         openStatusMenu()
         app.buttons["Settings"].click()
+        app.buttons["FTP Servers"].click()
         let name = element("server.name")
         replaceText(in: name, with: "Unsaved server edit")
         app.buttons["Photographers"].click()
@@ -1787,6 +1789,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         launch(seedServer: true)
         openStatusMenu()
         app.buttons["Settings"].click()
+        app.buttons["FTP Servers"].click()
         let name = element("server.name")
         replaceText(in: name, with: "Saved after close review")
         let settings = app.windows.containing(.textField, identifier: "server.name").firstMatch
@@ -1811,6 +1814,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         launch(seedServer: true)
         openStatusMenu()
         app.buttons["Settings"].click()
+        app.buttons["FTP Servers"].click()
         app.buttons["Duplicate Server"].click()
         let name = element("server.name")
         replaceText(in: name, with: "Edited second server")
@@ -1842,6 +1846,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
         openStatusMenu()
         app.buttons["Settings"].click()
+        app.buttons["FTP Servers"].click()
         replaceText(in: element("server.port"), with: "2121")
         element("server.save").click()
 
@@ -1863,6 +1868,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         launch(seedJob: true, seedServer: true)
         openStatusMenu()
         app.buttons["Settings"].click()
+        app.buttons["FTP Servers"].click()
         replaceText(in: element("server.port"), with: "2121")
         element("server.save").click()
         openStatusMenu()
@@ -2018,6 +2024,11 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     private func openConfigurationMenu() {
         let menu = element("configuration-transfer-menu")
+        if !menu.exists {
+            openStatusMenu()
+            app.buttons["Settings"].click()
+            app.buttons["General"].click()
+        }
         XCTAssertTrue(menu.waitForExistence(timeout: 3))
         menu.click()
     }

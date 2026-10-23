@@ -439,15 +439,16 @@ struct MetadataProgrammingView: View {
                 Divider()
 
                 Button {
-                    RegularWindowController.shared.prepareForOpening(windowID: "photographers")
-                    openWindow(id: "photographers")
+                    store.settingsTab = .photographers
+                    RegularWindowController.shared.prepareForOpening()
+                    openSettings()
                 } label: {
                     Label("Manage All Photographers…", systemImage: "person.2")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
                 .padding(12)
-                .help("Open the shared photographer library in a separate window")
+                .help("Open the shared photographer library in Settings")
             }
         }
     }

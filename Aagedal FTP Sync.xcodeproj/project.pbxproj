@@ -218,6 +218,7 @@
 		D0BCE9E39206ACDC8B23D71B /* SharedMetadataCalendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8710C0C84C0F5CABFAC80B85 /* SharedMetadataCalendar.swift */; };
 		D26419AE144637B98B69A612 /* UITestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FACE3FD67ADE245F727458D /* UITestSupport.swift */; };
 		D390A27D90E05797B8ACD7A5 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5995C30E1D15D202FBAEE40 /* AboutView.swift */; };
+		C0FFEE0000000000000000A1 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FFEE0000000000000000A2 /* GeneralSettingsView.swift */; };
 		D3C9790173E68C76900B69FD /* MetadataTemplates in Frameworks */ = {isa = PBXBuildFile; productRef = AB3F68F385FC94823FF3124B /* MetadataTemplates */; };
 		D4C2D45BA378F1269B6191B3 /* AppStorageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0F72DD22CD6008F168834B5 /* AppStorageLayout.swift */; };
 		D598491D10DB7F97533E8506 /* Version3BootstrapCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C978231C3238C1EB67BF06AA /* Version3BootstrapCoordinatorTests.swift */; };
@@ -454,6 +455,7 @@
 		A3283323167DA6CED1DA4D42 /* DownloadNamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadNamingTests.swift; sourceTree = "<group>"; };
 		A38A09C0D87C85E49CD89FF8 /* LocalEndpointSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalEndpointSession.swift; sourceTree = "<group>"; };
 		A5995C30E1D15D202FBAEE40 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		C0FFEE0000000000000000A2 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
 		A5CC0AFD9B33F57FB35183ED /* MetadataCalendarMigrationArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataCalendarMigrationArchiveTests.swift; sourceTree = "<group>"; };
 		A6814BDEA2C7D9393E32617C /* SourceSignatureVersion3Tests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceSignatureVersion3Tests.swift; sourceTree = "<group>"; };
 		A6C4BC1BBB75A8CBDBC1E8B1 /* AuraFaceComponentInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuraFaceComponentInstaller.swift; sourceTree = "<group>"; };
@@ -740,6 +742,7 @@
 			isa = PBXGroup;
 			children = (
 				A5995C30E1D15D202FBAEE40 /* AboutView.swift */,
+				C0FFEE0000000000000000A2 /* GeneralSettingsView.swift */,
 				44DC5631E8E1F2C557CA626F /* ConfigurationTransferView.swift */,
 				4A1B40E9EED67D6C74811BBE /* EndpointEditor.swift */,
 				A76827BE4BCD54BAAE42FE36 /* JobDetailEditor.swift */,
@@ -1315,6 +1318,7 @@
 			files = (
 				BD831FF968577F25071DEC5C /* AagedalFTPSyncApp.swift in Sources */,
 				D390A27D90E05797B8ACD7A5 /* AboutView.swift in Sources */,
+				C0FFEE0000000000000000A1 /* GeneralSettingsView.swift in Sources */,
 				71AE683049DF2894A8AE0ACE /* AppError.swift in Sources */,
 				CDAF2C3B1BB7340B9168A77F /* AppPersistenceCoordinator.swift in Sources */,
 				D4C2D45BA378F1269B6191B3 /* AppStorageLayout.swift in Sources */,
