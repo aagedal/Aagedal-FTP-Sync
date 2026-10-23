@@ -30,7 +30,7 @@ struct AagedalFTPSyncApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Aagedal FTP Sync", id: "jobs") {
+        Window("Sync Jobs", id: "jobs") {
             StartupGate(startup: startup) { _ in JobsWindowView() }
                 .frame(minWidth: 820, minHeight: 580)
                 .background(RegularWindowTracker(windowID: "jobs"))
@@ -51,23 +51,11 @@ struct AagedalFTPSyncApp: App {
         }
         .defaultSize(width: 1180, height: 760)
 
-        Window("Photographers", id: "photographers") {
-            StartupGate(startup: startup) { _ in PhotographerSettingsView() }
-                .background(RegularWindowTracker(windowID: "photographers"))
-        }
-        .defaultSize(width: 700, height: 450)
-
         Window("Photographer Map", id: "photographer-map") {
             StartupGate(startup: startup) { _ in PhotographerMapView() }
                 .background(RegularWindowTracker(windowID: "photographer-map"))
         }
         .defaultSize(width: 1120, height: 760)
-
-        Window("Servers", id: "servers") {
-            StartupGate(startup: startup) { _ in ServerSettingsView() }
-                .background(RegularWindowTracker(windowID: "servers"))
-        }
-        .defaultSize(width: 780, height: 560)
 
         Window("Startup and Recovery", id: "startup") {
             Version3StartupView(startup: startup)
@@ -82,6 +70,33 @@ struct AagedalFTPSyncApp: App {
             }
             .background(RegularWindowTracker())
         }
+        .commands { AppWindowCommands() }
+    }
+}
+
+/// Lists every window in the menu bar's Window menu with a shortcut, and
+/// routes About to the app's own window, so each window is discoverable by name.
+private struct AppWindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About Aagedal FTP Sync") { open("about") }
+        }
+        CommandGroup(before: .windowList) {
+            Button("Sync Jobs") { open("jobs") }
+                .keyboardShortcut("1", modifiers: .command)
+            Button("Metadata Programming") { open("metadata-programming") }
+                .keyboardShortcut("2", modifiers: .command)
+            Button("Photographer Map") { open("photographer-map") }
+                .keyboardShortcut("3", modifiers: .command)
+            Divider()
+        }
+    }
+
+    private func open(_ windowID: String) {
+        RegularWindowController.shared.prepareForOpening(windowID: windowID)
+        openWindow(id: windowID)
     }
 }
 

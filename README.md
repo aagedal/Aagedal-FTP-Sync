@@ -19,7 +19,7 @@ The 3.0 source currently adds these guarded workflows:
   2.9 settings into a separate 3.0 store without an upgrade page. Original 2.9
   files stay available for recovery. A backup-only or ambiguous inventory, damaged
   current data, or another running copy still requires recovery attention. Jobs and
-  calendar sync remain paused after migration. In Settings → Sync Servers,
+  calendar sync remain paused after migration. In Settings → Shared Calendars,
   **Add Sync Server** starts sync and registers the pasted join string. Attach jobs from
   Job settings → Metadata Sync; previously linked jobs can use **Resume Calendar Sync**. The menu-bar panel has no permanent recovery button.
 - Explicit variables in Headline, Description, Keywords and Copyright. Supported
@@ -129,9 +129,9 @@ and asks you to **Revert** to the latest saved settings before editing again.
 
 ## Optional metadata calendar sync
 
-Calendar sharing uses a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, owner/editor/read-only invitations, offline edits and explicit conflict resolution. Owners can invite additional owner devices to manage members and invitations. Manage servers under **Settings → Sync Servers**, and attach calendars under **Job settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. Choose [Docker deployment](Server/MetadataSync/DOCKER.md) or [manual PHP/SQL setup](Server/MetadataSync/MANUAL-SETUP.md). See the [server reference](Server/MetadataSync/README.md) for date-range boundaries, limits and deployment verification.
+Calendar sharing uses a user-configured HTTPS PHP/MySQL server: whole calendars or selected dates, owner/editor/read-only invitations, offline edits and explicit conflict resolution. Owners can invite additional owner devices to manage members and invitations. Manage servers under **Settings → Shared Calendars**, and attach calendars under **Job settings → Metadata Sync**. FTP credentials and local processing policies remain private to each Mac. Choose [Docker deployment](Server/MetadataSync/DOCKER.md) or [manual PHP/SQL setup](Server/MetadataSync/MANUAL-SETUP.md). See the [server reference](Server/MetadataSync/README.md) for date-range boundaries, limits and deployment verification.
 
-Settings has separate **FTP Servers** (FTP, FTPS, and SFTP file transfer profiles) and **Sync Servers** (metadata calendars) lists. Sync servers appear in a left-hand list with **+** to add and **−** to remove the selected server. Removal detaches its jobs on this Mac while keeping their local metadata and files; remote calendars are unchanged. Add a named sync server by pasting its join string, or use **Initialize Sync server** for the first Mac. Existing unnamed servers display their URL and can be renamed without changing credentials or job links. In **Job settings → Metadata Sync**, choose a saved sync server and create or attach a calendar. Attaching saves the job settings and preserves existing metadata through the copy review when necessary. New calendars use 3.0 template-enabled sync. **Members & Invitations** shows invitation controls and automatically loaded member lists for the server selected in the sidebar. Servers with multiple calendars show a labeled section for each calendar, with invitation date limits and access management. Several jobs can share one server, and jobs on different servers keep syncing together. Each shared calendar can be linked to one job per Mac.
+Settings has separate **FTP Servers** (FTP, FTPS, and SFTP file transfer profiles) and **Shared Calendars** (metadata sync servers and their calendars) tabs. Sync servers appear in a left-hand list with **+** to add and **−** to remove the selected server. Removal detaches its jobs on this Mac while keeping their local metadata and files; remote calendars are unchanged. Add a named sync server by pasting its join string, or use **Initialize Sync server** for the first Mac. Existing unnamed servers display their URL and can be renamed without changing credentials or job links. In **Job settings → Metadata Sync**, choose a saved sync server and create or attach a calendar. Attaching saves the job settings and preserves existing metadata through the copy review when necessary. New calendars use 3.0 template-enabled sync. **Members & Invitations** shows invitation controls and automatically loaded member lists for the server selected in the sidebar. Servers with multiple calendars show a labeled section for each calendar, with invitation date limits and access management. Several jobs can share one server, and jobs on different servers keep syncing together. Each shared calendar can be linked to one job per Mac.
 
 
 Saved metadata edits sync after a short pause in editing. Updates from other Macs are checked about every ten seconds while the app is open, even with automatic file transfers disabled. Open drafts pause calendar updates until saved or closed. The metadata window shows changes waiting to sync, connection failures, and the last successful sync; **Retry Now** requests another attempt. Saved offline edits stay on this Mac. After connection failures, automatic retries back off from 10 seconds to at most five minutes per account; **Retry Now** bypasses that wait. A failed connection stops redundant requests to the same account for that pass, while other accounts continue. The available-calendar list refreshes once a minute during background polling; linked calendar updates still check about every ten seconds while reachable. Requests made during another calendar operation are queued.
@@ -259,7 +259,22 @@ The same loopback suite runs weekly in scheduled CI and can be started manually 
 6. Pick a quick file filter. **All photos** includes common JPEG, HEIC, TIFF, and camera RAW formats.
 7. Save the job. Enable **Run automatically** or use **Sync Now**.
 
-The menu-bar panel provides start/stop controls, status, one-click sync, and a per-job quick filter. The settings window contains the full job editor.
+The menu-bar panel lists each job with one-click sync, start/stop and status. The
+sliders button opens a job's controls: sync frequency, file type and age, plus
+**Job Settings**, **Metadata** and **Open Folder** shortcuts. The folder button
+reveals the download folder. Labeled buttons along the bottom open the app's three
+main places:
+
+- **Sync Jobs** — create and edit jobs, folders, servers and filters.
+- **Metadata** — Metadata Programming, with the Photographer Map one click away.
+- **Settings** — one window for everything shared between jobs: **General**
+  (Launch at Login, configuration import/export, support bundle, version),
+  **FTP Servers**, **Photographers**, **Shared Calendars**, **Voice Memos** and
+  **People Library**.
+
+The **…** menu holds Start All, Stop All, About and Quit. While a window is open,
+the Window menu also lists Sync Jobs (⌘1), Metadata Programming (⌘2) and
+Photographer Map (⌘3).
 
 ## Synchronization behavior
 

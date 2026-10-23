@@ -9,6 +9,17 @@
 
 ## Unreleased (3.0.0)
 
+- Simplify navigation for new users. The menu-bar panel now has labeled **Sync Jobs**,
+  **Metadata** and **Settings** buttons, with Start All, Stop All, About and Quit in
+  one **…** menu. Each job row keeps sync, controls, folder and Start/Stop; its
+  controls popover adds labeled Job Settings, Metadata and Open Folder shortcuts.
+- Gather shared configuration in one Settings window. A new **General** tab holds
+  Launch at Login, configuration import/export, the support bundle and an overview
+  of each window. The separate Servers and Photographers windows are replaced by
+  their Settings tabs, and **Sync Servers** is renamed **Shared Calendars**.
+- Title the job editor window **Sync Jobs** and list Sync Jobs, Metadata Programming
+  and Photographer Map in the Window menu (⌘1–⌘3), with About opening the app's own window.
+
 - Publish processed RAW/XMP copies as one durable group before removing their
   sources. Preserve concurrent edits during rollback and retain recovery evidence
   after interrupted or conflicted processed-file handoff.

@@ -101,6 +101,9 @@ struct RuntimeSettingsView: View {
     @StateObject private var photographerEditingSession = PhotographerEditingSession()
     var body: some View {
         TabView(selection: $store.settingsTab) {
+            GeneralSettingsView()
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(AppSettingsTab.general)
             ServerSettingsView(session: serverEditingSession, protectsWindowClose: false)
                 .tabItem { Label("FTP Servers", systemImage: "server.rack") }
                 .tag(AppSettingsTab.servers)
@@ -108,7 +111,7 @@ struct RuntimeSettingsView: View {
                 .tabItem { Label("Photographers", systemImage: "person.2") }
                 .tag(AppSettingsTab.photographers)
             MetadataSyncSettingsView()
-                .tabItem { Label("Sync Servers", systemImage: "arrow.triangle.2.circlepath") }
+                .tabItem { Label("Shared Calendars", systemImage: "calendar.badge.clock") }
                 .tag(AppSettingsTab.metadataSync)
             VoiceMemoSettingsView()
                 .tabItem { Label("Voice Memos", systemImage: "waveform") }
