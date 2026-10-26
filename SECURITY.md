@@ -2,7 +2,7 @@
 
 ## Supported release
 
-Security fixes are currently developed for the 2.9 release line and the next feature release. Older builds should be upgraded to the latest available 2.9.x version.
+Security fixes are currently developed for the 3.0 release line and the next feature release. Older builds should be upgraded to the latest available 3.0.x version.
 
 Please report a suspected vulnerability privately to the repository owner rather than opening a public issue with exploit details. Include the affected version, protocol, reproduction steps, and any crash report that does not contain credentials or private file contents.
 

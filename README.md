@@ -4,14 +4,11 @@ A native macOS menu-bar utility for getting newsroom files where they need to go
 
 Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
-This branch contains the in-development 3.0 implementation. It is not a beta or a
-shipping release: the bundle identifies itself as 3.0.0 (build 44). Face recognition
-uses Photo Agent defaults; the remaining
-native, supported-macOS, performance and release gates are tracked in the
-[3.0 readiness report](Documentation/3.0-Readiness.md). Use the latest tagged 2.9.x
-release for production work until a 3.0 candidate is published.
+Version 3.0.0 (build 45) is the current release. Face recognition uses Photo Agent
+defaults. Acceptance gates that remained open at release are recorded in the
+[3.0 readiness report](Documentation/3.0-Readiness.md).
 
-## Version 3.0 preview
+## Version 3.0
 
 The 3.0 source currently adds these guarded workflows:
 
