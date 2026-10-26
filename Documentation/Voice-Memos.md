@@ -24,6 +24,10 @@ start transcription for that field. Existing literal descriptions remain literal
 The variable can also be used in other supported template fields; each field's own
 IPTC limit still applies.
 
+Reprocessing existing local files does not contact the source, so it only transcribes
+a WAV that is already in the destination folder beside the image. Otherwise the
+existing caption is kept and the memo is reported as unavailable.
+
 The WAV must have the same exact filename stem and directory as the image;
 the WAV extension is case-insensitive (`DSC0001.JPG` + `DSC0001.WAV`). More than one
 matching WAV is ambiguous and is not used. Filename adapters match the original

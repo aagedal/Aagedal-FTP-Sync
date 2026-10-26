@@ -401,7 +401,9 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         )
     }
 
-    func testReprocessStopsBeforeWritingWhenSourceListingIsUnavailable() async throws {
+    /// With source dates kept on downloads, the local date is the source time and
+    /// reprocessing works without ever opening the (here offline) source.
+    func testReprocessUsesPreservedLocalDateWithoutOpeningOfflineSource() async throws {
         let folder = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: folder) }
         let sourceFolder = folder.appendingPathComponent("source")
@@ -438,22 +440,21 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
                 name: "Assignment",
                 startsAt: timestamp.addingTimeInterval(-60),
                 endsAt: timestamp.addingTimeInterval(60),
-                fields: ScheduledMetadataFields(headline: "Must not be written")
+                fields: ScheduledMetadataFields(headline: "Written from the local date")
             )]
         )
-        let engine = SyncEngine(sessionFactory: { _, _, _ in
-            throw AppError.transferFailed("The source is offline.")
-        })
+        let engine = SyncEngine(
+            sourceSignatureRepository: SourceSignatureRepository(fileURL: folder.appendingPathComponent("signatures.json")),
+            sessionFactory: { _, _, _ in
+                XCTFail("Reprocessing must not open the source")
+                throw AppError.transferFailed("The source is offline.")
+            })
 
-        do {
-            _ = try await engine.reprocessExistingLocalFiles(job: job)
-            XCTFail("Reprocessing should stop when source timestamps cannot be loaded.")
-        } catch {
-            XCTAssertTrue(error.localizedDescription.contains("Source modification times could not be loaded"))
-        }
+        let result = try await engine.reprocessExistingLocalFiles(job: job)
 
+        XCTAssertEqual(result.applied, 1)
         XCTAssertEqual(try Data(contentsOf: destination), original)
-        XCTAssertFalse(
+        XCTAssertTrue(
             FileManager.default.fileExists(
                 atPath: destination.deletingPathExtension().appendingPathExtension("xmp").path
             )
