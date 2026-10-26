@@ -77,12 +77,6 @@ struct MetadataTemplateKeywordsEditor: View {
             HStack(spacing: 8) {
                 Text("Keywords")
                 Spacer()
-                Toggle("Resolve variables", isOn: Binding(
-                    get: { value.templateVersion != nil },
-                    set: { apply(value.source, resolvesVariables: $0) }))
-                    .toggleStyle(.checkbox)
-                    .help("Resolve variables in every keyword. Missing values leave the existing keyword list unchanged.")
-                    .accessibilityIdentifier("metadata-keywords-resolve-variables")
                 Menu("Insert Variable") {
                     Button("Capture date · YYYY-MM-DD") { insert("{dateCaptured:YYYY-MM-DD}") }
                     Button("Processing date · YYYY-MM-DD") { insert("{date:YYYY-MM-DD}") }
@@ -92,7 +86,7 @@ struct MetadataTemplateKeywordsEditor: View {
                     Button("People shown") { insert("{persons}") }
                 }
                 .fixedSize()
-                .help("Adds a variable to the keyword being typed and turns on variable resolution.")
+                .help("Adds a variable to the keyword being typed. Use {{ and }} for literal braces.")
                 Button { showingPicker = true } label: { Image(systemName: "list.bullet.indent") }
                     .buttonStyle(.borderless)
                     .help("Choose from structured keywords")
@@ -155,10 +149,8 @@ struct MetadataTemplateKeywordsEditor: View {
     }
 
     private var footnote: String {
-        guard value.templateVersion != nil else {
-            return value.source.contains(where: { $0.contains("{") })
-                ? "Braces stay literal until Resolve variables is on."
-                : "Press Return, or type a comma or semicolon, to add a keyword."
+        guard value.source.contains(where: { $0.contains("{") }) else {
+            return "Press Return, or type a comma or semicolon, to add a keyword."
         }
         let sampleDate = Date(timeIntervalSince1970: 1_704_153_600)
         let context = MetadataTemplateContext(processingDate: sampleDate, processingTimeZone: .gmt,
@@ -194,26 +186,32 @@ struct MetadataTemplateKeywordsEditor: View {
 
     @discardableResult
     private func add(_ values: [String]) -> Bool {
-        let combined = MetadataTemplateKeywordsDraft.appending(values, to: value.source)
+        let combined = MetadataTemplateKeywordsDraft.appending(values, to: editableSources)
         guard combined.count <= MetadataTemplate.maximumKeywordEntries else {
             show("A keyword list can hold at most \(MetadataTemplate.maximumKeywordEntries) keywords.")
             return false
         }
-        return apply(combined, resolvesVariables: value.templateVersion != nil)
+        return apply(combined)
     }
 
     private func remove(at index: Int) {
-        guard value.source.indices.contains(index) else { return }
-        var source = value.source
+        var source = editableSources
+        guard source.indices.contains(index) else { return }
         source.remove(at: index)
-        apply(source, resolvesVariables: value.templateVersion != nil)
+        apply(source)
+    }
+
+    /// Variables always resolve. Keywords saved without variables get their
+    /// braces escaped on the first edit, so they still produce the same text.
+    private var editableSources: [String] {
+        value.templateVersion == nil ? value.source.map(MetadataTemplateSource.escapingBraces) : value.source
     }
 
     @discardableResult
-    private func apply(_ source: [String], resolvesVariables: Bool) -> Bool {
+    private func apply(_ source: [String]) -> Bool {
         var draft = MetadataTemplateKeywordsDraft(value)
         draft.entries = source.map { .init(source: $0) }
-        draft.resolvesVariables = resolvesVariables
+        draft.resolvesVariables = true
         do {
             value = try draft.validatedValue()
             message = nil
@@ -224,9 +222,7 @@ struct MetadataTemplateKeywordsEditor: View {
         }
     }
 
-    /// Choosing a variable turns on resolution, as in the other metadata fields.
     private func insert(_ token: String) {
-        if value.templateVersion == nil, !apply(value.source, resolvesVariables: true) { return }
         inputText += token
         inputIsFocused = true
     }

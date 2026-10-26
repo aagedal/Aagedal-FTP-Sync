@@ -17,13 +17,15 @@
   their Settings tabs, and **Sync Servers** is renamed **Shared Calendars**.
 - Edit Headline, Description and Copyright variables inline instead of in a separate
   Variables window. **Insert Variable** adds a variable at the cursor (macOS 15 and later;
-  appended on macOS 14) and turns on **Resolve variables**, with an example and any
-  syntax error shown under the field. Clips and photographers cannot be saved while a
-  field's variables are invalid.
+  appended on macOS 14), with an example and any syntax error shown under the field.
+  Variables always resolve, so the Resolve variables setting is gone; use {{ and }} for
+  literal braces. Text saved without variables keeps its exact output when edited. Clips
+  and photographers cannot be saved while a field's variables are invalid.
+- Show Headline as a bordered input with a single label, like Description.
 - Edit keywords as chips, matching Aagedal Photo Agent: press Return, or type or paste
   commas or semicolons, to add keywords; duplicates are skipped. Suggestions and a
   searchable structured keyword picker add a keyword with its parent keywords and
-  synonyms. Variables and the whole-list resolution setting are unchanged.
+  synonyms. Keyword variables always resolve, as in the other fields.
 - Read Photo Agent's structured keyword lists from its Lists folder, linked once in
   Settings → General. The bundled IPTC Media Topics list (CC BY 4.0) is available
   without a linked folder. FTP Sync never writes to the folder.

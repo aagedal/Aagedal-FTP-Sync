@@ -4,7 +4,7 @@ A native macOS menu-bar utility for getting newsroom files where they need to go
 
 Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
-Version 3.0.0 (build 48) is the current release. Face recognition uses Photo Agent
+Version 3.0.0 (build 49) is the current release. Face recognition uses Photo Agent
 defaults. Acceptance gates that remained open at release are recorded in the
 [3.0 readiness report](Documentation/3.0-Readiness.md).
 
@@ -22,8 +22,8 @@ The 3.0 source currently adds these guarded workflows:
 - Explicit variables in Headline, Description, Keywords and Copyright. Supported
   variables include the processing date, capture date, photographer, GPS city/country
   and people already present or accepted by recognition. Insert them from each field's
-  **Insert Variable** menu. Braces remain literal until **Resolve variables** is on for
-  that field; a missing value preserves the complete existing
+  **Insert Variable** menu; variables always resolve, and `{{` and `}}` write literal
+  braces; a missing value preserves the complete existing
   field rather than publishing a partial result.
 - A Keywords field that works like Aagedal Photo Agent's: chips, comma/semicolon
   entry, suggestions and a structured keyword picker. Link Photo Agent's Lists folder

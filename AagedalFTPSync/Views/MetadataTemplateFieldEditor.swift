@@ -8,15 +8,26 @@ struct MetadataTemplateSourceIssuesKey: PreferenceKey {
     static func reduce(value: inout [String], nextValue: () -> [String]) { value += nextValue() }
 }
 
-/// Source text, variable resolution and the variable menu are edited inline.
-/// The binding only ever receives a validated atomic value.
+/// Variables always resolve in edited metadata. Text saved before variables were
+/// enabled is shown with its braces escaped, so it still produces the same output.
+enum MetadataTemplateSource {
+    static func escapingBraces(_ literal: String) -> String {
+        literal.replacingOccurrences(of: "{", with: "{{").replacingOccurrences(of: "}", with: "}}")
+    }
+
+    static func editable(_ value: MetadataTemplateText) -> String {
+        value.templateVersion == nil ? escapingBraces(value.source) : value.source
+    }
+}
+
+/// Source text and the variable menu are edited inline; variables always
+/// resolve. The binding only ever receives a validated atomic value.
 struct MetadataTemplateFieldEditor: View {
     let title: String
     @Binding var value: MetadataTemplateText
     var multiline = false
     var samplePhotographer = "Sample Photographer"
     @State private var source: String
-    @State private var resolvesVariables: Bool
     @State private var pendingInsertion: String?
     @State private var sampleContext: MetadataTemplateContext
 
@@ -26,8 +37,7 @@ struct MetadataTemplateFieldEditor: View {
         _value = value
         self.multiline = multiline
         self.samplePhotographer = samplePhotographer
-        _source = State(initialValue: value.wrappedValue.source)
-        _resolvesVariables = State(initialValue: value.wrappedValue.templateVersion != nil)
+        _source = State(initialValue: MetadataTemplateSource.editable(value.wrappedValue))
         let zone = TimeZone(identifier: TimeZone.current.identifier) ?? TimeZone(secondsFromGMT: 0)!
         _sampleContext = State(initialValue: MetadataTemplateContext(processingDate: Date(), processingTimeZone: zone,
             captureDate: MetadataCaptureDate(date: Date(timeIntervalSince1970: 1_709_208_000),
@@ -40,10 +50,6 @@ struct MetadataTemplateFieldEditor: View {
             HStack(spacing: 8) {
                 Text(title).font(.headline)
                 Spacer()
-                Toggle("Resolve variables", isOn: $resolvesVariables)
-                    .toggleStyle(.checkbox)
-                    .help("When off, all text, including braces, stays literal.")
-                    .accessibilityLabel("Resolve \(title) variables")
                 Menu("Insert Variable") {
                     insert("Capture date", token: "{dateCaptured:YYYY-MM-DD}")
                     Divider()
@@ -60,13 +66,13 @@ struct MetadataTemplateFieldEditor: View {
                 .help(variableHelp)
             }
             MetadataTemplateSourceInput(title: title, text: $source, multiline: multiline,
-                                        monospaced: resolvesVariables, insertion: $pendingInsertion)
+                                        insertion: $pendingInsertion)
             if let issue {
                 Label(issue, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
                     .accessibilityIdentifier("\(title) source error")
-            } else if resolvesVariables {
+            } else if source.contains("{") {
                 // No label override or text selection here: on macOS 27 either can make
                 // AppKit recurse while resolving this text's accessibility label.
                 Text(sample).font(.caption).foregroundStyle(.secondary).lineLimit(3)
@@ -75,17 +81,15 @@ struct MetadataTemplateFieldEditor: View {
         }
         .preference(key: MetadataTemplateSourceIssuesKey.self, value: issue.map { ["\(title): \($0)"] } ?? [])
         .onChange(of: source) { _, _ in publish() }
-        .onChange(of: resolvesVariables) { _, _ in publish() }
         .onChange(of: value) { _, newValue in
             // Adopt outside changes, such as loading a preset, but not our own writes.
             guard (try? validation.get()) != newValue else { return }
-            source = newValue.source
-            resolvesVariables = newValue.templateVersion != nil
+            source = MetadataTemplateSource.editable(newValue)
         }
     }
 
     private var validation: Result<MetadataTemplateText, Error> {
-        Result { resolvesVariables ? try .activated(source) : .literal(source) }
+        Result { try .activated(source) }
     }
 
     private var issue: String? {
@@ -98,15 +102,11 @@ struct MetadataTemplateFieldEditor: View {
     }
 
     private func insert(_ label: String, token: String) -> some View {
-        Button(label) {
-            pendingInsertion = token
-            // Choosing a variable means it should resolve.
-            resolvesVariables = true
-        }
+        Button(label) { pendingInsertion = token }
     }
 
     private var variableHelp: String {
-        "Inserts at the cursor and turns on variable resolution. Use {{ and }} for literal braces. City and Country need a geocoding result, Persons needs Person Shown names, and Voice memo transcript uses the first 30 seconds of a matching WAV. Missing values keep the existing field. A description must fit in 2,000 UTF-8 bytes."
+        "Inserts at the cursor. Use {{ and }} for literal braces. City and Country need a geocoding result, Persons needs Person Shown names, and Voice memo transcript uses the first 30 seconds of a matching WAV. Missing values keep the existing field. A description must fit in 2,000 UTF-8 bytes."
     }
 
     private var sample: String {
@@ -142,23 +142,20 @@ private struct MetadataTemplateSourceInput: View {
     let title: String
     @Binding var text: String
     let multiline: Bool
-    let monospaced: Bool
     @Binding var insertion: String?
 
     var body: some View {
         if #available(macOS 15, *) {
-            SelectionAwareTemplateInput(title: title, text: $text, multiline: multiline,
-                                        monospaced: monospaced, insertion: $insertion)
+            SelectionAwareTemplateInput(title: title, text: $text, multiline: multiline, insertion: $insertion)
         } else {
             Group {
                 if multiline {
-                    TextEditor(text: $text).frame(minHeight: 65, maxHeight: 130)
+                    TextEditor(text: $text).frame(minHeight: 65, maxHeight: 130).accessibilityLabel(title)
                 } else {
                     TextField(title, text: $text)
                 }
             }
-            .font(monospaced ? .body.monospaced() : .body)
-            .accessibilityLabel(title)
+            .metadataTemplateInputStyle(multiline: multiline)
             .onChange(of: insertion) { _, token in
                 guard let token else { return }
                 insertion = nil
@@ -173,7 +170,6 @@ private struct SelectionAwareTemplateInput: View {
     let title: String
     @Binding var text: String
     let multiline: Bool
-    let monospaced: Bool
     @Binding var insertion: String?
     @State private var selection: TextSelection?
 
@@ -181,12 +177,12 @@ private struct SelectionAwareTemplateInput: View {
         Group {
             if multiline {
                 TextEditor(text: $text, selection: $selection).frame(minHeight: 65, maxHeight: 130)
+                    .accessibilityLabel(title)
             } else {
                 TextField(title, text: $text, selection: $selection)
             }
         }
-        .font(monospaced ? .body.monospaced() : .body)
-        .accessibilityLabel(title)
+        .metadataTemplateInputStyle(multiline: multiline)
         .onChange(of: insertion) { _, token in
             guard let token else { return }
             insertion = nil
@@ -203,5 +199,23 @@ private struct SelectionAwareTemplateInput: View {
         let offset = text.distance(from: text.startIndex, to: range.lowerBound) + token.count
         text.replaceSubrange(range, with: token)
         selection = TextSelection(insertionPoint: text.index(text.startIndex, offsetBy: offset))
+    }
+}
+
+private extension View {
+    /// A visible bordered input without its own row label: the header above
+    /// already names the field, and a grouped Form would repeat it.
+    func metadataTemplateInputStyle(multiline: Bool) -> some View {
+        Group {
+            if multiline {
+                self.scrollContentBackground(.hidden)
+                    .padding(4)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 5))
+                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.secondary.opacity(0.35)))
+            } else {
+                self.textFieldStyle(.roundedBorder)
+            }
+        }
+        .labelsHidden()
     }
 }

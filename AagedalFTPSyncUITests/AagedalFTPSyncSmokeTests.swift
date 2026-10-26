@@ -1415,7 +1415,6 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         let headline = app.textFields["Headline"].firstMatch
         XCTAssertTrue(headline.waitForExistence(timeout: 3))
         replaceText(in: headline, with: "{unknown}")
-        app.checkBoxes["Resolve Headline variables"].click()
         XCTAssertTrue(element("Headline source error").waitForExistence(timeout: 3))
         app.buttons["Save"].firstMatch.click()
         XCTAssertTrue(element("metadata-clip-editor").exists, "Invalid variables must not save the clip")
@@ -1427,14 +1426,18 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
 
     func testInlineVariableInsertionAndKeywordChipsEditList() {
         openSeededClipEditor()
-        // Variables are inserted inline at the cursor and turn on resolution.
+        // Variables are inserted inline at the cursor and always resolve.
+        let description = app.textViews["Description"].firstMatch
+        description.click()
+        description.typeText("Typed")
+        XCTAssertTrue((description.value as? String ?? "").contains("Typed"))
+        XCTAssertFalse(app.checkBoxes["Resolve Headline variables"].exists)
         let headline = app.textFields["Headline"].firstMatch
         XCTAssertTrue(headline.waitForExistence(timeout: 3))
         replaceText(in: headline, with: "Photo: ")
         app.menuButtons["Insert Headline variable"].click()
         app.menuItems["Photographer"].click()
         XCTAssertEqual(headline.value as? String, "Photo: {photographer}")
-        XCTAssertEqual(String(describing: app.checkBoxes["Resolve Headline variables"].value ?? ""), "1")
         XCTAssertTrue(element("Headline sample output").waitForExistence(timeout: 3))
 
         // Keywords are chips: a pasted comma list splits, duplicates are skipped.
