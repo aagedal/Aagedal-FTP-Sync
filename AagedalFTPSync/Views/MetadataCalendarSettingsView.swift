@@ -136,7 +136,7 @@ struct MetadataCalendarSettingsView: View {
                                 calendarSetup
                             }
                         } else {
-                            Text("Add a sync server in Settings → Sync Servers first.")
+                            Text("Add a sync server in Settings → Shared Calendars first.")
                         }
                         Button("Manage Sync Servers…", action: openServerSettings)
                     }

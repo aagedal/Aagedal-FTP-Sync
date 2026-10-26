@@ -1858,6 +1858,8 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 5), .completed)
         XCTAssertFalse(port.isEnabled)
         XCTAssertEqual(sheet.descendants(matching: .any)["endpoint.remote-folder"].value as? String, "/keep/job/folder")
+        // Settings can overlap the sheet's Done button; close it before returning to the job.
+        app.windows.containing(.button, identifier: "FTP Servers").firstMatch.buttons[XCUIIdentifierCloseWindow].click()
         sheet.buttons["Done"].click()
         XCTAssertEqual(element("job-name").value as? String, "Keep local job edits")
         element("save-job").click()
