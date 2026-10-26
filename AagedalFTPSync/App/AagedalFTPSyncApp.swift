@@ -70,6 +70,8 @@ struct AagedalFTPSyncApp: App {
             }
             .background(RegularWindowTracker())
         }
+        // Tabs set only minimum sizes, so the window can grow past them.
+        .windowResizability(.contentMinSize)
         .commands { AppWindowCommands() }
     }
 }

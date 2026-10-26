@@ -138,7 +138,6 @@ struct MetadataCalendarSettingsView: View {
                         } else {
                             Text("Add a sync server in Settings → Shared Calendars first.")
                         }
-                        Button("Manage Sync Servers…", action: openServerSettings)
                     }
                 }
                 if let pending = sync.state.pendingReceive, pending.source.id == fixedJobID {
@@ -163,6 +162,7 @@ struct MetadataCalendarSettingsView: View {
                         Button("Keep Using Classic Calendar…") { migrationToAbandon = journal }.disabled(sync.busy)
                     }
                 }
+                sharedCalendarsLink
             }
             if let activationMessage { Text(activationMessage).textSelection(.enabled) }
             if !sync.message.isEmpty { Text(sync.message).textSelection(.enabled) }
@@ -287,6 +287,15 @@ struct MetadataCalendarSettingsView: View {
             }
             Text("Add and name servers here. Attach each job in Job settings → Metadata Sync.")
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var sharedCalendarsLink: some View {
+        Section {
+            Button("Open Shared Calendars Settings…", action: openServerSettings)
+                .accessibilityIdentifier("open-shared-calendars-settings")
+        } footer: {
+            Text("Add sync servers, manage members and invitations, and run hosting checks.")
         }
     }
 

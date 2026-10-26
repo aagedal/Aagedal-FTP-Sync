@@ -1730,7 +1730,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testJobMetadataSyncSettingsManageAttachmentSeparatelyFromServers() {
         launch(seedJob: true)
         element("Metadata Sync").firstMatch.click()
-        XCTAssertTrue(app.buttons["Manage Sync Servers…"].waitForExistence(timeout: 5))
+        XCTAssertTrue(element("open-shared-calendars-settings").waitForExistence(timeout: 5))
         XCTAssertFalse(element("metadata-sync-invitation").exists)
         XCTAssertFalse(element("Sync Job").exists)
     }

@@ -52,6 +52,14 @@ struct JobDetailEditor: View {
                             Text("Save this job before attaching a metadata sync server.")
                             Button("Save Job") { save() }
                                 .disabled(draft.validationMessage != nil || session.credentialLoadError != nil)
+                            Button("Open Shared Calendars Settings…") {
+                                store.settingsTab = .metadataSync
+                                store.metadataSyncSettingsTab = .calendars
+                                RegularWindowController.shared.prepareForOpening()
+                                openSettings()
+                            }
+                            .buttonStyle(.link)
+                            .accessibilityIdentifier("open-shared-calendars-settings")
                         }
                     } else {
                         MetadataCalendarSettingsView(fixedJobID: draft.id, beforeAttachment: { save() })

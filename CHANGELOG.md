@@ -15,6 +15,9 @@
   Launch at Login, configuration import/export, the support bundle and an overview
   of each window. The separate Servers and Photographers windows are replaced by
   their Settings tabs, and **Sync Servers** is renamed **Shared Calendars**.
+- Make the Settings window taller and resizable, keeping one size across tabs.
+- Add an **Open Shared Calendars Settings…** link to a job's Metadata Sync tab, shown
+  whether or not the job is attached to a calendar.
 - Title the job editor window **Sync Jobs** and list Sync Jobs, Metadata Programming
   and Photographer Map in the Window menu (⌘1–⌘3), with About opening the app's own window.
 
