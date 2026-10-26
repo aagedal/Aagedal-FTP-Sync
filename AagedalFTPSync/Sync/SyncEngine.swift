@@ -953,18 +953,13 @@ struct SyncEngine: Sendable {
             sourceFiles: destinationFiles, automation: automation, geocoding: job.metadataGeocoding,
             faceRecognition: job.metadataFaceRecognition,
             enforceLocalPathRules: true, occupiedDestinationPaths: Set(destinationFiles.keys))
-        if automation?.timestampPolicy == .sourceModification, !job.preserveModificationDates {
-            let missingSourcePaths = files
-                .map(\.relativePath)
-                .filter { sourceFiles[$0] == nil }
-            if let firstMissingPath = missingSourcePaths.first {
-                let description = missingSourcePaths.count == 1
-                    ? firstMissingPath
-                    : "\(firstMissingPath) and \(missingSourcePaths.count - 1) other files"
-                throw AppError.invalidConfiguration(
-                    "Source modification times are unavailable for \(description). Reconnect or restore the source files before reprocessing, or use camera capture time."
-                )
-            }
+        // Destination dates are download times here, so they cannot stand in for
+        // the source time. Each download records the source time, which places
+        // files the source has since removed; only files with neither are skipped.
+        let requiresRecordedSourceTime = automation?.timestampPolicy == .sourceModification
+            && !job.preserveModificationDates
+        func sourceModificationDate(for path: String) -> Date? {
+            sourceFiles[path]?.modifiedAt ?? savedSourceSignatures[path]?.modifiedAt
         }
         var scanned = scope.isClip ? 0 : files.count
         var applied = 0
@@ -982,6 +977,17 @@ struct SyncEngine: Sendable {
         }
         for file in files {
             try Task.checkCancellation()
+            if requiresRecordedSourceTime, sourceModificationDate(for: file.relativePath) == nil {
+                // Without a time the clip is unknown, so a clip run cannot claim it.
+                if scope.isClip { continue }
+                skipped += 1
+                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: .skipped,
+                    timestampPolicy: .sourceModification, scheduledAt: nil,
+                    matchedPhotographer: automation?.matchingPhotographer(for: file.relativePath),
+                    detail: "The source modification time is unknown: the file is no longer on the source and its download was not recorded. Use camera capture time to reprocess it."))
+                continue
+            }
             let processingDate = now()
             try Task.checkCancellation()
             let temporaryURL = try makeTemporaryURL(for: file)
@@ -1006,7 +1012,7 @@ struct SyncEngine: Sendable {
 
             let scheduledAt = automation.flatMap { automation in
                 MetadataWriter.schedulingDate(for: automation.timestampPolicy,
-                    sourceModifiedAt: sourceFiles[file.relativePath]?.modifiedAt ?? file.modifiedAt,
+                    sourceModifiedAt: sourceModificationDate(for: file.relativePath) ?? file.modifiedAt,
                     localArrivalAt: file.modifiedAt, fileURL: temporaryURL)
             }
             let assignment = scheduledAt.flatMap { automation?.assignment(for: file.relativePath, scheduledAt: $0) }

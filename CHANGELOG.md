@@ -15,6 +15,11 @@
   Launch at Login, configuration import/export, the support bundle and an overview
   of each window. The separate Servers and Photographers windows are replaced by
   their Settings tabs, and **Sync Servers** is renamed **Shared Calendars**.
+- Reprocess files that the source has since removed when the job uses source
+  modification time without keeping it on downloads: the source time recorded at
+  download is used. Files with no known source time are skipped and reported in the
+  audit trail instead of blocking the whole batch. Clarify the reprocessing summary
+  wording.
 - Edit Headline, Description and Copyright variables inline instead of in a separate
   Variables window. **Insert Variable** adds a variable at the cursor (macOS 15 and later;
   appended on macOS 14), with an example and any syntax error shown under the field.

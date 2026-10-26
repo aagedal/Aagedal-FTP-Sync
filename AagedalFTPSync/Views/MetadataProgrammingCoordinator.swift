@@ -255,18 +255,22 @@ final class MetadataProgrammingCoordinator: ObservableObject {
     ) -> String {
         let target = job?.localDestinationDisplayPath ?? "the local destination"
         let policyNote = draft.existingFieldPolicy.explanation
-        let scopeDescription: String
+        let scope: String
         switch pendingReprocessScope {
         case .photographer(let photographerID):
             let name = draft.photographers.first(where: { $0.id == photographerID })?.photographerName
                 ?? "the selected photographer"
-            scopeDescription = "Only files assigned to \(name)"
+            scope = " assigned to \(name)"
         case .clip(let clipID):
             let name = draft.clips.first(where: { $0.id == clipID })?.name
                 ?? "the selected metadata clip"
-            scopeDescription = "Only files assigned to the “\(name)” clip"
+            scope = " in the “\(name)” clip"
         case .all, nil:
-            scopeDescription = "Matching files"
+            scope = ""
+        }
+        let selection = switch reprocessFilter {
+        case .staleOrIncomplete: "updates stale or incomplete files\(scope)"
+        case .all: "re-evaluates all matching files\(scope)"
         }
         let preflightSummary: String
         if let result = preflight {
@@ -277,7 +281,7 @@ final class MetadataProgrammingCoordinator: ObservableObject {
         } else {
             preflightSummary = "The preflight is checking the destination without changing files."
         }
-        return "\(scopeDescription) in \(target) are using \(reprocessFilter.title.lowercased()). \(preflightSummary) The source is untouched and modification dates are retained. \(policyNote)"
+        return "In \(target), this \(selection). \(preflightSummary) The source is untouched and modification dates are retained. \(policyNote)"
     }
 
     var reprocessActionTitle: String {

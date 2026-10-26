@@ -460,9 +460,52 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         )
     }
 
-    func testReprocessRejectsMissingSourceTimestampWhenDatesWereNotPreserved() async throws {
+    func testReprocessSkipsFileWithoutAnyKnownSourceTimestampWhenDatesWereNotPreserved() async throws {
+        let fixture = try makeMissingSourceFixture(name: "Missing source timestamp")
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+
+        let result = try await SyncEngine(sourceSignatureRepository: fixture.signatures)
+            .reprocessExistingLocalFiles(job: fixture.job)
+
+        // The destination date is the download time and must not stand in for
+        // the source time; the file is reported instead of blocking the batch.
+        XCTAssertEqual(result.applied, 0)
+        XCTAssertEqual(result.skipped, 1)
+        XCTAssertTrue(result.metadataReport.entries.first?.detail?.contains("source modification time is unknown") == true)
+        XCTAssertEqual(try Data(contentsOf: fixture.destination), fixture.original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sidecar.path))
+    }
+
+    func testReprocessUsesRecordedSourceTimestampForFileRemovedFromSource() async throws {
+        let fixture = try makeMissingSourceFixture(name: "Recorded source timestamp")
+        defer { try? FileManager.default.removeItem(at: fixture.folder) }
+        // The download recorded the source time; the source has since removed the file.
+        try await fixture.signatures.record(
+            SyncFile(relativePath: "JAD_MOVED.CR3", size: Int64(fixture.original.count), modifiedAt: fixture.clipTime),
+            jobID: fixture.job.id, sourceEndpoint: fixture.job.left)
+
+        let result = try await SyncEngine(sourceSignatureRepository: fixture.signatures)
+            .reprocessExistingLocalFiles(job: fixture.job)
+
+        XCTAssertEqual(result.applied, 1)
+        XCTAssertEqual(result.skipped, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sidecar.path))
+    }
+
+    private struct MissingSourceFixture {
+        let folder: URL
+        let destination: URL
+        let sidecar: URL
+        let original: Data
+        let clipTime: Date
+        let job: SyncJob
+        let signatures: SourceSignatureRepository
+    }
+
+    /// One RAW in the destination, none on the source. Its destination date is a
+    /// download time far outside the only clip.
+    private func makeMissingSourceFixture(name: String) throws -> MissingSourceFixture {
         let folder = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: folder) }
         let sourceFolder = folder.appendingPathComponent("source")
         let destinationFolder = folder.appendingPathComponent("destination")
         try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
@@ -470,17 +513,14 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
         let destination = destinationFolder.appendingPathComponent("JAD_MOVED.CR3")
         let original = Data("camera raw data".utf8)
         try original.write(to: destination)
-        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
-        try FileManager.default.setAttributes([.modificationDate: timestamp], ofItemAtPath: destination.path)
+        let clipTime = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: clipTime.addingTimeInterval(86_400)],
+                                              ofItemAtPath: destination.path)
 
-        let photographer = PhotographerProfile(
-            name: "Jane Doe",
-            filenamePrefix: "JAD",
-            creator: "Jane Doe",
-            copyrightNotice: ""
-        )
+        let photographer = PhotographerProfile(name: "Jane Doe", filenamePrefix: "JAD", creator: "Jane Doe",
+                                               copyrightNotice: "")
         var job = SyncJob(
-            name: "Missing source timestamp",
+            name: name,
             left: try localEndpoint(for: sourceFolder),
             right: try localEndpoint(for: destinationFolder),
             direction: .leftToRight,
@@ -496,25 +536,16 @@ final class MetadataPreviewAndRecoveryTests: XCTestCase {
             clips: [MetadataScheduleClip(
                 photographerID: photographer.id,
                 name: "Assignment",
-                startsAt: timestamp.addingTimeInterval(-60),
-                endsAt: timestamp.addingTimeInterval(60),
-                fields: ScheduledMetadataFields(headline: "Must not be written")
+                startsAt: clipTime.addingTimeInterval(-60),
+                endsAt: clipTime.addingTimeInterval(60),
+                fields: ScheduledMetadataFields(headline: "Recorded source time")
             )]
         )
-
-        do {
-            _ = try await SyncEngine().reprocessExistingLocalFiles(job: job)
-            XCTFail("Reprocessing should reject a destination arrival date as a source modification date.")
-        } catch {
-            XCTAssertTrue(error.localizedDescription.contains("Source modification times are unavailable"))
-        }
-
-        XCTAssertEqual(try Data(contentsOf: destination), original)
-        XCTAssertFalse(
-            FileManager.default.fileExists(
-                atPath: destination.deletingPathExtension().appendingPathExtension("xmp").path
-            )
-        )
+        return MissingSourceFixture(
+            folder: folder, destination: destination,
+            sidecar: destination.deletingPathExtension().appendingPathExtension("xmp"),
+            original: original, clipTime: clipTime, job: job,
+            signatures: SourceSignatureRepository(fileURL: folder.appendingPathComponent("signatures.json")))
     }
 
     func testTIFFAndHEICFixturesRoundTripScheduledMetadata() throws {
