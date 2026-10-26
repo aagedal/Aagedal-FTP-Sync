@@ -1953,6 +1953,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
+        quitOtherCopies()
         app = cleanApp
         app.launchEnvironment["AAGEDAL_UI_TESTING"] = "1"
         app.launchEnvironment["AAGEDAL_UI_TEST_OPEN_JOBS"] = "1"
@@ -1984,6 +1985,36 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         waitForJobsWindow(seedJob: seedJob)
     }
 
+    /// XCUIApplication.terminate() only reaches the copy built for this target.
+    /// The app treats any process with its bundle identifier as a concurrent
+    /// writer, so installed, archived or other-worktree copies must quit too.
+    private func quitOtherCopies() {
+        let identifier = "no.aagedal.AagedalFTPSync"
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+        guard !running.isEmpty else { return }
+        running.forEach { $0.terminate() }
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, running.contains(where: { !$0.isTerminated }) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        for copy in running where !copy.isTerminated {
+            let path = copy.bundleURL?.path ?? "unknown location"
+            // Only force-quit disposable test builds; never kill a copy that may
+            // be doing real delivery work.
+            if path.contains("/DerivedData/") || path.contains("/build/") {
+                copy.forceTerminate()
+            } else {
+                XCTFail("Quit the other running copy of Aagedal FTP Sync before UI testing: \(path)")
+            }
+        }
+        let remaining = Date().addingTimeInterval(5)
+        while Date() < remaining, running.contains(where: { !$0.isTerminated }) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(NSRunningApplication.runningApplications(withBundleIdentifier: identifier).isEmpty,
+                      "Another copy of Aagedal FTP Sync is still running")
+    }
+
     private func waitForJobsWindow(seedJob: Bool) {
         let jobsWindow = app.windows["jobs"]
         XCTAssertTrue(jobsWindow.waitForExistence(timeout: 8))
@@ -1995,6 +2026,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
                                 seedRemoteJob: Bool = false) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
+        quitOtherCopies()
         app = cleanApp
         app.launchEnvironment["AAGEDAL_UI_TESTING"] = "1"
         app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"] = session
