@@ -62,4 +62,15 @@ final class MetadataTemplateKeywordsDraftTests: XCTestCase {
         XCTAssertEqual(copied.fields.description, "  {photographer}  ")
         XCTAssertEqual(copied.fields.templateVersions, ["description": 1, "keywords": 1])
     }
+
+    func testEscapingLiteralTextKeepsItsOutputWhenVariablesAlwaysResolve() throws {
+        let context = MetadataTemplateContext(processingDate: Date(timeIntervalSince1970: 0), processingTimeZone: .gmt,
+                                              captureDate: nil, photographer: "Ada")
+        for literal in ["Plain", "Braces {photographer} stay", "Odd } and { and {{}}", ""] {
+            let activated = try MetadataTemplateText.activated(MetadataTemplateSource.escapingBraces(literal))
+            XCTAssertEqual(activated.resolve(using: context), .resolved(literal), literal)
+        }
+        XCTAssertEqual(MetadataTemplateSource.editable(.literal("a {b}")), "a {{b}}")
+        XCTAssertEqual(MetadataTemplateSource.editable(try .activated("a {photographer}")), "a {photographer}")
+    }
 }

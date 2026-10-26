@@ -8,8 +8,8 @@ Hugging Face revisions and verify the exact byte count and SHA-256 before instal
 Models are stored in the application's sandboxed Application Support directory.
 Transcription runs locally using the bundled FFmpeg/whisper.cpp runtime.
 
-In a scheduled metadata description, open **Variables…**, enable **Resolve Variables**,
-and use, for example:
+In a scheduled metadata description, choose variables from **Insert Variable** or type
+them, for example:
 
 ```
 {existingDescription}
@@ -23,6 +23,10 @@ combined result. Fill-empty continues to preserve a nonempty caption and does no
 start transcription for that field. Existing literal descriptions remain literal.
 The variable can also be used in other supported template fields; each field's own
 IPTC limit still applies.
+
+Reprocessing existing local files does not contact the source, so it only transcribes
+a WAV that is already in the destination folder beside the image. Otherwise the
+existing caption is kept and the memo is reported as unavailable.
 
 The WAV must have the same exact filename stem and directory as the image;
 the WAV extension is case-insensitive (`DSC0001.JPG` + `DSC0001.WAV`). More than one

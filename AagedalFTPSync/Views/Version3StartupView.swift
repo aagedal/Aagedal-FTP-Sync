@@ -125,6 +125,10 @@ struct RuntimeSettingsView: View {
                     .tag(AppSettingsTab.peopleLibrary)
             }
         }
+        // One shared size keeps the window from jumping between tabs; the
+        // ideal height leaves room for the longer forms without scrolling.
+        .frame(minWidth: 960, idealWidth: 960, maxWidth: .infinity,
+               minHeight: 640, idealHeight: 760, maxHeight: .infinity)
         .background(UnsavedChangesWindowGuard(closeDecision: {
             serverEditingSession.confirmLeavingDraft(using: store)
                 && photographerEditingSession.confirmLeavingDraft(using: store)

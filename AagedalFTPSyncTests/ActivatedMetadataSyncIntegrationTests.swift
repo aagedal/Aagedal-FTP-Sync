@@ -78,8 +78,10 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertTrue(applied.metadataReport.entries.first?.processingEvidence?.voiceMemoNote?.contains("first 30 seconds") == true)
         let repeated = try await engine.run(job: job, leftPassword: nil, rightPassword: nil)
         XCTAssertEqual(repeated.transferred, 0)
+        // The WAV stayed on the source and reprocessing does not contact it, so the
+        // transcript cannot be rebuilt; the published caption is kept as it is.
         let reprocessed = try await engine.reprocessExistingLocalFiles(job: job)
-        XCTAssertEqual(reprocessed.failed, 0)
+        XCTAssertEqual(reprocessed.applied, 0)
         XCTAssertEqual(try ImageMetadata.read(from: target).iptc.caption, "Original\nNorsk notat")
     }
 
@@ -1070,7 +1072,9 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: target), laterEdit)
     }
 
-    func testChangedSourceIsReprocessedInsteadOfMisclassifiedAsOutputEdit() async throws {
+    /// Reprocessing reads only what was recorded at download; a later source
+    /// change is left for the next sync to deliver.
+    func testSourceChangeAfterDownloadDoesNotAffectReprocessing() async throws {
         let f = try fixture()
         try write(jpeg(), name: "FX_RESEND.jpg", root: f.source)
         let engine = engine(f)
@@ -1087,8 +1091,8 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
 
         XCTAssertEqual(result.conflicts, [])
         XCTAssertEqual(result.skipped, 1)
-        XCTAssertNotEqual(result.metadataReport.entries[0].processingFingerprint?.sourceRevision,
-                          transfer.metadataReport.entries[0].processingFingerprint?.sourceRevision)
+        XCTAssertEqual(result.metadataReport.entries[0].processingFingerprint?.sourceRevision,
+                       transfer.metadataReport.entries[0].processingFingerprint?.sourceRevision)
     }
 
     func testChangedSourceAndEditedDestinationRemainAConflict() async throws {
@@ -1129,7 +1133,9 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: target), destinationEdit)
     }
 
-    func testRemovedSourceSidecarMakesReceiptStaleInsteadOfReusingSavedCompanionEvidence() async throws {
+    /// The companion recorded at download stays the evidence after the source
+    /// removes it, because reprocessing never lists the source.
+    func testRemovedSourceSidecarDoesNotAffectReprocessing() async throws {
         let f = try fixture()
         try write(Data("synthetic RAW".utf8), name: "FX_REMOVED.cr3", root: f.source)
         let sourceSidecar = f.source.appendingPathComponent("FX_REMOVED.xmp")
@@ -1152,7 +1158,7 @@ final class ActivatedMetadataSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(result.conflicts, [])
         XCTAssertEqual(result.skipped, 1)
         XCTAssertEqual(result.failed, 0)
-        XCTAssertNotEqual(
+        XCTAssertEqual(
             result.metadataReport.entries.first?.processingFingerprint?.sourceRevision,
             previousEntry.processingFingerprint?.sourceRevision
         )

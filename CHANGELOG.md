@@ -1,13 +1,11 @@
 # Changelog
 
-## Unreleased — Voice memos
+## 3.0.0 — 2026-10-26
 
 - Add downloadable Norwegian and multilingual Whisper models in Settings → Voice Memos.
 - Resolve `{voiceMemoTranscript}` from a matching WAV, using only its first 30 seconds.
 - Add `{existingDescription}` with repeat-safe caption composition and the existing 2,000-byte caption limit.
 - Retry images when their voice memo arrives later; report incomplete transcription in metadata details.
-
-## Unreleased (3.0.0)
 
 - Simplify navigation for new users. The menu-bar panel now has labeled **Sync Jobs**,
   **Metadata** and **Settings** buttons, with Start All, Stop All, About and Quit in
@@ -17,6 +15,29 @@
   Launch at Login, configuration import/export, the support bundle and an overview
   of each window. The separate Servers and Photographers windows are replaced by
   their Settings tabs, and **Sync Servers** is renamed **Shared Calendars**.
+- Reprocess existing local files without contacting the source server. Source
+  modification time comes from the time recorded at download, or from the file's own
+  date when the job keeps source dates; camera capture time is read from the file.
+  Files without a known source time are skipped and reported in the audit trail
+  instead of blocking the whole batch. Voice memos are only transcribed again when the
+  WAV is in the destination folder. Clarify the reprocessing summary wording.
+- Edit Headline, Description and Copyright variables inline instead of in a separate
+  Variables window. **Insert Variable** adds a variable at the cursor (macOS 15 and later;
+  appended on macOS 14), with an example and any syntax error shown under the field.
+  Variables always resolve, so the Resolve variables setting is gone; use {{ and }} for
+  literal braces. Text saved without variables keeps its exact output when edited. Clips
+  and photographers cannot be saved while a field's variables are invalid.
+- Show Headline as a bordered input with a single label, like Description.
+- Edit keywords as chips, matching Aagedal Photo Agent: press Return, or type or paste
+  commas or semicolons, to add keywords; duplicates are skipped. Suggestions and a
+  searchable structured keyword picker add a keyword with its parent keywords and
+  synonyms. Keyword variables always resolve, as in the other fields.
+- Read Photo Agent's structured keyword lists from its Lists folder, linked once in
+  Settings → General. The bundled IPTC Media Topics list (CC BY 4.0) is available
+  without a linked folder. FTP Sync never writes to the folder.
+- Make the Settings window taller and resizable, keeping one size across tabs.
+- Add an **Open Shared Calendars Settings…** link to a job's Metadata Sync tab, shown
+  whether or not the job is attached to a calendar.
 - Title the job editor window **Sync Jobs** and list Sync Jobs, Metadata Programming
   and Photographer Map in the Window menu (⌘1–⌘3), with About opening the app's own window.
 

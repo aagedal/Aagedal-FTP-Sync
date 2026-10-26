@@ -2502,7 +2502,13 @@ final class LocalSyncIntegrationTests: XCTestCase {
             clips: [clip]
         )
 
-        let result = try await SyncEngine().reprocessExistingLocalFiles(job: job)
+        // The source time recorded at download wins over the shifted local date;
+        // reprocessing does not list the source.
+        let signatures = SourceSignatureRepository(fileURL: fixture.root.appendingPathComponent("signatures.json"))
+        try await signatures.record(
+            SyncFile(relativePath: "archive/JAD_EXISTING.jpg", size: Int64(jpeg.count), modifiedAt: timestamp),
+            jobID: job.id, sourceEndpoint: job.left)
+        let result = try await SyncEngine(sourceSignatureRepository: signatures).reprocessExistingLocalFiles(job: job)
 
         XCTAssertEqual(result.scanned, 1)
         XCTAssertEqual(result.applied, 1)
@@ -2524,7 +2530,7 @@ final class LocalSyncIntegrationTests: XCTestCase {
         let latestOutcomes = Dictionary(uniqueKeysWithValues: result.metadataReport.entries.map {
             ($0.relativePath, $0)
         })
-        let secondResult = try await SyncEngine().reprocessExistingLocalFiles(
+        let secondResult = try await SyncEngine(sourceSignatureRepository: signatures).reprocessExistingLocalFiles(
             job: job,
             filter: .staleOrIncomplete,
             latestOutcomes: latestOutcomes

@@ -531,8 +531,8 @@ final class DownloadNamingTests: XCTestCase {
                 photographers: [photographer], clips: [MetadataScheduleClip(photographerID: photographer.id,
                     name: "Test", startsAt: timestamp, endsAt: timestamp.addingTimeInterval(60),
                     fields: ScheduledMetadataFields(headline: "Preserve until admitted"))])
-            do { _ = try await engine.reprocessExistingLocalFiles(job: job); XCTFail("Reprocessing admitted invalid registry") }
-            catch { XCTAssertTrue(error.localizedDescription.contains("Source modification times could not be loaded")) }
+            // Reprocessing never opens the source, so it needs no name registry.
+            _ = try await engine.reprocessExistingLocalFiles(job: job)
             XCTAssertEqual(try? Data(contentsOf: storage.downloadNameRegistry), before)
             XCTAssertFalse(FileManager.default.fileExists(atPath: storage.downloadNamesDirectory.path))
         }

@@ -825,6 +825,7 @@ struct MetadataClipEditor: View {
     @State private var newPresetName: String
     @State private var presetPendingDeletion: MetadataPreset?
     @State private var validationMessage: String?
+    @State private var templateIssues: [String] = []
 
     let photographers: [PhotographerProfile]
     let onSave: (MetadataScheduleClip) -> Void
@@ -910,6 +911,7 @@ struct MetadataClipEditor: View {
 
             }
             .formStyle(.grouped)
+            .onPreferenceChange(MetadataTemplateSourceIssuesKey.self) { templateIssues = $0 }
 
             Divider()
             HStack {
@@ -948,6 +950,10 @@ struct MetadataClipEditor: View {
     }
 
     private func attemptSave() {
+        if let issue = templateIssues.first {
+            validationMessage = "Fix the variables before saving. \(issue)"
+            return
+        }
         let trimmedHeadline = draft.fields.headline.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedHeadline.isEmpty else {
             validationMessage = "Give the metadata a headline."

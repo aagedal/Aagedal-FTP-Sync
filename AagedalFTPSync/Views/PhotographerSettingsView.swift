@@ -111,6 +111,7 @@ final class PhotographerEditingSession: ObservableObject {
 struct PhotographerSettingsView: View {
     @EnvironmentObject private var store: AppStore
     @State private var selectedPhotographerID: UUID?
+    @State private var templateIssues: [String] = []
     @StateObject private var session: PhotographerEditingSession
     @State private var photographerPendingDeletion: PhotographerProfile?
     @State private var showPhotographerImporter = false
@@ -228,6 +229,7 @@ struct PhotographerSettingsView: View {
                 if let draftBinding {
                     VStack(alignment: .leading, spacing: 16) {
                         PhotographerEditor(photographer: draftBinding)
+                            .onPreferenceChange(MetadataTemplateSourceIssuesKey.self) { templateIssues = $0 }
                         Divider()
                         PhotographerWorkHoursControl(photographer: draftBinding)
 
@@ -442,6 +444,7 @@ struct PhotographerSettingsView: View {
 
     private var draftValidationMessage: String? {
         guard let draft else { return nil }
+        if let issue = templateIssues.first { return "Fix the variables before saving. \(issue)" }
         let name = draft.photographerName.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty {
             return "Give the photographer a name."

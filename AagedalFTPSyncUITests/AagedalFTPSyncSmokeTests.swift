@@ -1410,51 +1410,52 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
     }
 
-    func testVariableDraftRejectsInvalidActivationAndCancelKeepsLiteralHeadline() {
+    func testInvalidInlineVariablesBlockSaveUntilFixed() {
         openSeededClipEditor()
         let headline = app.textFields["Headline"].firstMatch
-        let original = headline.value as? String
-        app.buttons["Edit Headline variables"].click()
-        let source = app.textViews["Headline source draft"].firstMatch
-        XCTAssertTrue(source.waitForExistence(timeout: 3))
-        replaceText(in: source, with: "{unknown}")
-        app.checkBoxes["Resolve Variables"].click()
-        XCTAssertFalse(app.buttons["Apply"].firstMatch.isEnabled)
-        replaceText(in: source, with: "{photographer}")
-        XCTAssertTrue(app.buttons["Apply"].firstMatch.isEnabled)
-        app.typeKey(.escape, modifierFlags: [])
-        waitForSheetTransition()
         XCTAssertTrue(headline.waitForExistence(timeout: 3))
-        XCTAssertEqual(headline.value as? String, original)
+        replaceText(in: headline, with: "{unknown}")
+        XCTAssertTrue(element("Headline source error").waitForExistence(timeout: 3))
+        app.buttons["Save"].firstMatch.click()
+        XCTAssertTrue(element("metadata-clip-editor").exists, "Invalid variables must not save the clip")
+        replaceText(in: headline, with: "{photographer}")
+        XCTAssertTrue(element("Headline source error").waitForNonExistence(timeout: 3))
+        app.buttons["Cancel"].firstMatch.click()
+        XCTAssertTrue(element("metadata-clip-editor").waitForNonExistence(timeout: 5))
     }
 
-    func testVariableApplyRetainsSourceAndKeywordsCancelKeepsList() {
+    func testInlineVariableInsertionAndKeywordChipsEditList() {
         openSeededClipEditor()
-        app.buttons["Edit Headline variables"].click()
-        let source = app.textViews["Headline source draft"].firstMatch
-        XCTAssertTrue(source.waitForExistence(timeout: 3))
-        replaceText(in: source, with: "Photo: {photographer}")
-        app.checkBoxes["Resolve Variables"].click()
-        app.buttons["Apply"].firstMatch.click()
-        waitForSheetTransition()
-        let editHeadline = app.buttons["Edit Headline variables"].firstMatch
-        XCTAssertTrue(editHeadline.waitForExistence(timeout: 3))
-        XCTAssertTrue(editHeadline.isHittable)
-        editHeadline.click()
-        XCTAssertTrue(source.waitForExistence(timeout: 3))
-        XCTAssertEqual(source.value as? String, "Photo: {photographer}")
-        XCTAssertEqual(String(describing: app.checkBoxes["Resolve Variables"].value ?? ""), "1")
-        app.typeKey(.escape, modifierFlags: [])
+        // Variables are inserted inline at the cursor and always resolve.
+        let description = app.textViews["Description"].firstMatch
+        description.click()
+        description.typeText("Typed")
+        XCTAssertTrue((description.value as? String ?? "").contains("Typed"))
+        XCTAssertFalse(app.checkBoxes["Resolve Headline variables"].exists)
+        let headline = app.textFields["Headline"].firstMatch
+        XCTAssertTrue(headline.waitForExistence(timeout: 3))
+        replaceText(in: headline, with: "Photo: ")
+        app.menuButtons["Insert Headline variable"].click()
+        app.menuItems["Photographer"].click()
+        XCTAssertEqual(headline.value as? String, "Photo: {photographer}")
+        XCTAssertTrue(element("Headline sample output").waitForExistence(timeout: 3))
 
-        app.buttons["Edit Keywords…"].click()
-        XCTAssertTrue(element("metadata-keywords-editor").waitForExistence(timeout: 3))
-        let before = app.textFields.matching(identifier: "Keyword").count
-        app.buttons["Add Keyword"].click()
-        XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before + 1)
+        // Keywords are chips: a pasted comma list splits, duplicates are skipped.
+        let keywordInput = app.textFields["metadata-keywords-input"].firstMatch
+        XCTAssertTrue(keywordInput.waitForExistence(timeout: 3))
+        keywordInput.click()
+        keywordInput.typeText("UI Alpha, UI Beta; UI Alpha,")
+        let removeAlpha = app.buttons["Remove UI Alpha"]
+        XCTAssertTrue(removeAlpha.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Remove UI Beta"].exists)
+        XCTAssertEqual(app.buttons.matching(identifier: "Remove UI Alpha").count, 1)
+        removeAlpha.click()
+        XCTAssertTrue(removeAlpha.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Remove UI Beta"].exists)
+        element("metadata-keywords-structured").click()
+        XCTAssertTrue(element("structured-keywords-picker").waitForExistence(timeout: 3))
         app.typeKey(.escape, modifierFlags: [])
-        app.buttons["Edit Keywords…"].click()
-        XCTAssertTrue(element("metadata-keywords-editor").waitForExistence(timeout: 3))
-        XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before)
+        XCTAssertTrue(element("structured-keywords-picker").waitForNonExistence(timeout: 3))
     }
 
     func testPeopleLibrarySettingsShowsBundledModelAndLibraryAdmission() {
@@ -1730,7 +1731,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     func testJobMetadataSyncSettingsManageAttachmentSeparatelyFromServers() {
         launch(seedJob: true)
         element("Metadata Sync").firstMatch.click()
-        XCTAssertTrue(app.buttons["Manage Sync Servers…"].waitForExistence(timeout: 5))
+        XCTAssertTrue(element("open-shared-calendars-settings").waitForExistence(timeout: 5))
         XCTAssertFalse(element("metadata-sync-invitation").exists)
         XCTAssertFalse(element("Sync Job").exists)
     }
@@ -1953,6 +1954,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
     ) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
+        quitOtherCopies()
         app = cleanApp
         app.launchEnvironment["AAGEDAL_UI_TESTING"] = "1"
         app.launchEnvironment["AAGEDAL_UI_TEST_OPEN_JOBS"] = "1"
@@ -1984,6 +1986,36 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         waitForJobsWindow(seedJob: seedJob)
     }
 
+    /// XCUIApplication.terminate() only reaches the copy built for this target.
+    /// The app treats any process with its bundle identifier as a concurrent
+    /// writer, so installed, archived or other-worktree copies must quit too.
+    private func quitOtherCopies() {
+        let identifier = "no.aagedal.AagedalFTPSync"
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+        guard !running.isEmpty else { return }
+        running.forEach { $0.terminate() }
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline, running.contains(where: { !$0.isTerminated }) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        for copy in running where !copy.isTerminated {
+            let path = copy.bundleURL?.path ?? "unknown location"
+            // Only force-quit disposable test builds; never kill a copy that may
+            // be doing real delivery work.
+            if path.contains("/DerivedData/") || path.contains("/build/") {
+                copy.forceTerminate()
+            } else {
+                XCTFail("Quit the other running copy of Aagedal FTP Sync before UI testing: \(path)")
+            }
+        }
+        let remaining = Date().addingTimeInterval(5)
+        while Date() < remaining, running.contains(where: { !$0.isTerminated }) {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(NSRunningApplication.runningApplications(withBundleIdentifier: identifier).isEmpty,
+                      "Another copy of Aagedal FTP Sync is still running")
+    }
+
     private func waitForJobsWindow(seedJob: Bool) {
         let jobsWindow = app.windows["jobs"]
         XCTAssertTrue(jobsWindow.waitForExistence(timeout: 8))
@@ -1995,6 +2027,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
                                 seedRemoteJob: Bool = false) {
         let cleanApp = XCUIApplication()
         cleanApp.terminate()
+        quitOtherCopies()
         app = cleanApp
         app.launchEnvironment["AAGEDAL_UI_TESTING"] = "1"
         app.launchEnvironment["AAGEDAL_UI_TEST_SESSION"] = session

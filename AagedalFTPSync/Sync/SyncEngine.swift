@@ -907,13 +907,8 @@ struct SyncEngine: Sendable {
         )
         try destination.validateMetadataRecoveryIsResolved()
         let destinationFiles = try await destination.listFiles()
-        let sourceFiles = try await sourceFilesForReprocessing(
-            destination: destination,
-            job: job,
-            automation: automation,
-            leftPassword: leftPassword,
-            rightPassword: rightPassword
-        )
+        // Reprocessing never contacts the source: times and source evidence come
+        // from what was recorded at download, plus the local files themselves.
         let files = destinationFiles.values
             .filter { job.filter.includesFileType(path: $0.relativePath) }
             .filter {
@@ -953,18 +948,13 @@ struct SyncEngine: Sendable {
             sourceFiles: destinationFiles, automation: automation, geocoding: job.metadataGeocoding,
             faceRecognition: job.metadataFaceRecognition,
             enforceLocalPathRules: true, occupiedDestinationPaths: Set(destinationFiles.keys))
-        if automation?.timestampPolicy == .sourceModification, !job.preserveModificationDates {
-            let missingSourcePaths = files
-                .map(\.relativePath)
-                .filter { sourceFiles[$0] == nil }
-            if let firstMissingPath = missingSourcePaths.first {
-                let description = missingSourcePaths.count == 1
-                    ? firstMissingPath
-                    : "\(firstMissingPath) and \(missingSourcePaths.count - 1) other files"
-                throw AppError.invalidConfiguration(
-                    "Source modification times are unavailable for \(description). Reconnect or restore the source files before reprocessing, or use camera capture time."
-                )
-            }
+        // Each download records the source time. Without it, a destination date
+        // is only usable when the job preserved source dates; a download date
+        // would place the file in the wrong clip, so such files are skipped.
+        let requiresRecordedSourceTime = automation?.timestampPolicy == .sourceModification
+            && !job.preserveModificationDates
+        func sourceModificationDate(for path: String) -> Date? {
+            savedSourceSignatures[path]?.modifiedAt
         }
         var scanned = scope.isClip ? 0 : files.count
         var applied = 0
@@ -976,12 +966,19 @@ struct SyncEngine: Sendable {
         let runID = UUID()
 
         do {
-        var memoSource: (session: any EndpointSession, files: [String: SyncFile])?
-        defer {
-            if let session = memoSource?.session { Task { await session.close() } }
-        }
         for file in files {
             try Task.checkCancellation()
+            if requiresRecordedSourceTime, sourceModificationDate(for: file.relativePath) == nil {
+                // Without a time the clip is unknown, so a clip run cannot claim it.
+                if scope.isClip { continue }
+                skipped += 1
+                metadataReport.append(MetadataAuditEntry(runID: runID, jobID: job.id, operation: .reprocess,
+                    relativePath: file.relativePath, status: .skipped,
+                    timestampPolicy: .sourceModification, scheduledAt: nil,
+                    matchedPhotographer: automation?.matchingPhotographer(for: file.relativePath),
+                    detail: "The source modification time is unknown: no source time was recorded when this file was downloaded. Use camera capture time to reprocess it."))
+                continue
+            }
             let processingDate = now()
             try Task.checkCancellation()
             let temporaryURL = try makeTemporaryURL(for: file)
@@ -1006,7 +1003,7 @@ struct SyncEngine: Sendable {
 
             let scheduledAt = automation.flatMap { automation in
                 MetadataWriter.schedulingDate(for: automation.timestampPolicy,
-                    sourceModifiedAt: sourceFiles[file.relativePath]?.modifiedAt ?? file.modifiedAt,
+                    sourceModifiedAt: sourceModificationDate(for: file.relativePath) ?? file.modifiedAt,
                     localArrivalAt: file.modifiedAt, fileURL: temporaryURL)
             }
             let assignment = scheduledAt.flatMap { automation?.assignment(for: file.relativePath, scheduledAt: $0) }
@@ -1017,44 +1014,21 @@ struct SyncEngine: Sendable {
                 scanned += 1
             }
             let savedPrimarySignature = savedSourceSignatures[file.relativePath]
-            let liveSourceEvidence = sourceFiles[file.relativePath]
-            let sourceEvidence = liveSourceEvidence
-                ?? savedPrimarySignature.map {
+            let sourceEvidence = savedPrimarySignature.map {
                     SyncFile(relativePath: file.relativePath, size: $0.size, modifiedAt: $0.modifiedAt)
                 }
                 ?? file
             let sidecarPath = MetadataWriter.sidecarRelativePath(for: file.relativePath)
-            let savedSidecarSignature = savedSourceSignatures[sidecarPath]
-            let liveSourceSidecar = sourceFiles[sidecarPath]
-            // A source-modification listing is authoritative about a removed
-            // companion. Falling back to an older saved companion here would
-            // conceal that source change from the processing fingerprint.
-            let sourceSidecarEvidence = automation?.timestampPolicy == .sourceModification
-                ? liveSourceSidecar
-                : savedSidecarSignature.map {
-                    SyncFile(relativePath: sidecarPath, size: $0.size, modifiedAt: $0.modifiedAt)
-                }
+            let sourceSidecarEvidence = savedSourceSignatures[sidecarPath].map {
+                SyncFile(relativePath: sidecarPath, size: $0.size, modifiedAt: $0.modifiedAt)
+            }
             let existingOutputSidecarURL = FileManager.default.fileExists(atPath: temporarySidecarURL.path)
                 ? temporarySidecarURL : nil
 
             // A no-write receipt bootstrap needs evidence that this job
-            // previously observed the source. A live listing describes the
-            // source now, but does not prove that an existing destination came
-            // from it. Source signatures are written only after a successful
-            // publication, so they provide the required legacy ownership link.
-            let hasDurableLegacySourceEvidence: Bool = {
-                guard let savedPrimarySignature else { return false }
-                if let liveSourceEvidence,
-                   !savedPrimarySignature.matches(liveSourceEvidence, timestampTolerance: 0) {
-                    return false
-                }
-                if let liveSourceSidecar {
-                    guard let savedSidecarSignature,
-                          savedSidecarSignature.matches(liveSourceSidecar, timestampTolerance: 0)
-                    else { return false }
-                }
-                return true
-            }()
+            // previously observed the source. Source signatures are written only
+            // after a successful publication, so they provide that ownership link.
+            let hasDurableLegacySourceEvidence = savedPrimarySignature != nil
 
             // A receipt's output hash is ownership evidence independent of its
             // source revision. A source resend must not hide a destination edit.
@@ -1114,18 +1088,9 @@ struct SyncEngine: Sendable {
                 var memoIssue: String?
                 if try Self.needsVoiceMemo(assignment, at: temporaryURL, path: file.relativePath) {
                     do {
+                        // Only a WAV already downloaded beside the image is used.
                         memoURL = try await stageVoiceMemo(for: file.relativePath, files: destinationFiles,
                                                           from: destination, to: temporaryMemoURL)
-                        if memoURL == nil {
-                            if memoSource == nil {
-                                memoSource = try await voiceMemoSource(job: job, destination: destination,
-                                    leftPassword: leftPassword, rightPassword: rightPassword)
-                            }
-                            if let memoSource {
-                                memoURL = try await stageVoiceMemo(for: file.relativePath, files: memoSource.files,
-                                    from: memoSource.session, to: temporaryMemoURL)
-                            }
-                        }
                     } catch is CancellationError { throw CancellationError() }
                     catch { memoIssue = error.localizedDescription }
                 }
@@ -1519,57 +1484,6 @@ struct SyncEngine: Sendable {
             conflicts: result.conflicts,
             conflictOutputRevisions: result.conflictOutputRevisions
         )
-    }
-
-    private func sourceFilesForReprocessing(
-        destination: any EndpointSession,
-        job: SyncJob,
-        automation: MetadataAutomation?,
-        leftPassword: String?,
-        rightPassword: String?
-    ) async throws -> [String: SyncFile] {
-        guard automation?.timestampPolicy == .sourceModification else { return [:] }
-
-        let sourceEndpoint: Endpoint
-        let password: String?
-        switch job.direction {
-        case .leftToRight:
-            sourceEndpoint = job.left
-            password = leftPassword
-        case .rightToLeft:
-            sourceEndpoint = job.right
-            password = rightPassword
-        case .bidirectional:
-            throw AppError.invalidConfiguration("Metadata reprocessing requires a one-way job.")
-        }
-
-        let source: any EndpointSession
-        do {
-            let naming = try await prepareDownloadNaming(job: job)
-            let rawSource = try sessionFactory(sourceEndpoint, password, nil)
-            if let naming {
-                source = downloadNamingSession(source: rawSource, destination: destination, job: job, configuration: naming)
-            } else { source = rawSource }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            throw AppError.transferFailed(
-                "Source modification times could not be loaded for metadata reprocessing. Reconnect the source and try again. \(error.localizedDescription)"
-            )
-        }
-        do {
-            let files = try await source.listFiles()
-            await source.close()
-            return files
-        } catch is CancellationError {
-            await source.close()
-            throw CancellationError()
-        } catch {
-            await source.close()
-            throw AppError.transferFailed(
-                "Source modification times could not be loaded for metadata reprocessing. Reconnect the source and try again. \(error.localizedDescription)"
-            )
-        }
     }
 
     private func validateLocalDestinationPaths(
@@ -2533,20 +2447,6 @@ struct SyncEngine: Sendable {
         guard request.requiredVariables(for: Set(MetadataWritableField.allCases)).contains(.voiceMemoTranscript) else { return false }
         let writable = try MetadataWriter.writableFields(at: url, relativePath: path, policy: request.existingFieldPolicy)
         return request.requiredVariables(for: writable).contains(.voiceMemoTranscript)
-    }
-
-    private func voiceMemoSource(job: SyncJob, destination: any EndpointSession,
-                                 leftPassword: String?, rightPassword: String?) async throws
-        -> (session: any EndpointSession, files: [String: SyncFile])? {
-        guard let endpoint = job.sourceEndpoint else { return nil }
-        let naming = try await prepareDownloadNaming(job: job)
-        let rawSource = try sessionFactory(endpoint, job.direction == .leftToRight ? leftPassword : rightPassword, nil)
-        let source: any EndpointSession
-        if let naming {
-            source = downloadNamingSession(source: rawSource, destination: destination, job: job, configuration: naming)
-        } else { source = rawSource }
-        do { return (source, try await source.listFiles()) }
-        catch { await source.close(); throw error }
     }
 
     private func stageVoiceMemo(for imagePath: String, files: [String: SyncFile],
