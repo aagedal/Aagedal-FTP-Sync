@@ -114,6 +114,8 @@ struct GeneralSettingsView: View {
                 Text("Servers, photographers, shared calendars, voice memos and the People Library are configured in the other tabs of this window.")
             }
 
+            StructuredKeywordsSettingsSection()
+
             Section("Configuration") {
                 LabeledContent("Configuration package") {
                     configurationMenu
@@ -233,5 +235,44 @@ struct GeneralSettingsView: View {
         guard let result = store.importConfiguration(from: data, password: password, allowImportedAppleCoordinates: allowAppleCoordinates) else { return false }
         importSummary = result.summary
         return true
+    }
+}
+
+/// Links Aagedal Photo Agent's Lists folder so the Keywords field can offer its
+/// structured lists. FTP Sync only reads the folder.
+private struct StructuredKeywordsSettingsSection: View {
+    @ObservedObject private var library = StructuredKeywordLibraryStore.shared
+
+    var body: some View {
+        Section {
+            LabeledContent("Photo Agent lists") {
+                if let path = library.linkedFolderPath {
+                    Text((path as NSString).abbreviatingWithTildeInPath)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                } else {
+                    Text("Not linked").foregroundStyle(.secondary)
+                }
+            }
+            LabeledContent("Active lists") {
+                Text(library.activeListNames.isEmpty ? "None" : library.activeListNames.joined(separator: ", "))
+                    .foregroundStyle(.secondary)
+            }
+            if let error = library.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+            }
+            HStack {
+                Button(library.linkedFolderPath == nil ? "Choose Lists Folder…" : "Change…") { library.chooseFolder() }
+                    .accessibilityIdentifier("structured-keywords-choose-folder")
+                if library.linkedFolderPath != nil {
+                    Button("Reload") { library.reload() }
+                    Button("Unlink") { library.unlinkFolder() }
+                }
+            }
+        } header: {
+            Text("Structured Keywords")
+        } footer: {
+            Text("Choose the Lists folder in ~/Library/Application Support/Aagedal Photo Agent, or in Photo Agent’s iCloud Drive folder. Its active lists appear in every Keywords field. Edit lists in Photo Agent; without a linked folder, IPTC Media Topics is available.")
+        }
     }
 }

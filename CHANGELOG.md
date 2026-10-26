@@ -15,6 +15,13 @@
   Launch at Login, configuration import/export, the support bundle and an overview
   of each window. The separate Servers and Photographers windows are replaced by
   their Settings tabs, and **Sync Servers** is renamed **Shared Calendars**.
+- Edit keywords as chips, matching Aagedal Photo Agent: press Return, or type or paste
+  commas or semicolons, to add keywords; duplicates are skipped. Suggestions and a
+  searchable structured keyword picker add a keyword with its parent keywords and
+  synonyms. Variables and the whole-list resolution setting are unchanged.
+- Read Photo Agent's structured keyword lists from its Lists folder, linked once in
+  Settings → General. The bundled IPTC Media Topics list (CC BY 4.0) is available
+  without a linked folder. FTP Sync never writes to the folder.
 - Make the Settings window taller and resizable, keeping one size across tabs.
 - Add an **Open Shared Calendars Settings…** link to a job's Metadata Sync tab, shown
   whether or not the job is attached to a calendar.

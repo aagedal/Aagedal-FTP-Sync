@@ -4,7 +4,7 @@ A native macOS menu-bar utility for getting newsroom files where they need to go
 
 Version 2.9 adds optional metadata calendar sharing through a user-configured HTTPS PHP/MySQL server, with whole-calendar or date-range sharing, multiple editors, offline edits and explicit conflict resolution. Manual `.aftpsync` imports retain overlapping metadata clips and show a warning. The app has no hard-coded server and does not bundle rclone.
 
-Version 3.0.0 (build 46) is the current release. Face recognition uses Photo Agent
+Version 3.0.0 (build 47) is the current release. Face recognition uses Photo Agent
 defaults. Acceptance gates that remained open at release are recorded in the
 [3.0 readiness report](Documentation/3.0-Readiness.md).
 
@@ -24,6 +24,10 @@ The 3.0 source currently adds these guarded workflows:
   and people already present or accepted by recognition. Braces remain literal until
   variables are enabled for that field; a missing value preserves the complete existing
   field rather than publishing a partial result.
+- A Keywords field that works like Aagedal Photo Agent's: chips, comma/semicolon
+  entry, suggestions and a structured keyword picker. Link Photo Agent's Lists folder
+  in Settings → General to use its structured lists (read-only); the bundled IPTC Media
+  Topics list is always available.
 - Per-job reverse geocoding through either an offline GeoNames database or Apple online, with named map polygons that override City and `{gps:city}` for GPS-tagged images inside those areas.
   City and Country have independent disabled, fill-empty and overwrite policies. Apple
   lookup requires explicit consent because image coordinates are sent to Apple; it does

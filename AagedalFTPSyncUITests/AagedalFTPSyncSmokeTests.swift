@@ -1428,7 +1428,7 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(headline.value as? String, original)
     }
 
-    func testVariableApplyRetainsSourceAndKeywordsCancelKeepsList() {
+    func testVariableApplyRetainsSourceAndKeywordChipsEditList() {
         openSeededClipEditor()
         app.buttons["Edit Headline variables"].click()
         let source = app.textViews["Headline source draft"].firstMatch
@@ -1446,15 +1446,22 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertEqual(String(describing: app.checkBoxes["Resolve Variables"].value ?? ""), "1")
         app.typeKey(.escape, modifierFlags: [])
 
-        app.buttons["Edit Keywords…"].click()
-        XCTAssertTrue(element("metadata-keywords-editor").waitForExistence(timeout: 3))
-        let before = app.textFields.matching(identifier: "Keyword").count
-        app.buttons["Add Keyword"].click()
-        XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before + 1)
+        // Keywords are chips: a pasted comma list splits, duplicates are skipped.
+        let keywordInput = app.textFields["metadata-keywords-input"].firstMatch
+        XCTAssertTrue(keywordInput.waitForExistence(timeout: 3))
+        keywordInput.click()
+        keywordInput.typeText("UI Alpha, UI Beta; UI Alpha,")
+        let removeAlpha = app.buttons["Remove UI Alpha"]
+        XCTAssertTrue(removeAlpha.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Remove UI Beta"].exists)
+        XCTAssertEqual(app.buttons.matching(identifier: "Remove UI Alpha").count, 1)
+        removeAlpha.click()
+        XCTAssertTrue(removeAlpha.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["Remove UI Beta"].exists)
+        element("metadata-keywords-structured").click()
+        XCTAssertTrue(element("structured-keywords-picker").waitForExistence(timeout: 3))
         app.typeKey(.escape, modifierFlags: [])
-        app.buttons["Edit Keywords…"].click()
-        XCTAssertTrue(element("metadata-keywords-editor").waitForExistence(timeout: 3))
-        XCTAssertEqual(app.textFields.matching(identifier: "Keyword").count, before)
+        XCTAssertTrue(element("structured-keywords-picker").waitForNonExistence(timeout: 3))
     }
 
     func testPeopleLibrarySettingsShowsBundledModelAndLibraryAdmission() {
