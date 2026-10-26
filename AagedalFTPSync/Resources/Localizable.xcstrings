@@ -212,7 +212,7 @@
     "Activate sync in a copy?" : {
 
     },
-    "Add a sync server in Settings → Sync Servers first." : {
+    "Add a sync server in Settings → Shared Calendars first." : {
 
     },
     "Add and name servers here. Attach each job in Job settings → Metadata Sync." : {
