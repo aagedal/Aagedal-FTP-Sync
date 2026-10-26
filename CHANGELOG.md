@@ -15,6 +15,11 @@
   Launch at Login, configuration import/export, the support bundle and an overview
   of each window. The separate Servers and Photographers windows are replaced by
   their Settings tabs, and **Sync Servers** is renamed **Shared Calendars**.
+- Edit Headline, Description and Copyright variables inline instead of in a separate
+  Variables window. **Insert Variable** adds a variable at the cursor (macOS 15 and later;
+  appended on macOS 14) and turns on **Resolve variables**, with an example and any
+  syntax error shown under the field. Clips and photographers cannot be saved while a
+  field's variables are invalid.
 - Edit keywords as chips, matching Aagedal Photo Agent: press Return, or type or paste
   commas or semicolons, to add keywords; duplicates are skipped. Suggestions and a
   searchable structured keyword picker add a keyword with its parent keywords and

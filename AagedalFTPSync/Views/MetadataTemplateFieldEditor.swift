@@ -1,102 +1,49 @@
 import SwiftUI
 import MetadataTemplates
 
-/// The binding always contains a validated atomic pair. Active source is edited
-/// in an isolated sheet; cancelling never modifies the caller's value.
+/// Reports fields whose typed source cannot be saved yet, so a parent can block
+/// saving instead of silently keeping the last valid value.
+struct MetadataTemplateSourceIssuesKey: PreferenceKey {
+    static let defaultValue: [String] = []
+    static func reduce(value: inout [String], nextValue: () -> [String]) { value += nextValue() }
+}
+
+/// Source text, variable resolution and the variable menu are edited inline.
+/// The binding only ever receives a validated atomic value.
 struct MetadataTemplateFieldEditor: View {
     let title: String
     @Binding var value: MetadataTemplateText
     var multiline = false
     var samplePhotographer = "Sample Photographer"
-    @State private var showingVariables = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title).font(.headline)
-                if value.templateVersion != nil {
-                    Label("Variables enabled", systemImage: "curlybraces")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Variables…") { showingVariables = true }
-                    .accessibilityLabel("Edit \(title) variables")
-                    .help("Edit source, insert variables and preview sample output before applying.")
-            }
-            if value.templateVersion != nil {
-                Text(value.source.isEmpty ? "Empty source" : value.source)
-                    .font(.body.monospaced()).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8).background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
-                    .accessibilityLabel("\(title) variable source")
-                    .help("Use Variables to edit this activated source safely.")
-            } else if multiline {
-                TextEditor(text: literalBinding)
-                    .frame(minHeight: 65, maxHeight: 130)
-                    .accessibilityLabel(title)
-            } else {
-                TextField(title, text: literalBinding)
-                    .accessibilityLabel(title)
-            }
-        }
-        // This editor is the modal background while its variable sheet is open.
-        // Keeping the newly activated source in the macOS 27 accessibility tree
-        // can make AppKit resolve the background label through the presented
-        // sheet and recurse during a full XCTest/VoiceOver snapshot.
-        .accessibilityHidden(showingVariables)
-        .sheet(isPresented: $showingVariables) {
-            MetadataTemplateTextDraft(title: title, initial: value, samplePhotographer: samplePhotographer) {
-                value = $0
-            }
-        }
-    }
-
-    private var literalBinding: Binding<String> {
-        Binding(get: { value.source }, set: { value = .literal($0) })
-    }
-}
-
-private struct MetadataTemplateTextDraft: View {
-    @Environment(\.dismiss) private var dismiss
-    let title: String
-    let apply: (MetadataTemplateText) -> Void
-    @State private var context: MetadataTemplateContext
     @State private var source: String
     @State private var resolvesVariables: Bool
-    @State private var sample = "Preparing sample…"
+    @State private var pendingInsertion: String?
+    @State private var sampleContext: MetadataTemplateContext
 
-    private struct PreviewKey: Hashable { let source: String; let enabled: Bool }
-    private var previewKey: PreviewKey { PreviewKey(source: source, enabled: resolvesVariables) }
-
-    init(title: String, initial: MetadataTemplateText, samplePhotographer: String,
-         apply: @escaping (MetadataTemplateText) -> Void) {
+    init(title: String, value: Binding<MetadataTemplateText>, multiline: Bool = false,
+         samplePhotographer: String = "Sample Photographer") {
         self.title = title
-        self.apply = apply
-        _source = State(initialValue: initial.source)
-        _resolvesVariables = State(initialValue: initial.templateVersion != nil)
+        _value = value
+        self.multiline = multiline
+        self.samplePhotographer = samplePhotographer
+        _source = State(initialValue: value.wrappedValue.source)
+        _resolvesVariables = State(initialValue: value.wrappedValue.templateVersion != nil)
         let zone = TimeZone(identifier: TimeZone.current.identifier) ?? TimeZone(secondsFromGMT: 0)!
-        _context = State(initialValue: MetadataTemplateContext(processingDate: Date(), processingTimeZone: zone,
+        _sampleContext = State(initialValue: MetadataTemplateContext(processingDate: Date(), processingTimeZone: zone,
             captureDate: MetadataCaptureDate(date: Date(timeIntervalSince1970: 1_709_208_000),
                                             zoneSource: .explicitOffset(secondsFromGMT: 0)),
             photographer: samplePhotographer))
     }
 
-    private var validation: Result<MetadataTemplateText, Error> {
-        Result { resolvesVariables ? try .activated(source) : .literal(source) }
-    }
-    private var validationError: String? {
-        guard case .failure(let error) = validation else { return nil }
-        return errorMessage(error)
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("\(title) Variables").font(.title2.bold())
-            Toggle("Resolve Variables", isOn: $resolvesVariables)
-                .help("When off, all source text, including braces, remains literal.")
-            HStack {
-                Text("Source").font(.headline)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(title).font(.headline)
                 Spacer()
+                Toggle("Resolve variables", isOn: $resolvesVariables)
+                    .toggleStyle(.checkbox)
+                    .help("When off, all text, including braces, stays literal.")
+                    .accessibilityLabel("Resolve \(title) variables")
                 Menu("Insert Variable") {
                     insert("Capture date", token: "{dateCaptured:YYYY-MM-DD}")
                     Divider()
@@ -107,63 +54,79 @@ private struct MetadataTemplateTextDraft: View {
                     insert("Persons", token: "{persons}")
                     insert("Voice memo transcript", token: "{voiceMemoTranscript}")
                     insert("Existing description", token: "{existingDescription}")
-                }.help("Appends to the end of the source. Enable Resolve Variables to activate it.")
-            }
-            TextEditor(text: $source)
-                .font(.body.monospaced()).frame(height: 120)
-                .accessibilityLabel("\(title) source draft")
-                .border(Color.secondary.opacity(0.3))
-            Text("Insert Variable appends to the end. Use {{ and }} for literal braces when variables are enabled.")
-                .font(.caption).foregroundStyle(.secondary)
-            if let validationError {
-                Label(validationError, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red).accessibilityLabel("Source error: \(validationError)")
-            }
-            Text("Sample output only").font(.headline)
-            Text("Processing time is frozen when this editor opens. Assumed processing zone: \(context.processingTimeZone.identifier). Capture date is a fixed example in UTC. This does not read a photo or change saved job assumptions.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("City and Country require a usable geocoding result. Persons requires usable Person Shown names from image metadata or recognition. Missing dependencies preserve the existing field.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Voice memos use the first 30 seconds of a matching WAV and the model selected in Settings → Voice Memos. Use Existing description to keep embedded caption text; enable description overwrite to apply the combined result. The complete description must fit within 2,000 UTF-8 bytes. These image variables are unavailable in this sample.")
-                .font(.caption).foregroundStyle(.secondary)
-            ScrollView {
-                Text(sample).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(minHeight: 65, maxHeight: 110)
-                .accessibilityLabel("\(title) sample output")
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Apply") {
-                    guard case .success(let replacement) = validation else { return }
-                    apply(replacement)
-                    dismiss()
-                }.keyboardShortcut(.defaultAction).disabled(validationError != nil)
-            }
-        }
-        .padding(20).frame(width: 620)
-        .task(id: previewKey) {
-            sample = "Preparing sample…"
-            do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
-            guard !Task.isCancelled else { return }
-            switch validation {
-            case .failure(let error): sample = "Fix the source to preview: " + errorMessage(error)
-            case .success(let value):
-                switch value.resolve(using: context) {
-                case .resolved(let result): sample = result.isEmpty ? "No value proposed" : result
-                case .preserveExisting(let reason): sample = preservationMessage(reason)
                 }
+                .fixedSize()
+                .accessibilityLabel("Insert \(title) variable")
+                .help(variableHelp)
+            }
+            MetadataTemplateSourceInput(title: title, text: $source, multiline: multiline,
+                                        monospaced: resolvesVariables, insertion: $pendingInsertion)
+            if let issue {
+                Label(issue, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .labelStyle(AccessibleStatusLabelStyle(symbolColor: .orange))
+                    .accessibilityIdentifier("\(title) source error")
+            } else if resolvesVariables {
+                // No label override or text selection here: on macOS 27 either can make
+                // AppKit recurse while resolving this text's accessibility label.
+                Text(sample).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    .accessibilityIdentifier("\(title) sample output")
             }
         }
+        .preference(key: MetadataTemplateSourceIssuesKey.self, value: issue.map { ["\(title): \($0)"] } ?? [])
+        .onChange(of: source) { _, _ in publish() }
+        .onChange(of: resolvesVariables) { _, _ in publish() }
+        .onChange(of: value) { _, newValue in
+            // Adopt outside changes, such as loading a preset, but not our own writes.
+            guard (try? validation.get()) != newValue else { return }
+            source = newValue.source
+            resolvesVariables = newValue.templateVersion != nil
+        }
+    }
+
+    private var validation: Result<MetadataTemplateText, Error> {
+        Result { resolvesVariables ? try .activated(source) : .literal(source) }
+    }
+
+    private var issue: String? {
+        guard case .failure(let error) = validation else { return nil }
+        return Self.errorMessage(error)
+    }
+
+    private func publish() {
+        if case .success(let validated) = validation, validated != value { value = validated }
     }
 
     private func insert(_ label: String, token: String) -> some View {
-        Button(label) { source += token }
+        Button(label) {
+            pendingInsertion = token
+            // Choosing a variable means it should resolve.
+            resolvesVariables = true
+        }
     }
 
-    private func errorMessage(_ error: Error) -> String {
-        guard let error = error as? MetadataTemplateParseError else { return "This source cannot be activated." }
+    private var variableHelp: String {
+        "Inserts at the cursor and turns on variable resolution. Use {{ and }} for literal braces. City and Country need a geocoding result, Persons needs Person Shown names, and Voice memo transcript uses the first 30 seconds of a matching WAV. Missing values keep the existing field. A description must fit in 2,000 UTF-8 bytes."
+    }
+
+    private var sample: String {
+        guard case .success(let value) = validation else { return "" }
+        switch value.resolve(using: sampleContext) {
+        case .resolved(let result):
+            return result.isEmpty ? "Example: no value" : "Example: " + result
+        case .preserveExisting(.missingValues(let variables)):
+            return "Example keeps the existing value; unavailable in this example: "
+                + variables.map(\.rawValue).sorted().joined(separator: ", ")
+        case .preserveExisting(.invalidDate): return "Example keeps the existing value because a date is invalid."
+        case .preserveExisting(.outputLimitExceeded(let maximum)): return "Example keeps the existing value: output exceeds \(maximum) bytes."
+        case .preserveExisting(.keywordEntryLimitExceeded(let maximum)): return "Example keeps the existing value: more than \(maximum) entries."
+        }
+    }
+
+    static func errorMessage(_ error: Error) -> String {
+        guard let error = error as? MetadataTemplateParseError else { return "This text cannot use variables." }
         switch error {
-        case .sourceLimitExceeded(let maximum): return "Source exceeds the \(maximum)-byte limit."
+        case .sourceLimitExceeded(let maximum): return "Text exceeds the \(maximum)-byte limit."
         case .unmatchedOpeningBrace(let offset): return "Unclosed opening brace at UTF-8 byte \(offset)."
         case .unmatchedClosingBrace(let offset): return "Unexpected closing brace at UTF-8 byte \(offset)."
         case .nestedOpeningBrace(let offset): return "Nested opening brace at UTF-8 byte \(offset)."
@@ -171,14 +134,74 @@ private struct MetadataTemplateTextDraft: View {
         case .unsupportedDateFormat(_, let offset): return "Unsupported date format at UTF-8 byte \(offset). Use YYYY-MM-DD."
         }
     }
+}
 
-    private func preservationMessage(_ reason: MetadataTemplatePreservationReason) -> String {
-        switch reason {
-        case .missingValues(let variables):
-            return "Existing value would be preserved. Missing sample values: " + variables.map(\.rawValue).sorted().joined(separator: ", ")
-        case .invalidDate: return "Existing value would be preserved because a date is invalid."
-        case .outputLimitExceeded(let maximum): return "Existing value would be preserved: output exceeds \(maximum) bytes."
-        case .keywordEntryLimitExceeded(let maximum): return "Existing keywords would be preserved: more than \(maximum) entries."
+/// Inserts a requested variable at the cursor where macOS supports reading the
+/// text selection (15 and later); otherwise appends it.
+private struct MetadataTemplateSourceInput: View {
+    let title: String
+    @Binding var text: String
+    let multiline: Bool
+    let monospaced: Bool
+    @Binding var insertion: String?
+
+    var body: some View {
+        if #available(macOS 15, *) {
+            SelectionAwareTemplateInput(title: title, text: $text, multiline: multiline,
+                                        monospaced: monospaced, insertion: $insertion)
+        } else {
+            Group {
+                if multiline {
+                    TextEditor(text: $text).frame(minHeight: 65, maxHeight: 130)
+                } else {
+                    TextField(title, text: $text)
+                }
+            }
+            .font(monospaced ? .body.monospaced() : .body)
+            .accessibilityLabel(title)
+            .onChange(of: insertion) { _, token in
+                guard let token else { return }
+                insertion = nil
+                text += token
+            }
         }
+    }
+}
+
+@available(macOS 15, *)
+private struct SelectionAwareTemplateInput: View {
+    let title: String
+    @Binding var text: String
+    let multiline: Bool
+    let monospaced: Bool
+    @Binding var insertion: String?
+    @State private var selection: TextSelection?
+
+    var body: some View {
+        Group {
+            if multiline {
+                TextEditor(text: $text, selection: $selection).frame(minHeight: 65, maxHeight: 130)
+            } else {
+                TextField(title, text: $text, selection: $selection)
+            }
+        }
+        .font(monospaced ? .body.monospaced() : .body)
+        .accessibilityLabel(title)
+        .onChange(of: insertion) { _, token in
+            guard let token else { return }
+            insertion = nil
+            insert(token)
+        }
+    }
+
+    private func insert(_ token: String) {
+        guard case .selection(let range)? = selection?.indices,
+              range.lowerBound >= text.startIndex, range.upperBound <= text.endIndex else {
+            text += token
+            return
+        }
+        let offset = text.distance(from: text.startIndex, to: range.lowerBound) + token.count
+        text.replaceSubrange(range, with: token)
+        selection = TextSelection(insertionPoint: text.index(text.startIndex, offsetBy: offset))
     }
 }

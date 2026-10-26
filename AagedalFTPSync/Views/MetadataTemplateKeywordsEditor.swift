@@ -92,7 +92,7 @@ struct MetadataTemplateKeywordsEditor: View {
                     Button("People shown") { insert("{persons}") }
                 }
                 .fixedSize()
-                .help("Add a variable to the keyword being typed.")
+                .help("Adds a variable to the keyword being typed and turns on variable resolution.")
                 Button { showingPicker = true } label: { Image(systemName: "list.bullet.indent") }
                     .buttonStyle(.borderless)
                     .help("Choose from structured keywords")
@@ -224,7 +224,9 @@ struct MetadataTemplateKeywordsEditor: View {
         }
     }
 
+    /// Choosing a variable turns on resolution, as in the other metadata fields.
     private func insert(_ token: String) {
+        if value.templateVersion == nil, !apply(value.source, resolvesVariables: true) { return }
         inputText += token
         inputIsFocused = true
     }

@@ -1410,41 +1410,32 @@ final class AagedalFTPSyncSmokeTests: XCTestCase {
         XCTAssertTrue(element("metadata-clip-editor").waitForExistence(timeout: 5))
     }
 
-    func testVariableDraftRejectsInvalidActivationAndCancelKeepsLiteralHeadline() {
+    func testInvalidInlineVariablesBlockSaveUntilFixed() {
         openSeededClipEditor()
         let headline = app.textFields["Headline"].firstMatch
-        let original = headline.value as? String
-        app.buttons["Edit Headline variables"].click()
-        let source = app.textViews["Headline source draft"].firstMatch
-        XCTAssertTrue(source.waitForExistence(timeout: 3))
-        replaceText(in: source, with: "{unknown}")
-        app.checkBoxes["Resolve Variables"].click()
-        XCTAssertFalse(app.buttons["Apply"].firstMatch.isEnabled)
-        replaceText(in: source, with: "{photographer}")
-        XCTAssertTrue(app.buttons["Apply"].firstMatch.isEnabled)
-        app.typeKey(.escape, modifierFlags: [])
-        waitForSheetTransition()
         XCTAssertTrue(headline.waitForExistence(timeout: 3))
-        XCTAssertEqual(headline.value as? String, original)
+        replaceText(in: headline, with: "{unknown}")
+        app.checkBoxes["Resolve Headline variables"].click()
+        XCTAssertTrue(element("Headline source error").waitForExistence(timeout: 3))
+        app.buttons["Save"].firstMatch.click()
+        XCTAssertTrue(element("metadata-clip-editor").exists, "Invalid variables must not save the clip")
+        replaceText(in: headline, with: "{photographer}")
+        XCTAssertTrue(element("Headline source error").waitForNonExistence(timeout: 3))
+        app.buttons["Cancel"].firstMatch.click()
+        XCTAssertTrue(element("metadata-clip-editor").waitForNonExistence(timeout: 5))
     }
 
-    func testVariableApplyRetainsSourceAndKeywordChipsEditList() {
+    func testInlineVariableInsertionAndKeywordChipsEditList() {
         openSeededClipEditor()
-        app.buttons["Edit Headline variables"].click()
-        let source = app.textViews["Headline source draft"].firstMatch
-        XCTAssertTrue(source.waitForExistence(timeout: 3))
-        replaceText(in: source, with: "Photo: {photographer}")
-        app.checkBoxes["Resolve Variables"].click()
-        app.buttons["Apply"].firstMatch.click()
-        waitForSheetTransition()
-        let editHeadline = app.buttons["Edit Headline variables"].firstMatch
-        XCTAssertTrue(editHeadline.waitForExistence(timeout: 3))
-        XCTAssertTrue(editHeadline.isHittable)
-        editHeadline.click()
-        XCTAssertTrue(source.waitForExistence(timeout: 3))
-        XCTAssertEqual(source.value as? String, "Photo: {photographer}")
-        XCTAssertEqual(String(describing: app.checkBoxes["Resolve Variables"].value ?? ""), "1")
-        app.typeKey(.escape, modifierFlags: [])
+        // Variables are inserted inline at the cursor and turn on resolution.
+        let headline = app.textFields["Headline"].firstMatch
+        XCTAssertTrue(headline.waitForExistence(timeout: 3))
+        replaceText(in: headline, with: "Photo: ")
+        app.menuButtons["Insert Headline variable"].click()
+        app.menuItems["Photographer"].click()
+        XCTAssertEqual(headline.value as? String, "Photo: {photographer}")
+        XCTAssertEqual(String(describing: app.checkBoxes["Resolve Headline variables"].value ?? ""), "1")
+        XCTAssertTrue(element("Headline sample output").waitForExistence(timeout: 3))
 
         // Keywords are chips: a pasted comma list splits, duplicates are skipped.
         let keywordInput = app.textFields["metadata-keywords-input"].firstMatch

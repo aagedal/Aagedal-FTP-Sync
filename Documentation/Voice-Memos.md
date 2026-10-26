@@ -8,8 +8,8 @@ Hugging Face revisions and verify the exact byte count and SHA-256 before instal
 Models are stored in the application's sandboxed Application Support directory.
 Transcription runs locally using the bundled FFmpeg/whisper.cpp runtime.
 
-In a scheduled metadata description, open **Variables…**, enable **Resolve Variables**,
-and use, for example:
+In a scheduled metadata description, choose variables from **Insert Variable** (this
+turns on **Resolve variables**), or type them and enable it yourself, for example:
 
 ```
 {existingDescription}
